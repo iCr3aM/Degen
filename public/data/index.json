@@ -1,0 +1,224 @@
+{
+  "v": 1,
+  "start": 1356998400000,
+  "end": 1735689600000,
+  "totalHours": 105192,
+  "encoding": "gzip(int32le[o, h-o, l-o, c-o] × count)",
+  "coins": {
+    "BTC": {
+      "name": "比特币",
+      "file": "BTC.bin",
+      "start": 1356998400000,
+      "count": 105192,
+      "scale": 100,
+      "maxPrice": 108364,
+      "first": 13.24,
+      "last": 93381,
+      "bytes": 1683072,
+      "zipped": 990728,
+      "sources": {
+        "hourly": 105192,
+        "gapHours": 0,
+        "gapRanges": [],
+        "detail": {
+          "bitstamp btcusd": 105192
+        }
+      }
+    },
+    "DOGE": {
+      "name": "狗狗币",
+      "file": "DOGE.bin",
+      "start": 1390341600000,
+      "count": 95930,
+      "scale": 100000000,
+      "maxPrice": 0.73995,
+      "first": 0.00188943,
+      "last": 0.316,
+      "bytes": 1534880,
+      "zipped": 711502,
+      "sources": {
+        "hourly": 95930,
+        "gapHours": 0,
+        "gapRanges": [],
+        "detail": {
+          "binance DOGEUSDT": 48112,
+          "Poloniex_DOGEUSDT_1h.csv": 7432,
+          "Poloniex_DOGEBTC_1h.csv": 40386
+        }
+      }
+    },
+    "XRP": {
+      "name": "瑞波币",
+      "file": "XRP.bin",
+      "start": 1407985200000,
+      "count": 91029,
+      "scale": 10000000,
+      "maxPrice": 3.317,
+      "first": 0.0053754,
+      "last": 2.07924,
+      "bytes": 1456464,
+      "zipped": 726479,
+      "sources": {
+        "hourly": 91029,
+        "gapHours": 0,
+        "gapRanges": [],
+        "detail": {
+          "bitstamp xrpusd": 70499,
+          "binance XRPUSDT": 0,
+          "Poloniex_XRPUSDT_1h.csv": 15953,
+          "Poloniex_XRPBTC_1h.csv": 4577
+        }
+      }
+    },
+    "ETH": {
+      "name": "以太坊",
+      "file": "ETH.bin",
+      "start": 1439013600000,
+      "count": 82410,
+      "scale": 10000,
+      "maxPrice": 4868.79,
+      "first": 1.71,
+      "last": 3331.3,
+      "bytes": 1318560,
+      "zipped": 754875,
+      "sources": {
+        "hourly": 82410,
+        "gapHours": 0,
+        "gapRanges": [],
+        "detail": {
+          "bitstamp ethusd": 64664,
+          "binance ETHUSDT": 0,
+          "Poloniex_ETHUSDT_1h.csv": 17746
+        }
+      }
+    },
+    "SOL": {
+      "name": "Solana",
+      "file": "SOL.bin",
+      "start": 1597125600000,
+      "count": 38490,
+      "scale": 100000,
+      "maxPrice": 264.39,
+      "first": 2.9515,
+      "last": 189.31,
+      "bytes": 615840,
+      "zipped": 333382,
+      "sources": {
+        "hourly": 38490,
+        "gapHours": 0,
+        "gapRanges": [],
+        "detail": {
+          "binance SOLUSDT": 38470,
+          "binanceus SOLUSD": 20
+        }
+      }
+    }
+  },
+  "liq": {
+    "file": "liq.bin",
+    "encoding": "gzip(float32le × 4383 × 5)",
+    "start": 1356998400000,
+    "days": 4383,
+    "order": [
+      "BTC",
+      "DOGE",
+      "XRP",
+      "ETH",
+      "SOL"
+    ],
+    "anchors": {
+      "BTC": {
+        "early": 500000,
+        "late": 30000000000
+      },
+      "DOGE": {
+        "early": 1000,
+        "late": 2000000000
+      },
+      "XRP": {
+        "early": 5000,
+        "late": 2000000000
+      },
+      "ETH": {
+        "early": 1000,
+        "late": 15000000000
+      },
+      "SOL": {
+        "early": 92000000,
+        "late": 2000000000
+      }
+    },
+    "firstYear": {
+      "BTC": 2013,
+      "DOGE": 2014,
+      "XRP": 2014,
+      "ETH": 2015,
+      "SOL": 2020
+    },
+    "smoothing": null,
+    "firstDay": {
+      "BTC": 0,
+      "DOGE": 385,
+      "XRP": 590,
+      "ETH": 949,
+      "SOL": 2779
+    },
+    "bytes": 87660,
+    "zipped": 64951
+  },
+  "circulating": {
+    "BTC": {
+      "unit": "BTC",
+      "points": {
+        "2013-01-01": 10614075,
+        "2016-01-01": 15029575,
+        "2018-01-01": 16774525,
+        "2020-01-01": 18133650,
+        "2021-01-01": 18586956,
+        "2022-01-01": 18916244,
+        "2024-01-01": 19586163,
+        "2024-12-31": 19803534
+      }
+    },
+    "ETH": {
+      "unit": "ETH",
+      "points": {
+        "2015-08-08": 72009990,
+        "2016-01-01": 76166279,
+        "2018-01-01": 96712859,
+        "2021-01-01": 114093438,
+        "2022-01-01": 118049178,
+        "2024-01-01": 120187795,
+        "2024-12-31": 120471971
+      }
+    },
+    "XRP": {
+      "unit": "XRP",
+      "points": {
+        "2013-01-01": 100000000000,
+        "2021-01-01": 48000000000,
+        "2024-12-31": 57900000000
+      }
+    },
+    "DOGE": {
+      "unit": "DOGE",
+      "points": {
+        "2014-01-21": 18957229670,
+        "2018-01-01": 112532135652,
+        "2021-01-01": 127649065504,
+        "2022-01-01": 132623305487,
+        "2024-01-01": 142480185486,
+        "2024-12-31": 147435315475
+      }
+    },
+    "SOL": {
+      "unit": "SOL",
+      "points": {
+        "2020-08-11": 8200000,
+        "2021-01-01": 47500000,
+        "2024-01-01": 429000000,
+        "2024-12-31": 483000000
+      }
+    }
+  }
+}

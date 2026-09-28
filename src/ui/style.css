@@ -1,0 +1,436 @@
+/**
+ * 样式（P0 · 交易核心骨架）
+ * ===============================================================
+ * 三条不可动摇的约束：
+ *   ① **全直角**（`* { border-radius: 0 }`）—— 与参考项目同一套语气，一处声明，各处不再写。
+ *   ② **列宽固定、数字不许把格子撑高**（用户 2026-09-28）—— 凡是有数值的格子一律
+ *      `nowrap + overflow:hidden`，且给固定行高，数字位数变化时格子不跳。
+ *   ③ **竖屏单列**（GDD §2.3）—— 整页不滚动，`#app` 撑满 100dvh 后交给 flex 分配，
+ *      K 线区是唯一弹性块，其余全部固定高度。
+ *
+ * 字号下限 12px（GDD §18.6），等宽字体（GDD §18.6），深底 + 绿涨红跌（GDD §18.6）。
+ *
+ * ④ **纵向间距只有 8 与 12 两档**（X-2 视觉对齐，2026-09-28）—— 8 是块内（同一张卡里的行距），
+ *    12 是块间。不再出现 2 / 6 / 10 这类中间值，纵向呼吸才是均匀的。改任何 padding / margin
+ *    前先想一遍：它是块内还是块间，只能填 8 或 12（容器自身可以写 0）。
+ *    例外只有一处：`.chart-head` 是画布内的覆盖层，它的内边距只决定浮字落在哪一格，
+ *    不参与页面块的纵向节奏，保持原值不动。
+ *
+ * ⑤ 配色基调**中性**（X-2 视觉对齐，2026-09-28）—— 底 / 面板 / 分隔线三色都不带蓝相，
+ *    深色界面里任何色偏都会在长时间盯盘时放大。彩色只留给语义：涨跌、主色、金。
+ */
+
+:root {
+  --bg: #0d0f12;
+  --panel: #151a20;
+  --panel-2: #101317;
+  --line: #232b34;
+  --fg: #dbe4f0;
+  --mut: #8f9aa6;         /* 次要文字：压在 --panel 上约 6.1:1（原 #7c8ba1 只有 4.8:1） */
+  --up: #00d18f;          /* 涨 / 盈利 */
+  --down: #ff5b6a;        /* 跌 / 亏损 */
+  --accent: #4da3ff;
+  --accent-soft: rgba(77, 163, 255, .16);   /* 选中态淡底：`.on` 一律走这个变量，不再各写各的 rgba */
+  --gold: #ffc44d;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+* { box-sizing: border-box; border-radius: 0; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  max-width: 620px;
+  margin: 0 auto;
+  padding: 0 12px calc(8px + env(safe-area-inset-bottom, 0px));
+  overflow: hidden;
+}
+
+/* 数字：所有会变的数值都走这个 —— **不许换行、不许撑高格子** */
+.num { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.up { color: var(--up); }
+.down { color: var(--down); }
+.mut { color: var(--mut); }
+.gold { color: var(--gold); }
+
+/* ══════════════ 顶部状态栏 ══════════════ */
+.top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 52px;
+  border-bottom: 1px solid var(--line);
+}
+.top .who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+.top .who b { font-size: 15px; font-weight: 600; color: var(--accent); }
+.top .who span { font-size: 12px; color: var(--mut); }
+.top .tools { margin-left: auto; flex: none; display: flex; gap: 6px; }
+
+/* 倍速档 / 暂停：一枚小方按钮，选中态 = 主色描边 + 淡底 */
+.ic {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--fg);
+  min-width: 42px;
+  height: 32px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ic.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.ic.warn { border-color: var(--down); color: var(--down); }
+.ic:active { background: var(--line); }
+.ic:disabled { opacity: .45; }
+
+/* 顶栏三枚按钮**定宽**（2026-09-28）—— 约束 ②「列宽固定不跳」在这一行的落点。
+   「重开」进入确认态时文案会变，而 `.ic` 只有 `min-width: 42px`：四个字「确认重开」= 4×12 = 48px
+   + 内边距 16 + 边框 2 = **64px**，会把按钮从 42 撑到 64，连带把左边两枚整体推走 22px。
+   这是全屏**唯一**一处会因文字长度变宽的控件。两条一起改：
+     ① 顶栏的 `.ic` 一律锁死 `width: 42px`（= 2 个汉字 24 + 内边距 16 + 边框 2，正好）
+     ② 确认态文案从「确认重开」缩成「确认」（仍 2 个汉字），红色 `.warn` 边框负责表达「已进入确认态」
+   为什么是 `.top .ic` 而不是 `.ic`：`renderBoot()` 里那枚「清除存档并重开」（7 个汉字 = 84px）
+   也带 `.ic` 类，定宽 42px 会把它截断 —— 只锁顶栏这一处。 */
+.top .ic { width: 42px; }
+
+/* 交易所切换器（GDD §7.2）：搬来顶栏后做成**双行**小按钮 —— 上行每家名字、下行「费率 x%」。
+   外观完全复用 `.ic`（无底色 + 1px 边框 + 按压压暗），玩家一眼就知道它和暂停 / 重开一样是可点的。
+   为什么双行：390px 屏 `.who` 115px、暂停+重开 90px + 两处 8px 间隙 ⇒ 只剩 150px；
+   单行「Binance 费率 0.04%」= 13 个 ASCII×7.2 + 2 个汉字×12 = 125px，加内边距 16 = 141px，只剩 9px 余量，
+   换个所或换到 375px 屏就爆。改双行后最长一行是「费率 0.04%」= 67.2px。
+   `min-width: 86px`（67.2 + 内边距 16 + 边框 2 = 85.2，向上取整）而不是写死 `width`：
+   四个所的费率行长度在 60–67.2px 之间，写死宽度能保证换所时不抖；用 min-width 则万一某台设备的
+   字体度量更宽，按钮会跟着长一点而不是把字截掉（约束 ③「文字不会被截断」优先）。 */
+.top .ic.exbtn {
+  width: auto;
+  min-width: 86px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  line-height: 14px;
+  text-align: left;
+}
+.top .ic.exbtn b { font-size: 12px; font-weight: 600; }
+.top .ic.exbtn u { text-decoration: none; font-size: 12px; color: var(--mut); }
+
+/* ══════════════ 账户指标（两列：权益 / 可用） ══════════════
+   交易所切换器**已搬去顶栏**（2026-09-28，见 `.top .exbtn`），这里退回两列 ——
+   手机上每格 91px → **179px**，`$1,234,567.89` 不用再被 `text-overflow` 截尾。
+   两列等分 ⇒ 宽度只随容器变化，仍然满足「列宽固定不跳」。 */
+.hud {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding-top: 12px;
+}
+/* 格子高度锁死：标签 12px + 数值 12px + 副行 12px，行高都定死 ⇒ 永远 3 行，不随数字跳动。
+   高度预算 = 标签行 16 ＋ 数值行 22 ＋ 副行 16 = **54 内容** ＋ padding 8×2 ＋ border 1×2 = **72px**。
+   ⚠️ 原来写 62px，而三行的行高加起来是 54px，内容盒只有 48px —— 副行被 `overflow:hidden`
+      裁掉 6px（X-2 对齐时把内边距放大到 8/12 才发现的），所以这一版把高度一并补到 72px。
+   ⚠️ 数值行 16px → **12px**（2026-09-28 P1-B 拍板）：HUD 加第三格后，390px 手机上每格只剩
+      91px 可用，`$1,234,567.89` 在 16px 下要 114px、撑爆后被 `text-overflow` 截掉尾巴；
+      降到 12px 后同串只要 86px。**行高仍锁 22px**（不去动高度预算），所以 72px 一格不变，
+      主次改由字重（600）承担。
+      （交易所搬走后每格已有 179px，理论上回 16px 也放得下 —— 但用户本轮未圈定，**保持 12px 不动**。） */
+.hud .cell {
+  height: 72px;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 8px 12px;
+  /* 全部剥掉浏览器默认那套（居中、灰底、系统字体），保证两格与顶栏按钮同一套语气 */
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+}
+.hud .cell i {
+  display: block;
+  font-style: normal;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--mut);
+}
+.hud .cell b { display: block; font-size: 12px; line-height: 22px; font-weight: 600; }
+.hud .cell u {
+  display: block;
+  text-decoration: none;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--mut);
+}
+
+/* ══════════════ 币种条（5 等分排满，不滚动） ══════════════
+   曾经写的是「56px 固定宽 + 横向滚动」，那是 10 币方案的遗产 —— 币种砍到 5 个之后
+   实测只占 312px，而手机容器有 366px，那几行滚动代码纯属摆设（P1-A，2026-09-28）。
+   改成 5 等分后每个约 68px，比原来更宽更好点；宽度只随容器变化、与解锁数量无关，
+   满足约束 ② 的「列宽固定不跳」。
+   高度 36 → **32px**（2026-09-28 三次拍板）：与次级按钮、顶栏小按钮同档，全屏控件只剩 32 / 40 两档。 */
+.symbols {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 12px 0;
+}
+.sym {
+  flex: 1 1 0;
+  min-width: 0;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--mut);
+  height: 32px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sym.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+/* 未解锁：压暗且不可点（GDD §18.1「未解锁置灰」）—— 比通用禁用（.45）更暗一档，置灰是要一眼看出来的 */
+.sym:disabled { opacity: .3; }
+/* 持仓所在币种：左侧一道主色竖条，不换色不换字，避免和 .on 抢注意力 */
+.sym.held { box-shadow: inset 2px 0 0 var(--gold); }
+.sym:active { background: var(--line); }
+
+/* ══════════════ K 线区（唯一弹性块） ══════════════ */
+.chart-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.chart-wrap canvas { display: block; width: 100%; height: 100%; }
+/* K 线左上角的浮层（2026-09-28）：加了一层半透**遮罩**，压在 K 线上也读得清。
+   宽度由内容撑开（`right: 0` 已去掉）⇒ 遮罩只盖住文字那一小块，不挡行情。
+   里面只放「币种 + 24h」—— **现价已由 K 线右端的彩色标签承担**，同一个数字不在一屏出现两次。 */
+.chart-head {
+  position: absolute;
+  top: 0; left: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(16, 19, 23, .72);   /* = --panel-2 的七成不透明 */
+  pointer-events: none;
+}
+.chart-head b { font-size: 16px; font-weight: 600; }
+.chart-head span { font-size: 12px; }
+
+/* K 线**右上角**的在途转账倒计时（P2-A）：与左上角遮罩同一套做法 —— 半透底 + 绝对定位，
+   不占布局高度。只在有在途转账时显示（`hidden` 由 render.js 控制）。 */
+.chart-eta {
+  position: absolute;
+  top: 0; right: 0;
+  padding: 6px 8px;
+  background: rgba(16, 19, 23, .72);   /* = --panel-2 的七成不透明，同 .chart-head */
+  font-size: 12px;
+  pointer-events: none;
+}
+.chart-eta[hidden] { display: none; }
+
+/* ══════════════ 持仓条（无持仓隐藏） ══════════════ */
+.posbar {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.posbar[hidden] { display: none; }
+.posbar div { min-width: 0; }
+.posbar i { display: block; font-style: normal; font-size: 12px; color: var(--mut); }
+.posbar b { display: block; font-size: 13px; }
+.posbar .side-long { color: var(--up); }
+.posbar .side-short { color: var(--down); }
+
+/* ══════════════ 日志条（一行，只显示最近一条） ══════════════ */
+.logline {
+  flex: none;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  padding: 0 2px;
+  font-size: 12px;
+  color: var(--mut);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ══════════════ 操作区 ══════════════ */
+.trade { flex: none; padding-top: 8px; }
+.row { display: flex; gap: 8px; margin-bottom: 8px; }
+/* 最后一行不再留 8px：那是给「下一行」用的间距，行没了就是纯死空间（#app 自己已有 8px 底部内边距）。
+   2026-09-28 拍板，K 线区常驻多收回 8px。 */
+.row:last-child { margin-bottom: 0; }
+.row .lbl {
+  flex: none;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--mut);
+  padding-right: 2px;
+}
+
+/* 次级按钮（数量档 / 杠杆档）：高 32px（2026-09-28 三次拍板，原 34px）
+   —— 这类按钮的**宽度由 flex 等分决定**（手机实测 55–97px、宽屏 106–182px），
+      可点面积本来就远超 44×44，把高度压到 32 只减视觉重量，不减可点性。
+      32 是 GDD §2.2 区间的下沿，也是顶栏小按钮（.ic）的同一档 —— 全屏次级控件就此统一到一个高度。 */
+.opt {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.opt.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.opt:active { background: var(--line); }
+.opt:disabled { opacity: .45; }
+
+/* 主操作按钮：做多 / 做空 / 平仓 —— 高 40px（2026-09-28 三次拍板，原 44px）
+   —— 44px 与次级 34px 的落差仍显重，压到 40 后主次差 8px（恰好一个块内间距），
+      靠**宽度（比次级宽一倍）与实心色块**承担主操作的身份，不再靠高度。
+      三次缩高合计：52 → 44 → 40px。 */
+.act {
+  flex: 1;
+  height: 40px;
+  border: 0;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.act.long { background: var(--up); color: #04140f; }
+.act.short { background: var(--down); color: #1a0508; }
+.act.flat { background: var(--line); color: var(--fg); }
+/* 主按钮是实心块，按压态不能用 `background` 顶掉语义色 ⇒ 压暗一档 */
+.act:active { filter: brightness(.88); }
+.act:disabled { opacity: .45; }
+
+/* 爆仓 / 结算遮罩 */
+.over {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(6, 9, 15, .94);
+  padding: 24px;
+  text-align: center;
+}
+.over b { font-size: 20px; }
+.over p { margin: 0; font-size: 13px; color: var(--mut); line-height: 1.7; }
+.over button {
+  height: 44px;
+  padding: 0 20px;
+  background: var(--accent);
+  color: #04121f;
+  border: 0;
+  font: inherit;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+}
+.over button:active { filter: brightness(.88); }
+
+/* ══════════════ 选所弹层（挂在 #overlay，不进 #app） ══════════════
+   一层吃掉整屏点击的暗底 + 一张贴住**顶栏交易所按钮**下沿的竖表。
+   四家全列出来（没开业 / 已归零置灰），玩家顺带看到时间线。
+
+   P2-A：表头加一行**拥堵状态词**，每行加成两行 —— 上行「名字 / 费率」、下行「确认数 · 预估到账」。
+   拥堵信息只能放这里：顶栏 375px 屏只剩 46px，「拥堵 严重」根本塞不进去。
+   两行之间用**行高**排开、不写 gap —— 遵守「纵向间距只有 8 与 12 两档」那条约束。 */
+#overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+}
+.pick-back { position: absolute; inset: 0; background: rgba(6, 9, 15, .55); }
+.pick {
+  position: absolute;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+/* 表头：只说状态词，不给 0–100 的数字（P2-A 拍板 ③）。颜色由 .mut / .gold / .down 承担。 */
+.pick-head {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.pick-row {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.pick-row:last-child { border-bottom: 0; }
+.pick-l1 { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; line-height: 18px; }
+.pick-row b { font-weight: 600; }
+.pick-row u { text-decoration: none; font-size: 12px; color: var(--mut); }
+.pick-note { font-style: normal; font-size: 12px; line-height: 16px; color: var(--mut); }
+.pick-row.on, .pick-row.on u { color: var(--accent); }
+.pick-row:active:not(:disabled) { background: var(--line); }
+.pick-row:disabled { opacity: .4; cursor: default; }
+
+/* 首屏加载 / 出错 */
+.boot {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--bg);
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+}
+.boot .err { color: var(--down); white-space: pre-wrap; word-break: break-all; font-size: 12px; text-align: left; max-width: 100%; }

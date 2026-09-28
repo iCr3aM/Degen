@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.cache/
+.DS_Store
+*.log
+
+# Kraken OHLCVT 归档（442 MB）—— 参考/校验用，不进仓库（见 ROADMAP §七 X-4）
+Kraken_OHLCVT_Full_2026Q2/

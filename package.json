@@ -1,0 +1,16 @@
+{
+  "name": "degen",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "《加密交易员》Degen —— 以真实加密货币历史小时线为底层的极简交易模拟游戏。设计文档见 GDD.MD",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "data": "node tools/fetch-data.mjs"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}
