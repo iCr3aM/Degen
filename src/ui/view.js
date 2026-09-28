@@ -70,10 +70,19 @@ function norm(sym, i, cssW) {
   return { v, start, maxRight, maxCount };
 }
 
-/** 右端夹取：下界随根数变（见 `norm` 的注释），两根数可能反号时排序兜底 */
+/**
+ * 右端夹取：**下界随根数变、上界恒为 `maxRight`**。
+ *
+ * ⚠️ 上界**不能**写 `Math.max(a, maxRight)`（B22 修的 bug，2026-09-29）：
+ *    `a = start + count − 1` 的本意只是「窗口最左一根 ≥ 数据首根」这个**下界**。
+ *    币种刚上线时 `start ≈ i` ⇒ `a > maxRight = i`，区间被翻成 `[maxRight, a]`，
+ *    `right` 就能一路推到 `start + count − 1` —— 右端越过当前小时，**屏幕上出现未来行情**
+ *    （开局 BTC 可右拖偷看 59 小时 ≈ 2.5 天，1d 模式最多 240 天）。
+ *    上界钉死 `maxRight` 之后，`a > maxRight` 时区间自动退化成 `[maxRight, maxRight]`。
+ */
 function clampRight(v, start, maxRight) {
   const a = start + v.count - 1;
-  v.right = clamp(v.right, Math.min(a, maxRight), Math.max(a, maxRight));
+  v.right = clamp(v.right, Math.min(a, maxRight), maxRight);
 }
 
 /**

@@ -11,10 +11,10 @@ import { maxLeverageAt } from './core/config.js';
 import { createState, heldSyms, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded } from './core/market.js';
-import { createClock, openTrade, closeTrade, switchExchange, timeOf, normalizeLeverage, markPrice } from './core/engine.js';
+import { createClock, openTrade, closeTrade, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp } from './core/engine.js';
 import { marginRateOf, isSpot } from './core/positions.js';
 import {
-  mount, update, renderOver, clearOver, renderBoot, hideBoot,
+  mount, update, renderOver, renderLoan, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openSettings,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
@@ -127,6 +127,9 @@ const chartW = () => Math.max(1, Math.round(refs.chartWrap.getBoundingClientRect
 let lastDraw = -Infinity;
 /* ⚠️ 起手取 `!!s.over`：读档读到一个**已经结束**的档时，不该在开屏第一帧补响一声爆仓 / 结算。 */
 let overDrawn = !!s.over;
+/* 借贷遮罩（B30）画过没 —— 与 `overDrawn` 同一个理由：`checkRuin` 把 `s.paused` 置真之后
+   不会再有任何 `onFrame`，那一帧若被 80ms 节流吞掉，遮罩就永远出不来。 */
+let loanDrawn = !!s.pending;
 
 /**
  * 把「刚刚发生的事」翻译成声音（Batch 4 · B20）。
@@ -172,7 +175,7 @@ function soundFromTick(s) {
 }
 
 function draw(force = false) {
-  if (s.over && !overDrawn) force = true;
+  if ((s.over && !overDrawn) || (s.pending && !loanDrawn)) force = true;
   const now = performance.now();
   if (!force && now - lastDraw < 80) return;
   lastDraw = now;
@@ -188,11 +191,17 @@ function draw(force = false) {
       renderOver(root, s);
       // 结束音只响一次（`overDrawn` 是「这一局结束的画面画过了没」）
       if (!overDrawn) (s.over.reason === 'settled' ? snd.settle : snd.liq)();
+    } else if (s.pending === 'loan') {
+      /* 归零待决（B30）：遮罩替掉正常界面，时钟已停。
+         不给它配音效 —— 「账户归零」那条日志已经响过 warn 了（`soundFromTick`）。 */
+      closePicker();
+      renderLoan(root, s);
     } else {
       clearOver(root);
       soundFromTick(s);
     }
     overDrawn = !!s.over;
+    loanDrawn = !!s.pending;
   } catch (err) {
     renderBoot('渲染失败', err);
   }
@@ -208,6 +217,7 @@ function dispatch(node) {
   if (d.act !== 'long' && d.act !== 'short' && d.act !== 'close' && d.reset === undefined) snd.tap();
 
   if (d.intro !== undefined) return onIntro();
+  if (d.loan !== undefined) return onLoan(d.loan);
   if (d.settings !== undefined) return onSettings();
   if (d.snd !== undefined) return onSoundToggle(node);
   if (d.reset !== undefined) return onReset(node);
@@ -269,13 +279,14 @@ function dispatch(node) {
  * 失败（没开业 / 已归零 / 还挂着仓）由 `switchExchange` 判，只记一条日志。
  */
 function onEx(id) {
+  // 结束 / 待借贷决策（B30）时换所没有意义：待决态下只该回答遮罩上那个问题
+  if (s.over || s.pending) { closePicker(); return; }
   if (id === 'pick') {
-    if (!s.over) pickExchange(s, refs.exBtn);
+    pickExchange(s, refs.exBtn);
     return;
   }
   // 点「当前所」这一行：本来就无事可做，直接收掉弹层，不必问一句再切到自己
   if (id === s.ex) { closePicker(); return; }
-  if (s.over) { closePicker(); return; }
   confirmExchange(s, id);
 }
 
@@ -291,8 +302,23 @@ function onSym(sym) {
    弹窗期间时钟是停的（见 `boot`），点「开始交易」才真正开盘并放一声起手音。 */
 function onIntro() {
   closePicker();
+  /* 开局写一条**真实发生的事**（Batch 5 · B24）：日志条原来是写死的「等待开盘…」兜底，
+     可此刻行情其实已经在跑 —— 文案与实况自相矛盾。这条日志把空态填掉，
+     时间戳取 `s.i = 0`（`pushLog` 自己取），语义正确。读档续玩不补（与开场弹窗同一判据）。 */
+  pushLog(s, '开盘 · 2013 年 1 月，门头沟', 'info');
   clock.start();
   snd.begin();
+  after();
+}
+
+/** 借贷遮罩上的两枚按钮（Batch 5 · B30）：借 → `takeLoan`；收摊 → `giveUp`（真的结束本局） */
+function onLoan(what) {
+  if (what === 'take') {
+    const r = takeLoan(s);
+    if (!r.ok) pushLog(s, r.why, 'bad');
+  } else {
+    giveUp(s);
+  }
   after();
 }
 
@@ -302,7 +328,7 @@ function onIntro() {
    ⚠️ 面板是**静态 DOM**（不参与每帧重绘），所以「已武装」这个状态只能存在这里，
       不能写进 `refs` —— 一重绘就被抹掉。 */
 function onSettings() {
-  if (s.over) return;
+  if (s.over || s.pending) return;
   cancelReset();
   openSettings(snd.isMuted());
 }

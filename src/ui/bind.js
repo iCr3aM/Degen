@@ -12,8 +12,9 @@
 export const ACTION_KEYS = [
   'sym', 'ex', 'exok', 'exno', 'frac', 'lev', 'speed', 'act', 'pause', 'restart', 'wipe', 'mode',
   /* Batch 4：`settings`（顶栏第三枚）/ `snd`（音效开关）/ `reset`（面板内重开）/ `sclose`（关面板）
-     / `intro`（开场弹窗的「开始交易」） */
-  'settings', 'snd', 'reset', 'sclose', 'intro',
+     / `intro`（开场弹窗的「开始交易」）
+     Batch 5（B30）：`loan`（归零遮罩上的「借续命」/「就此收摊」） */
+  'settings', 'snd', 'reset', 'sclose', 'intro', 'loan',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');

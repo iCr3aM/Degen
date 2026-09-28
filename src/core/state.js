@@ -9,7 +9,7 @@
 
 import { GAME } from './config.js';
 
-export const STATE_VERSION = 4;
+export const STATE_VERSION = 5;
 
 export function createState() {
   return {
@@ -59,14 +59,28 @@ export function createState() {
     /** 下单金额占「可用保证金」的比例，1 = 全部 */
     sizeFrac: 1,
 
-    /** 速度倍率：1 / 2 / 5 / 10 / 20 */
+    /** 速度倍率：1 / 2 / 5 / 10 / 20 / 50（`render.js` 的 `SPEEDS` 是唯一真源） */
     speed: 1,
 
     /** 暂停 */
     paused: false,
 
-    /** 已实现盈亏累计（含手续费），用于战后复盘 */
+    /**
+     * 已实现盈亏累计（含**全部**手续费与资金费），用于战后复盘。
+     * ⚠️ 口径是「真实现金变动」：开仓费、资金费、平仓盈亏 − 平仓费、爆仓 / 归零的保证金全在里面
+     *    （Batch 5 · B23 补齐了前两项）。它**不参与任何玩法判定** —— 破产看的是 `equity(s)`。
+     */
     realized: 0,
+
+    /**
+     * 场外配资（Batch 5 · B30）—— 只在**资产归零**时触发一次。
+     *   `loaned`：本局是否已经借过（只给一次机会，第二次归零就是真结束）
+     *   `loan`  ：在贷：`null` 或 `{ amount, owe, dueAt }`
+     *   `pending`：待玩家决策：`null` 或 `'loan'`（归零后的借贷遮罩；**此期间时钟暂停**）
+     */
+    loaned: false,
+    loan: null,
+    pending: null,
 
     /** 游戏结束：null 或 { reason, at } */
     over: null,

@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt } from './config.js';
+import { GAME, HOUR_MS, EXCHANGES, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt } from './config.js';
 import { candleAt, closeAt, hasCandle, isLoaded, loadCoin, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { fmtMoney, fmtRate } from './format.js';
@@ -29,6 +29,7 @@ const WARN_LEAD = 7 * 24 * HOUR_MS;
 export const OVER = {
   LIQUIDATED: 'liquidated',   // 爆仓，保证金全部损失且账户清零
   SETTLED: 'settled',         // 活到 2024-12-31 收盘
+  DEFAULTED: 'defaulted',     // 借款到期还不上（B30）：债务违约
 };
 
 /** 当前游戏时刻（ms） */
@@ -123,6 +124,10 @@ export function openTrade(s, side, frac = 1) {
   if (!(margin > 0) || margin + fee > cash + 1e-9) return { ok: false, why: '可用保证金不足' };
 
   s.books[s.ex] = cash - margin - fee;
+  /* ⚠️ 开仓费是**玩家真实付出的钱**，必须同时记进「已实现」（Batch 5 · B23）——
+     原来只从余额里扣、不写 `realized`，于是 HUD 副行那个数既不等于真实现金变动、
+     也不等于已实现盈亏。它只被 `render.js` 读来展示，不参与任何玩法判定。 */
+  s.realized -= fee;
   s.lev = lev;
 
   const pos = openPosition(s.sym, side, price, margin, lev, feeRate);
@@ -154,7 +159,7 @@ export function closeTrade(s, why = '手动') {
     r.pnl >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
 
-  if (isBankrupt(s)) return endGame(s, OVER.LIQUIDATED);
+  if (checkRuin(s)) return { ok: false, why: s.over.reason };
   return { ok: true };
 }
 
@@ -172,8 +177,34 @@ function forceLiquidate(s, pos, atPrice) {
 function endGame(s, reason) {
   s.over = { reason, at: s.i };
   s.paused = true;
-  pushLog(s, reason === OVER.LIQUIDATED ? '账户归零，游戏结束' : '活到了 2024-12-31，结算', reason === OVER.LIQUIDATED ? 'bad' : 'ok');
+  const text = reason === OVER.SETTLED ? '活到了 2024-12-31，结算'
+    : reason === OVER.DEFAULTED ? '借款到期还不上，债务违约'
+      : '账户归零，游戏结束';
+  pushLog(s, text, reason === OVER.SETTLED ? 'ok' : 'bad');
   return { ok: false, why: reason };
+}
+
+/**
+ * 「归零」的**唯一出口**（Batch 5 · B30）—— 原来有 4 处各自 `isBankrupt → endGame`，
+ * 现在全部走这里。收成一个口的好处不只是少写几遍：**这条规则以后只会有一个地方要改**。
+ *
+ * 归零时若本局**还没借过**，不结束本局，而是进「待决态」：时钟停住、弹出借贷遮罩，
+ * 等玩家回答「借，还是收摊」。`s.pending` 期间 `s.paused` 为真，时钟自然不再推进。
+ *
+ * ⚠️ 4 条调用路径（`closeTrade` / `collapseExchange` / `settleFunding` / `liquidateAll`）
+ *    一个都不能漏，否则会出现「该结束却没结束」或「该弹借贷却直接结束」。
+ * @returns {boolean} 本局是否就此结束
+ */
+function checkRuin(s) {
+  if (!isBankrupt(s)) return false;
+  if (!s.loaned) {
+    s.pending = 'loan';
+    s.paused = true;
+    pushLog(s, `账户归零 ｜ 可借 ${fmtMoney(loanAmountAt(timeOf(s)))} 续命`, 'bad');
+    return false;
+  }
+  endGame(s, OVER.LIQUIDATED);
+  return true;
 }
 
 /* ───────────────────────────── 交易所 ───────────────────────────── */
@@ -248,7 +279,92 @@ function collapseExchange(s, ex) {
   pushLog(s, hit > 0 ? `${ex.name} 归零 ｜ 损失 ${fmtMoney(hit)}` : `${ex.name} 归零`,
     hit > 0 ? 'bad' : 'info');
 
-  if (isBankrupt(s)) { endGame(s, OVER.LIQUIDATED); return true; }
+  return checkRuin(s);
+}
+
+/* ───────────────────────────── 场外配资（B30） ───────────────────────────── */
+
+/**
+ * 借下那笔救命钱 —— 归零遮罩上的绿键（`data-loan="take"`）。
+ * 只允许在**待决态**里调用一次：`s.loaned` 一旦置真，本局再没有第二次机会。
+ */
+export function takeLoan(s) {
+  if (!s.pending || s.loan) return { ok: false, why: '现在没有可借的额度' };
+
+  const amount = loanAmountAt(timeOf(s));
+  const owe = amount * (1 + LOAN.ratePerDay * LOAN.days);
+  s.loaned = true;
+  s.loan = { amount, owe, dueAt: s.i + LOAN.days * 24 };
+  s.books[s.ex] = (s.books[s.ex] ?? 0) + amount;
+  s.pending = null;
+  s.paused = false;
+  pushLog(s, `借款 ${fmtMoney(amount)} ｜ ${LOAN.days} 天后还 ${fmtMoney(owe)}`, 'info');
+  return { ok: true };
+}
+
+/** 「就此收摊」—— 归零遮罩上的灰键（`data-loan="give"`）。真的结束本局。 */
+export function giveUp(s) {
+  s.pending = null;
+  endGame(s, OVER.LIQUIDATED);
+  return { ok: false, why: OVER.LIQUIDATED };
+}
+
+/**
+ * 借款到期结算（Batch 5 · B30）。两条预警 ＋ 一次清算：
+ *
+ *   ① **自动清仓**：按期价把**全部**仓位平掉结成现金（含现货，收平仓费，与手动平仓同口径）——
+ *      只从现金扣的话，钱全在仓位里的玩家会莫名其妙违约；给一枚「还款」按钮又要占操作区的格子
+ *      （与本轮「压缩纵向空间」方向相反）。
+ *   ② 可还池 = 当前所余额 ＋ 平仓所得 ＋ **在途转账**（不够时先从在途扣，扣完取消那笔转账）。
+ *   ③ 池 ≥ `owe` ⇒ 扣款结清，**只有利息**进「已实现」（本金进出互相抵消，见 B23 的口径）；
+ *      池 < `owe` ⇒ 债务违约，本局结束。
+ *
+ * @returns {boolean} 是否因违约结束了本局
+ */
+function settleLoan(s) {
+  if (!s.loan) return false;
+
+  // 两条预警（仿 Mt.Gox 归零的 `WARN_LEAD` 写法，用 `===` 保证只触发一次）
+  if (s.i === s.loan.dueAt - LOAN.warnLead) {
+    pushLog(s, `借款还剩 7 天 ｜ 需还 ${fmtMoney(s.loan.owe)}`, 'bad');
+  }
+  if (s.i === s.loan.dueAt - 24) {
+    pushLog(s, `借款明天到期 ｜ 需还 ${fmtMoney(s.loan.owe)}`, 'bad');
+  }
+  if (s.i < s.loan.dueAt) return false;
+
+  for (const sym of heldSyms(s)) {
+    const pos = s.positions[sym];
+    const price = markPrice(s, sym);
+    if (price > 0) {
+      const r = closePosition(pos, price, feeRateOf(pos.ex));
+      s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
+      s.realized += r.pnl - r.fee;
+    } else {
+      s.books[pos.ex] = (s.books[pos.ex] ?? 0) + pos.margin;   // 取不到价：按权益口径退回保证金
+    }
+    delete s.positions[sym];
+  }
+
+  const owe = s.loan.owe;
+  const pool = (s.books[s.ex] ?? 0) + (s.transfer ? s.transfer.amount : 0);
+  if (pool + 1e-9 < owe) {
+    endGame(s, OVER.DEFAULTED);
+    return true;
+  }
+
+  // 先在途、后账本（在途那笔钱本来就不能动用，先扣它最自然）
+  let rest = owe;
+  if (s.transfer) {
+    const use = Math.min(s.transfer.amount, rest);
+    s.transfer.amount -= use;
+    rest -= use;
+    if (s.transfer.amount <= 1e-9) s.transfer = null;
+  }
+  s.books[s.ex] = (s.books[s.ex] ?? 0) - rest;
+  s.realized -= owe - s.loan.amount;      // 只有利息是成本
+  pushLog(s, `还款 ${fmtMoney(owe)} ｜ 借款结清`, 'ok');
+  s.loan = null;
   return false;
 }
 
@@ -261,7 +377,10 @@ function collapseExchange(s, ex) {
  * 多仓下每个仓位各自判定；**单仓爆仓不等于本局结束**，总权益归零才结束（GDD §10）。
  */
 export function advanceOneHour(s) {
-  if (s.over) return;
+  /* ⚠️ `s.pending`（B30 待借贷决策）也必须挡住：时钟那边虽然会因 `s.paused` 停下，
+     但**同一次 `step()` 的 while 循环**里 `paused` 是刚被置上的，循环不会自己知道。
+     没有这一行，`s.i += 1` 会继续跑，玩家在遮罩上犹豫的那一拍就白白流走几十个小时。 */
+  if (s.over || s.pending) return;
   s.i += 1;
 
   if (s.i >= GAME.candles) {
@@ -292,6 +411,13 @@ export function advanceOneHour(s) {
     }
     if (t === ex.close && collapseExchange(s, ex)) return;
   }
+
+  // ⚠️ 上一步可能已经进了「待借贷」的待决态（B30）：时钟停了，后续的资金费 / 强平都不该再跑。
+  if (s.pending) return;
+
+  // 借款到期结算（B30）：排在交易所归零**之后**、资金费**之前** ——
+  // 归零已经把该作废的仓位作废了，而到期清仓必须先于资金费（否则会为已经要平的仓位再扣一次）。
+  if (settleLoan(s)) return;
 
   // 资金费率每 8 游戏小时结算一次，只结算合约仓位（现货没有这一项）
   if (s.i % FUNDING.hours === 0 && settleFunding(s)) return;
@@ -366,6 +492,9 @@ function settleFunding(s) {
 
     const fee = fundingOf(pos, mark, rate);
     pos.margin -= fee;
+    /* ⚠️ 同一笔钱也要记进「已实现」（Batch 5 · B23）：原来只从保证金里扣，
+       于是 HUD 副行那个数漏掉了资金费这一项支出（或收入）。 */
+    s.realized -= fee;
     net += fee;
     gross += pos.size * mark;
   }
@@ -381,8 +510,7 @@ function settleFunding(s) {
       net > 0 ? 'bad' : 'ok');
   }
 
-  if (isBankrupt(s)) { endGame(s, OVER.LIQUIDATED); return true; }
-  return false;
+  return checkRuin(s);
 }
 
 /**
@@ -405,7 +533,7 @@ function liquidateAll(s) {
     const mark = pos.side === 'long' ? c.l : c.h;
     if (hit || isLiquidatable(pos, mark)) {
       forceLiquidate(s, pos, liq);
-      if (isBankrupt(s)) { endGame(s, OVER.LIQUIDATED); return true; }
+      if (checkRuin(s)) return true;
     }
   }
   return false;
@@ -447,7 +575,10 @@ export function createClock(s, cb) {
         acc -= 1;
         advanceOneHour(s);
         moved = true;
-        if (s.over) { acc = 0; break; }
+        /* `s.paused` 也要退出（B30）：借贷待决 / 本局结束都会在 `advanceOneHour` **内部**
+           把 `paused` 置真。只判 `s.over` 的话，循环会带着 `paused` 继续转 ——
+           那几十上百小时就这么在玩家还没回答遮罩之前悄悄走掉了。*/
+        if (s.over || s.paused) { acc = 0; break; }
       }
     }
 

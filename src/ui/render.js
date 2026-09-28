@@ -11,7 +11,7 @@
  * 所有会变的数字都挂在 `refs` 上，`update()` 是唯一的写入口。
  */
 
-import { GAME, COINS, EXCHANGES, coinOf, exchangeOf, leverageOptionsAt, feeRateOf, HOUR_MS } from '../core/config.js';
+import { GAME, COINS, EXCHANGES, coinOf, exchangeOf, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
 import { fmtDate, fmtHour, fmtMoney, fmtPct, fmtRate } from '../core/format.js';
 import { available, equity, markPrice, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
 import { isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
@@ -169,7 +169,7 @@ export function mount(root) {
     exBtn, exName, exRate,
     eqVal, eqSub, cashVal, cashSub,
     symbols, symBtns,
-    canvas, chartWrap, chSym, chChg, modeBtn, chartEta, chartLock,
+    canvas, chartWrap, chartHead, chSym, chChg, modeBtn, chartEta, chartLock,
     posbar, posSide, posPnl, posRate,
     logline,
     fracBtns, levRow, levBtns, spdBtns,
@@ -190,6 +190,21 @@ function mini(label, valEl) {
   return d;
 }
 
+/**
+ * 每个币「解锁进度环」的**起点**（Batch 5 · B25）：
+ *   起点 = **上一个币的解锁时刻**（BTC 用开盘时刻）⇒ 每个币在属于它的那一段里从 0% 填满到 100%，
+ *   读起来就是「下一个就是它，已经走了多少」。起点晚于终点（BTC）时时长取 0，进度直接算满。
+ */
+const LOCK_PREV = (() => {
+  const m = new Map();
+  let prev = GAME.start;
+  for (const c of COINS) {
+    m.set(c.sym, Math.min(prev, c.unlock));
+    prev = c.unlock;
+  }
+  return m;
+})();
+
 /* ═════════════════════════ 每帧写入口 ═════════════════════════ */
 
 /**
@@ -200,10 +215,13 @@ function mini(label, valEl) {
 export function update(refs, s, view) {
   refs.dateEl.textContent = fmtDate(timeOf(s));
 
-  /* 顶栏按钮 */
+  /* 顶栏按钮。⚠️ B30 的**待决态**（`s.pending`）下也要锁死：时钟已经停了，这时候
+     「继续 / 暂停」和「设置」都不该可用 —— 玩家只有一个选择要回答（借，还是收摊）。 */
+  const lockedUI = !!s.over || !!s.pending;
   refs.pauseBtn.textContent = s.paused ? '继续' : '暂停';
   refs.pauseBtn.classList.toggle('on', s.paused);
-  refs.pauseBtn.disabled = !!s.over;
+  refs.pauseBtn.disabled = lockedUI;
+  refs.settingsBtn.disabled = lockedUI;
 
   /* 账户三格 */
   const eq = equity(s);
@@ -215,7 +233,13 @@ export function update(refs, s, view) {
   refs.eqSub.className = 'num ' + (s.realized >= 0 ? 'up' : 'down');
 
   refs.cashVal.textContent = fmtMoney(available(s));
-  if (anyHeld(s)) {
+  /* 副行优先级：**有贷款时负债永远最该出现**（B30）—— 它是必须还的一笔钱，
+     而「初始 $3,000」是个死常量、零信息量。剩几天按小时差向下取整。 */
+  if (s.loan) {
+    const left = Math.max(0, Math.ceil((s.loan.dueAt - s.i) / 24));
+    refs.cashSub.textContent = `欠 ${fmtMoney(s.loan.owe)} · ${left}d`;
+    refs.cashSub.className = 'num down';
+  } else if (anyHeld(s)) {
     const u = totalUnrealized(s);
     refs.cashSub.textContent = `未实现 ${fmtMoney(u, { sign: true })}`;
     refs.cashSub.className = 'num ' + (u >= 0 ? 'up' : 'down');
@@ -232,13 +256,27 @@ export function update(refs, s, view) {
     ? `→ 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`
     : `费率 ${fmtRate(feeRateOf(s.ex), 2)}`;
 
-  /* 币种条 */
+  /* 币种条：未解锁的币用**边框环**显示解锁进度（Batch 5 · B25）。
+     进度由 `--pf` 这个 CSS 变量驱动（`style.css` 的 `.sym.locked` 拿它画锥形渐变环），
+     值没变就不写 —— 每帧 4 个按钮的 `setProperty` 会触发样式失效，能省则省。 */
   const now = timeOf(s);
   for (const c of COINS) {
     const b = refs.symBtns.get(c.sym);
     b.classList.toggle('on', s.sym === c.sym);
     b.classList.toggle('held', !!posOf(s, c.sym));
-    b.disabled = now < c.unlock;
+    const locked = now < c.unlock;
+    b.disabled = locked;
+    b.classList.toggle('locked', locked);
+    if (locked) {
+      const from = LOCK_PREV.get(c.sym);
+      const span = c.unlock - from;
+      const p = span > 0 ? Math.min(1, Math.max(0, (now - from) / span)) : 1;
+      const key = p.toFixed(4);
+      if (b.dataset.pf !== key) {
+        b.dataset.pf = key;
+        b.style.setProperty('--pf', key);
+      }
+    }
   }
 
   /* K 线：持仓条、图表标记、主按钮都只看**当前所选币**的仓位（多仓口径，2026-09-28 拍板） */
@@ -261,6 +299,11 @@ export function update(refs, s, view) {
   const effY = drawChart(refs.canvas, {
     candles: win.candles,
     vols: win.vols,
+    /* 槽位数（= 视野要的根数）：柱宽按它算、柱子右对齐，币种刚上线时才不会一根撑满屏（B22） */
+    slots: win.count,
+    /* 顶部留白 = 左上角遮罩的**实测**高度（Batch 5 · B27）：量不到时由 `chart.js` 退回自己的兜底常量。
+       `getBoundingClientRect` 与 `main.js` 那次取 `chartWrap` 尺寸落在同一帧，不额外多一次强制布局。 */
+    topInset: refs.chartHead.getBoundingClientRect().height,
     mark,
     entry: cur ? cur.entry : null,
     side: cur ? cur.side : null,
@@ -319,10 +362,13 @@ export function update(refs, s, view) {
   /* 日志条：只显示最近一条。时间用**事件发生那一刻**的 `at`，不是「现在」——
      否则一条发生在 2015-10-01 的爆仓，几天后会被标成今天。
      ⚠️ 前缀**只有时分**（2026-09-29）：完整日期已经在顶栏，这里再写一遍就是重复显示。 */
+  /* ⚠️ 兜底文案是 **`—`** 而不是「等待开盘…」（Batch 5 · B24）：那一行是日志的**空态**，
+     而此刻行情往往已经在跑了 —— 写「等待开盘」等于声称一件不成立的事。
+     新开局的「开盘」日志由 `main.js` 的 `onIntro()` 补上，空态几乎只出现在老存档上。 */
   const last = s.log[0];
   refs.logline.textContent = last
     ? `[${fmtHour(GAME.start + (last.at ?? s.i) * HOUR_MS)}] ${last.text}`
-    : '等待开盘…';
+    : '—';
   refs.logline.className = 'logline ' + (last ? (last.kind === 'bad' ? 'down' : last.kind === 'ok' ? 'up' : 'mut') : 'mut');
 
   /* 金额档 */
@@ -347,11 +393,12 @@ export function update(refs, s, view) {
   /* 速度档 */
   for (const [v, b] of refs.spdBtns) b.classList.toggle('on', s.speed === v);
 
-  /* 主按钮可用性：做多/做空看「当前币还没仓位」，平仓看「当前币有仓位」 */
-  const canTrade = !s.over && !cur && mark != null && isLoaded(sym);
+  /* 主按钮可用性：做多/做空看「当前币还没仓位」，平仓看「当前币有仓位」。
+     `lockedUI`（结束 / 待借贷决策）下一律不可用 —— 待决态只留遮罩上那两枚按钮。 */
+  const canTrade = !lockedUI && !cur && mark != null && isLoaded(sym);
   refs.longBtn.disabled = !canTrade;
   refs.shortBtn.disabled = !canTrade;
-  refs.closeBtn.disabled = !cur || !!s.over;
+  refs.closeBtn.disabled = !cur || lockedUI;
 }
 
 /* ───────────────────────── 小工具 ───────────────────────── */
@@ -362,22 +409,57 @@ function candle24(sym, i) {
   return c ? c.c : null;
 }
 
-/** 覆盖全屏的结束遮罩 */
+/**
+ * 覆盖全屏的结束遮罩。三种结局：收盘结算（赢）/ 爆仓 / **债务违约**（B30）。
+ * ⚠️ 收盘时**若贷款还没到期**，账上那笔钱是借来的 ⇒ 净成绩要减掉 `owe`（借的钱赖不掉）。
+ *    这不改 `settled` 的判据（活到 2024 年底就算赢），只是把最终数字说清楚。
+ */
 export function renderOver(root, s) {
   root.querySelector('.over')?.remove();
   const box = el('div', 'over');
-  const win = s.over.reason === 'settled';
-  const eq = equity(s);
+  const reason = s.over.reason;
+  const win = reason === 'settled';
+  const owed = s.loan ? s.loan.owe : 0;
+  const eq = equity(s) - owed;
 
-  box.append(
-    el('b', win ? 'up' : 'down', win ? '收盘结算' : '爆仓'),
-    el('p', null, win
+  const title = reason === 'defaulted' ? '债务违约' : win ? '收盘结算' : '爆仓';
+  const body = reason === 'defaulted'
+    ? `到期还不上借款，账户清零\n倒在 ${fmtDate(timeOf(s))}`
+    : win
       ? `你活到了 ${fmtDate(timeOf(s), false)}\n最终权益 ${fmtMoney(eq)}`
-      : `保证金归零，账户清零\n倒在 ${fmtDate(timeOf(s))}`),
-  );
+        + (owed ? `\n（已扣未还借款 ${fmtMoney(owed)}）` : '')
+      : `保证金归零，账户清零\n倒在 ${fmtDate(timeOf(s))}`;
+
+  box.append(el('b', win ? 'up' : 'down', title), el('p', null, body));
   const btn = el('button', null, '重新开始');
   btn.dataset.restart = '';
   box.append(btn);
+  root.append(box);
+}
+
+/**
+ * 借贷决策遮罩（Batch 5 · B30）—— 归零那一刻出现，**时钟已停**，等玩家二选一。
+ * 复用 `.over` 外壳（居中、吃满屏、不透明底）：它不是「可以点外面关掉」的菜单，
+ * 是一个必须回答的问题 —— 与开场叙事同一种语气。
+ * ⚠️ 这一帧只画一次（`s.paused` 期间不再有 `onFrame`），所以不需要去重重建。
+ */
+export function renderLoan(root, s) {
+  root.querySelector('.over')?.remove();
+  const box = el('div', 'over');
+  const amount = loanAmountAt(timeOf(s));
+  const owe = amount * (1 + LOAN.ratePerDay * LOAN.days);
+
+  box.append(
+    el('b', 'down', '账户归零'),
+    el('p', null, `借 ${fmtMoney(amount)} ｜ ${LOAN.days} 天后还 ${fmtMoney(owe)}\n这是这一局最后的机会`),
+  );
+  const take = el('button', null, `借 ${fmtMoney(amount)} 续命`);
+  take.dataset.loan = 'take';
+  const give = el('button', 'flat', '就此收摊');
+  give.dataset.loan = 'give';
+  const btns = el('div', 'over-btns');
+  btns.append(take, give);
+  box.append(btns);
   root.append(box);
 }
 

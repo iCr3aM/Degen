@@ -42,12 +42,21 @@ export function load() {
  * v3 → v4（P2-A）：新增 `transfer` / `pulse`。旧档没有这两个字段，补上默认值即可，
  * 玩法不受影响（旧档的 `s.ex` 已经是某一家所，且 `books` 里那一格就是全部余额）——
  * 所以**旧档不必作废**。再往前的版本没有迁移路径，直接丢弃重开。
+ *
+ * v4 → v5（Batch 5 · B30）：新增 `loaned` / `loan` / `pending`。同样是补默认值即可 ——
+ * 旧档没借过钱（`loaned: false`）、没有在贷、没有待决。
  */
 function migrate(s) {
   if (s.v === 3) {
     s.transfer = null;
     s.pulse = [];
     s.v = 4;
+  }
+  if (s.v === 4) {
+    s.loaned = false;
+    s.loan = null;
+    s.pending = null;
+    s.v = 5;
   }
   return s.v === STATE_VERSION ? s : null;
 }

@@ -2,7 +2,7 @@
 
 > 生成时间：2026-09-29　｜　工作目录：`f:\Cr3aM\Desktop\Degen`
 > 用途：暂停开发、切换工作流时的交接说明。回答三件事：**现在站在哪 / 什么没做 / 接下来怎么做**。
-> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v14，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
+> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v16，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
 
 ---
 
@@ -10,8 +10,10 @@
 
 **P0 + P1 全部完成，游戏可玩、可存档、真机实测通过。** X-1～X-4 四轮收尾也已完成。
 **P2-A「链上转账与网络拥堵」也已全部落地并通过真机验收（步骤 1–8，离线断言 44/44 ＋ p8 全通过）。**
-**P2-B 暂缓** —— 用户 2026-09-29 插入了一轮 UI 打磨（共 12 条），待办载体是 `ROADMAP.MD` **§十**。
+**P2-B 暂缓** —— 用户 2026-09-29 插入了一轮 UI 打磨，待办载体是 `ROADMAP.MD` **§十**。
 **Batch 1（B1–B5）、Batch 2（B7–B10）、Batch 3（B11–B14）、Batch 4（B15–B21：量柱叠放 / 日线量修正 / 浮字避让 / 补色 / 资金费率模型 / 开场叙事 / 音效 / 设置面板）均已完成**；
+**Batch 5（B22–B30：K 线数据泄漏修复 / 已实现盈亏补两费 / 开局日志 / 解锁进度环 / 纵向压缩 / 绘图上沿＝遮罩底 / 量区 P90 / 爆仓后借贷）也已完成** ——
+方案与落地结果见 `ROADMAP.MD` **§十四**（B22–B29）与 **§十五**（B30 场外配资）；离线断言 28/28 ＋ `npm run build` 通过。
 **下一站是 P2-B（滑点 ＋ OTC ＋ 供应量消耗，口径见 `ROADMAP.MD` §五）**。
 另有一份**已裁决**的提案：`ROADMAP.MD` **§十一「开仓规模上限」** ——
 2026-09-29 拍板**三个点全部不做**（不引入杠杆—名义阶梯 / 不加市场深度闸门 / 不做 Mt.Gox $1M 上限）
@@ -47,9 +49,9 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 ### 单一真相源
 
 - 时钟：`s.i` ＝ 第几根小时 K（唯一刻度）
-- 存档版本：`STATE_VERSION = 4`（key `localStorage.degen_save`）
-- 数据包：`public/data/<SYM>.bin` ＝ gzip(Int32)，**每根 16 字节** `[o, h-o, l-o, c-o]` int32LE，
-  再除一个每币固定的 `scale`；**不存时间戳、不存成交量**
+- 存档版本：`STATE_VERSION = 5`（key `localStorage.degen_save`；4 → 5 新增 `loaned` / `loan` / `pending`）
+- 数据包：`public/data/<SYM>.bin` ＝ gzip(Int32)，**每根 17 字节** ＝ `[o, h-o, l-o, c-o]` int32LE ＋ **尾巴 1 字节成交量份额**，
+  再除一个每币固定的 `scale`；**不存时间戳**
 - 日流动性：`public/data/liq.bin` ＝ gzip(Float32)，**每日每币一个美元成交额**（4,383 天 × 5 币，86 KB → gzip 63 KB）；
   与 K 线分文件（不塞进 K 线，否则包体 +25%）
 - 清单：`public/data/index.json`（含 `liq` / `circulating` / `gapRanges` 等）
@@ -58,9 +60,9 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/core/config.js` | `GAME` / `COINS` / `EXCHANGES` / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
+| `src/core/config.js` | `GAME` / `COINS` / `EXCHANGES` / **`LOAN` ＋ `loanAmountAt`** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
 | `src/core/state.js` | `STATE_VERSION`、`createState()`、`cashOf` / `posOf` / `heldSyms` / `anyHeld` / `pushLog` |
-| `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity` |
+| `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30） |
 | `src/core/positions.js` | 逐仓持仓：`isSpot` / 保证金率 / 强平价 / 资金费率 / `unrealizedOf` |
 | `src/core/market.js` | 行情懒加载：`loadCoin` / 取价；**日流动性 `loadLiq` / `liqOf` / `dayIndexOf` / `isLiqLoaded`** |
 | `src/core/congestion.js` | **网络拥堵纯逻辑**：年代表值 / 锚点窗口 / 进块等待 W 表 / 各所确认数 / `arrivalCandles` / `bumpPulse` / `decayPulse` |
@@ -71,9 +73,9 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 | `src/ui/bind.js` | 事件绑定（`data-ex` / `data-act` 分派） |
 | `src/ui/view.js` | **K 线视野**：看哪一段 / 看多密 / 1h·1d / 价格轴平移多少（纯 UI 状态，不进存档） |
 | `src/ui/sound.js` | **音效**（Batch 4）：Web Audio 合成，零音频文件；开关存 `degen_settings`，**不进存档** |
-| `src/ui/style.css` | 全部样式；**纵向间距只有 8（块内）/ 12（块间）两档** |
+| `src/ui/style.css` | 全部样式；**纵向间距只有 8 一档**（8 ＝ 块内，也 ＝ 主页面所有块间；12 只剩弹层内部） |
 | `tools/fetch-data.mjs` | 行情数据管线，产出 `public/data/` |
-| `ROADMAP.MD` | 路线图 v14，**P2 方案全部写在这里** |
+| `ROADMAP.MD` | 路线图 v16，**P2 方案全部写在这里** |
 | `GDD.MD` | 设计文档 v1.0 |
 
 ### 常用命令
@@ -98,7 +100,7 @@ Windows 上脚本会自举系统代理（`DEGEN_NO_PROXY=1` 可绕过）。
 | 1. 行情数据管线：真小时 OHLC → 离线数据包 | `tools/fetch-data.mjs` → `public/data/` |
 | 2. 交易核心：多/空/平 ＋ 盈亏 ＋ 保证金率 | `src/core/positions.js`、`engine.js` |
 | 3. K 线渲染：Canvas 2D ＋ 竖屏 ＋ 触控 | `src/ui/chart.js`、`render.js`、`bind.js` |
-| 4. 时间推进：速度档 1x–20x ＋ 暂停 | `engine.js` `createClock` |
+| 4. 时间推进：速度档 1x–50x ＋ 暂停 | `engine.js` `createClock` |
 | 5. 爆仓 / 破产系统 | `engine.js` `advanceOneHour` / `forceLiquidate` / `endGame` |
 
 ### P1 · 全部完成（含数据管线的另一半）
@@ -303,7 +305,7 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
 - **方案先行**：实施前先给方案供审核；**不擅自添加未沟通的功能**
 - **不确定就问**，不自作主张
 - **按逐条圈定的清单改，未圈到的内容一字不动**
-- **全直角**（无圆角）；`style.css` **纵向间距只有 8（块内）/ 12（块间）两档**
+- **全直角**（无圆角）；`style.css` **纵向间距只有 8 一档**（8 ＝ 块内，也 ＝ 主页面所有块间；12 只剩弹层内部）
 - **列宽固定不跳**（需实测文字宽度）
 - **同一信息不重复**（如时间只在顶栏出现）
 - **事件描述**一局内同一句最多出现一次
@@ -350,23 +352,34 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
 - `browse_evaluate` / `browser_evaluate` 在本环境连续返回 `undefined` ⇒ **该环境不可用**
 - `.mjs` 顶层 `return` 需包进 `if (...) { ... }` 块
 - 上一轮怀疑的「注入存档没加载」**不是 bug** —— 注入的 2015-08-09 存档正常加载
+- **`view.js` `clampRight` 的把区间写反（Batch 5 · B22 修掉的真 bug）**：`clamp(v, a, b)` 的 `a` 本是**下界**，
+  旧代码却写成 `Math.max(a, maxRight)` ⇒ 币种刚上线时 `a > maxRight`，区间翻成 `[maxRight, a]`，右端越过当前小时
+  ⇒ 屏幕上出现**未来行情**（开局 BTC 可右拖偷看 59 小时）。修法：`clamp(v.right, Math.min(a, maxRight), maxRight)`。
+  **凡「左右边界」都先自问哪一端是硬墙**，别让 min/max 抢了方向
+- **K 线按「根数」算槽宽会坑首根**：槽位宽度必须按 `slots`（视野容量）算、柱子**右对齐**（`xAt(k) = (slots − n + k)·cw + cw/2`），
+  否则币种刚上线只有 1 根时，那根会被撑满整屏
+- **暂停/待决态下 `step()` 的 while 必须同时判 `s.over` 与 `s.paused`**（Batch 5 · B30 自查补上）：
+  `checkRuin()` 是在循环**内部**把 `paused` 置真的，只判 `over` 会让 50x 一次 `step()` 带着待决态白走几十个游戏小时；
+  同理 `advanceOneHour()` 顶部闸门必须把 `s.pending` 一起挡住
+- **状态机里「暂停」落地后要保证还有一帧重绘**：`checkRuin()` 置 `paused` 后不再有 `onFrame`，
+  那一帧若被 `draw()` 的 80ms 节流吞掉，借贷遮罩永远出不来 ⇒ `main.js` 需要 `loanDrawn` 这类标志 ＋ 强制 `force = true`
 
 ---
 
 ## 七、给接手者的第一件事
 
-**UI 四轮打磨（Batch 1–4）已全部收口**。接手后按这个顺序走：
+**UI 五轮打磨（Batch 1–5）已全部收口**。接手后按这个顺序走：
 
 1. 读 `ROADMAP.MD` **§十「UI 第二轮待办」** —— Batch 1 / Batch 2 / **Batch 3 均已落地**并有实测证据、
    「B1 的高度预算」表；再看 **§十一「开仓规模上限」** —— **已裁决为「不做」**（三条全否，
    `openTrade()` 一行不动），只当背景知识读，不要再实现
 2. **下一站 ＝ P2-B（滑点 ＋ OTC ＋ 供应量消耗）**，口径见 `ROADMAP.MD` §五 P2-B。
    Batch 3（B11–B14）的完整方案与拍板留在 **§十二** 备查，**不须再动**；
-   Batch 4（B15–B21）的方案与落地结果留在 **§十三**（含 §13.9 改动清单 ＋ 验收），同样**不须再动**
+   Batch 4（B15–B21）的方案与落地结果留在 **§十三**（含 §13.9 改动清单 ＋ 验收），同样**不须再动**；
+   **Batch 5（B22–B30）的方案与落地结果留在 §十四 ＋ §十五**（含 §14.12 改动清单 ＋ §15.8），同样**不须再动**
    ⚠️ **B15 之后量区语义已变**：不再是「价格 78% / 量 22% 上下分栏」，而是**量柱半透明叠在 K 线上**
-   （价格区吃满整高，量柱最大高度 `clamp(plotH×0.25, 20, 64)`）——
-   下文旧口径（78% / 22%）只作历史背景读
-3. 确认 ROADMAP 头部已是 **v14**（Batch 4 已完成）；§15.1 一律按真实数值实现（2026-09-29 已定）
+   （价格区吃满整高，量柱最大高度 `clamp(plotH×0.25, 20, 64)`）；**B29 又把标尺从「视野内最大值」改为「视野内 P90」**
+3. 确认 ROADMAP 头部已是 **v16**（Batch 5 已完成）；§15.1 一律按真实数值实现（2026-09-29 已定）
 4. P2-B 注意：数据包只有 OHLC ＋ 每根 1 字节当日份额、没有订单簿 ⇒
    滑点只能建「成交价折让」，不能建「逐档吃穿盘口」
 5. 每改完一步跑 `npm run build`；涉及数据管线改动跑 `npm run data` 并核对 `index.json`

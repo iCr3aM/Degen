@@ -10,11 +10,13 @@
  *
  * 字号下限 12px（GDD §18.6），等宽字体（GDD §18.6），深底 + 绿涨红跌（GDD §18.6）。
  *
- * ④ **纵向间距只有 8 与 12 两档**（X-2 视觉对齐，2026-09-28）—— 8 是块内（同一张卡里的行距），
- *    12 是块间。不再出现 2 / 6 / 10 这类中间值，纵向呼吸才是均匀的。改任何 padding / margin
- *    前先想一遍：它是块内还是块间，只能填 8 或 12（容器自身可以写 0）。
- *    例外只有一处：`.chart-head` 是画布内的覆盖层，它的内边距只决定浮字落在哪一格，
- *    不参与页面块的纵向节奏，保持原值不动。
+ * ④ **纵向间距只有 8 与 12 两档**（X-2 视觉对齐，2026-09-28；Batch 5 · B26 收紧，2026-09-29）——
+ *    8 是块内（同一张卡里的行距），也是**现在主页面所有块间的间距**（顶栏 / HUD / 币种 / K 线 /
+ *    持仓 / 日志 / 操作区之间一律 8，因为 K 线区是全屏唯一弹性块，每一道缝都得还给行情）。
+ *    12 只剩**弹层遮罩内部**（`.confirm` / `.intro` / `.over`，它们不参与页面纵向节奏）。
+ *    不再出现 2 / 6 / 10 这类中间值。改任何 padding / margin 前先想一遍：它是主页面还是弹层内。
+ *    例外只有一处：`.chart-head` 是画布内的覆盖层，它的内边距只决定浮字落在哪一格与遮罩多高
+ *    （高度会被当成 K 线上沿，见 B27），不参与页面块的纵向节奏。
  *
  * ⑤ 配色基调**中性**（X-2 视觉对齐，2026-09-28）—— 底 / 面板 / 分隔线三色都不带蓝相，
  *    深色界面里任何色偏都会在长时间盯盘时放大。彩色只留给语义：涨跌、主色、金。
@@ -74,7 +76,9 @@ html, body {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 52px;
+  /* 52 → **48px**（Batch 5 · B26，2026-09-29）：`.who` 两行内容 33.75px、按钮 32px，48 都放得下。
+     省下的 4px 全部让给 K 线区 —— 这一版所有纵向压缩都是同一个目的。 */
+  height: 48px;
   border-bottom: 1px solid var(--line);
 }
 .top .who {
@@ -85,7 +89,9 @@ html, body {
 }
 .top .who b { font-size: 15px; font-weight: 600; color: var(--accent); }
 .top .who span { font-size: 12px; color: var(--mut); }
-.top .tools { margin-left: auto; flex: none; display: flex; gap: 6px; }
+/* 按钮间隙 6 → **4px**（Batch 5 · B26）：只影响横向，给「交易所双行按钮」多留 4px，
+   防止窄机型上 `费率 0.04%` 那行被压到折行。 */
+.top .tools { margin-left: auto; flex: none; display: flex; gap: 4px; }
 
 /* 倍速档 / 暂停：一枚小方按钮，选中态 = 主色描边 + 淡底 */
 .ic {
@@ -144,19 +150,20 @@ html, body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
-  padding-top: 12px;
+  /* 上间距 12 → **8px**（Batch 5 · B26）：块间一律 8，消除顶栏下那道偏宽的缝 */
+  padding-top: 8px;
 }
 /* 格子高度锁死：标签 12px + 数值 12px + 副行 12px，行高都定死 ⇒ 永远 3 行，不随数字跳动。
-   高度预算 = 标签行 16 ＋ 数值行 22 ＋ 副行 16 = **54 内容** ＋ padding 8×2 ＋ border 1×2 = **72px**。
-   ⚠️ 原来写 62px，而三行的行高加起来是 54px，内容盒只有 48px —— 副行被 `overflow:hidden`
-      裁掉 6px（X-2 对齐时把内边距放大到 8/12 才发现的），所以这一版把高度一并补到 72px。
-   ⚠️ 数值行 16px → **12px**（2026-09-28 P1-B 拍板）：HUD 加第三格后，390px 手机上每格只剩
+   ⚠️ 高度预算**每一版都要重算**（三行行高之和必须 ≤ 内容盒，否则副行被 `overflow:hidden` 裁掉）：
+       Batch 5 · B26 起 = 标签行 14 ＋ 数值行 20 ＋ 副行 14 = **48 内容** ＋ padding 8×2 ＋ border 1×2
+       = **66px**（原来是 16/22/16 = 54 内容、高 72px）。行高收窄不影响可读性 —— 12px 字在 14px
+       行高下仍有 2px 余量，数值行 20px 也够，而省下的 6px 是这一版回收的最大一笔。
+   ⚠️ 数值行字号 16px → **12px**（2026-09-28 P1-B 拍板）：HUD 加第三格后，390px 手机上每格只剩
       91px 可用，`$1,234,567.89` 在 16px 下要 114px、撑爆后被 `text-overflow` 截掉尾巴；
-      降到 12px 后同串只要 86px。**行高仍锁 22px**（不去动高度预算），所以 72px 一格不变，
-      主次改由字重（600）承担。
+      降到 12px 后同串只要 86px，主次改由字重（600）承担。
       （交易所搬走后每格已有 179px，理论上回 16px 也放得下 —— 但用户本轮未圈定，**保持 12px 不动**。） */
 .hud .cell {
-  height: 72px;
+  height: 66px;
   min-width: 0;
   overflow: hidden;
   background: var(--panel);
@@ -171,15 +178,15 @@ html, body {
   display: block;
   font-style: normal;
   font-size: 12px;
-  line-height: 16px;
+  line-height: 14px;
   color: var(--mut);
 }
-.hud .cell b { display: block; font-size: 12px; line-height: 22px; font-weight: 600; }
+.hud .cell b { display: block; font-size: 12px; line-height: 20px; font-weight: 600; }
 .hud .cell u {
   display: block;
   text-decoration: none;
   font-size: 12px;
-  line-height: 16px;
+  line-height: 14px;
   color: var(--mut);
 }
 /* 副行里带涨跌语义的两个数（Batch 4 · B17）：「已实现」「未实现」正绿负红。
@@ -198,7 +205,8 @@ html, body {
   flex: none;
   display: flex;
   gap: 8px;
-  padding: 12px 0;
+  /* 上下留白 12 → **8px**（Batch 5 · B26）：块间一律 8，同时收紧「币种 ↔ HUD」与「K 线 ↔ 币种」两道缝 */
+  padding: 8px 0;
 }
 .sym {
   flex: 1 1 0;
@@ -213,8 +221,19 @@ html, body {
   cursor: pointer;
 }
 .sym.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-/* 未解锁：压暗且不可点（GDD §18.1「未解锁置灰」）—— 比通用禁用（.45）更暗一档，置灰是要一眼看出来的 */
-.sym:disabled { opacity: .3; }
+/* 未解锁：压暗且不可点（GDD §18.1「未解锁置灰」）—— 比通用禁用（.45）更暗一档，置灰是要一眼看出来的。
+   Batch 5 · B25 起从 .3 提到 **.45**：太暗就看不清下面那道进度环了，置灰仍有 0.45 的落差可辨。 */
+.sym:disabled { opacity: .45; }
+/* 解锁进度环（Batch 5 · B25）：从「上一枚币解锁时刻」走到自己的解锁时刻，边框按比例绕一圈。
+   `--pf` 由 render.js 写（0→1 四位小数，同值不重写），已走过的部分是主色，其余留 --line。
+   `border-color: transparent` ＋ 双层 background-clip 是关键：第一层贴 border-box 画环，
+   第二层 padding-box 兜住内部（否则渐变会糊满整块按钮）。 */
+.sym.locked {
+  border-color: transparent;
+  background:
+    conic-gradient(from 0deg, var(--accent) calc(var(--pf, 0) * 360deg), var(--line) 0) border-box,
+    none padding-box;
+}
 /* 持仓所在币种：左侧一道主色竖条，不换色不换字，避免和 .on 抢注意力 */
 .sym.held { box-shadow: inset 2px 0 0 var(--gold); }
 .sym:active { background: var(--line); }
@@ -240,11 +259,14 @@ html, body {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 6px 8px;
+  /* 内边距 6 → **4px**、币种字号 16 → **14px**（Batch 5 · B26）—— 遮罩高度是要还的：
+     它同时是 K 线的 `topInset`（render.js 把实测高度传给 chart.js 当绘图上沿），
+     遮罩每矮 1px，K 线可画区就多 1px，价格轴最上那一档与强平价才不会被压住。 */
+  padding: 4px 8px;
   background: rgba(16, 19, 23, .72);   /* = --panel-2 的七成不透明 */
   pointer-events: none;
 }
-.chart-head b { font-size: 16px; font-weight: 600; }
+.chart-head b { font-size: 14px; font-weight: 600; }
 .chart-head span { font-size: 12px; }
 /* 粒度小字（Batch 3 · B12）：遮罩里唯一可点的东西，所以单独把事件收回来。
    高 20px 是触屏能稳稳点中的下限；底色沿用面板色，只在按下时变主色。 */
@@ -298,7 +320,8 @@ html, body {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
-  margin-top: 12px;
+  /* 上间距 12 → **8px**（Batch 5 · B26）：收紧「持仓栏 ↔ K 线」那道缝 */
+  margin-top: 8px;
   padding: 8px 12px;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -312,7 +335,8 @@ html, body {
 /* ══════════════ 日志条（一行，只显示最近一条） ══════════════ */
 .logline {
   flex: none;
-  height: 26px;
+  /* 26 → **24px**（Batch 5 · B26）：12px 字在 24px 里居中仍有余量，省下的 2px 归 K 线区 */
+  height: 24px;
   display: flex;
   align-items: center;
   padding: 0 2px;
@@ -405,6 +429,10 @@ html, body {
   cursor: pointer;
 }
 .over button:active { filter: brightness(.88); }
+/* 借贷遮罩的两枚按钮（Batch 5 · B30）：并排一行，间距仍走 8（约束 ④），不写 margin 交给 `.over` 的 gap。
+   「放弃」走中性格（灰底 + 亮字），与主色的「借入」拉开主次 —— 与操作区的 `.act.flat` 同一套语气。 */
+.over-btns { display: flex; gap: 8px; margin: 0; }
+.over button.flat { background: var(--line); color: var(--fg); }
 
 /* ══════════════ 选所弹层（挂在 #overlay，不进 #app） ══════════════
    一层吃掉整屏点击的暗底 + 一张贴住**顶栏交易所按钮**下沿的竖表。

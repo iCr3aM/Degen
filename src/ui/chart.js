@@ -24,7 +24,8 @@
 export const PAD_R = 52;
 /** 底部留白（右侧价格标签高 18px，贴边会被切掉） */
 const PAD_B = 16;
-/** 顶部留白 = 轴标签半高 ＋ 一点余量（Batch 1 · B5，2026-09-29） */
+/** 顶部留白的**兜底值**（Batch 5 · B27）：真实值由调用方按左上角遮罩实测高度传进来（`o.topInset`），
+ *  遮罩量不到时才退回这里 —— 10px 只是轴标签半高，遮罩有 28px 高，光靠它标签会被压进遮罩底下。 */
 const PAD_TOP = 10;
 /** 量柱**最大**高度占绘图高度的比例（Batch 4 · B15）—— 纯展示层，只服务观感。
  *  ⚠️ 取 **1/4** 而不是「先定 28% 再由上限兜」：实测这台机型画布高 214px（`plotH ≈ 186`），
@@ -88,6 +89,10 @@ function axisLabel(p) {
  *   entry    number|null       持仓开仓价
  *   side     'long'|'short'|null
  *   liq      number|null       强平价（现货传 null）
+ *   slots    number            本帧视野的**槽位数**（= `view.js` 的 `count`）。
+ *                              ⚠️ 不等于 `candles.length`：币种刚上线时可用根数少于 `count`，
+ *                              柱宽必须按槽位算、柱子**右对齐**，否则开局那 1 根 K 线会撑满整屏（B22）。
+ *   topInset number            顶部留白 = 左上角遮罩的实测高度（B27）。不传则退回 `PAD_TOP`。
  *   cssW/cssH number           容器尺寸（CSS 像素）
  *   yPx      number            价格轴的垂直平移（像素，向下为正；`view.js` 持有）
  * @returns {number} **实际生效的 `yPx`**（被限位夹过）—— 调用方必须写回视野状态，
@@ -109,10 +114,13 @@ export function drawChart(canvas, o) {
   ctx.clearRect(0, 0, W, H);
 
   const plotW = Math.max(1, W - PAD_R);
-  // ⚠️ 顶部留白 = 轴标签半高（12px 字垂直居中 ⇒ 上半 6px）＋ 一点余量（Batch 1 · B5，2026-09-29）。
-  //    原来只留 4px，最上一档标签「$xx.xk」的上半截会被画布切掉（用户实机发现「y 轴最上方被截断」）。
-  const plotH = Math.max(1, H - PAD_B - PAD_TOP);
-  const top = PAD_TOP;
+  // ⚠️ 顶部留白 = **左上角遮罩的实测高度**（Batch 5 · B27，2026-09-29）。
+  //    原来写死 10px（= 轴标签半高 ＋ 余量，Batch 1 · B5 为解决「最上一档标签被切掉」而设），
+  //    但遮罩有 ≈28px 高 ⇒ 最上档轴标签、开仓价签、强平价签**整块躺在 72% 不透明的遮罩底下**，
+  //    看起来就是「强平价显示不全」。真正的病根是这里，不是画布高度不够。
+  const topInset = Number.isFinite(o.topInset) && o.topInset > 0 ? o.topInset : PAD_TOP;
+  const plotH = Math.max(1, H - PAD_B - topInset);
+  const top = topInset;
   const bot = top + plotH;              // 价格区下沿 = 量柱基线（贴住最下面那根网格线）
   // 价格区**吃满** plotH（Batch 4 · B15，原先是「价格 78% + 量区 22%」上下分栏）；
   // 量柱改成叠在 K 线上的展示层，这里的 volH 是**量柱最大高度**，不再是分栏高度。
@@ -164,9 +172,15 @@ export function drawChart(canvas, o) {
   }
   const yOf = p => top + (hi - p) / span * plotH;
 
+  // ⚠️ 柱宽按**槽位数**算、柱子**右对齐**（Batch 5 · B22，2026-09-29）。
+  //    原来 `cw = plotW / n`（n = 实际根数）：币种刚上线时只有 1~2 根可用 ⇒ 那 1 根会撑满整屏。
+  //    改成按 `slots`（= 视野要的根数）算之后，柱宽恒定；前 `slots − n` 个槽位留白，
+  //    **最新那一根永远贴住右端**（与现价线贴右端同一口径），日线模式第一天同理。
   const n = candles.length;
-  const cw = plotW / n;
+  const slots = Math.max(n, Math.round(o.slots || n));
+  const cw = plotW / slots;
   const bw = Math.max(1, Math.min(cw - 1, 13));
+  const xAt = k => (slots - n + k) * cw + cw / 2;
 
   // ── 网格线 + 右侧价格标签（三档，只铺在价格区） ──
   ctx.font = '12px ui-monospace, monospace';
@@ -190,7 +204,7 @@ export function drawChart(canvas, o) {
     const c = candles[k];
     const up = c.c >= c.o;
     const col = up ? T.UP : T.DOWN;
-    const x = k * cw + cw / 2;
+    const x = xAt(k);
     const yH = yOf(c.h), yL = yOf(c.l);
     const yO = yOf(c.o), yC = yOf(c.c);
 
@@ -208,24 +222,35 @@ export function drawChart(canvas, o) {
   }
 
   // ── 成交量柱（图层二：**盖在 K 线之上**，Batch 4 · B15） ──
-  // 高度按**视野内最大值自适应**：份额是日内相对量，绝对量跨 7 个数量级
-  // （2013 与 2024 差百万倍），固定标尺会让早年的柱子整片看不见。
+  // 柱高按**视野内的 P90**归一化（Batch 5 · B29，2026-09-29），不再是最大值：
+  //   份额是日内相对量，绝对量跨 7 个数量级，所以必须按视野自适应；
+  //   但用 `vmax` 时，视野里只要出现一根极端柱（2017-12 / 2021-04），其余几十根全被压到几像素，
+  //   **看不见就等于没有**（量区是纯展示层）。取 P90 之后约 90% 的柱子保留真实相对高低，
+  //   超过 P90 的少数巨量柱封顶 —— 仍是最高的那一档，一眼可辨。
+  //   ⚠️ 视野内没有极端柱时 `vp90 ≈ vmax` ⇒ **自动退化成改版前的口径**，只在本来就读不出来时才生效。
   // 无成交的根不画（柱高 0）。量区不画网格、不加轴标签 —— LESS IS MORE。
   // ⚠️ 柱宽与柱心的取法与 K 线**完全一致** ⇒ 每根量柱正好盖住它自己那一根 K 线；
   //    同色叠加下 K 线躯干看不出变化，只有背景被压出「暗一档的柱身」。
   const V = vols || [];
   let vmax = 0;
-  for (const v of V) if (v > vmax) vmax = v;
-  if (vmax > 0) {
+  const nz = [];
+  for (const v of V) if (v > 0) { nz.push(v); if (v > vmax) vmax = v; }
+  let vscale = vmax;
+  if (nz.length >= 10) {
+    nz.sort((a, b) => a - b);
+    vscale = nz[Math.min(nz.length - 1, Math.ceil(0.9 * nz.length) - 1)];   // 最近秩法 P90
+  }
+  if (vscale > 0) {
     ctx.save();
     ctx.globalAlpha = VOL_ALPHA;
     for (let k = 0; k < n; k++) {
       const v = V[k];
       if (!(v > 0)) continue;
       const c = candles[k];
-      const h = Math.max(1, Math.round(v / vmax * volH));
+      const r = Math.min(1, v / vscale);
+      const h = Math.max(1, Math.round(r * volH));
       ctx.fillStyle = c.c >= c.o ? T.UP : T.DOWN;
-      const x = k * cw + cw / 2;
+      const x = xAt(k);
       ctx.fillRect(Math.round(x - bw / 2), bot - h, Math.round(bw), h);
     }
     ctx.restore();
@@ -247,10 +272,12 @@ export function drawChart(canvas, o) {
     ctx.restore();
     // 右端一枚小标签：方向 + 开仓价。
     // ⚠️ 标签矩形要**单独**再夹一次（它高 16px）—— 线贴到价格区上/下沿时，不夹就会有一半被切掉。
+    //    夹取的**下界必须是 `top + 8`**（Batch 5 · B27）：原来写死 `8`，而 `top` 现在等于遮罩高度
+    //    （≈28px）⇒ 标签矩形会落到 y ∈ [1,17]、**整块躺在遮罩底下**，这正是「强平价显示不全」的原因。
     const tag = (side === 'short' ? '空 ' : '多 ') + axisLabel(entry);
     ctx.font = '12px ui-monospace, monospace';
     const tw = ctx.measureText(tag).width + 6;
-    const ty = Math.round(clamp(y, 8, bot - 8)) + .5;
+    const ty = Math.round(clamp(y, top + 8, bot - 8)) + .5;
     ctx.fillStyle = T.GOLD;
     ctx.fillRect(plotW - tw, ty - 8, tw, 16);
     ctx.fillStyle = '#1a1405';
@@ -269,7 +296,7 @@ export function drawChart(canvas, o) {
     if (Number.isFinite(liq)) {
       const ltag = '强 ' + axisLabel(liq);
       const lw = ctx.measureText(ltag).width + 6;
-      const ly = ty > bot - SIDE_RESERVE ? Math.max(8, ty - SIDE_SHIFT) : ty;
+      const ly = ty > bot - SIDE_RESERVE ? Math.max(top + 8, ty - SIDE_SHIFT) : ty;
       ctx.fillStyle = T.DOWN;
       ctx.fillRect(0, ly - 8, lw, 16);
       ctx.fillStyle = '#1a0508';
