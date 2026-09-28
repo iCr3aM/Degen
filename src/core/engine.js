@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, SUPPLY_CAP, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt } from './config.js';
+import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, fillPrice, impactOf, sigmaOf } from './impact.js';
@@ -82,6 +82,20 @@ export function equity(s) {
  *    实现上天然成立 —— `cashOf` 只看 `books`，而发起转账时旧所那一格已经清零。
  */
 export const available = s => cashOf(s);
+
+/* ───────────────────────── 下单通道（P2-B3 · GDD §15.3） ───────────────────────── */
+
+/** OTC 是否已解锁（§15.3：权益 > $500 万）—— UI 用它决定那枚切换键显不显示 */
+export const otcUnlocked = s => equity(s) > OTC.unlock;
+
+/**
+ * 当前**生效**的通道：`'book'`（盘口）或 `'otc'`（场外大宗）。
+ *
+ * ⚠️ OTC 只在「玩家选了它」**且「仍然解锁」**时成立 —— 权益掉回门槛下就自动退回盘口。
+ *    否则会出现最别扭的一种状态：切换键已经藏起来了（不满足解锁条件），
+ *    而 `s.chan` 还留着 `'otc'`，玩家接着下的每一单都在走一条看不见的通道。
+ */
+export const chanOf = s => (s.chan === 'otc' && otcUnlocked(s) ? 'otc' : 'book');
 
 /**
  * 账户权益归零即破产（GDD §1.3）。
@@ -154,6 +168,11 @@ export function openTrade(s, side, frac = 1) {
   if (s.over) return { ok: false, why: '本局已结束' };
   if (posOf(s, s.sym)) return { ok: false, why: `${s.sym} 已有持仓，先平仓` };
 
+  /* 通道（P2-B3 · §15.3）：OTC 是**现货大宗**，没有做空这一说（空头要借币、要维持保证金，
+     都不是「私下一口价买现货」能承接的）。 */
+  const otc = chanOf(s) === 'otc';
+  if (otc && side === 'short') return { ok: false, why: 'OTC 通道只有现货，不能做空' };
+
   const coin = coinOf(s.sym);
   if (!coin || !isLoaded(s.sym)) return { ok: false, why: '行情还没加载完' };
   if (timeOf(s) < coin.unlock) return { ok: false, why: `${s.sym} 还没上线` };
@@ -161,8 +180,8 @@ export function openTrade(s, side, frac = 1) {
   const price = markPrice(s, s.sym);
   if (!(price > 0)) return { ok: false, why: '当前没有可成交的价格' };
 
-  // 杠杆上限与费率都取**玩家当前所在的交易所**（GDD §7.1）
-  const lev = Math.max(1, Math.min(s.lev, maxLeverageAt(timeOf(s), s.ex)));
+  // 杠杆上限与费率都取**玩家当前所在的交易所**（GDD §7.1）。OTC 一律 1x（= 现货）
+  const lev = otc ? 1 : Math.max(1, Math.min(s.lev, maxLeverageAt(timeOf(s), s.ex)));
   const feeRate = feeRateOf(s.ex);
   const cash = cashOf(s);
 
@@ -173,18 +192,24 @@ export function openTrade(s, side, frac = 1) {
   const fee = feeOf(margin);
   if (!(margin > 0) || margin + fee > cash + 1e-9) return { ok: false, why: '可用保证金不足' };
 
-  /* 成交价（P2-B1）：盘口价 ± 冲击 —— 买抬、卖压，**永远对玩家不利**。
+  /* OTC 的门槛（§15.3）：单笔名义 ≥ $100 万。锁定 1x ⇒ 名义 = 保证金。
+     ⚠️ 门槛只卡**买入**，不卡平仓 —— 卡平仓会把玩家困在一条「币价跌下来、名义已不足 $100 万」的仓位上。 */
+  if (otc && margin < OTC.min) return { ok: false, why: `OTC 单笔最少 ${fmtMoney(OTC.min)}` };
+
+  /* 成交价（P2-B1 / P2-B3）：盘口价 ± 代价 —— 买抬、卖压，**永远对玩家不利**。
+     代价有两种，同一时刻只有一种成立：盘口是平方根冲击、OTC 是固定 1% 溢价（不吃滑点）。
      ⚠️ 保证金与开仓费都不受它影响（那两项按名义价值算，与成交价无关），
-        受影响的是 `size`：买贵了就拿到的币少一点，这才是冲击的真实代价。 */
-  const impact = impactFor(s.sym, s.i, margin * lev);
-  const fill = fillPrice(price, side === 'long' ? 1 : -1, impact);
+        受影响的是 `size`：买贵了就拿到的币少一点，这才是代价的真实形态。 */
+  const cost = otc ? OTC.premium : impactFor(s.sym, s.i, margin * lev);
+  const fill = fillPrice(price, side === 'long' ? 1 : -1, cost);
 
   /* 供应量上限（P2-B2 · §15.1 / §15.4）：买入会从市场里锁走一部分币，锁走的枚数不得越界。
      ⚠️ 校验必须排在**动账之前** —— 下面那几行一旦执行，钱已经扣了，这时再拒绝就没法干净地退回。
-     ⚠️ 只有多头方向消耗供应量（空头没把币拿走）；`capturedOf` 已经跳过 OTC 仓位。
+     ⚠️ 只有多头方向消耗供应量（空头没把币拿走）；**OTC 买入不算**（对手方私下一口价，
+        不从市场拿走流通量），所以这里直接跳过 —— 落点就是下面那句 `pos.otc = true`。
      按真实上限落地后这条整局都不会触发，所以**不为它新增终局**（GDD §16 只有两种收场）。 */
   const cap = SUPPLY_CAP[s.sym];
-  if (side === 'long' && cap != null && capturedOf(s, s.sym) + margin * lev / fill > cap) {
+  if (!otc && side === 'long' && cap != null && capturedOf(s, s.sym) + margin * lev / fill > cap) {
     return { ok: false, why: `${s.sym} 已触及供应量上限，无法继续买入` };
   }
 
@@ -199,9 +224,11 @@ export function openTrade(s, side, frac = 1) {
   pos.i = s.i;
   pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
   pos.openFee = fee;
+  if (otc) pos.otc = true;          // 只给 OTC 仓位打标（`capturedOf` 见到它就跳过）
   s.positions[s.sym] = pos;
 
-  pushLog(s, `${side === 'long' ? '做多' : '做空'} ${s.sym} ${lev}x ｜ 保证金 ${fmtMoney(margin)} @ ${showPrice(fill)}${slipTag(impact)}`, side === 'long' ? 'long' : 'short');
+  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(OTC.premium, 2)}` : slipTag(cost);
+  pushLog(s, `${side === 'long' ? '做多' : '做空'} ${s.sym} ${lev}x ｜ 保证金 ${fmtMoney(margin)} @ ${showPrice(fill)}${tag}`, side === 'long' ? 'long' : 'short');
   return { ok: true };
 }
 
@@ -217,15 +244,22 @@ export function closeTrade(s, why = '手动') {
   const price = markPrice(s, sym);
   if (!(price > 0)) return { ok: false, why: '当前没有可成交的价格' };
 
-  /* 成交价（P2-B1）：**平多是卖、平空是买**，所以方向与开仓时相反 ——
-     冲击永远对玩家不利：卖掉打点折、买回抬点价。本次成交名义 = 整条仓位（一次性平完）。 */
-  const impact = impactFor(sym, s.i, pos.size * price);
-  const fill = fillPrice(price, pos.side === 'long' ? -1 : 1, impact);
+  /* OTC 通道**只平现货**（1x 做多）—— 杠杆仓一律走盘口（§15.3 的通道语义）。
+     反过来没有任何限制：**盘口可以平任何仓位**，包括 OTC 买来的现货 ——
+     所以 OTC 买入的仓位永远不会「只能用它自己的通道才能出手」。 */
+  const otc = chanOf(s) === 'otc';
+  if (otc && !isSpot(pos)) return { ok: false, why: 'OTC 只能平现货，杠杆仓请走盘口' };
+
+  /* 成交价（P2-B1 / P2-B3）：**平多是卖、平空是买**，所以方向与开仓时相反 ——
+     代价永远对玩家不利：卖掉打点折、买回抬点价。本次成交名义 = 整条仓位（一次性平完）。 */
+  const cost = otc ? OTC.premium : impactFor(sym, s.i, pos.size * price);
+  const fill = fillPrice(price, pos.side === 'long' ? -1 : 1, cost);
 
   const r = closePosition(pos, fill, feeRateOf(pos.ex));
   s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
   s.realized += r.pnl - r.fee;
-  pushLog(s, `平仓 ${sym} ${pos.lev}x ｜ ${r.pnl >= 0 ? '盈利' : '亏损'} ${fmtMoney(r.pnl)}（${why}）${slipTag(impact)}`,
+  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(OTC.premium, 2)}` : slipTag(cost);
+  pushLog(s, `平仓 ${sym} ${pos.lev}x ｜ ${r.pnl >= 0 ? '盈利' : '亏损'} ${fmtMoney(r.pnl)}（${why}）${tag}`,
     r.pnl >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
 

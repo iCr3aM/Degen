@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
 import { fmtDate, fmtHour, fmtMoney, fmtPct, fmtRate } from '../core/format.js';
-import { available, equity, markPrice, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
+import { available, chanOf, equity, markPrice, otcUnlocked, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
 import { isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
 import { isLoaded, rangeOf, candleAt } from '../core/market.js';
 import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
@@ -152,8 +152,14 @@ export function mount(root) {
   shortBtn.dataset.act = 'short';
   const closeBtn = el('button', 'act flat', '平仓');
   closeBtn.dataset.act = 'close';
+  /* 通道切换键（P2-B3 · GDD §15.3）：铺在底行最左。字面是**当前**通道，点一下切到另一种 ——
+     与 K 线左上角那枚粒度小字同一约定，全屏只有一套「字面即现状」的切法。
+     它是四枚里唯一的**方框**（其余三枚是实心块）：它不是「一次成交」，是「换一条成交路径」。
+     未解锁（权益 ≤ $500 万）时 `hidden` —— 一个 $3,000 开局的玩家不该看见自己用不了的东西。 */
+  const chanBtn = el('button', 'act chan', '盘口');
+  chanBtn.dataset.chan = 'toggle';
   const actRow = el('div', 'row');
-  actRow.append(longBtn, shortBtn, closeBtn);
+  actRow.append(chanBtn, longBtn, shortBtn, closeBtn);
 
   const trade = el('div', 'trade');
   trade.append(fracRow, levRow, spdRow, actRow);
@@ -169,7 +175,7 @@ export function mount(root) {
     posbar, posSide, posPnl, posRate,
     logline,
     fracBtns, levRow, levBtns, spdBtns,
-    longBtn, shortBtn, closeBtn,
+    chanBtn, longBtn, shortBtn, closeBtn,
     _levSignature: '',
   };
 }
@@ -395,6 +401,13 @@ export function update(refs, s, view) {
   refs.longBtn.disabled = !canTrade;
   refs.shortBtn.disabled = !canTrade;
   refs.closeBtn.disabled = !cur || lockedUI;
+
+  /* 通道切换键：解锁（权益 > $500 万）才出现；字面与高亮都跟着**生效通道**走 ——
+     看 `chanOf` 而不是 `s.chan`，否则权益掉回门槛下时会出现「键藏起来了、单子却还在走 OTC」。 */
+  const chan = chanOf(s);
+  refs.chanBtn.hidden = !otcUnlocked(s);
+  refs.chanBtn.textContent = chan === 'otc' ? 'OTC' : '盘口';
+  refs.chanBtn.classList.toggle('on', chan === 'otc');
 }
 
 /* ───────────────────────── 小工具 ───────────────────────── */

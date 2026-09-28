@@ -11,7 +11,7 @@ import { maxLeverageAt } from './core/config.js';
 import { createState, heldSyms, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded } from './core/market.js';
-import { createClock, openTrade, closeTrade, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp } from './core/engine.js';
+import { createClock, chanOf, openTrade, closeTrade, otcUnlocked, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp } from './core/engine.js';
 import { marginRateOf, isSpot } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, clearOver, renderBoot, hideBoot,
@@ -224,6 +224,7 @@ function dispatch(node) {
   if (d.sclose !== undefined) return onCloseSettings();
 
   if (d.sym !== undefined) return onSym(d.sym);
+  if (d.chan !== undefined) return onChan();
   if (d.ex !== undefined) return onEx(d.ex);
   /* 换所二次确认的两个出口（Batch 2 · B10）—— 确认键自带目标所 id，所以不需要额外的「待确认」状态。 */
   if (d.exok !== undefined) {
@@ -236,6 +237,9 @@ function dispatch(node) {
   if (d.exno !== undefined) { closePicker(); after(); return; }
   if (d.frac !== undefined) { s.sizeFrac = Number(d.frac); after(); return; }
   if (d.lev !== undefined) {
+    /* OTC 通道只有现货 ⇒ 杠杆被锁在 1x。这里只给一条日志、**不改 s.lev** ——
+       他切回盘口时那个杠杆还在，不必重新点一遍（Batch 5 的 `数据不擅自改` 口径）。 */
+    if (chanOf(s) === 'otc') { pushLog(s, 'OTC 通道只有现货，杠杆固定 1x', 'info'); after(); return; }
     const want = Number(d.lev);
     s.lev = Math.max(1, Math.min(want, maxLeverageAt(timeOf(s), s.ex)));
     after();
@@ -296,6 +300,19 @@ function onSym(sym) {
   // 切到一个没加载过的币：先重画一次（会显示「无行情数据」），拉到之后再刷新
   after();
   if (!isLoaded(sym)) ensureCoin(sym).then(() => draw(true));
+}
+
+/**
+ * 通道切换（P2-B3 · GDD §15.3）—— 盘口 ⇄ OTC。
+ * ⚠️ 解锁判据统一走 `otcUnlocked`（引擎里那份），这里不另算一遍：两处各写一遍迟早会不一致。
+ */
+function onChan() {
+  if (!otcUnlocked(s)) return;
+  s.chan = chanOf(s) === 'otc' ? 'book' : 'otc';
+  /* 切到 OTC 就把杠杆归 1：OTC 只有现货，让操作区当场显示 1x 比事后再拒绝更直白。
+     切回盘口**不还原**原来的杠杆 —— 那需要多存一个字段，而 `1x` 是个安全的默认值。 */
+  if (s.chan === 'otc') s.lev = 1;
+  after();
 }
 
 /* ── 开场叙事（Batch 4 · B19）─────────────────────────────────────

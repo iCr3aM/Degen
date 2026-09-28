@@ -9,7 +9,7 @@
 
 import { GAME } from './config.js';
 
-export const STATE_VERSION = 5;
+export const STATE_VERSION = 6;
 
 export function createState() {
   return {
@@ -52,6 +52,13 @@ export function createState() {
 
     /** 当前正在看的币种 */
     sym: 'BTC',
+
+    /**
+     * 下单通道（P2-B3 · GDD §15.3）—— `'book'`（盘口，默认）或 `'otc'`（场外大宗）。
+     * ⚠️ 它是**玩家的选择**，所以必须入存档；但「OTC 是否生效」由 `engine.chanOf` 判 ——
+     *    权益掉回门槛下时自动退回盘口，免得玩家卡在一个已经藏起来的通道里。
+     */
+    chan: 'book',
 
     /** 玩家选择的杠杆（会在档位表里夹取，见 `config.leverageOptionsAt`） */
     lev: 1,

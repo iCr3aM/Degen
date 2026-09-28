@@ -47,6 +47,9 @@ export function load() {
  * v4 → v5（Batch 5 · B30）：新增 `loaned` / `loan` / `pending`。同样是补默认值即可 ——
  * 旧档没借过钱（`loaned: false`）、没有在贷、没有待决。
  *
+ * v5 → v6（P2-B3 · OTC）：新增 `chan`。旧档没有通道这个概念，一律补 `'book'`（盘口）——
+ * 语义上正好是「旧档一直以来的行为」，玩法不受影响，所以**同样不作废旧档**。
+ *
  * ⚠️ **不改版本号也要校正的字段**：`speed`。2026-09-29 速度档收窄为 `1/5/10/50`，
  * 旧档若停在已删掉的 `2x` / `20x` 上，`render.js` 会「一排按钮全不亮，时钟却在飞跑」。
  * 这属于取值域收窄，不是结构变更，所以**不升版本**，直接在末尾夹一次。
@@ -62,6 +65,10 @@ function migrate(s) {
     s.loan = null;
     s.pending = null;
     s.v = 5;
+  }
+  if (s.v === 5) {
+    s.chan = 'book';
+    s.v = 6;
   }
   if (s.v !== STATE_VERSION) return null;
   /* 取值域校正：不在档位表里的速度一律回落到 1x */

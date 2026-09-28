@@ -397,6 +397,17 @@ html, body {
 .act.long { background: var(--up); color: #04140f; }
 .act.short { background: var(--down); color: #1a0508; }
 .act.flat { background: var(--line); color: var(--fg); }
+/* 通道切换键（P2-B3 · GDD §15.3）：四枚里唯一**空心**的一枚 ——
+   它不是「一次成交」，是「换一条成交路径」，所以用方框而不是实心块。
+   字号压到 14px 也是同一个意思：它比旁边三枚低半档，但仍高于 12px 的地板。
+   选中 OTC 时走全站统一的 `.on` 三件套（说明见 `--accent` 那段）。 */
+.act.chan {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--mut);
+  font-size: 14px;
+}
+.act.chan.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 /* 主按钮是实心块，按压态不能用 `background` 顶掉语义色 ⇒ 压暗一档 */
 .act:active { filter: brightness(.88); }
 .act:disabled { opacity: .45; }
