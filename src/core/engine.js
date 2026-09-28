@@ -13,8 +13,9 @@
  */
 
 import { GAME, HOUR_MS, EXCHANGES, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt } from './config.js';
-import { candleAt, closeAt, hasCandle, isLoaded, loadCoin, HOURS_PER_DAY } from './market.js';
+import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
+import { SLIP, fillPrice, impactOf, sigmaOf } from './impact.js';
 import { fmtMoney, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, openPosition, pnlOf,
@@ -91,6 +92,55 @@ export const available = s => cashOf(s);
  */
 const isBankrupt = s => equity(s) <= 1e-9;
 
+/* ───────────────────────────── 滑点（P2-B1） ───────────────────────────── */
+
+/* σ 的缓存：键 = 币，值 = { day, v }。与资金费率那个 `sigmaCache` 同一个理由 ——
+   同一天内不必重扫 30 个日收盘。
+   ⚠️ **必须与 `sigmaCache` 分开**：那个装的是「小时收益 σ」（资金费率的归一化分母），
+   这个装的是「日收益 σ」（滑点的 σ_30日）—— 共用一个 Map 会串味。 */
+const daySigmaCache = new Map();
+
+/**
+ * 近 30 天「日收盘收益率」的总体标准差 —— 滑点式里的 σ_30日（GDD §14.3）。
+ *
+ * 第 d 天的日收盘 = 那一天**最后一根小时 K**（`d × 24 + 23`）的收盘价。
+ * 取 [day−31, day−1] 共 31 个日收盘 ⇒ 30 个日收益 —— **不含今天**：今天还没走完，
+ * 把半截行情算进「日均波动」会让 σ 随当天走势抖（与 `hourlySigma` 的按天缓存同一取舍）。
+ */
+function dailySigma(sym, i) {
+  const day = dayIndexOf(i);
+  const hit = daySigmaCache.get(sym);
+  if (hit && hit.day === day) return hit.v;
+
+  const closes = [];
+  for (let d = Math.max(0, day - SLIP.window - 1); d < day; d++) {
+    closes.push(closeAt(sym, d * HOURS_PER_DAY + HOURS_PER_DAY - 1));
+  }
+  const v = sigmaOf(closes);
+  daySigmaCache.set(sym, { day, v });
+  return v;
+}
+
+/**
+ * 一次成交的冲击（0 = 不触发）。
+ * ⚠️ **取不到当日流动性就不触发** —— 数据还没加载完 / 该币那天还没上线时，不凭空造一个冲击出来。
+ */
+function impactFor(sym, i, notional) {
+  const liq = liqOf(sym, dayIndexOf(i));
+  if (!(liq > 0) || !(notional > 0)) return 0;
+  return impactOf(notional / liq, dailySigma(sym, i));
+}
+
+/** 日志尾巴：触发了才追加，没触发的一个字符都不加 */
+const slipTag = impact => (impact > 0 ? ` ｜ 滑点 ${fmtRate(impact, 2)}` : '');
+
+/**
+ * 日志里的价格。只做一件事：抹掉浮点乘法的尾噪 ——
+ * `13.078 × 1.006` 会算出 `13.156468000000001` 这种东西，直接贴进 nowrap 的日志条很难看。
+ * 取 8 位有效数字（数据包本身就是按 8 位有效数字编码的），所以**未触发滑点时与原来一字不差**。
+ */
+const showPrice = v => Number(v.toPrecision(8));
+
 /* ───────────────────────────── 交易动作 ───────────────────────────── */
 
 /**
@@ -130,13 +180,19 @@ export function openTrade(s, side, frac = 1) {
   s.realized -= fee;
   s.lev = lev;
 
-  const pos = openPosition(s.sym, side, price, margin, lev, feeRate);
+  /* 成交价（P2-B1）：盘口价 ± 冲击 —— 买抬、卖压，**永远对玩家不利**。
+     ⚠️ 保证金与开仓费都不受它影响（那两项按名义价值算，与成交价无关），
+        受影响的是 `size`：买贵了就拿到的币少一点，这才是冲击的真实代价。 */
+  const impact = impactFor(s.sym, s.i, margin * lev);
+  const fill = fillPrice(price, side === 'long' ? 1 : -1, impact);
+
+  const pos = openPosition(s.sym, side, fill, margin, lev, feeRate);
   pos.i = s.i;
   pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
   pos.openFee = fee;
   s.positions[s.sym] = pos;
 
-  pushLog(s, `${side === 'long' ? '做多' : '做空'} ${s.sym} ${lev}x ｜ 保证金 ${fmtMoney(margin)} @ ${price}`, side === 'long' ? 'long' : 'short');
+  pushLog(s, `${side === 'long' ? '做多' : '做空'} ${s.sym} ${lev}x ｜ 保证金 ${fmtMoney(margin)} @ ${showPrice(fill)}${slipTag(impact)}`, side === 'long' ? 'long' : 'short');
   return { ok: true };
 }
 
@@ -152,10 +208,15 @@ export function closeTrade(s, why = '手动') {
   const price = markPrice(s, sym);
   if (!(price > 0)) return { ok: false, why: '当前没有可成交的价格' };
 
-  const r = closePosition(pos, price, feeRateOf(pos.ex));
+  /* 成交价（P2-B1）：**平多是卖、平空是买**，所以方向与开仓时相反 ——
+     冲击永远对玩家不利：卖掉打点折、买回抬点价。本次成交名义 = 整条仓位（一次性平完）。 */
+  const impact = impactFor(sym, s.i, pos.size * price);
+  const fill = fillPrice(price, pos.side === 'long' ? -1 : 1, impact);
+
+  const r = closePosition(pos, fill, feeRateOf(pos.ex));
   s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
   s.realized += r.pnl - r.fee;
-  pushLog(s, `平仓 ${sym} ${pos.lev}x ｜ ${r.pnl >= 0 ? '盈利' : '亏损'} ${fmtMoney(r.pnl)}（${why}）`,
+  pushLog(s, `平仓 ${sym} ${pos.lev}x ｜ ${r.pnl >= 0 ? '盈利' : '亏损'} ${fmtMoney(r.pnl)}（${why}）${slipTag(impact)}`,
     r.pnl >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
 
@@ -337,7 +398,11 @@ function settleLoan(s) {
     const pos = s.positions[sym];
     const price = markPrice(s, sym);
     if (price > 0) {
-      const r = closePosition(pos, price, feeRateOf(pos.ex));
+      /* 到期自动清仓与**手动平仓同口径**（含滑点，P2-B1）—— 一笔 $100 万的仓位
+         不该因为「是系统帮我平的」就白捡一个更好的成交价。这一条不单独写日志，
+         下面那条「还款 · 借款结清」已经概括了整件事。 */
+      const impact = impactFor(sym, s.i, pos.size * price);
+      const r = closePosition(pos, fillPrice(price, pos.side === 'long' ? -1 : 1, impact), feeRateOf(pos.ex));
       s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
       s.realized += r.pnl - r.fee;
     } else {
