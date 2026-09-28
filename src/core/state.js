@@ -59,7 +59,7 @@ export function createState() {
     /** 下单金额占「可用保证金」的比例，1 = 全部 */
     sizeFrac: 1,
 
-    /** 速度倍率：1 / 2 / 5 / 10 / 20 / 50（`render.js` 的 `SPEEDS` 是唯一真源） */
+    /** 速度倍率：1 / 5 / 10 / 50（`config.SPEEDS` 是唯一真源） */
     speed: 1,
 
     /** 暂停 */

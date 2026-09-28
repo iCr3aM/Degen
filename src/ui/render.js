@@ -11,7 +11,7 @@
  * 所有会变的数字都挂在 `refs` 上，`update()` 是唯一的写入口。
  */
 
-import { GAME, COINS, EXCHANGES, coinOf, exchangeOf, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
+import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
 import { fmtDate, fmtHour, fmtMoney, fmtPct, fmtRate } from '../core/format.js';
 import { available, equity, markPrice, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
 import { isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
@@ -20,10 +20,6 @@ import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '
 import { anyHeld, posOf } from '../core/state.js';
 import { drawChart } from './chart.js';
 import { windowFor, setYPx } from './view.js';
-
-/* 速度档：20x → **50x**（2026-09-29 用户要求）。50x 下 1 真实秒走 50 游戏小时，
-   时钟 `step()` 里有 `guard < 400` 兜底，不会因为一帧跨太多根而卡住。 */
-const SPEEDS = [1, 2, 5, 10, 20, 50];
 
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);

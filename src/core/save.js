@@ -7,6 +7,7 @@
  */
 
 import { STATE_VERSION } from './state.js';
+import { SPEEDS } from './config.js';
 
 const KEY = 'degen_save';
 let disabled = false;
@@ -45,6 +46,10 @@ export function load() {
  *
  * v4 → v5（Batch 5 · B30）：新增 `loaned` / `loan` / `pending`。同样是补默认值即可 ——
  * 旧档没借过钱（`loaned: false`）、没有在贷、没有待决。
+ *
+ * ⚠️ **不改版本号也要校正的字段**：`speed`。2026-09-29 速度档收窄为 `1/5/10/50`，
+ * 旧档若停在已删掉的 `2x` / `20x` 上，`render.js` 会「一排按钮全不亮，时钟却在飞跑」。
+ * 这属于取值域收窄，不是结构变更，所以**不升版本**，直接在末尾夹一次。
  */
 function migrate(s) {
   if (s.v === 3) {
@@ -58,7 +63,10 @@ function migrate(s) {
     s.pending = null;
     s.v = 5;
   }
-  return s.v === STATE_VERSION ? s : null;
+  if (s.v !== STATE_VERSION) return null;
+  /* 取值域校正：不在档位表里的速度一律回落到 1x */
+  if (!SPEEDS.includes(s.speed)) s.speed = 1;
+  return s;
 }
 
 export function wipe() {

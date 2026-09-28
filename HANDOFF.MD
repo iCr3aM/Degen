@@ -2,7 +2,7 @@
 
 > 生成时间：2026-09-29　｜　工作目录：`f:\Cr3aM\Desktop\Degen`
 > 用途：暂停开发、切换工作流时的交接说明。回答三件事：**现在站在哪 / 什么没做 / 接下来怎么做**。
-> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v16，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
+> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v17，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
 
 ---
 
@@ -14,6 +14,8 @@
 **Batch 1（B1–B5）、Batch 2（B7–B10）、Batch 3（B11–B14）、Batch 4（B15–B21：量柱叠放 / 日线量修正 / 浮字避让 / 补色 / 资金费率模型 / 开场叙事 / 音效 / 设置面板）均已完成**；
 **Batch 5（B22–B30：K 线数据泄漏修复 / 已实现盈亏补两费 / 开局日志 / 解锁进度环 / 纵向压缩 / 绘图上沿＝遮罩底 / 量区 P90 / 爆仓后借贷）也已完成** ——
 方案与落地结果见 `ROADMAP.MD` **§十四**（B22–B29）与 **§十五**（B30 场外配资）；离线断言 28/28 ＋ `npm run build` 通过。
+**（v17，2026-09-29）速度档已由 `1/2/5/10/20/50` 收窄为 `1/5/10/50`**（删 `2x` 与 `20x`），
+唯一真源从 `render.js` 上移到 **`config.SPEEDS`** —— 因为 `save.js` 也要用它校正旧档。
 **下一站是 P2-B（滑点 ＋ OTC ＋ 供应量消耗，口径见 `ROADMAP.MD` §五）**。
 另有一份**已裁决**的提案：`ROADMAP.MD` **§十一「开仓规模上限」** ——
 2026-09-29 拍板**三个点全部不做**（不引入杠杆—名义阶梯 / 不加市场深度闸门 / 不做 Mt.Gox $1M 上限）
@@ -60,7 +62,7 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/core/config.js` | `GAME` / `COINS` / `EXCHANGES` / **`LOAN` ＋ `loanAmountAt`** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
+| `src/core/config.js` | `GAME` / `COINS` / `EXCHANGES` / **`SPEEDS`（1/5/10/50，唯一真源）** / **`LOAN` ＋ `loanAmountAt`** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
 | `src/core/state.js` | `STATE_VERSION`、`createState()`、`cashOf` / `posOf` / `heldSyms` / `anyHeld` / `pushLog` |
 | `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30） |
 | `src/core/positions.js` | 逐仓持仓：`isSpot` / 保证金率 / 强平价 / 资金费率 / `unrealizedOf` |
@@ -75,7 +77,7 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 | `src/ui/sound.js` | **音效**（Batch 4）：Web Audio 合成，零音频文件；开关存 `degen_settings`，**不进存档** |
 | `src/ui/style.css` | 全部样式；**纵向间距只有 8 一档**（8 ＝ 块内，也 ＝ 主页面所有块间；12 只剩弹层内部） |
 | `tools/fetch-data.mjs` | 行情数据管线，产出 `public/data/` |
-| `ROADMAP.MD` | 路线图 v16，**P2 方案全部写在这里** |
+| `ROADMAP.MD` | 路线图 v17，**P2 方案全部写在这里** |
 | `GDD.MD` | 设计文档 v1.0 |
 
 ### 常用命令
@@ -363,6 +365,9 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
   同理 `advanceOneHour()` 顶部闸门必须把 `s.pending` 一起挡住
 - **状态机里「暂停」落地后要保证还有一帧重绘**：`checkRuin()` 置 `paused` 后不再有 `onFrame`，
   那一帧若被 `draw()` 的 80ms 节流吞掉，借贷遮罩永远出不来 ⇒ `main.js` 需要 `loanDrawn` 这类标志 ＋ 强制 `force = true`
+- **收窄任何「档位表 / 取值域」都要顺手清理旧档**：速度档删掉 `2x` / `20x` 后（v17），
+  停在旧档位的存档会让 `render.js` 的 `s.speed === v` 全部落空 ⇒ **一排按钮全不亮、时钟却按旧倍率飞跑**。
+  这类改动**不升 `STATE_VERSION`**（不是结构变更），但必须在 `save.js` 的 `migrate()` 末尾夹一次。
 
 ---
 
@@ -379,7 +384,7 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
    **Batch 5（B22–B30）的方案与落地结果留在 §十四 ＋ §十五**（含 §14.12 改动清单 ＋ §15.8），同样**不须再动**
    ⚠️ **B15 之后量区语义已变**：不再是「价格 78% / 量 22% 上下分栏」，而是**量柱半透明叠在 K 线上**
    （价格区吃满整高，量柱最大高度 `clamp(plotH×0.25, 20, 64)`）；**B29 又把标尺从「视野内最大值」改为「视野内 P90」**
-3. 确认 ROADMAP 头部已是 **v16**（Batch 5 已完成）；§15.1 一律按真实数值实现（2026-09-29 已定）
+3. 确认 ROADMAP 头部已是 **v17**（速度档已收窄为 `1/5/10/50`）；§15.1 一律按真实数值实现（2026-09-29 已定）
 4. P2-B 注意：数据包只有 OHLC ＋ 每根 1 字节当日份额、没有订单簿 ⇒
    滑点只能建「成交价折让」，不能建「逐档吃穿盘口」
 5. 每改完一步跑 `npm run build`；涉及数据管线改动跑 `npm run data` 并核对 `index.json`

@@ -3,7 +3,7 @@
 > 与 `GDD.MD` §20「开发优先级」一一对应，只回答两件事：**现在站在哪**、**下一步做什么**。
 > 最后更新：2026-09-29
 >
-> ⚠️ 本版是 **v13**。v3 的四条拍板照旧：
+> ⚠️ 本版是 **v17**。v3 的四条拍板照旧：
 > **① 币种表砍到 5 个（BTC / ETH / XRP / DOGE / SOL），LTC / BNB / ADA / DOT / AVAX 彻底删除**
 > **② 五个币全部有真小时线，日线插值 + 平线补齐整块废除；本轮 $0**
 > **③ 交易所真实名字，先只做一个试试手感　④ 推进顺序照旧**
@@ -88,6 +88,16 @@
 > `createClock` 的 while 循环只判 `s.over` 不判 `s.paused` —— 两者叠加会让玩家在借贷遮罩前白流几十个游戏小时。
 > 离线断言 **28/28** 全绿，`npm run build` 通过。落地结果见 **§14.12** 与 **§15.8**。
 >
+> **v17 新增（2026-09-29）：速度档由 `1/2/5/10/20/50` 收窄为 `1/5/10/50` —— 删掉 `2x` 与 `20x`。**
+> 判据是把六档按「每根 K 线占多少真实秒」摊开，它们其实只有两个功能区：
+> **读盘档** 1x（1.0s/根，定义性锚点）/ 2x（0.5s）/ 5x（0.2s），**快进档** 10x（0.1s）/ 20x（0.05s）/ 50x（0.02s）。
+> ① `2x` 与 `1x` 只差一倍，「稍快一点」由 1x→5x 已覆盖 ⇒ 删；
+> ② `20x` 在 Batch 1 加上 50x 后从「最快」退成「次快」，与 10x 同属「跳过无聊时段」⇒ 删。
+> `1x`（文档定义的速度基准）与 `50x`（唯一快进档，全程约 35 分钟）保留。
+> **唯一真源上移到 `config.SPEEDS`**（原来写在 `render.js`）—— 因为 `save.js` 也要用它：
+> 旧档若停在已删的 `2x` / `20x` 上，`render.js` 会「一排按钮全不亮，时钟却在飞跑」；
+> 这属于**取值域收窄、不是结构变更**，故**不升 `STATE_VERSION`**，只在 `migrate()` 末尾把非法速度夹回 1x。
+>
 > **P2-A 方案修订（2026-09-29 复核后定稿，已拍板并落地）**：
 > **① 日流动性**不再是「§15.2 端点半插值」的纯合成模型 —— 实测发现**成交量一直都在**（抓价那五个源本身就带
 > volume，管线只是没读，证据表见 §五 P2-A）。口径按你的拍板定为 **两端锚定 ＋ 真实形状**：
@@ -124,7 +134,7 @@
 | 1. 行情数据管线：真实小时级 OHLC → 离线数据包 | ✅ | `tools/fetch-data.mjs` → `public/data/` |
 | 2. 交易核心：多 / 空 / 平 + 盈亏 + 保证金率 | ✅ | `src/core/positions.js`、`engine.js` |
 | 3. K 线渲染：Canvas 2D + 竖屏 + 触控 | ✅ | `src/ui/chart.js`、`render.js`、`bind.js` |
-| 4. 时间推进：速度档 1x–50x + 暂停 | ✅ | `src/core/engine.js` `createClock`、`src/ui/render.js` `SPEEDS` |
+| 4. 时间推进：速度档 1x–50x + 暂停 | ✅ | `src/core/engine.js` `createClock`、`src/core/config.js` `SPEEDS`（v17 起） |
 | 5. 爆仓 / 破产系统 | ✅ | `engine.js` `advanceOneHour` / `forceLiquidate` / `endGame` |
 
 **已经提前做完的 P1 条目**（它们本质是数据管线的另一半，所以跟着 P0 一起落地了）：
@@ -1396,7 +1406,7 @@ GDD 同步的口径：§9.1（现货判定规则）、§9.2（多仓 ＋ 逐仓 
 | # | 待办 | 落点 | 状态 |
 | --- | --- | --- | --- |
 | B1 | **持仓条常驻**（无持仓也显示三格，填 `--`），消除开/平仓时 K 线区高度跳动 | [render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L255-L279) 去掉全部 `posbar.hidden`；[style.css](file:///f:/Cr3aM/Desktop/Degen/src/ui/style.css#L254-L267) 删掉已无引用的 `.posbar[hidden]` | ✅ |
-| B2 | **速度档加 50x** | [render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L23-L25) `SPEEDS = [1,2,5,10,20,50]` | ✅ |
+| B2 | **速度档加 50x** | `render.js` `SPEEDS = [1,2,5,10,20,50]`（**v17 起收窄为 `1/5/10/50`，真源移到 `config.js`**） | ✅ |
 | B3 | **日期去重**（审计 A1）：日志条前缀只留时分 | [format.js](file:///f:/Cr3aM/Desktop/Degen/src/core/format.js) 新增 `fmtHour`；[render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L281-L287) | ✅ |
 | B4 | **选所弹层不折行**（先量尺寸 → 见下方实测） | [style.css](file:///f:/Cr3aM/Desktop/Degen/src/ui/style.css#L382-L401) `.pick{width:max-content;min-width:200px;max-width:calc(100vw - 24px)}`；`.pick-l1` / `.pick-note` 加 `nowrap`；[render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L414-L420) 删掉 JS 里的 `minWidth` | ✅ |
 | B5 | **K 线价格轴顶部下移**（审计 E） | [chart.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/chart.js#L80-L87) 引入 `PAD_TOP = 10`，`plotH = H - PAD_B - PAD_TOP`（底边仍落 `H-PAD_B`，两侧对称） | ✅ |
@@ -1413,7 +1423,7 @@ GDD 同步的口径：§9.1（现货判定规则）、§9.2（多仓 ＋ 逐仓 
   复测：面板 200px（自然宽 < min-width，故维持 200），`uH` 全 18px、`noteH` 全 16px（均单行），
   左/右均未溢出；模拟 375px 屏（`#app` 限 351px）同样全单行、无溢出。
 - **B1 复测**：无持仓时持仓条 `display:grid`、高 69.8px、三格文案 `['--','--','--']`。
-- **B2 复测**：`['1x','2x','5x','10x','20x','50x']` 六档，375px 屏无压扁。
+- **B2 复测**：`['1x','2x','5x','10x','20x','50x']` 六档，375px 屏无压扁。**（v17 起收窄为 `['1x','5x','10x','50x']` 四档，更宽更易点）**
 - **B3 复测**：日志条 `[22:00] …`、顶栏 `2013-01-06 22:00` —— 日期不再出现两次。
 - **整页不滚动**：`scrollHeight === clientHeight`；console 无 error / warning。
 
