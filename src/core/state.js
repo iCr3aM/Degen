@@ -102,6 +102,21 @@ export const posOf = (s, sym) => s.positions[sym] ?? null;
 /** 当前所有持仓的币符号（顺序 = 建仓先后） */
 export const heldSyms = s => Object.keys(s.positions);
 
+/**
+ * 某个币**已被玩家锁走的枚数**（P2-B2 · GDD §15.1 / §15.4）—— 派生量，**不入存档**。
+ * 每币最多一条仓位，所以 O(1) 就够。
+ *
+ * 三条口径：
+ *   - 只有**多头方向**算数：空头并没有把币从市场里拿走
+ *   - **OTC 买来的币不算**（§15.3：对手方私下一口价，不从市场拿走流通量）
+ *   - 没持仓 ⇒ 0
+ */
+export function capturedOf(s, sym) {
+  const pos = s.positions[sym];
+  if (!pos || pos.side !== 'long' || pos.otc) return 0;
+  return pos.size;
+}
+
 /** 是否持有任何仓位 */
 export const anyHeld = s => heldSyms(s).length > 0;
 

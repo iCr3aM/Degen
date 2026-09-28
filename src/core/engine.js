@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt } from './config.js';
+import { GAME, HOUR_MS, EXCHANGES, SUPPLY_CAP, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, fillPrice, impactOf, sigmaOf } from './impact.js';
@@ -21,7 +21,7 @@ import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, openPosition, pnlOf,
   FUNDING, fundingOf, fundingRateOf,
 } from './positions.js';
-import { cashOf, heldSyms, posOf, pushLog } from './state.js';
+import { cashOf, capturedOf, heldSyms, posOf, pushLog } from './state.js';
 
 /** 交易所归零前多少毫秒给一条预警日志（7 天） */
 const WARN_LEAD = 7 * 24 * HOUR_MS;
@@ -173,18 +173,27 @@ export function openTrade(s, side, frac = 1) {
   const fee = feeOf(margin);
   if (!(margin > 0) || margin + fee > cash + 1e-9) return { ok: false, why: '可用保证金不足' };
 
+  /* 成交价（P2-B1）：盘口价 ± 冲击 —— 买抬、卖压，**永远对玩家不利**。
+     ⚠️ 保证金与开仓费都不受它影响（那两项按名义价值算，与成交价无关），
+        受影响的是 `size`：买贵了就拿到的币少一点，这才是冲击的真实代价。 */
+  const impact = impactFor(s.sym, s.i, margin * lev);
+  const fill = fillPrice(price, side === 'long' ? 1 : -1, impact);
+
+  /* 供应量上限（P2-B2 · §15.1 / §15.4）：买入会从市场里锁走一部分币，锁走的枚数不得越界。
+     ⚠️ 校验必须排在**动账之前** —— 下面那几行一旦执行，钱已经扣了，这时再拒绝就没法干净地退回。
+     ⚠️ 只有多头方向消耗供应量（空头没把币拿走）；`capturedOf` 已经跳过 OTC 仓位。
+     按真实上限落地后这条整局都不会触发，所以**不为它新增终局**（GDD §16 只有两种收场）。 */
+  const cap = SUPPLY_CAP[s.sym];
+  if (side === 'long' && cap != null && capturedOf(s, s.sym) + margin * lev / fill > cap) {
+    return { ok: false, why: `${s.sym} 已触及供应量上限，无法继续买入` };
+  }
+
   s.books[s.ex] = cash - margin - fee;
   /* ⚠️ 开仓费是**玩家真实付出的钱**，必须同时记进「已实现」（Batch 5 · B23）——
      原来只从余额里扣、不写 `realized`，于是 HUD 副行那个数既不等于真实现金变动、
      也不等于已实现盈亏。它只被 `render.js` 读来展示，不参与任何玩法判定。 */
   s.realized -= fee;
   s.lev = lev;
-
-  /* 成交价（P2-B1）：盘口价 ± 冲击 —— 买抬、卖压，**永远对玩家不利**。
-     ⚠️ 保证金与开仓费都不受它影响（那两项按名义价值算，与成交价无关），
-        受影响的是 `size`：买贵了就拿到的币少一点，这才是冲击的真实代价。 */
-  const impact = impactFor(s.sym, s.i, margin * lev);
-  const fill = fillPrice(price, side === 'long' ? 1 : -1, impact);
 
   const pos = openPosition(s.sym, side, fill, margin, lev, feeRate);
   pos.i = s.i;
