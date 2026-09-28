@@ -1295,10 +1295,13 @@ GDD 同步的口径：§9.1（现货判定规则）、§9.2（多仓 ＋ 逐仓 
 
 ---
 
-## 十、UI 第二轮待办（2026-09-29 提出，尚未开工）
+## 十、UI 第二轮待办（Batch 1 ✅ 已完成；Batch 2 / 3 待办）
 
 > 来源：用户 2026-09-29 一次提出的 12 条改进 ＋ 1 条流程约定。**本节是这一轮的待办载体**，
 > 每条标注复杂度与依赖；**分批执行，每批完成即 `git commit`（推送由用户自己做）**。
+>
+> **进度**：Batch 1（B1–B5）✅ 2026-09-29 已落地并真机复测；B6 待用户裁决；
+> Batch 2（B7–B10）、Batch 3（B11–B14）未开工。
 
 ### 10.1 动手前已核实的事实（审计结论）
 
@@ -1345,16 +1348,62 @@ GDD 同步的口径：§9.1（现货判定规则）、§9.2（多仓 ＋ 逐仓 
 
 ### 10.2 待办清单（按批分组）
 
-**Batch 1 · 低风险 UI 修小（建议先做）**
+**Batch 1 · 低风险 UI 修小（✅ 2026-09-29 已完成并复测）**
 
-| # | 待办 | 落点 | 复杂度 |
+| # | 待办 | 落点 | 状态 |
 | --- | --- | --- | --- |
-| B1 | **持仓条常驻**（无持仓也显示三格，填 `--`），消除开/平仓时 K 线区高度跳动 | [render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L272-L274) 去掉 `posbar.hidden`；[style.css](file:///f:/Cr3aM/Desktop/Degen/src/ui/style.css#L265) `.posbar[hidden]` 保留但不再触发 | 低 |
-| B2 | **速度档加 50x** | [render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L23) `SPEEDS` 加 50（速度行 6 档 flex 等分，需实测 375px 下 `50x` 不被压扁） | 低 |
-| B3 | **日期去重**（审计 A1）：日志条前缀只留时分 | [render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L279-L281) | 低 |
-| B4 | **选所弹层加宽**，修掉 Bitfinex「费率 0.10%」换行（**先量尺寸**：375px 屏实测 `.pick-l1` 文字宽 ＋ 内边距，再定 `min-width`；并给 `b/u` 加 `white-space:nowrap`） | [render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L414) `panel.style.minWidth`；[style.css](file:///f:/Cr3aM/Desktop/Degen/src/ui/style.css#L414-L416) `.pick-l1` | 低 |
-| B5 | **K 线价格轴顶部下移**（审计 E）：`top: 4 → 10`＋档位重算 | [chart.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/chart.js#L82) | 低 |
-| B6 | **HUD 副行去重**（审计 A2）：B1 落地后把「可用保证金」副行从「未实现 ±$x」改成不重复的信息 | [render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L199-L201) | 低 |
+| B1 | **持仓条常驻**（无持仓也显示三格，填 `--`），消除开/平仓时 K 线区高度跳动 | [render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L255-L279) 去掉全部 `posbar.hidden`；[style.css](file:///f:/Cr3aM/Desktop/Degen/src/ui/style.css#L254-L267) 删掉已无引用的 `.posbar[hidden]` | ✅ |
+| B2 | **速度档加 50x** | [render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L23-L25) `SPEEDS = [1,2,5,10,20,50]` | ✅ |
+| B3 | **日期去重**（审计 A1）：日志条前缀只留时分 | [format.js](file:///f:/Cr3aM/Desktop/Degen/src/core/format.js) 新增 `fmtHour`；[render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L281-L287) | ✅ |
+| B4 | **选所弹层不折行**（先量尺寸 → 见下方实测） | [style.css](file:///f:/Cr3aM/Desktop/Degen/src/ui/style.css#L382-L401) `.pick{width:max-content;min-width:200px;max-width:calc(100vw - 24px)}`；`.pick-l1` / `.pick-note` 加 `nowrap`；[render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L414-L420) 删掉 JS 里的 `minWidth` | ✅ |
+| B5 | **K 线价格轴顶部下移**（审计 E） | [chart.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/chart.js#L80-L87) 引入 `PAD_TOP = 10`，`plotH = H - PAD_B - PAD_TOP`（底边仍落 `H-PAD_B`，两侧对称） | ✅ |
+| B6 | **HUD 副行去重**（审计 A2） | 见下方「B6 的结论」—— **倾向保持原状**，待用户裁决 | ⏸ |
+
+**Batch 1 实测证据（2026-09-29，真机视口 376×473，dpr 1）**
+
+- **B4 量到的尺寸**：弹层内容盒 **174px**（= 200 − 边框 2 − 行内边距 24）；
+  最长一行是 Bitfinex「`Bitfinex`(57.2) ＋ gap 8 ＋ `费率 0.10%`(63.6)」＝ **128.8px**，
+  面板 max-content 自然宽 **154.8px**。⇒ **本机本来就不折行**，用户手机上折行是
+  **机型字体度量更大**（系统字号放大 / 浏览器最小字号，约 1.7 倍）把 174px 撑爆。
+  所以修法不是猜一个更宽的固定值，而是 `.pick` 改 `width:max-content` ＋ 两行 `nowrap`
+  —— **任何字体度量下都恰好长到放下**，`max-width` 兜底不越视口。
+  复测：面板 200px（自然宽 < min-width，故维持 200），`uH` 全 18px、`noteH` 全 16px（均单行），
+  左/右均未溢出；模拟 375px 屏（`#app` 限 351px）同样全单行、无溢出。
+- **B1 复测**：无持仓时持仓条 `display:grid`、高 69.8px、三格文案 `['--','--','--']`。
+- **B2 复测**：`['1x','2x','5x','10x','20x','50x']` 六档，375px 屏无压扁。
+- **B3 复测**：日志条 `[22:00] …`、顶栏 `2013-01-06 22:00` —— 日期不再出现两次。
+- **整页不滚动**：`scrollHeight === clientHeight`；console 无 error / warning。
+
+**⚠️ B1 的副作用（Batch 2/3 必须知道的高度预算）**
+
+持仓条常驻后，**固定块总高 ≈ 475.8px**（顶栏 52 ＋ HUD 84 ＋ 币种条 56 ＋ 持仓条 69.8
+＋ 日志条 26 ＋ 操作区 168 ＋ 底部内边距 8）。K 线区 ＝ 视口高 − 475.8：
+
+| 视口高 | K 线区高 |
+| --- | --- |
+| 667（iPhone SE） | 191px |
+| 744 | 268px |
+| 812（主流） | **336px** |
+| 852 | 376px |
+| 915 | 439px |
+
+⇒ 真机（≥667px）都够用；**只有桌面调试窗口那种 < 476px 的高度会把 K 线压成 0**（本次实测 473px 高 → 0px）。
+Batch 2 的 B9（强平价移到图内）与 Batch 3 的 B11（成交量柱）都要**从这个预算里再切肉**，
+届时需先定「哪一块让位」。
+
+**B6 的结论（未改代码，待用户裁决）**
+
+用户问「未实现盈亏和可用保证金框的第三行重复了，是否要精简？（可能不需要？因为后期可以开多个仓位？）」
+—— 经核对代码，**用户自己的怀疑是对的，这两处不是真重复**：
+
+| 位置 | 口径 |
+| --- | --- |
+| HUD「可用保证金」副行 [render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L199-L201) | `totalUnrealized(s)` —— **全部持仓币种的未实现盈亏合计** |
+| 持仓条「未实现盈亏」[render.js](file:///f:/Cr3aM/Desktop/Degen/src/ui/render.js#L262-L264) | `unrealizedOf(s, sym)` —— **当前所选币这一个仓位** |
+
+多仓并存时（P1-C 已落地）两者数值不同、语义不同：一个是「全账户浮盈浮亏」，一个是「这一笔的浮盈浮亏」。
+⇒ **建议保持原状**，等 Batch 2 做完一位小数后若仍显拥挤，再考虑把 HUD 副行换成「已用保证金」。
+**本项不阻塞 Batch 2**。
 
 **Batch 2 · 数字与持仓区（依赖 Batch 1 的持仓条常驻）**
 
@@ -1391,7 +1440,7 @@ GDD 同步的口径：§9.1（现货判定规则）、§9.2（多仓 ＋ 逐仓 
 | --- | --- | --- |
 | Q1 | **成交量入 K 线（B11）**是否接受**数据包 +25%**（重跑 `npm run data`） | ① 接受（画成交量柱）② 不画成交量，保持 4 列包体 |
 | Q2 | **资金费率行文案（B8）**：`支出 $0.05 −$0.05` 里「支出」与负号语义重复，是否改成 `资金费率 0.0100% ｜ −$0.05`？ | ① 按用户原文两段都写 ② 只写带符号金额 ③ 其他 |
-| Q3 | **git 仓库（G）**：是否需要我现在 `git init` ＋ 建基线提交（并加 `.gitignore` 校验） | ① 现在 init ② 用户自己 init |
+| Q3 | ~~**git 仓库（G）**~~ | ✅ **已拍板并落地（2026-09-29）**：由助理 `git init` ＋ 基线提交 `3feff8d`；`.gitignore` 已加 `Kraken_OHLCVT_Full_2026Q2/`（442 MB 归档不进仓库） |
 
 ### 10.5 流程约定（长期）
 

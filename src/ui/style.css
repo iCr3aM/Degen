@@ -251,7 +251,10 @@ html, body {
 }
 .chart-eta[hidden] { display: none; }
 
-/* ══════════════ 持仓条（无持仓隐藏） ══════════════ */
+/* ══════════════ 持仓条（**常驻**） ══════════════
+   无持仓时三格填 `--`，不再整条隐藏（2026-09-29）—— K 线区是全屏唯一的弹性块，
+   持仓条一显一隐，K 线高度就会在每次开仓 / 平仓时来回跳。字号 13px 且行高由 `.num`
+   的单行撑开，三格高度与「有持仓」时完全一致，所以常驻不会让 K 线少一格。 */
 .posbar {
   flex: none;
   display: grid;
@@ -262,7 +265,6 @@ html, body {
   background: var(--panel);
   border: 1px solid var(--line);
 }
-.posbar[hidden] { display: none; }
 .posbar div { min-width: 0; }
 .posbar i { display: block; font-style: normal; font-size: 12px; color: var(--mut); }
 .posbar b { display: block; font-size: 13px; }
@@ -379,8 +381,22 @@ html, body {
   z-index: 20;
 }
 .pick-back { position: absolute; inset: 0; background: rgba(6, 9, 15, .55); }
+/* 宽度**按内容自适应**（2026-09-29）。
+   原来只有 JS 里那行 `minWidth:200px` ＋ 默认 `width:auto`：abspos 的 auto 本来就是
+   shrink-to-fit，**本机实测**自然宽 154.8px、内容盒 174px，「Bitfinex(57.2) ＋ 间隙 8 ＋
+   费率 0.10%(63.6)」＝ 128.8px 根本不会折行。
+   但用户在**手机**上实测折行 —— 部分机型（系统字号放大 / 浏览器最小字号）把 13px 等宽字
+   撑到约 1.7 倍，174px 就不够了，`费率 0.10%` 于是在空格处断开成两行。
+   猜一个「更大的固定值」治不了（各机型度量不同），改成让面板自己长到刚好放下：
+     ① 上行 / 下行一律 `nowrap`（见 `.pick-l1` / `.pick-note`）—— 从根上禁掉折行；
+     ② 面板 `width:max-content` —— 任何字体度量下都恰好等于单行所需宽；
+     ③ `min-width:200px` 只为保持桌面端现有观感（自然宽 154.8 比它还窄）；
+     ④ `max-width` 兜底：字体再夸张也不许超出视口（右侧贴边，只向**左**长）。 */
 .pick {
   position: absolute;
+  width: max-content;
+  min-width: 200px;
+  max-width: calc(100vw - 24px);
   background: var(--panel);
   border: 1px solid var(--line);
   overflow: hidden;
@@ -411,10 +427,12 @@ html, body {
   cursor: pointer;
 }
 .pick-row:last-child { border-bottom: 0; }
-.pick-l1 { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; line-height: 18px; }
+/* `nowrap` 由 `.pick-l1` 统一给（`white-space` 会继承到 b/u）—— 折行只可能发生在这一行，
+   下行文案短、本来就单行，一并锁死免得某台机型上「预估 24h」也断成两截。 */
+.pick-l1 { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; line-height: 18px; white-space: nowrap; }
 .pick-row b { font-weight: 600; }
 .pick-row u { text-decoration: none; font-size: 12px; color: var(--mut); }
-.pick-note { font-style: normal; font-size: 12px; line-height: 16px; color: var(--mut); }
+.pick-note { font-style: normal; font-size: 12px; line-height: 16px; color: var(--mut); white-space: nowrap; }
 .pick-row.on, .pick-row.on u { color: var(--accent); }
 .pick-row:active:not(:disabled) { background: var(--line); }
 .pick-row:disabled { opacity: .4; cursor: default; }

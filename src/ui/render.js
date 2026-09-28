@@ -12,7 +12,7 @@
  */
 
 import { GAME, COINS, EXCHANGES, coinOf, exchangeOf, leverageOptionsAt, feeRateOf, HOUR_MS } from '../core/config.js';
-import { fmtDate, fmtMoney, fmtPct, fmtPrice, fmtRate } from '../core/format.js';
+import { fmtDate, fmtHour, fmtMoney, fmtPct, fmtPrice, fmtRate } from '../core/format.js';
 import { available, equity, markPrice, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
 import { isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
 import { isLoaded, rangeOf, candleAt } from '../core/market.js';
@@ -20,7 +20,9 @@ import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '
 import { anyHeld, posOf } from '../core/state.js';
 import { drawChart } from './chart.js';
 
-const SPEEDS = [1, 2, 5, 10, 20];
+/* 速度档：20x → **50x**（2026-09-29 用户要求）。50x 下 1 真实秒走 50 游戏小时，
+   时钟 `step()` 里有 `guard < 400` 兜底，不会因为一帧跨太多根而卡住。 */
+const SPEEDS = [1, 2, 5, 10, 20, 50];
 
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -94,7 +96,9 @@ export function mount(root) {
   const chartWrap = el('div', 'chart-wrap');
   chartWrap.append(canvas, chartHead, chartEta);
 
-  /* ── 持仓条 ── */
+  /* ── 持仓条 ──
+   ⚠️ **常驻**（2026-09-29）：无持仓时三格填 `--`，不再整条隐藏 ——
+    K 线区是全屏唯一的弹性块，持仓条一显一隐会让 K 线高度开仓/平仓时来回跳。 */
   const posSide = el('b', 'num');
   const posPnl = el('b', 'num');
   const posRate = el('b', 'num');
@@ -104,7 +108,6 @@ export function mount(root) {
     mini('未实现盈亏', posPnl),
     mini('保证金率 / 强平价', posRate),
   );
-  posbar.hidden = true;
 
   /* ── 日志条 ── */
   const logline = el('div', 'logline');
@@ -249,11 +252,10 @@ export function update(refs, s, view) {
     refs.chartEta.hidden = true;
   }
 
-  /* 持仓条：只显示当前所选币 */
+  /* 持仓条：只显示当前所选币；**无持仓也常驻**（三格填 `--`），见 mount() 的注释 */
   if (cur) {
     const p = cur;
     const spot = isSpot(p);
-    refs.posbar.hidden = false;
     const posMark = markPrice(s, p.sym);
     refs.posSide.textContent = spot ? `${p.sym} 现货` : `${p.sym} ${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
     refs.posSide.className = 'num ' + (p.side === 'long' ? 'side-long' : 'side-short');
@@ -270,14 +272,18 @@ export function update(refs, s, view) {
       refs.posRate.className = 'num ' + (rate < 0.05 ? 'down' : 'mut');
     }
   } else {
-    refs.posbar.hidden = true;
+    for (const n of [refs.posSide, refs.posPnl, refs.posRate]) {
+      n.textContent = '--';
+      n.className = 'num mut';
+    }
   }
 
   /* 日志条：只显示最近一条。时间用**事件发生那一刻**的 `at`，不是「现在」——
-     否则一条发生在 2015-10-01 的爆仓，几天后会被标成今天。 */
+     否则一条发生在 2015-10-01 的爆仓，几天后会被标成今天。
+     ⚠️ 前缀**只有时分**（2026-09-29）：完整日期已经在顶栏，这里再写一遍就是重复显示。 */
   const last = s.log[0];
   refs.logline.textContent = last
-    ? `[${fmtDate(GAME.start + (last.at ?? s.i) * HOUR_MS, false)}] ${last.text}`
+    ? `[${fmtHour(GAME.start + (last.at ?? s.i) * HOUR_MS)}] ${last.text}`
     : '等待开盘…';
   refs.logline.className = 'logline ' + (last ? (last.kind === 'bad' ? 'down' : last.kind === 'ok' ? 'up' : 'mut') : 'mut');
 
@@ -409,9 +415,9 @@ export function pickExchange(s, anchor) {
   const r = anchor.getBoundingClientRect();
   panel.style.top = Math.round(r.bottom + 4) + 'px';
   panel.style.right = Math.round(document.documentElement.clientWidth - r.right) + 'px';
-  // 宽度按内容定（原来是 max(160, 按钮宽)）—— P2-A 的下行比费率行更长，160px 会把字截掉。
-  // 仍然贴着右边缘，所以只向**左**长，不会溢出视口。
-  panel.style.minWidth = '200px';
+  // 宽度**不在这里定**（2026-09-29）—— 交给 `style.css` 的 `.pick`：`width:max-content`
+  // ＋ `min-width:200px` ＋ `max-width:calc(100vw - 24px)`。JS 只负责定位，
+  // 面板会长到刚好放下最长一行，任何机型字体都不会折行。
 
   back.addEventListener('pointerdown', closePicker);
   ov.append(back, panel);

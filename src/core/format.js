@@ -71,3 +71,13 @@ export function fmtDate(ts, withHour = true) {
   if (!withHour) return `${y}-${m}-${day}`;
   return `${y}-${m}-${day} ${String(d.getUTCHours()).padStart(2, '0')}:00`;
 }
+
+/**
+ * 只到小时：`00:00`。
+ * 专给**日志条前缀**用（2026-09-29）：完整日期已由顶栏承担，日志条再写一遍就是重复。
+ * 保留小时是因为日志里可能有「几小时前」的事件（如资金费率每 8 游戏小时一次）。
+ */
+export function fmtHour(ts) {
+  const d = new Date(ts);
+  return String(d.getUTCHours()).padStart(2, '0') + ':00';
+}

@@ -78,8 +78,13 @@ export function drawChart(canvas, o) {
   ctx.clearRect(0, 0, W, H);
 
   const plotW = Math.max(1, W - PAD_R);
-  const plotH = Math.max(1, H - PAD_B - 4);
-  const top = 4;
+  // ⚠️ 顶部留白 = 轴标签半高（12px 字垂直居中 ⇒ 上半 6px）＋ 一点余量（2026-09-29）。
+  //    原来只留 4px，最上一档标签「$xx.xk」的上半截会被画布切掉（用户实机发现「y 轴最上方被截断」）。
+  //    写成 `PAD_B - PAD_TOP` 而不是原来的「底部 16 - 固定 4」：底边仍落在 H-PAD_B，
+  //    两侧留白对称，只是把画高让出 6px 给顶端标签。
+  const PAD_TOP = 10;
+  const plotH = Math.max(1, H - PAD_B - PAD_TOP);
+  const top = PAD_TOP;
 
   if (!candles || !candles.length) {
     ctx.fillStyle = T.MUT;
