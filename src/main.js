@@ -11,7 +11,7 @@ import { maxLeverageAt } from './core/config.js';
 import { createState, heldSyms, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded } from './core/market.js';
-import { createClock, chanOf, openTrade, closeTrade, otcUnlocked, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp } from './core/engine.js';
+import { createClock, chanOf, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp } from './core/engine.js';
 import { marginRateOf, isSpot } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, clearOver, renderBoot, hideBoot,
@@ -305,9 +305,11 @@ function onSym(sym) {
 /**
  * 通道切换（P2-B3 · GDD §15.3）—— 盘口 ⇄ OTC。
  * ⚠️ 解锁判据统一走 `otcUnlocked`（引擎里那份），这里不另算一遍：两处各写一遍迟早会不一致。
+ * ⚠️ `otcOpenFor` 也要挡（P2-B 修订）：禁用态的键本来点不出事件，但**状态机不能只靠 DOM 兜底** ——
+ *    少了这一行，一旦那个币还没开通 OTC，`s.chan` 会留下一个 `chanOf` 永远不认的 `'otc'`。
  */
 function onChan() {
-  if (!otcUnlocked(s)) return;
+  if (!otcUnlocked(s) || !otcOpenFor(s)) return;
   s.chan = chanOf(s) === 'otc' ? 'book' : 'otc';
   /* 切到 OTC 就把杠杆归 1：OTC 只有现货，让操作区当场显示 1x 比事后再拒绝更直白。
      切回盘口**不还原**原来的杠杆 —— 那需要多存一个字段，而 `1x` 是个安全的默认值。 */

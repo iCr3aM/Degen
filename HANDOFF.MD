@@ -19,11 +19,20 @@
 `7264ff6`（B1 滑点，新建 `src/core/impact.js`）/ `c32cdb5`（B2 供应量 `SUPPLY_CAP` ＋ `capturedOf`）/
 `f2080c3`（B3 OTC，`s.chan` ＋ 操作区「盘口 / OTC」切换键，`STATE_VERSION` 5 → **6**）。
 离线断言 **78/78** ＋ `npm run build` 通过；落地结果与两处自主裁决见 `ROADMAP.MD` **§五 P2-B §落地结果**。
+**（2026-09-29 · P2-B 修订）OTC 溢价已史实化** —— 原「固定 1%」换成 **`年代基准 × 市况倍数`**
+（`8f3ffd9` 第一批：`config.js` ＋ `engine.js`；本批：`render.js` ＋ `main.js` ＋ 文档）。
+史实依据：**OTC 台不是币一上线就有** —— `config.COINS[].otc` 按币分年代给开通时刻
+（BTC 2013 / ETH 2016 ICO 潮 / XRP·DOGE 2018 / SOL 2021）；溢价按年代收敛
+（基准点差 **0.50% → 0.30% → 0.15%**，2020 起不再降）＋ 按当日 σ_30日 放大
+（`mult = (σ/σ_基准)^4`，夹在 1–40 倍，**硬上限 8%**），σ_基准分三档 **3.33% / 3.44% / 2.89%**。
+**沿用 `impact.js` 的同一个 `dailySigma`，零新增数据、不升 `STATE_VERSION`**；切换键改**三级状态**
+（权益不够 ⇒ 藏 / 币未开通 ⇒ 禁用灰框 / 可走 ⇒ 可用）。离线断言 **64/64** ＋ build 通过；
+实测溢价表与两处方案偏离见 `ROADMAP.MD` **§五 P2-B 修订 §落地结果**。
 **下一站是 P2-C（历史锚点与新闻，口径见 `ROADMAP.MD` §五）**。
 另有一份**已裁决**的提案：`ROADMAP.MD` **§十一「开仓规模上限」** ——
 2026-09-29 拍板**三个点全部不做**（不引入杠杆—名义阶梯 / 不加市场深度闸门 / 不做 Mt.Gox $1M 上限）
 ⇒ **整体不实现，`openTrade()` 一行不动**；查证与测算保留在 §十一 备查。
-P2-B 的真机回归（验收口径⑩）与 OTC 三个门槛值的复校，留到下一轮实机确认。
+P2-B 的真机回归（验收口径⑩）与 OTC `unlock` / `min` 两个门槛值的复校，留到下一轮实机确认。
 
 ---
 
@@ -55,6 +64,8 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 
 - 时钟：`s.i` ＝ 第几根小时 K（唯一刻度）
 - 存档版本：`STATE_VERSION = 6`（key `localStorage.degen_save`；4 → 5 新增 `loaned` / `loan` / `pending`；5 → 6 新增 `chan`）
+  > **P2-B 修订（OTC 史实化）不升版本** —— 新增的全是**静态配置**（`COINS[].otc` ＋ `OTC.base/sigmaRef/p/multCap/max`），
+  > 不进存档，故无需迁移。
 - 数据包：`public/data/<SYM>.bin` ＝ gzip(Int32)，**每根 17 字节** ＝ `[o, h-o, l-o, c-o]` int32LE ＋ **尾巴 1 字节成交量份额**，
   再除一个每币固定的 `scale`；**不存时间戳**
 - 日流动性：`public/data/liq.bin` ＝ gzip(Float32)，**每日每币一个美元成交额**（4,383 天 × 5 币，86 KB → gzip 63 KB）；
@@ -65,10 +76,10 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/core/config.js` | `GAME` / `COINS` / `EXCHANGES` / **`SPEEDS`（1/5/10/50，唯一真源）** / **`LOAN` ＋ `loanAmountAt`** / **`SUPPLY_CAP`（§15.1 上限，枚）** / **`OTC`（unlock / min / premium）** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
+| `src/core/config.js` | `GAME` / **`COINS`（含 `unlock` 与 `otc`：该币首次能走场外大宗）** / `EXCHANGES` / **`SPEEDS`（1/5/10/50，唯一真源）** / **`LOAN` ＋ `loanAmountAt`** / **`SUPPLY_CAP`（§15.1 上限，枚）** / **`OTC`（unlock / min / base 年代点差 / sigmaRef / p / multCap / max）＋ `otcBaseAt` / `otcSigmaRefAt` / `otcPremiumOf`** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
 | `src/core/state.js` | `STATE_VERSION`、`createState()`、`cashOf` / `posOf` / `heldSyms` / `anyHeld` / **`capturedOf`（已锁枚数，派生量）** / `pushLog` |
 | `src/core/impact.js` | **滑点纯函数（P2-B1）**：`SLIP` 常量 / `sigmaOf(closes)` / `impactOf(q, sigma)` / `fillPrice(price, dir, impact)` —— 零依赖 |
-| `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30）；**通道 `chanOf` / `otcUnlocked`（P2-B3）＋ 开平仓成交价层（P2-B1）** |
+| `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30）；**通道 `chanOf` / `otcUnlocked` / `otcOpenFor`（P2-B3 ＋ 修订）＋ 开平仓成交价层（P2-B1）** |
 | `src/core/positions.js` | 逐仓持仓：`isSpot` / 保证金率 / 强平价 / 资金费率 / `unrealizedOf` |
 | `src/core/market.js` | 行情懒加载：`loadCoin` / 取价；**日流动性 `loadLiq` / `liqOf` / `dayIndexOf` / `isLiqLoaded`** |
 | `src/core/congestion.js` | **网络拥堵纯逻辑**：年代表值 / 锚点窗口 / 进块等待 W 表 / 各所确认数 / `arrivalCandles` / `bumpPulse` / `decayPulse` |
@@ -245,7 +256,8 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
 
 ### P2-B · 滑点 ＋ OTC ＋ 供应量消耗（GDD §15 / §20-12）　✅ **已完成（2026-09-29，三批分别提交；离线断言 78/78 ＋ `npm run build` 通过）**
 
-> 落地明细见 `ROADMAP.MD` §五 P2-B「落地结果」。下面保留口径定义，供回查。
+> 落地明细见 `ROADMAP.MD` §五 P2-B「落地结果」＋「P2-B 修订 §落地结果」。下面保留口径定义，供回查。
+> （2026-09-29 修订：**OTC 溢价已史实化 ＋ 分币分年代开通**，见下方「OTC 解锁」条。）
 
 - **滑点（§14.3）**：现公式 `min(Q/V, 0.30)` 实测**偏高 10–18 倍**。已拍板改为平方根定律（**开仓 ＋ 平仓都算，买抬卖压**）：
 
@@ -259,8 +271,11 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
   σ 从已有 K 线算（**零新增数据**）；分母 ＝ `liqOf(sym, 当天)`。
   落点：卖 10% 日量 ⇒ BTC≈1.9% / 山寨≈3.8%；卖 30%（封顶 25%）⇒ BTC≈3.0% / 山寨≈6.0%。
   ⚠️ 数据包**只有 OHLC、没有订单簿** ⇒ 滑点**只能**建成「成交价折让」，**不能**建成「逐档吃穿盘口」。这是数据模型的天花板，须如实写进 GDD。
-- **OTC 解锁（§15.3）**：> $500 万解锁、$100 万起做、溢价 1% —— **形态定为现货 1x**（不做空、锁杠杆、不吃滑点、
-  不计入供应量；只能平现货，盘口可平任何仓位）。**门槛只卡买入、不卡平仓**。三个数值**待真机跑一局后按实测资产曲线复校**。
+- **OTC 解锁（§15.3）**：> $500 万解锁、$100 万起做 —— **形态定为现货 1x**（不做空、锁杠杆、不吃滑点、
+  不计入供应量；只能平现货，盘口可平任何仓位）。**门槛只卡买入、不卡平仓**。
+  **溢价已史实化（2026-09-29 修订）**：`固定 1%` → **`年代基准（0.50%/0.30%/0.15%）× 市况倍数（σ_30日 驱动，上限 8%）`**；
+  **开通也按币分年代**（`COINS[].otc`：BTC 2013 / ETH 2016 / XRP·DOGE 2018 / SOL 2021）。
+  `unlock` / `min` 两个门槛值**待真机跑一局后按实测资产曲线复校**。
 - **流通量锁定上限（§15.1）**：流通量数据**已查全**（BTC 用 blockchain.info 逐日；ETH/DOGE/SOL 用 Coin Metrics `SplyCur`；
   XRP 按 `1000 亿 − escrow − 自持` 反推）。
   **已拍板：一律按真实数值实现，不缩到玩家量级**（BTC 300 万枚 ＝ $3,000 亿），
@@ -387,7 +402,8 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
    「B1 的高度预算」表；再看 **§十一「开仓规模上限」** —— **已裁决为「不做」**（三条全否，
    `openTrade()` 一行不动），只当背景知识读，不要再实现
 2. **下一站 ＝ P2-C（历史锚点与新闻）**，口径见 `ROADMAP.MD` §五 P2-C。
-   **P2-B（滑点 ＋ 供应量消耗/上限 ＋ OTC）已落地**，方案与落地结果留在 `ROADMAP.MD` **§五 P2-B**（含「落地结果」小节），**不须再动**；
+   **P2-B（滑点 ＋ 供应量消耗/上限 ＋ OTC）已落地**，方案与落地结果留在 `ROADMAP.MD` **§五 P2-B**（含「落地结果」小节），
+   其 **「P2-B 修订 · OTC 史实化」**（同节，含实测溢价表与两处方案偏离）**也已落地，不须再动**；
    Batch 3（B11–B14）的完整方案与拍板留在 **§十二** 备查，**不须再动**；
    Batch 4（B15–B21）的方案与落地结果留在 **§十三**（含 §13.9 改动清单 ＋ 验收），同样**不须再动**；
    **Batch 5（B22–B30）的方案与落地结果留在 §十四 ＋ §十五**（含 §14.12 改动清单 ＋ §15.8），同样**不须再动**
