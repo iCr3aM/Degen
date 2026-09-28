@@ -11,18 +11,31 @@ import { maxLeverageAt } from './core/config.js';
 import { createState, heldSyms, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded } from './core/market.js';
-import { createClock, openTrade, closeTrade, switchExchange, timeOf, normalizeLeverage } from './core/engine.js';
-import { mount, update, renderOver, clearOver, renderBoot, hideBoot, pickExchange, confirmExchange, closePicker } from './ui/render.js';
+import { createClock, openTrade, closeTrade, switchExchange, timeOf, normalizeLeverage, markPrice } from './core/engine.js';
+import { marginRateOf, isSpot } from './core/positions.js';
+import {
+  mount, update, renderOver, clearOver, renderBoot, hideBoot,
+  pickExchange, confirmExchange, closePicker, openIntro, openSettings,
+} from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
+import * as snd from './ui/sound.js';
 
 const root = document.getElementById('app');
 
-let s = load() || createState();
+/* ⚠️ `load()` 返回 null 就是**全新一局** —— 开场叙事弹窗只在这一次出现（Batch 4 · B19）。
+   读档续玩（哪怕是暂停在 2015 年的档）不该再看一遍开场白。 */
+const saved = load();
+let s = saved || createState();
+const isNewGame = !saved;
+
 let refs = null;
 let clock = null;
-let restartArmed = false;
-let restartTimer = 0;
+/* 设置面板里「重开本局」的**双重确认**状态机（Batch 4 · B21）。
+   面板是静态 DOM、不参与每帧重绘，所以武装状态只能放在这里 —— 见 `render.openSettings` 的注释。 */
+let resetNode = null;
+let resetArmed = false;
+let resetTimer = 0;
 
 /* ───────────────────────────── 启动 ───────────────────────────── */
 
@@ -46,20 +59,26 @@ async function boot() {
   normalizeLeverage(s);
 
   clock = createClock(s, { onFrame: () => draw() });
-  clock.start();
   draw();
 
   bindActions(document.body, dispatch);
   /* K 线手势（Batch 3 · B13/B14）：三个回调都只动**视野**（`view.js`），
      不碰 `s`、不写存档，唯一副作用是立刻重画一帧（拖动不能被 80ms 节流吞掉）。
-     复位只在**当前币**上生效；每帧的限位（`chart.js` 里夹）会把越界的视野拉回来。 */
+     复位只在**当前币**上生效；每帧的限位（`chart.js` 里夹）会把越界的视野拉回来。
+     ⚠️ 拖动（pan / zoom）刻意**不出声** —— 手指划一下就响，比没声音还吵。 */
   bindChart(refs.canvas, {
     pan: (dx, dy) => { panBy(s.sym, dx, dy, s.i, chartW()); draw(true); },
     zoom: f => { zoomBy(s.sym, f, s.i, chartW()); draw(true); },
-    reset: () => { resetView(s.sym); draw(true); },
+    reset: () => { snd.tap(); resetView(s.sym); draw(true); },
   });
   setInterval(() => save(s), 10000);
   window.addEventListener('beforeunload', () => save(s));
+
+  /* 开场叙事（Batch 4 · B19）：**只在新开局弹一次**。
+     ⚠️ 弹窗期间**时钟不启动** —— 玩家点「开始交易」（`onIntro`）才真正开盘，
+        否则读完三行字回来，行情已经自己走了几十根。 */
+  if (isNewGame) openIntro();
+  else clock.start();
 }
 
 /** 保证某个币的数据已加载；失败只记一条日志，不让整个游戏崩掉 */
@@ -106,7 +125,52 @@ const chartW = () => Math.max(1, Math.round(refs.chartWrap.getBoundingClientRect
  *    反而正常 —— 按钮一点就补上第一帧，掩盖了「开局一片空白」这个现象。
  */
 let lastDraw = -Infinity;
-let overDrawn = false;
+/* ⚠️ 起手取 `!!s.over`：读档读到一个**已经结束**的档时，不该在开屏第一帧补响一声爆仓 / 结算。 */
+let overDrawn = !!s.over;
+
+/**
+ * 把「刚刚发生的事」翻译成声音（Batch 4 · B20）。
+ *
+ * 为什么放在渲染层而不是逻辑层：`core/*` 是纯逻辑、零浏览器 API（GDD 的分层约束），
+ * 不能在里面 `new AudioContext()`。UI 这边只需要看**日志头一条变没变** —— 逻辑层本来
+ * 就把所有值得知道的事都写进日志了，不需要为音效再加一条专用通道。
+ *
+ * 分工（避免同一件事响两声）：
+ *   - 玩家点出来的动作：`dispatch` 里直接发声（开仓 / 平仓 / 轻点）
+ *   - 时间推出来的事件：这里按日志文案认
+ *   - 结束画面：`draw()` 里按 `s.over.reason` 认
+ */
+let lastLogKey = null;
+const warnedSyms = new Set();
+const FUNDING_TAG = '资金费率';
+
+function soundFromTick(s) {
+  const last = s.log[0];
+  if (last) {
+    const key = `${last.at}|${last.text}`;
+    if (lastLogKey === null) lastLogKey = key;      // 首帧只记锚点，不补响历史事件
+    else if (key !== lastLogKey) {
+      lastLogKey = key;
+      if (last.text.startsWith(FUNDING_TAG)) (last.kind === 'ok' ? snd.fundUp : snd.fundDown)();
+      else if (last.text.includes('推高拥堵')) snd.pulse();
+    }
+  }
+
+  /* 保证金率跌破 5%：**进入**那一刻响一次，回到安全区后重置（不然每帧都在响）。
+     与持仓条第三格同一个判据（`rate < 0.05` 转红），现货没有维持保证金率这一说，跳过。 */
+  for (const sym of heldSyms(s)) {
+    const pos = s.positions[sym];
+    if (isSpot(pos)) { warnedSyms.delete(sym); continue; }
+    const mark = markPrice(s, sym);
+    const rate = mark == null ? 1 : marginRateOf(pos, mark);
+    if (rate < 0.05) {
+      if (!warnedSyms.has(sym)) { warnedSyms.add(sym); snd.warn(); }
+    } else {
+      warnedSyms.delete(sym);
+    }
+  }
+}
+
 function draw(force = false) {
   if (s.over && !overDrawn) force = true;
   const now = performance.now();
@@ -119,8 +183,15 @@ function draw(force = false) {
 
   try {
     update(refs, s, view);
-    if (s.over) { closePicker(); renderOver(root, s); }
-    else clearOver(root);
+    if (s.over) {
+      closePicker();
+      renderOver(root, s);
+      // 结束音只响一次（`overDrawn` 是「这一局结束的画面画过了没」）
+      if (!overDrawn) (s.over.reason === 'settled' ? snd.settle : snd.liq)();
+    } else {
+      clearOver(root);
+      soundFromTick(s);
+    }
     overDrawn = !!s.over;
   } catch (err) {
     renderBoot('渲染失败', err);
@@ -131,6 +202,16 @@ function draw(force = false) {
 
 function dispatch(node) {
   const d = node.dataset;
+
+  /* 通用轻点反馈（Batch 4 · B20）—— 除了**成交 / 重开**这两类有专属音的动作，其余键都响这一声。
+     逻辑：一次点击最多响一次，任何时刻都不会叠。 */
+  if (d.act !== 'long' && d.act !== 'short' && d.act !== 'close' && d.reset === undefined) snd.tap();
+
+  if (d.intro !== undefined) return onIntro();
+  if (d.settings !== undefined) return onSettings();
+  if (d.snd !== undefined) return onSoundToggle(node);
+  if (d.reset !== undefined) return onReset(node);
+  if (d.sclose !== undefined) return onCloseSettings();
 
   if (d.sym !== undefined) return onSym(d.sym);
   if (d.ex !== undefined) return onEx(d.ex);
@@ -159,18 +240,21 @@ function dispatch(node) {
     return;
   }
   if (d.pause !== undefined) { if (!s.over) s.paused = !s.paused; after(); return; }
-  if (d.restart !== undefined) return onRestart();
+  /* 结束遮罩上的「重新开始」：本局都已经结束了，没有必要再问一遍（Batch 4 起彻底直通）。 */
+  if (d.restart !== undefined) return doRestart();
   if (d.wipe !== undefined) return onWipe();
 
   if (d.act === 'long' || d.act === 'short') {
     const r = openTrade(s, d.act, s.sizeFrac);
     if (!r.ok) pushLog(s, r.why, 'bad');
+    else snd.open();
     after();
     return;
   }
   if (d.act === 'close') {
     const r = closeTrade(s);
-    if (!r.ok && r.why !== 'liquidated') pushLog(s, r.why, 'bad');
+    if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
+    else snd.close();
     after();
     return;
   }
@@ -203,22 +287,64 @@ function onSym(sym) {
   if (!isLoaded(sym)) ensureCoin(sym).then(() => draw(true));
 }
 
-function onRestart() {
-  if (!restartArmed && !s.over) {
-    restartArmed = true;
-    refs.restartBtn.textContent = '确认';
-    refs.restartBtn.classList.add('warn');
-    clearTimeout(restartTimer);
-    restartTimer = setTimeout(() => {
-      restartArmed = false;
-      refs.restartBtn.textContent = '重开';
-      refs.restartBtn.classList.remove('warn');
-    }, 3000);
+/* ── 开场叙事（Batch 4 · B19）─────────────────────────────────────
+   弹窗期间时钟是停的（见 `boot`），点「开始交易」才真正开盘并放一声起手音。 */
+function onIntro() {
+  closePicker();
+  clock.start();
+  snd.begin();
+  after();
+}
+
+/* ── 设置面板（Batch 4 · B21）─────────────────────────────────────
+   顶栏第三枚按钮由「重开」改为「设置」：重开挪进面板，且必须**双重确认** ——
+   它是全屏唯一会毁掉整局的操作，用一个 42px 的小按钮一键完成太危险。
+   ⚠️ 面板是**静态 DOM**（不参与每帧重绘），所以「已武装」这个状态只能存在这里，
+      不能写进 `refs` —— 一重绘就被抹掉。 */
+function onSettings() {
+  if (s.over) return;
+  cancelReset();
+  openSettings(snd.isMuted());
+}
+
+/** 音效开关：先落盘再改按钮外观，静音时**不响**（否则关掉它还会「嗒」一下） */
+function onSoundToggle(node) {
+  const muted = !snd.isMuted();
+  snd.setMuted(muted);
+  node.textContent = muted ? '关' : '开';
+  node.classList.toggle('on', !muted);
+  if (!muted) snd.tap();
+}
+
+function onCloseSettings() {
+  cancelReset();
+  closePicker();
+  after();
+}
+
+/** 重开：第一次点击只「武装」并把按钮变红，3 秒内再点一次才真重开 */
+function onReset(node) {
+  if (!resetArmed) {
+    resetArmed = true;
+    resetNode = node;
+    node.textContent = '确认重开';
+    node.classList.add('warn');
+    clearTimeout(resetTimer);
+    resetTimer = setTimeout(cancelReset, 3000);
     return;
   }
-  clearTimeout(restartTimer);
-  restartArmed = false;
   doRestart();
+}
+
+/** 撤销武装：超时、关闭面板、切去别处都要把按钮还原，免得下次点开还是红的 */
+function cancelReset() {
+  clearTimeout(resetTimer);
+  resetArmed = false;
+  if (resetNode) {
+    resetNode.textContent = '重开本局';
+    resetNode.classList.remove('warn');
+    resetNode = null;
+  }
 }
 
 function doRestart() {

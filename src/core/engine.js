@@ -12,8 +12,8 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, coinOf, exchangeOf, maxLeverageAt, feeRateOf } from './config.js';
-import { candleAt, closeAt, hasCandle, isLoaded, loadCoin } from './market.js';
+import { GAME, HOUR_MS, EXCHANGES, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt } from './config.js';
+import { candleAt, closeAt, hasCandle, isLoaded, loadCoin, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { fmtMoney, fmtRate } from './format.js';
 import {
@@ -301,19 +301,55 @@ export function advanceOneHour(s) {
 
 /* ───────────────────────── 资金费率与强平 ───────────────────────── */
 
+/* σ 的缓存：键 = 币，值 = { day, v }。结算每 8 游戏小时来一次，50x 下每秒 6 次 ——
+   不按天缓存的话，每次都要重扫 720 根 K 线。同一天内窗口滑动带来的偏差可以忽略
+   （σ 是 30 天的统计量，一天的位移改变不了它多少）。 */
+const sigmaCache = new Map();
+
+/**
+ * 近 30 天（`FUNDING.sigmaWindow` 根）的**小时收益标准差** —— 溢价归一化的分母（Batch 4 · B18）。
+ * 用「相邻收盘价的变化率」的总体标准差（不是样本标准差），样本不足时退回 `FUNDING.sigmaDefault`。
+ * @returns {number} σ ≥ `FUNDING.sigmaDefault` 的下限，保证分母永远不为 0
+ */
+function hourlySigma(sym, i) {
+  const day = Math.floor(i / HOURS_PER_DAY);
+  const hit = sigmaCache.get(sym);
+  if (hit && hit.day === day) return hit.v;
+
+  const from = Math.max(0, i - FUNDING.sigmaWindow + 1);
+  let n = 0, sum = 0, sum2 = 0, prev = 0;
+  for (let k = from; k <= i; k++) {
+    const c = closeAt(sym, k);
+    if (!(c > 0)) { prev = 0; continue; }        // 洞/未上线：断开，不跨洞算收益
+    if (prev > 0) { const r = c / prev - 1; n++; sum += r; sum2 += r * r; }
+    prev = c;
+  }
+  let v = FUNDING.sigmaDefault;
+  if (n > 1) {
+    const mean = sum / n;
+    const va = Math.max(0, sum2 / n - mean * mean);
+    v = Math.max(FUNDING.sigmaDefault, Math.sqrt(va));
+  }
+  sigmaCache.set(sym, { day, v });
+  return v;
+}
+
 /**
  * 资金费率结算（GDD §9.5）。每隔 `FUNDING.hours` 游戏小时，把**每一个合约仓位**
  * 该期应付的名义价值 × 费率从它的保证金里扣掉（应收则加回去）。
  *
  * 溢价指数是**合成的** —— 口径与理由见 `positions.js` 的 `FUNDING` 注释：
  * 数据包里每个币只有一条真小时线，拿不到「合约价 vs 现货价」两条线，
- * 故以近 8 根的真实涨跌幅归一化后当溢价。
+ * 故以「近 8 根真实涨跌幅 ÷ 近 30 天的典型波动」当溢价（Batch 4 · B18），
+ * 上限按年代走（2013–2018 → 0.5%、2019–2021 → 0.3%、2022 起 → 0.1%）。
  *
  * @returns {boolean} 是否因结算后总权益归零而结束本局
  */
 function settleFunding(s) {
   const syms = heldSyms(s);
   if (!syms.length) return false;
+
+  const cap = fundingPremiumCapAt(timeOf(s));      // 溢价上限按年代，同一时刻所有币一样
 
   let net = 0;              // > 0 = 玩家整体支出
   let gross = 0;            // 参与结算的名义价值之和（用来把净额折算回一个综合费率）
@@ -325,7 +361,8 @@ function settleFunding(s) {
     if (!(mark > 0)) continue;
 
     const prev = closeAt(sym, s.i - FUNDING.window);
-    const rate = prev > 0 ? fundingRateOf(mark / prev - 1) : fundingRateOf(0);
+    const sigma = hourlySigma(sym, s.i);
+    const rate = prev > 0 ? fundingRateOf(mark / prev - 1, sigma, cap) : fundingRateOf(0, sigma, cap);
 
     const fee = fundingOf(pos, mark, rate);
     pos.margin -= fee;
@@ -337,10 +374,10 @@ function settleFunding(s) {
     // 各币各看各的动量，费率并不相同 —— 日志只报一个**按名义价值加权的综合费率**，
     // 它恰好能自洽地解释那个净额，不会出现「费率写 +0.01% 却收钱」这种读不通的情况。
     const rate = net / gross;
-    // 文案（Batch 2 · B8，2026-09-29 拍板）：**只写带符号的金额**，不再写「支出 / 收入」四个字 ——
-    // 「−$0.05」已经同时表达了方向和数额，多两个汉字只是把日志条挤爆（日志条一行 nowrap + 省略号）。
-    // 符号取自玩家视角：`net > 0` = 应付 ⇒ 金额取负。
-    pushLog(s, `资金费率 ${fmtRate(Math.abs(rate), 4)} ｜ ${fmtMoney(-net, { sign: true })}`,
+    /* 文案（Batch 4 · B18，2026-09-29 拍板）：金额一律是**玩家视角的总收益**，
+       「收益 +$0.03」= 拿到 U、「收益 −$0.05」= 付出 U ——
+       正负号本身就是方向，不再写「支出 / 收入」四个字（日志条一行 nowrap，多两个汉字就挤爆）。 */
+    pushLog(s, `资金费率 ${fmtRate(Math.abs(rate), 4)} ｜ 收益 ${fmtMoney(-net, { sign: true })}`,
       net > 0 ? 'bad' : 'ok');
   }
 

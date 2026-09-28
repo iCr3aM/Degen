@@ -9,7 +9,12 @@
  */
 
 /** 所有动作键。渲染出的 `data-*` 必须落在这里，否则点了没反应。 */
-export const ACTION_KEYS = ['sym', 'ex', 'exok', 'exno', 'frac', 'lev', 'speed', 'act', 'pause', 'restart', 'wipe', 'mode'];
+export const ACTION_KEYS = [
+  'sym', 'ex', 'exok', 'exno', 'frac', 'lev', 'speed', 'act', 'pause', 'restart', 'wipe', 'mode',
+  /* Batch 4：`settings`（顶栏第三枚）/ `snd`（音效开关）/ `reset`（面板内重开）/ `sclose`（关面板）
+     / `intro`（开场弹窗的「开始交易」） */
+  'settings', 'snd', 'reset', 'sclose', 'intro',
+];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');
 

@@ -182,6 +182,11 @@ html, body {
   line-height: 16px;
   color: var(--mut);
 }
+/* 副行里带涨跌语义的两个数（Batch 4 · B17）：「已实现」「未实现」正绿负红。
+   ⚠️ 必须写成 `.hud .cell u.up` 这一级 —— 上面那条 `.hud .cell u`（0,2,1）优先级高于
+     全局的 `.up`（0,1,0），直接挂 `.up` 会被 mut 灰吃掉，写了等于没写。 */
+.hud .cell u.up { color: var(--up); }
+.hud .cell u.down { color: var(--down); }
 
 /* ══════════════ 币种条（5 等分排满，不滚动） ══════════════
    曾经写的是「56px 固定宽 + 横向滚动」，那是 10 币方案的遗产 —— 币种砍到 5 个之后
@@ -258,14 +263,18 @@ html, body {
 }
 .chart-head .chip:active { border-color: var(--accent); color: var(--accent); }
 
-/* K 线**右上角**那一列浮字（Batch 3 · B14 起装两枚）：都用半透底压在画布上，
-   合起来仍是**绝对定位的一列**，不占布局高度。谁在谁不在由 render.js 用 `hidden` 控制。 */
+/* K 线**左下角**那一列浮字（Batch 4 · B16 从右上角搬来；内部仍装两枚）：
+   都用半透底压在画布上，合起来仍是**绝对定位的一列**，不占布局高度。
+   为什么必须搬家：右侧**整列**都是价格轴（4 档轴标签 ＋ 现价彩签 ＋ 开仓价签），
+   挂在右上角时，轴最上那一档标签（固定 y≈10）会被这枚浮字盖掉 —— 用户实机发现
+   「拖动后价格变到顶部，就被『双击回最新』盖住了」。
+   左下角是全屏唯一没被占用的角落（只有量柱的暗色柱身），压上去仍然读得清。 */
 .chart-side {
   position: absolute;
-  top: 0; right: 0;
+  bottom: 0; left: 0;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 1px;
   pointer-events: none;
 }
@@ -492,6 +501,45 @@ html, body {
 }
 .confirm-row i { font-style: normal; color: var(--mut); }
 .confirm-btns { display: flex; gap: 8px; margin-top: 12px; }
+
+/* ══════════════ 设置面板（Batch 4 · B21） ══════════════
+   复用 `.confirm` 那副居中盒（同一个 `#overlay`、同一层暗底），只多两种零件：
+   一行「标签 —— 32px 小开关」和一枚会转红的破坏性按钮。 */
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.set-row i { font-style: normal; color: var(--mut); }
+/* 开关：与 `.opt` / `.ic` 同档的 32px 高，宽度锁死 64px —— 文案在「开 / 关」之间切换时不抖 */
+.set-btn {
+  width: 64px;
+  height: 32px;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.set-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.set-btn:active { background: var(--line); }
+/* 「确认重开」的武装态：整块转红。`.act flat` 是中性格，`.act` 家族本来没有警示色 ——
+   破坏性操作与非破坏性操作必须一眼分得开，这一步的颜色变化本身就是确认反馈。 */
+.act.warn { background: var(--down); color: #1a0508; }
+
+/* ══════════════ 开场叙事（Batch 4 · B19） ══════════════
+   复用 `.confirm` 的盒子，**不铺暗底**（不是「点外面就能关掉」的菜单，是这一局的入口）。
+   `white-space: pre-line`：文案里的 `\n` 直接当成换行，不在 JS 里塞 `<br>`。 */
+.intro p {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--mut);
+  white-space: pre-line;
+}
 
 /* 首屏加载 / 出错 */
 .boot {

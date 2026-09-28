@@ -76,14 +76,20 @@ function clampRight(v, start, maxRight) {
   v.right = clamp(v.right, Math.min(a, maxRight), Math.max(a, maxRight));
 }
 
-/** 第 d 天（自 2013-01-01 起的天序号）的日线；`upto` = 当前小时（进行中的那天只看已过的部分） */
+/**
+ * 第 d 天（自 2013-01-01 起的天序号）的日线；`upto` = 当前小时（进行中的那天只看已过的部分）
+ *
+ * ⚠️ **量也要一起聚合**（Batch 4 · B15）：份量份额之和只算**已过的小时**，
+ *    与 OHLC 完全同一口径 —— 否则当天那根柱高会偷看未来（拿整天真实成交额配半天的价格），
+ *    而且看不出「日内抬升」。
+ */
 function dayBar(sym, d, upto) {
   const r = rangeOf(sym);
   if (!r) return null;
   const a = Math.max(d * HOURS_PER_DAY, r[0]);
   const z = Math.min(d * HOURS_PER_DAY + HOURS_PER_DAY - 1, upto, r[1] - 1);
   if (a > z) return null;
-  let o = null, h = -Infinity, l = Infinity, c = null;
+  let o = null, h = -Infinity, l = Infinity, c = null, share = 0;
   for (let k = a; k <= z; k++) {
     const cc = candleAt(sym, k);
     if (!cc) continue;
@@ -91,10 +97,11 @@ function dayBar(sym, d, upto) {
     if (cc.h > h) h = cc.h;
     if (cc.l < l) l = cc.l;
     c = cc.c;
+    share += volumeAt(sym, k);
   }
   if (o == null) return null;
   /* 上市首日 / 今天这类**不完整的桶照画**（12.3）：只有几个小时就按几个小时聚合，不补齐。 */
-  return { o, h, l, c };
+  return { o, h, l, c, share };
 }
 
 /**
@@ -114,8 +121,9 @@ export function windowFor(sym, i, cssW) {
       const bar = dayBar(sym, d, i);
       if (!bar) continue;
       candles.push(bar);
-      /* 日线模式的量**不用把 24 根加起来**（12.3）：`liqOf` 就是那一天的总量，白拿 */
-      vols.push(liqOf(sym, d) || 0);
+      /* 日线的量 = **已过小时的份额之和** × 当天真实总量（Batch 4 · B15）：
+         整天 = 份额和约 1 ⇒ 拿回全量；今天 = 只算已过的那几个小时 ⇒ 柱子随小时推进逐格抬升。 */
+      vols.push(bar.share * (liqOf(sym, d) || 0));
     }
   } else {
     for (let k = from; k <= right; k++) {

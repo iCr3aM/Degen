@@ -55,10 +55,13 @@ export function mount(root) {
   exBtn.append(exName, exRate);
   const pauseBtn = el('button', 'ic', '暂停');
   pauseBtn.dataset.pause = '';
-  const restartBtn = el('button', 'ic', '重开');
-  restartBtn.dataset.restart = '';
+  /* 第三枚：`重开` → **`设置`**（Batch 4 · B21）。重开本身搬进设置面板并加二次确认 ——
+     顶栏只留「一看就知道点得动」的入口，误触一下就清档的风险从根上消失。
+     文案仍是 2 个汉字，`.top .ic` 的 42px 定宽不用改，布局一动不动。 */
+  const settingsBtn = el('button', 'ic', '设置');
+  settingsBtn.dataset.settings = '';
   const tools = el('div', 'tools');
-  tools.append(exBtn, pauseBtn, restartBtn);
+  tools.append(exBtn, pauseBtn, settingsBtn);
   top.append(who, tools);
 
   /* ── 账户两格：交易所搬去顶栏后退回两列（2026-09-28），手机上每格从 91px 回到 179px，
@@ -162,7 +165,7 @@ export function mount(root) {
   root.append(top, hud, symbols, chartWrap, posbar, logline, trade);
 
   return {
-    root, dateEl, pauseBtn, restartBtn,
+    root, dateEl, pauseBtn, settingsBtn,
     exBtn, exName, exRate,
     eqVal, eqSub, cashVal, cashSub,
     symbols, symBtns,
@@ -206,12 +209,20 @@ export function update(refs, s, view) {
   const eq = equity(s);
   refs.eqVal.textContent = fmtMoney(eq);
   refs.eqVal.className = 'num ' + (eq >= GAME.cash ? 'up' : 'down');
-  refs.eqSub.textContent = `已实现 ${fmtMoney(s.realized, { sign: s.realized > 0 })}`;
+  /* 副行两个数**都带符号**（Batch 4 · B17）：正绿负红，与持仓盈亏同一口径。
+     颜色写在这里而不是 CSS 默认值 —— 见 `style.css` 里 `.hud .cell u.up` 那段注释。 */
+  refs.eqSub.textContent = `已实现 ${fmtMoney(s.realized, { sign: true })}`;
+  refs.eqSub.className = 'num ' + (s.realized >= 0 ? 'up' : 'down');
 
   refs.cashVal.textContent = fmtMoney(available(s));
-  refs.cashSub.textContent = anyHeld(s)
-    ? `未实现 ${fmtMoney(totalUnrealized(s), { sign: true })}`
-    : `初始 ${fmtMoney(GAME.cash)}`;
+  if (anyHeld(s)) {
+    const u = totalUnrealized(s);
+    refs.cashSub.textContent = `未实现 ${fmtMoney(u, { sign: true })}`;
+    refs.cashSub.className = 'num ' + (u >= 0 ? 'up' : 'down');
+  } else {
+    refs.cashSub.textContent = `初始 ${fmtMoney(GAME.cash)}`;
+    refs.cashSub.className = 'num mut';
+  }
 
   refs.exName.textContent = exchangeOf(s.ex)?.name ?? '--';
   /* 第二行平时是费率；**有在途转账时临时换成倒计时**（P2-A）——
@@ -499,6 +510,86 @@ export function closePicker() {
   picker.textContent = '';
   picker.hidden = true;
   picker = null;
+}
+
+/* ═════════════════════════ 开场叙事（Batch 4 · B19） ═════════════════════════ */
+
+/**
+ * 进游戏前的开场白。`main.js` 只在**新开局**（`load()` 返回 null）调它一次 ——
+ * 读档续玩不弹，重开 / 爆仓重开（都走 `wipe` ＋ reload）会重新出现。
+ *
+ * 两条刻意的选择：
+ *   ① **没有暗底**（不像选所 / 设置那样铺 `.pick-back`）—— 它不是「可以点外面关掉的菜单」，
+ *      是这一局的入口，必须点「开始交易」才走；
+ *   ② 弹窗期间**时钟不启动**（`main.js` 里 `clock.start()` 排在 `onIntro()` 之后），
+ *      玩家读完再开盘，不浪费开局那几根 K 线。
+ */
+export function openIntro() {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const box = el('div', 'confirm intro');
+  box.append(el('h3', null, 'Degen · 加密交易员'));
+  box.append(el('p', null,
+    '2013 年 1 月，你带着 $3,000 走进门头沟。\n'
+    + '这里没有救世主：行情 24 小时不睡，交易所会说没就没。\n'
+    + '从门头沟活到币安，撑到 2024 年底 —— 那就叫赢。'));
+  const go = el('button', 'act long', '开始交易');
+  go.dataset.intro = '';
+  const btns = el('div', 'confirm-btns');
+  btns.append(go);
+  box.append(btns);
+
+  ov.append(box);
+  ov.hidden = false;
+  picker = ov;
+}
+
+/* ═════════════════════════ 设置面板（Batch 4 · B21） ═════════════════════════ */
+
+/**
+ * 设置。顶栏第三枚「重开」改叫「设置」之后点开的就是这里，目前只有两项：
+ *   **① 音效开关**（偏好存 `degen_settings`，独立于存档 —— 重开不会把开关一起清掉）
+ *   **② 重开本局**（**面板内双重确认**：第一次点变「确认重开」，3 秒不点自动还原）
+ *
+ * ⚠️ 双重确认的**状态机在 `main.js`**（`onReset` / `cancelReset`），不在这里：
+ *    面板是静态 DOM、不参与每帧重绘，把「已武装」这个状态放进渲染层只会两处打架。
+ *    这里只负责把按钮画出来（初始文案「重开本局」）。
+ * @param {boolean} muted 当前是否静音（由 `sound.js` 持有）
+ */
+export function openSettings(muted) {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const back = el('div', 'pick-back');
+  const box = el('div', 'confirm');
+  box.append(el('h3', null, '设置'));
+
+  const rows = el('div', 'confirm-rows');
+  const sRow = el('div', 'set-row');
+  const sBtn = el('button', 'set-btn' + (muted ? '' : ' on'), muted ? '关' : '开');
+  sBtn.dataset.snd = 'toggle';
+  sRow.append(el('i', null, '音效'), sBtn);
+  rows.append(sRow);
+  box.append(rows);
+
+  /* 两枚按钮都走 `.act flat`（中性灰）—— 重开是**破坏性**操作，武装后才转红（`.warn`），
+     颜色变化的本身就是那一步确认的反馈。文案「重开本局」与「确认重开」都是 4 个字，
+     切换时按钮宽度不跳。 */
+  const reset = el('button', 'act flat', '重开本局');
+  reset.dataset.reset = '';
+  const off = el('button', 'act flat', '关闭');
+  off.dataset.sclose = '';
+  const btns = el('div', 'confirm-btns');
+  btns.append(reset, off);
+  box.append(btns);
+
+  back.addEventListener('pointerdown', closePicker);
+  ov.append(back, box);
+  ov.hidden = false;
+  picker = ov;
 }
 
 /** 首屏加载 / 报错面板（独立于 #app 主结构，挂了也能显示） */
