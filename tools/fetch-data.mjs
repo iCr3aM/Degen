@@ -31,16 +31,19 @@
  * ─────────────────────────────────────────────────────────────────────────
  * 5 个币合计 ≈ 41.3 万根小时 K。写成 JSON 是几十 MB 级别，
  * 远超 GDD §19.2 给的「行情包 1–3MB」预算。所以：
- *   - 每根 K 线只存 4 个 Int32：`[o, h-o, l-o, c-o]`（后三个是相对开盘的增量，
+ *   - 每根 K 线存 4 个 Int32：`[o, h-o, l-o, c-o]`（后三个是相对开盘的增量，
  *     同根 K 线内 h/l/c 与 o 的差通常很小 ⇒ 高位字节全是 0 或 0xFF ⇒ gzip 压得动）
  *   - 时间戳**完全不存**：数据是逐小时连续的，时刻由 `起点 + 序号 × 3600s` 推出
- *   - 成交量**不进 K 线包**（每根多 4 字节会让包体 +25%），但会**另出一个 `liq.bin`**：
- *     抓价时顺手捞到的真实成交额按日聚合成「日流动性」，供 P2-A 的拥堵脉冲阈值与
- *     P2-B 的滑点分母使用。详见下文「日流动性」段。
+ *   - **成交量份额**（Batch 3 · B11，2026-09-29 拍板「方案 B」）：在同一个 `.bin` 的
+ *     **尾部追加 `count` 个字节**（`round(该小时成交额 ÷ 当日成交额 × 255)`），
+ *     只 +6.25% 体积就能画量柱；绝对量由 `liq.bin` 的日流动性给出（份额 × `liqOf`）。
+ *     详见 `encodeCoin()`。日流动性本身仍**另出一个 `liq.bin`**：抓价时顺手捞到的真实成交额
+ *     按日聚合成「日流动性」，供 P2-A 的拥堵脉冲阈值与 P2-B 的滑点分母使用。详见下文「日流动性」段。
  *   - 价格乘一个每币固定的 `scale`（10 的幂），把浮点压成整数
  * 最终体积见脚本结尾打印的实测值。
  *
- * ⚠️ 文件同时以**未压缩字节数**为准做完整性校验：运行时解压后必须恰好是 `count × 4` 个 Int32。
+ * ⚠️ 文件同时以**未压缩字节数**为准做完整性校验：运行时解压后必须恰好是 `count × 17` 字节
+ *    （`count × 4` 个 Int32 ＋ `count` 个 Uint8）。
  *
  * 用法：
  *   node tools/fetch-data.mjs --probe            只探测各数据源的最早可用时刻，不下载
@@ -558,16 +561,40 @@ function chooseScale(maxPrice) {
   return Math.pow(10, Math.max(0, Math.min(8, e)));
 }
 
-function encodeCoin(held, count, scale) {
-  const n = count * 4;
-  const buf = Buffer.allocUnsafe(n * 4);
+/**
+ * 打包一个币：前半是 OHLC（`count × 16` 字节），**尾部追加 `count` 个字节的成交量份额**
+ * （Batch 3 · B11，2026-09-29 拍板「方案 B」）。
+ *
+ * 为什么不是「第 5 列 Int32」而是一个字节：
+ *   ① 画量柱只需要**相对量**，1/255 的日内分辨率（≈0.4%）肉眼完全够；
+ *   ② 绝对美元成交额跨 7 个数量级（2013 BTC 小时额 ≈ $2e4 → 2024 峰值 $1e9+），
+ *      单一 scale 两头难兼顾，而份额天然归一；
+ *   ③ 份额 × `liqOf(sym, day)` ＝ 该小时的美元量，**与 P2-B 滑点用的那一份流动性同源**
+ *      （日线模式下 24 根相加也正好等于 `liqOf`，不用再聚合）。
+ * 有成交的小时**至少给 1**，否则极小的份额会被量化成 0、量柱整根消失。
+ */
+function encodeCoin(held, count, scale, dayUsd, startI) {
+  const buf = Buffer.allocUnsafe(count * 17);
+  // ⚠️ 布局是**两段式**：前 `count × 16` 字节是 OHLC（步长仍是 16），
+  //    成交量份额**整段追加在尾部**（第 `count*16 + k` 字节）。
+  //    不能写成「OHLC 步长 17、份额跟在每根后面」——那样 OHLC 就不再是连续的 Int32 数组，
+  //    运行时得逐根拼，白白多一层开销（这个坑在 2026-09-29 的字节校验里被逮到过）。
+  const VOL_BASE = count * 16;
   for (let k = 0; k < count; k++) {
     const o = held[k * 5], h = held[k * 5 + 1], l = held[k * 5 + 2], c = held[k * 5 + 3];
+    const usd = held[k * 5 + 4];
     const O = Math.round(o * scale);
     buf.writeInt32LE(O, k * 16);
     buf.writeInt32LE(Math.round(h * scale) - O, k * 16 + 4);
     buf.writeInt32LE(Math.round(l * scale) - O, k * 16 + 8);
     buf.writeInt32LE(Math.round(c * scale) - O, k * 16 + 12);
+
+    const day = Math.floor((startI + k) / 24);
+    const total = dayUsd[day];
+    const share = total > 0 ? usd / total : 0;
+    let b = Math.round(share * 255);
+    if (usd > 0 && b < 1) b = 1;
+    buf[VOL_BASE + k] = b > 255 ? 255 : b;
   }
   return buf;
 }
@@ -809,7 +836,7 @@ async function main() {
     start: START_TS,
     end: END_TS,
     totalHours: TOTAL_HOURS,
-    encoding: 'gzip(int32le[o, h-o, l-o, c-o] × count)',
+    encoding: 'gzip(int32le[o, h-o, l-o, c-o] × count ＋ uint8 成交量份额 × count)',
     coins: {},
   };
 
@@ -829,7 +856,7 @@ async function main() {
     }
     const scale = chooseScale(maxPrice);
 
-    const raw = encodeCoin(held, count, scale);
+    const raw = encodeCoin(held, count, scale, dayUsd, startI);
     const zip = gzipSync(raw, { level: 9 });
     writeFileSync(join(OUT_DIR, `${coin.sym}.bin`), zip);
 
@@ -839,6 +866,9 @@ async function main() {
       start: tsOf(startI),
       count,
       scale,
+      /* 尾部还有 count 个字节的成交量份额（0~255 ＝ 该小时占当日成交额的比例 ×255）——
+         运行时按 `count*16` 偏移切开；见文件头与 `encodeCoin()`。 */
+      vol: true,
       maxPrice: Number(maxPrice.toFixed(8)),
       first: +held[3].toFixed(8),
       last: +held[(count - 1) * 5 + 3].toFixed(8),

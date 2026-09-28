@@ -13,7 +13,8 @@ import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded } from './core/market.js';
 import { createClock, openTrade, closeTrade, switchExchange, timeOf, normalizeLeverage } from './core/engine.js';
 import { mount, update, renderOver, clearOver, renderBoot, hideBoot, pickExchange, confirmExchange, closePicker } from './ui/render.js';
-import { bindActions } from './ui/bind.js';
+import { bindActions, bindChart } from './ui/bind.js';
+import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
 
 const root = document.getElementById('app');
 
@@ -49,6 +50,14 @@ async function boot() {
   draw();
 
   bindActions(document.body, dispatch);
+  /* K 线手势（Batch 3 · B13/B14）：三个回调都只动**视野**（`view.js`），
+     不碰 `s`、不写存档，唯一副作用是立刻重画一帧（拖动不能被 80ms 节流吞掉）。
+     复位只在**当前币**上生效；每帧的限位（`chart.js` 里夹）会把越界的视野拉回来。 */
+  bindChart(refs.canvas, {
+    pan: (dx, dy) => { panBy(s.sym, dx, dy, s.i, chartW()); draw(true); },
+    zoom: f => { zoomBy(s.sym, f, s.i, chartW()); draw(true); },
+    reset: () => { resetView(s.sym); draw(true); },
+  });
   setInterval(() => save(s), 10000);
   window.addEventListener('beforeunload', () => save(s));
 }
@@ -77,6 +86,9 @@ async function ensureLiq() {
 }
 
 /* ───────────────────────────── 每帧 ───────────────────────────── */
+
+/** K 线区的 CSS 宽度。手势换算「一像素 = 多少根」要用**同一份**，所以单独留一个入口 */
+const chartW = () => Math.max(1, Math.round(refs.chartWrap.getBoundingClientRect().width));
 
 /**
  * 渲染节流到 ~12fps。K 线一秒钟最多走 20 根（20x），12fps 足够把每一根都画出来，
@@ -139,6 +151,13 @@ function dispatch(node) {
     return;
   }
   if (d.speed !== undefined) { s.speed = Number(d.speed); after(); return; }
+  /* 粒度切换（Batch 3 · B12）：小字上写的是**当前**粒度，点一下切到另一种。
+     只动视野，不动玩法 —— `s.i` 永远还是「第几根小时 K」。 */
+  if (d.mode !== undefined) {
+    setMode(s.sym, viewOf(s.sym).mode === '1d' ? '1h' : '1d', s.i, chartW());
+    after();
+    return;
+  }
   if (d.pause !== undefined) { if (!s.over) s.paused = !s.paused; after(); return; }
   if (d.restart !== undefined) return onRestart();
   if (d.wipe !== undefined) return onWipe();

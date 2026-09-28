@@ -19,6 +19,7 @@ import { isLoaded, rangeOf, candleAt } from '../core/market.js';
 import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { anyHeld, posOf } from '../core/state.js';
 import { drawChart } from './chart.js';
+import { windowFor, setYPx } from './view.js';
 
 /* 速度档：20x → **50x**（2026-09-29 用户要求）。50x 下 1 真实秒走 50 游戏小时，
    时钟 `step()` 里有 `guard < 400` 兜底，不会因为一帧跨太多根而卡住。 */
@@ -87,14 +88,23 @@ export function mount(root) {
   const chSym = el('b');
   const chChg = el('span');
   const chartHead = el('div', 'chart-head');
-  chartHead.append(chSym, chChg);
-  /* 在途转账的倒计时卡（P2-A）：压在 K 线**右上角**，做法与左上角遮罩完全一致 ——
-     `position:absolute` + 半透底，**不占任何布局高度**（K 线区是全屏唯一的弹性块，
-     往里塞东西就等于从 K 线上割肉）。只在有在途转账时显示。 */
+  /* 粒度切换（Batch 3 · B12，拍板「K 线左上角遮罩里加一枚可点小字」）：
+     字面是**当前**粒度，点一下切到另一种。做成 `button` 才有点击态，也为触屏留住命中面积。 */
+  const modeBtn = el('button', 'chip');
+  modeBtn.dataset.mode = 'toggle';
+  chartHead.append(chSym, chChg, modeBtn);
+  /* K 线**右上角**那一列浮字（两枚都压在画布上、**不占布局高度**）：
+       · 在途转账倒计时（P2-A）：只在有转账时显示
+       · 锁视野提示（Batch 3 · B14）：只在玩家拖动/缩放之后显示
+     放同一列是因为两者会同时出现（转账途中拖 K 线很常见），并排会打架。 */
   const chartEta = el('div', 'chart-eta');
   chartEta.hidden = true;
+  const chartLock = el('div', 'chart-lock', '双击回最新');
+  chartLock.hidden = true;
+  const chartSide = el('div', 'chart-side');
+  chartSide.append(chartEta, chartLock);
   const chartWrap = el('div', 'chart-wrap');
-  chartWrap.append(canvas, chartHead, chartEta);
+  chartWrap.append(canvas, chartHead, chartSide);
 
   /* ── 持仓条 ──
    ⚠️ **常驻**（2026-09-29）：无持仓时三格填 `--`，不再整条隐藏 ——
@@ -156,7 +166,7 @@ export function mount(root) {
     exBtn, exName, exRate,
     eqVal, eqSub, cashVal, cashSub,
     symbols, symBtns,
-    canvas, chartWrap, chSym, chChg, chartEta,
+    canvas, chartWrap, chSym, chChg, modeBtn, chartEta, chartLock,
     posbar, posSide, posPnl, posRate,
     logline,
     fracBtns, levRow, levBtns, spdBtns,
@@ -233,8 +243,13 @@ export function update(refs, s, view) {
     refs.chChg.textContent = '';
   }
 
-  drawChart(refs.canvas, {
-    candles: candlesFor(sym, s.i, view.chartW),
+  const win = windowFor(sym, s.i, view.chartW);
+  /* 图上唯一的入口：K 线、量柱、两条水平线都在这一笔里画。
+     ⚠️ 返回值必须写回视野 —— 价格轴的平移限位夹在 `drawChart` 里（换算的唯一真源在那边），
+        状态记的是**没夹过**的原始位移，不写回就会越夹越离谱。 */
+  const effY = drawChart(refs.canvas, {
+    candles: win.candles,
+    vols: win.vols,
     mark,
     entry: cur ? cur.entry : null,
     side: cur ? cur.side : null,
@@ -242,7 +257,14 @@ export function update(refs, s, view) {
     liq: cur && !isSpot(cur) ? liquidationPrice(cur) : null,
     cssW: view.chartW,
     cssH: view.chartH,
+    yPx: win.yPx,
   });
+  if (effY !== win.yPx) setYPx(sym, effY);
+
+  /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种 */
+  refs.modeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
+  /* 锁视野提示（Batch 3 · B14）：拖动/缩放之后才出现，双击复位后自己消失 */
+  refs.chartLock.hidden = !win.locked;
 
   /* 在途转账倒计时（K 线右上角）。两个数字与顶栏那行同源，但这里多一个「去哪儿」——
      玩家一眼能确认钱在往哪家所的路上。 */
@@ -322,17 +344,6 @@ export function update(refs, s, view) {
 }
 
 /* ───────────────────────── 小工具 ───────────────────────── */
-
-/** 当前视野里要画多少根：按宽度定，窄屏 50 根、宽屏 90 根 */
-function candlesFor(sym, i, cssW) {
-  const want = Math.max(40, Math.min(96, Math.round((cssW - 52) / 5)));
-  const out = [];
-  for (let k = i - want + 1; k <= i; k++) {
-    const c = candleAt(sym, k);
-    if (c) out.push(c);
-  }
-  return out;
-}
 
 /** 24 小时前的收盘价（用来算涨跌幅） */
 function candle24(sym, i) {

@@ -9,7 +9,7 @@
  */
 
 /** 所有动作键。渲染出的 `data-*` 必须落在这里，否则点了没反应。 */
-export const ACTION_KEYS = ['sym', 'ex', 'exok', 'exno', 'frac', 'lev', 'speed', 'act', 'pause', 'restart', 'wipe'];
+export const ACTION_KEYS = ['sym', 'ex', 'exok', 'exno', 'frac', 'lev', 'speed', 'act', 'pause', 'restart', 'wipe', 'mode'];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');
 
@@ -53,6 +53,112 @@ export function bindActions(container, onAction) {
     off() {
       target.removeEventListener(PRIMARY_EVENT, handle, true);
       target.removeEventListener(KEYBOARD_EVENT, handleClick, true);
+    },
+  };
+}
+
+/* ═════════════════════ K 线手势（Batch 3 · B13 / B14） ═════════════════════
+ * 单指拖动（平移）／双指捏合（缩放 x）／双击（复位）。
+ *
+ * 为什么绑在**画布**上而不是 body：上面那套动作键分派只认 `[data-*]`，画布没有动作键，
+ * 两套互不打扰；绑在画布上也天然把「拖 K 线」和「点按钮」分开。
+ *
+ * ⚠️ 两个坑：① `style.css` 必须给画布 `touch-action: none`，否则浏览器吞掉 `pointermove`；
+ *             ② 拖动时要用 `setPointerCapture`，手指滑出画布（很常见）仍能收到 move。
+ *
+ * 判定阈值：累计位移 > 4px 才算「拖动」—— 否则一次点按被手指抖动歪 1px 也会锁视野。
+ */
+
+/** 双击的两次按下间隔上限（ms）与允许的位移（px） */
+const TAP_MS = 300;
+const TAP_PX = 24;
+/** 起拖阈值（px）：手指抖动不算拖动 */
+const DRAG_PX = 4;
+/** 单次捏合事件的最大缩放比（防手指跳变时视野闪飞） */
+const ZOOM_STEP = 2;
+
+const dist2 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+/**
+ * @param {HTMLCanvasElement} canvas
+ * @param {{pan:(dx:number,dy:number)=>void, zoom:(f:number)=>void, reset:()=>void}} h
+ *   `pan` 的 dx/dy 是**本次事件**的位移（不是累计）；`zoom` 的 f < 1 = 放大（可见根数变少）
+ */
+export function bindChart(canvas, h) {
+  const pts = new Map();          // pointerId -> {x, y}
+  let pinchDist = 0;
+  let travel = 0;                 // 本次拖动累计位移
+  let lastTapAt = 0;
+  let tapX = 0, tapY = 0;
+
+  const onDown = ev => {
+    pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (canvas.setPointerCapture) {
+      try { canvas.setPointerCapture(ev.pointerId); } catch { /* 已释放 / 不支持的浏览器，忽略 */ }
+    }
+
+    if (pts.size === 1) {
+      travel = 0;
+      const now = performance.now();
+      /* 双击**手动判**：触屏上 `dblclick` 只在部分浏览器里派发（且要先有 tap 延迟），不可靠 */
+      if (now - lastTapAt < TAP_MS && Math.abs(ev.clientX - tapX) < TAP_PX && Math.abs(ev.clientY - tapY) < TAP_PX) {
+        lastTapAt = 0;
+        h.reset();
+        return;
+      }
+      lastTapAt = now;
+      tapX = ev.clientX;
+      tapY = ev.clientY;
+    } else if (pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      pinchDist = dist2(a, b);
+    }
+    if (ev.cancelable !== false && ev.preventDefault) ev.preventDefault();
+  };
+
+  const onMove = ev => {
+    const p = pts.get(ev.pointerId);
+    if (!p) return;
+    const dx = ev.clientX - p.x;
+    const dy = ev.clientY - p.y;
+    p.x = ev.clientX;
+    p.y = ev.clientY;
+    travel += Math.abs(dx) + Math.abs(dy);
+
+    /* 双指：只比距离，不看方向 —— 分开 = 放大（可见根数变少） */
+    if (pts.size >= 2) {
+      const [a, b] = [...pts.values()];
+      const d = dist2(a, b);
+      if (pinchDist > 0 && d > 0) {
+        const f = Math.min(ZOOM_STEP, Math.max(1 / ZOOM_STEP, pinchDist / d));
+        if (f !== 1) h.zoom(f);
+      }
+      pinchDist = d;
+      return;
+    }
+    if (travel <= DRAG_PX) return;
+    h.pan(dx, dy);
+  };
+
+  const onUp = ev => {
+    pts.delete(ev.pointerId);
+    if (pts.size < 2) pinchDist = 0;
+    if (canvas.releasePointerCapture) {
+      try { canvas.releasePointerCapture(ev.pointerId); } catch { /* 同上 */ }
+    }
+  };
+
+  canvas.addEventListener('pointerdown', onDown);
+  canvas.addEventListener('pointermove', onMove);
+  canvas.addEventListener('pointerup', onUp);
+  canvas.addEventListener('pointercancel', onUp);
+
+  return {
+    off() {
+      canvas.removeEventListener('pointerdown', onDown);
+      canvas.removeEventListener('pointermove', onMove);
+      canvas.removeEventListener('pointerup', onUp);
+      canvas.removeEventListener('pointercancel', onUp);
     },
   };
 }

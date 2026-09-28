@@ -222,10 +222,13 @@ html, body {
   background: var(--panel-2);
   border: 1px solid var(--line);
 }
-.chart-wrap canvas { display: block; width: 100%; height: 100%; }
+/* ⚠️ `touch-action: none` 是**手势的前提**（Batch 3 · B14）：页面根上写了
+   `touch-action: manipulation`，浏览器会把画布上的单指拖动当成滚动/缩放手势吞掉，
+   `pointermove` 这辈子都到不了 JS。只对画布解除，页面其余部分该怎么滚还怎么滚。 */
+.chart-wrap canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 /* K 线左上角的浮层（2026-09-28）：加了一层半透**遮罩**，压在 K 线上也读得清。
    宽度由内容撑开（`right: 0` 已去掉）⇒ 遮罩只盖住文字那一小块，不挡行情。
-   里面只放「币种 + 24h」—— **现价已由 K 线右端的彩色标签承担**，同一个数字不在一屏出现两次。 */
+   里面只放「币种 + 24h + 粒度」—— **现价已由 K 线右端的彩色标签承担**，同一个数字不在一屏出现两次。 */
 .chart-head {
   position: absolute;
   top: 0; left: 0;
@@ -238,18 +241,44 @@ html, body {
 }
 .chart-head b { font-size: 16px; font-weight: 600; }
 .chart-head span { font-size: 12px; }
+/* 粒度小字（Batch 3 · B12）：遮罩里唯一可点的东西，所以单独把事件收回来。
+   高 20px 是触屏能稳稳点中的下限；底色沿用面板色，只在按下时变主色。 */
+.chart-head .chip {
+  pointer-events: auto;
+  /* `font: inherit` 是必须的 —— `button` 默认不继承字体族，不写就用系统字体，和旁边的等宽数字对不上 */
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  height: 20px;
+  padding: 0 6px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 0;
+}
+.chart-head .chip:active { border-color: var(--accent); color: var(--accent); }
 
-/* K 线**右上角**的在途转账倒计时（P2-A）：与左上角遮罩同一套做法 —— 半透底 + 绝对定位，
-   不占布局高度。只在有在途转账时显示（`hidden` 由 render.js 控制）。 */
-.chart-eta {
+/* K 线**右上角**那一列浮字（Batch 3 · B14 起装两枚）：都用半透底压在画布上，
+   合起来仍是**绝对定位的一列**，不占布局高度。谁在谁不在由 render.js 用 `hidden` 控制。 */
+.chart-side {
   position: absolute;
   top: 0; right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  pointer-events: none;
+}
+/* 在途转账倒计时（P2-A）：与左上角遮罩同一套做法（半透底 + 12px）。 */
+.chart-eta,
+.chart-lock {
   padding: 6px 8px;
   background: rgba(16, 19, 23, .72);   /* = --panel-2 的七成不透明，同 .chart-head */
   font-size: 12px;
-  pointer-events: none;
 }
-.chart-eta[hidden] { display: none; }
+/* 锁视野提示（Batch 3 · B14）：玩家拖动/缩放之后才出现（拖动时不再自动跟随当前根） */
+.chart-lock { color: var(--mut); }
+.chart-eta[hidden], .chart-lock[hidden] { display: none; }
 
 /* ══════════════ 持仓条（**常驻**） ══════════════
    无持仓时三格填 `--`，不再整条隐藏（2026-09-29）—— K 线区是全屏唯一的弹性块，

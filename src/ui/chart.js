@@ -1,15 +1,33 @@
 /**
  * K 线绘制（Canvas 2D，GDD §19.1）
  * ===============================================================
- * 只画「最近 N 根 + 一条当前价水平线 + 一条持仓开仓价水平线」。
- * 不画成交量、不画均线、不画指标 —— GDD §3「Less is More」。
+ * 画「最近 N 根 K 线 ＋ 底部成交量柱 ＋ 一条当前价水平线 ＋ 一条持仓开仓价水平线」。
+ * 不画均线、不画指标、不画图例 —— GDD §3「Less is More」。
  *
  * ⚠️ 坐标全部乘 `dpr` 后再 `ctx.scale(dpr, dpr)`：手机上 devicePixelRatio 是 2~3，
  *    不补这一刀，K 线会糊成一团。
  *
  * ⚠️ **颜色不在这里写死** —— 唯一真源是 `style.css` 的 `:root`（见下方 `theme()`）。
  *    曾经这里硬编码过一份副本，结果改 CSS 变量时 K 线的网格线和轴标签没跟着变。
+ *
+ * ⚠️ **价格 ↔ 像素的换算只在本文件里做**（`yOf` 是唯一真源）。视野状态（看第几根、缩放、
+ *    y 平移）由 `view.js` 持有并传进来，但 **y 平移的限位必须在换算的同一处夹**
+ *    —— 所以本函数会把「实际生效的 yPx」返回给调用方写回视野状态，见下方 `yPx` 段。
+ *
+ * ⚠️ **画高只有一块**：`plotH` 里价格区占 78%、量区占 22%（Batch 3 · B11）。量区**恒定预留**，
+ *    某一刻没有量数据也不还给价格区 —— 与「持仓条常驻」同一条理由：布局不许跳。
  */
+
+/** 右侧价格标签宽（`view.js` 算单根 K 线宽度时要用同一份，故导出） */
+export const PAD_R = 52;
+/** 底部留白（右侧价格标签高 18px，贴边会被切掉） */
+const PAD_B = 16;
+/** 顶部留白 = 轴标签半高 ＋ 一点余量（Batch 1 · B5，2026-09-29） */
+const PAD_TOP = 10;
+/** 底部成交量区占绘图高度的比例（Batch 3 · B11） */
+const VOL_RATIO = 0.22;
+/** 量柱透明度：跟涨跌色，但不与 K 线抢（Batch 3 · B11） */
+const VOL_ALPHA = 0.45;
 
 /** 画布要用的 CSS 变量名。键名只在本文件里用，值就是 `:root` 里那个变量。 */
 const THEME_VARS = {
@@ -37,9 +55,6 @@ function theme() {
   return themeCache;
 }
 
-const PAD_R = 52;      // 右侧留给价格标签
-const PAD_B = 16;      // 底部留白（右侧价格标签高 18px，贴边会被切掉）
-
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
 /** 价格轴的小数位：跟 `format.fmtPrice` 同一套口径，但更短（标签位只有 50px） */
@@ -56,15 +71,19 @@ function axisLabel(p) {
 /**
  * @param {HTMLCanvasElement} canvas
  * @param {object} o
- *   candles  Array<{o,h,l,c}>  已按时间升序，最后一个是当前根
+ *   candles  Array<{o,h,l,c}>  视野内的小时线（或日线聚合），已按时间升序，最后一个是当前根
+ *   vols     Array<number>     与 `candles` 一一对齐的**绝对美元成交额**（0 = 该根无成交）
  *   mark     number            当前价（画水平线）
  *   entry    number|null       持仓开仓价
  *   side     'long'|'short'|null
  *   liq      number|null       强平价（现货传 null）
  *   cssW/cssH number           容器尺寸（CSS 像素）
+ *   yPx      number            价格轴的垂直平移（像素，向下为正；`view.js` 持有）
+ * @returns {number} **实际生效的 `yPx`**（被限位夹过）—— 调用方必须写回视野状态，
+ *                   否则玩家一直往同一边拖时状态里的值会越滚越大，松手再按就从远处跳回来。
  */
 export function drawChart(canvas, o) {
-  const { candles, mark, entry, side, liq } = o;
+  const { candles, vols, mark, entry, side, liq } = o;
   const T = theme();
   const dpr = Math.min(3, (typeof devicePixelRatio === 'number' ? devicePixelRatio : 1) || 1);
   const W = Math.max(1, Math.round(o.cssW));
@@ -79,42 +98,66 @@ export function drawChart(canvas, o) {
   ctx.clearRect(0, 0, W, H);
 
   const plotW = Math.max(1, W - PAD_R);
-  // ⚠️ 顶部留白 = 轴标签半高（12px 字垂直居中 ⇒ 上半 6px）＋ 一点余量（2026-09-29）。
+  // ⚠️ 顶部留白 = 轴标签半高（12px 字垂直居中 ⇒ 上半 6px）＋ 一点余量（Batch 1 · B5，2026-09-29）。
   //    原来只留 4px，最上一档标签「$xx.xk」的上半截会被画布切掉（用户实机发现「y 轴最上方被截断」）。
-  //    写成 `PAD_B - PAD_TOP` 而不是原来的「底部 16 - 固定 4」：底边仍落在 H-PAD_B，
-  //    两侧留白对称，只是把画高让出 6px 给顶端标签。
-  const PAD_TOP = 10;
   const plotH = Math.max(1, H - PAD_B - PAD_TOP);
   const top = PAD_TOP;
+  // 价格区在上、量区贴底；两者共用 `plotH`
+  const volH = Math.round(plotH * VOL_RATIO);
+  const priceH = Math.max(1, plotH - volH);
+  const volBase = top + plotH;          // 量柱基线（贴着画布底部留白的上沿）
 
   if (!candles || !candles.length) {
     ctx.fillStyle = T.MUT;
     ctx.font = '12px ui-monospace, monospace';
     ctx.textAlign = 'center';
     ctx.fillText('无行情数据', plotW / 2, H / 2);
-    return;
+    return 0;
   }
 
-  // ── 价格轴范围：只由 K 线本身与当前价决定 ──
-  // ⚠️ **开仓价不参与这里**（2026-09-28）：一旦并进来，开仓价离现价越远、K 线被压得越扁。
-  //    它改成只把线「夹到画布边缘」（见下方开仓线那一段）。
+  // ── 价格轴范围：只由**视野内的 K 线**决定 ──
+  // ⚠️ **开仓价与当前价都不参与这里**：并进来以后，它们离 K 线越远、K 线被压得越扁。
+  //    开仓价改成只把线「夹到画布边缘」（见下方开仓线那一段）；当前价本来就在某根 K 线里，
+  //    且**平移到过去之后必须不再参与**（否则回到 2013 年还在按 2024 的价自动缩放）。
   let lo = Infinity, hi = -Infinity;
   for (const c of candles) {
     if (c.l < lo) lo = c.l;
     if (c.h > hi) hi = c.h;
   }
-  if (Number.isFinite(mark)) { lo = Math.min(lo, mark); hi = Math.max(hi, mark); }
   if (!(hi > lo)) { hi = lo * 1.001 + 1e-9; lo = lo * 0.999 - 1e-9; }
-  const padY = (hi - lo) * 0.06;
+  const dataLo = lo, dataHi = hi;       // 未加留白的数据极值（y 限位要用）
+  const dataRange = hi - lo;
+  const padY = dataRange * 0.06;
   lo -= padY; hi += padY;
   const span = hi - lo;
-  const yOf = p => top + (hi - p) / span * plotH;
+
+  // ── y 平移 ＋ **严格限位**（Batch 3 · B14，2026-09-29 拍板「严格」） ──
+  // 屏幕下移（yPx > 0）＝ 同一价格落到更大的 y ⇒ 窗口整体上移 ⇒ lo/hi 变小。
+  // 限位：平移后视野里**至少有一根 K 线完整可见**（不许拖成空屏）。价格窗口高 `span`，
+  // 判据是「某根 K 线的 [l, h] 整个落在窗口内」，于是中心的合法区间是
+  //   - 上界：窗口上沿贴住数据最高价 ⇒ 只剩最高那根（`cMin`）
+  //   - 下界：窗口下沿贴住数据最低价 ⇒ 只剩最低那根（`cMax`）
+  // ⚠️ 行程只有 `span - dataRange` ＝ 6% 留白的两倍，也就是价格区高度的约 1/9 ——
+  //    **这是「自动适配价格轴 ＋ 不许拖成空屏」两条规则直接推出来的结果**，
+  //    不是 bug：轴每帧都按视野内的 K 线重新适配，本来就没有多少可平移的余地。
+  //    要更大行程就得放宽判据（比如「允许留白半屏」），届时改这两行即可。
+  // `Math.min/max` 排在两边：万一日后 `span ≤ dataRange`（现在不会），区间不反号。
+  let shift = 0;
+  const wantY = Number.isFinite(o.yPx) ? o.yPx : 0;
+  if (wantY !== 0) {
+    const center0 = (lo + hi) / 2;
+    const cMin = dataHi - span / 2;
+    const cMax = dataLo + span / 2;
+    shift = clamp(center0 - wantY * (span / priceH), Math.min(cMin, cMax), Math.max(cMin, cMax)) - center0;
+    lo += shift; hi += shift;
+  }
+  const yOf = p => top + (hi - p) / span * priceH;
 
   const n = candles.length;
   const cw = plotW / n;
   const bw = Math.max(1, Math.min(cw - 1, 13));
 
-  // ── 网格线 + 右侧价格标签（三档） ──
+  // ── 网格线 + 右侧价格标签（三档，只铺在价格区） ──
   ctx.font = '12px ui-monospace, monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
@@ -129,6 +172,28 @@ export function drawChart(canvas, o) {
     ctx.stroke();
     ctx.fillStyle = T.MUT;
     ctx.fillText(axisLabel(p), plotW + 6, y);
+  }
+
+  // ── 成交量柱（先画，K 线盖在上面） ──
+  // 高度按**视野内最大值自适应**：份额是日内相对量，绝对量跨 7 个数量级
+  // （2013 与 2024 差百万倍），固定标尺会让早年的柱子整片看不见。
+  // 无成交的根不画（柱高 0）。量区不画网格、不加轴标签 —— LESS IS MORE。
+  const V = vols || [];
+  let vmax = 0;
+  for (const v of V) if (v > vmax) vmax = v;
+  if (vmax > 0) {
+    ctx.save();
+    ctx.globalAlpha = VOL_ALPHA;
+    for (let k = 0; k < n; k++) {
+      const v = V[k];
+      if (!(v > 0)) continue;
+      const c = candles[k];
+      const h = Math.max(1, Math.round(v / vmax * volH));
+      ctx.fillStyle = c.c >= c.o ? T.UP : T.DOWN;
+      const x = k * cw + cw / 2;
+      ctx.fillRect(Math.round(x - bw / 2), volBase - h, Math.round(bw), h);
+    }
+    ctx.restore();
   }
 
   // ── K 线本体 ──
@@ -154,10 +219,10 @@ export function drawChart(canvas, o) {
   }
 
   // ── 开仓价（金色虚线，画在当前价之前，避免盖住它） ──
-  // 开仓价**不在**价格轴范围内（见上），所以线只做一件事：**夹到画布的上沿或下沿**。
+  // 开仓价**不在**价格轴范围内（见上），所以线只做一件事：**夹到价格区的上沿或下沿**。
   // 开仓价低于现价 ⇒ y 落到下沿；高于现价 ⇒ 落到上沿。价格本身仍写在右端小标签里，贴边不丢信息。
   if (Number.isFinite(entry)) {
-    const y = Math.round(clamp(yOf(entry), top, top + plotH)) + .5;
+    const y = Math.round(clamp(yOf(entry), top, volBase - volH)) + .5;
     ctx.save();
     ctx.setLineDash([4, 4]);
     ctx.strokeStyle = T.GOLD;
@@ -168,11 +233,11 @@ export function drawChart(canvas, o) {
     ctx.stroke();
     ctx.restore();
     // 右端一枚小标签：方向 + 开仓价。
-    // ⚠️ 标签矩形要**单独**再夹一次（它高 16px）—— 线贴到上/下沿时，不夹就会有一半被画布切掉。
+    // ⚠️ 标签矩形要**单独**再夹一次（它高 16px）—— 线贴到价格区上/下沿时，不夹就会有一半被切掉。
     const tag = (side === 'short' ? '空 ' : '多 ') + axisLabel(entry);
     ctx.font = '12px ui-monospace, monospace';
     const tw = ctx.measureText(tag).width + 6;
-    const ty = Math.round(clamp(y, 8, H - 8)) + .5;
+    const ty = Math.round(clamp(y, 8, volBase - volH - 8)) + .5;
     ctx.fillStyle = T.GOLD;
     ctx.fillRect(plotW - tw, ty - 8, tw, 16);
     ctx.fillStyle = '#1a1405';
@@ -196,8 +261,10 @@ export function drawChart(canvas, o) {
   }
 
   // ── 当前价（实线 + 右端高亮标签） ──
-  if (Number.isFinite(mark) && mark >= lo && mark <= hi) {
-    const y = Math.round(yOf(mark)) + .5;
+  // **总是画**：平移到过去之后当前价可能整条落在视野之外，那就把它夹到价格区边缘 ——
+  // 贴边的标签仍然报着真价，玩家不会「以为没在持仓」。原来是越界就整条消失，反而更容易误读。
+  if (Number.isFinite(mark)) {
+    const y = Math.round(clamp(yOf(mark), top, volBase - volH)) + .5;
     const last = candles[n - 1];
     const col = last && last.c >= last.o ? T.UP : T.DOWN;
     ctx.strokeStyle = col;
@@ -218,4 +285,5 @@ export function drawChart(canvas, o) {
   }
 
   ctx.fillStyle = T.FG;
+  return -shift * priceH / span;
 }

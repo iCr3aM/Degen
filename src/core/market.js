@@ -15,7 +15,7 @@ import { HOUR_MS, DATA_DIR } from './config.js';
 const BASE = (import.meta.env && import.meta.env.BASE_URL) || './';
 
 let manifest = null;
-const series = new Map();      // sym -> Int32Array
+const series = new Map();      // sym -> { ints: Int32Array, vol: Uint8Array }（vol = 成交量份额，Batch 3）
 const inflight = new Map();    // sym -> Promise（防并发重复下载）
 const failed = new Map();      // sym -> Error
 
@@ -57,7 +57,8 @@ export async function loadManifest() {
 
 /**
  * 加载（并缓存）某个币的整条序列。
- * @returns {Promise<Int32Array>} 长度 = count × 4，依次是 [o, h-o, l-o, c-o]
+ * 文件 = gzip(`count × 16` 字节的 OHLC ＋ `count` 字节的成交量份额)，切成两个视图共享同一块内存。
+ * @returns {Promise<{ints:Int32Array, vol:Uint8Array}>} ints 长度 = count × 4，依次是 [o, h-o, l-o, c-o]
  */
 export function loadCoin(sym) {
   if (series.has(sym)) return Promise.resolve(series.get(sym));
@@ -69,12 +70,16 @@ export function loadCoin(sym) {
     const meta = mf.coins[sym];
     if (!meta) throw new Error(`清单里没有 ${sym}`);
     const raw = await gunzip(await fetchBuffer(`${BASE}${DATA_DIR}/${meta.file}`));
-    const ints = new Int32Array(raw);
-    if (ints.length !== meta.count * 4) {
-      throw new Error(`${sym} 数据长度不符：期望 ${meta.count * 4} 个整数，实得 ${ints.length}`);
+    const want = meta.count * 17;              // 4 列 Int32（16B）＋ 1 字节成交量份额
+    if (raw.byteLength !== want) {
+      throw new Error(`${sym} 数据长度不符：期望 ${want} 字节，实得 ${raw.byteLength} —— 先重新跑 npm run data`);
     }
-    series.set(sym, ints);
-    return ints;
+    const rec = {
+      ints: new Int32Array(raw, 0, meta.count * 4),
+      vol: new Uint8Array(raw, meta.count * 16, meta.count),
+    };
+    series.set(sym, rec);
+    return rec;
   })();
 
   inflight.set(sym, p);
@@ -102,15 +107,28 @@ export function hasCandle(sym, i) {
  * @returns {{o:number,h:number,l:number,c:number}|null}
  */
 export function candleAt(sym, i) {
-  const ints = series.get(sym);
+  const rec = series.get(sym);
   const r = rangeOf(sym);
-  if (!ints || !r) return null;
+  if (!rec || !r) return null;
   if (i < r[0] || i >= r[1]) return null;
   const meta = manifest.coins[sym];
+  const ints = rec.ints;
   const k = (i - r[0]) * 4;
   const s = meta.scale;
   const o = ints[k] / s;
   return { o, h: o + ints[k + 1] / s, l: o + ints[k + 2] / s, c: o + ints[k + 3] / s };
+}
+
+/**
+ * 第 i 根的**成交量份额**（0~1 ＝ 该小时占当日成交额的比重，Batch 3 · B11 拍板「方案 B」）。
+ * 绝对美元量 = 本值 × `liqOf(sym, dayIndexOf(i))`（P2-B 滑点用的就是那一份日流动性）。
+ * 未加载 / 越界 ⇒ 0；调用方一律按「无成交」处理（不参与任何玩法逻辑，只影响量柱高度）。
+ */
+export function volumeAt(sym, i) {
+  const rec = series.get(sym);
+  const r = rangeOf(sym);
+  if (!rec || !r || i < r[0] || i >= r[1]) return 0;
+  return rec.vol[i - r[0]] / 255;
 }
 
 /** 只取收盘价 —— 标记价用这个 */
