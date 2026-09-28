@@ -22,6 +22,17 @@ const failed = new Map();      // sym -> Error
 let liqBuf = null;             // Float32Array，长度 = days × 币数（日流动性，P2-A）
 let liqInflight = null;
 
+/**
+ * 价格位移源（上帝模式 ＋ 订单冲击）—— 由 `main.js`（唯一的接线层）注入 `(sym, j) => 系数`。
+ *
+ * ⚠️ **注入式**，不直接 import 状态：market.js 是最底层的数据读取者，不该知道 `s` 长什么样。
+ * ⚠️ 未注入（或返回 1）时 `candleAt` 走原路径，与数据包**逐位相同** —— 离线断言靠这一条。
+ */
+let factorSource = null;
+
+/** 注入价格位移源；不传 = 解除（回到原始数据） */
+export function bindFactorSource(fn) { factorSource = fn || null; }
+
 /** 一天 = 24 根 K 线（GDD §11：1 根 K 线 = 1 游戏小时） */
 export const HOURS_PER_DAY = 24;
 
@@ -114,9 +125,16 @@ export function candleAt(sym, i) {
   const meta = manifest.coins[sym];
   const ints = rec.ints;
   const k = (i - r[0]) * 4;
-  const s = meta.scale;
-  const o = ints[k] / s;
-  return { o, h: o + ints[k + 1] / s, l: o + ints[k + 2] / s, c: o + ints[k + 3] / s };
+  const scale = meta.scale;
+  const o = ints[k] / scale;
+  const h = o + ints[k + 1] / scale;
+  const l = o + ints[k + 2] / scale;
+  const c = o + ints[k + 3] / scale;
+
+  /* 价格位移：系数按**根**取（一笔单只影响它之后的行情），不是全局常数 —— 见 god.js 的文件头 */
+  const f = factorSource ? factorSource(sym, i) : 1;
+  if (f === 1) return { o, h, l, c };
+  return { o: o * f, h: h * f, l: l * f, c: c * f };
 }
 
 /**

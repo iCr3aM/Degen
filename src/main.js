@@ -7,16 +7,18 @@
  *   main.js 是唯一把两边连起来的地方（也是唯一允许读时钟的地方）
  */
 
-import { maxLeverageAt } from './core/config.js';
+import { GAME, HOUR_MS, maxLeverageAt } from './core/config.js';
 import { createState, heldSyms, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
-import { loadManifest, loadCoin, loadLiq, isLoaded } from './core/market.js';
-import { createClock, chanOf, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp } from './core/engine.js';
+import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource } from './core/market.js';
+import { createClock, chanOf, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
+import { clearScale, enableGod, factorFor, setScale } from './core/god.js';
+import { fmtMoney } from './core/format.js';
 import { marginRateOf, isSpot } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, clearOver, renderBoot, hideBoot,
-  pickExchange, confirmExchange, closePicker, openIntro, openSettings,
+  pickExchange, confirmExchange, closePicker, openIntro, openSettings, openGod,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -38,6 +40,14 @@ let resetNode = null;
 let resetArmed = false;
 let resetTimer = 0;
 
+/* 上帝模式的隐藏入口（方案 §2.1）：**1.5 秒内连点顶栏「Degen」5 次**。
+   与上面那套双重确认同一个理由 —— 顶栏是静态 DOM、不参与每帧重绘，武装状态只能放在这里。
+   ⚠️ 计数**不写进 `s`**：它是个纯手势状态，进存档只会污染状态位（重开一局还得记得清）。 */
+const GOD_TAPS = 5;
+const GOD_TAP_MS = 1500;
+let godTaps = 0;
+let godTapAt = 0;
+
 /* ───────────────────────────── 启动 ───────────────────────────── */
 
 async function boot() {
@@ -52,6 +62,13 @@ async function boot() {
   await ensureCoin(s.sym);
   for (const sym of heldSyms(s)) await ensureCoin(sym);   // 多仓：手上每个币的行情都要在
   await ensureLiq();
+
+  /* 价格位移层（方案 §2.6）：**唯一收口**在 `market.candleAt`。
+     注入一个**逐根**系数，markPrice / 权益 / 强平价 / 资金费 / K 线图 / HUD 涨跌幅全部自动跟上。
+     ⚠️ 难度在于它**不能**写成「一个全局常数」：一笔单只影响它之后的行情（`j < at ⇒ 1`），
+        所以历史 K 线不会被重新标定，收益率会真的变 ⇒ σ 会变（见 `engine.invalidateSigma`）。
+     ⚠️ 没有上帝位移也没有冲击池时 `factorFor` 恒返回 1，`candleAt` 走原路径 —— **逐位相同**。 */
+  bindFactorSource((sym, j) => factorFor(s, sym, j));
 
   refs = mount(root);
   hideBoot();
@@ -227,6 +244,25 @@ function dispatch(node) {
   if (d.reset !== undefined) return onReset(node);
   if (d.sclose !== undefined) return onCloseSettings();
 
+  /* ── 上帝模式 ＋ 订单冲击（隐藏入口 · 方案 §2）──
+     `god` 是标题上的连点入口，其余六枚都在上帝面板里（`data-god*`）。
+     档位类动作（倍率 / 砸盘 / 复位）改完状态后**重开一次面板**：面板是静态 DOM，
+     不重开的话 `.on` 那枚高亮不会跟着走、日期框也会停在旧值。 */
+  if (d.god !== undefined) return onGodTap();
+  if (d.impact !== undefined) return onImpactToggle(node);
+  if (d.godmult !== undefined || d.godscale !== undefined || d.godreset !== undefined
+      || d.godcash !== undefined || d.goddate !== undefined || d.godoff !== undefined) {
+    /* 这几枚只可能出现在上帝面板里，而面板只在 `s.god` 非空时打开。这一行是**状态机不靠 DOM 兜底**：
+       万一面板被别的路径留下来（比如读到一份 `god: null` 的档），这里不能抛异常。 */
+    if (!s.god) return;
+    if (d.godmult !== undefined) { s.god.mult = Number(d.godmult); openGod(s); after(); return; }
+    if (d.godscale !== undefined) { setScale(s, s.sym, Number(d.godscale)); openGod(s); after(); return; }
+    if (d.godreset !== undefined) { clearScale(s); openGod(s); after(); return; }
+    if (d.godcash !== undefined) return onGodCash(node);
+    if (d.goddate !== undefined) return onGodDate(node);
+    return onGodOff();
+  }
+
   if (d.sym !== undefined) return onSym(d.sym);
   if (d.chan !== undefined) return onChan();
   if (d.ex !== undefined) return onEx(d.ex);
@@ -321,6 +357,107 @@ function onChan() {
   after();
 }
 
+/* ── 上帝模式 ＋ 订单冲击（隐藏入口 · 方案 §2）─────────────────────
+   一个隐藏入口（连点标题）、一个玩法开关（设置面板）、一张面板（倍率 / 资金 / 日期 / 砸盘）。
+   ⚠️ 面板是**静态 DOM**，所以「填入 / 跳到」要从它内部读输入框的值 —— 输入框不能挂 `data-*`
+      （`bind.js` 会 `preventDefault` 掉 `pointerdown`，挂上去就打不了字）。 */
+
+/** 连点计数：**1.5 秒内 5 次**才触发；间隔超时就重新从 1 数起 */
+function onGodTap() {
+  const now = performance.now();
+  godTaps = now - godTapAt > GOD_TAP_MS ? 1 : godTaps + 1;
+  godTapAt = now;
+  if (godTaps < GOD_TAPS) return;
+  godTaps = 0;
+  /* 本局已结束 / 正停在借贷遮罩上：时间不再前进，开这张面板没有意义（而且 `s.over` 下评论区那些
+     动作本来就被别处挡掉了，这里先拦一次更干净）。 */
+  if (s.over || s.pending) return;
+  enableGod(s);
+  openGod(s);
+  after();
+}
+
+/**
+ * 订单冲击开关（方案 §2.7）—— **玩法开关**，落在主状态 `s.impactOn`（不是 `degen_settings`）。
+ * ⚠️ 关掉只是「不再产生新的冲击」，**已落地的行情位移不还原**（那是已发生的历史）——
+ *    想还原行情要用上帝面板里的「复位」。按钮文案得**手改**：面板不参与每帧重绘
+ *    （与 `onSoundToggle` 同一个理由）。
+ */
+function onImpactToggle(node) {
+  s.impactOn = !s.impactOn;
+  node.textContent = s.impactOn ? '开' : '关';
+  node.classList.toggle('on', s.impactOn);
+  after();
+}
+
+/** 面板里那枚「填入」：**直接设定当前交易所的余额**（方案 §2.3），不是在原余额上加 */
+function onGodCash(node) {
+  const v = readGodInput(node, '.god-cash');
+  const num = Number(v);
+  if (v === null || v.trim() === '' || !Number.isFinite(num) || num < 0) {
+    pushLog(s, '填入资金：请输入 ≥ 0 的数', 'bad');
+    after();
+    return;
+  }
+  s.books[s.ex] = num;
+  s.god.lastFill = num;
+  s.godRuined = false;                 // 补上钱之后，下一次归零要能再提示一遍
+  pushLog(s, `上帝模式 ｜ 资金已填入 ${fmtMoney(num)}`, 'ok');
+  openGod(s);                          // 重开面板：输入框预填值跟着 `lastFill` 走
+  after();
+}
+
+/**
+ * 面板里那枚「跳到」：把时间推到某个日期（方案 §2.4）。
+ *
+ * ⚠️ **逐小时重放，不能只改 `s.i`**：那等于把跳过这段时间里的所有事件白送 ——
+ *    Mt.Gox 2014-02-25 归零、币解锁、杠杆阶梯升级、借款到期、强平、资金费、转账到账。
+ *    复用现成的 `advanceOneHour` 就零新增事件逻辑。
+ * ⚠️ **只许向前**：向后跳会让「未来开的仓」凭空出现在历史里。
+ */
+function onGodDate(node) {
+  const v = readGodInput(node, '.god-date');
+  const m = v && /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (!m) {
+    pushLog(s, '跳到日期：请选择一个日期', 'bad');
+    after();
+    return;
+  }
+  const target = Math.min(
+    Math.max((Date.UTC(+m[1], +m[2] - 1, +m[3]) - GAME.start) / HOUR_MS, s.i),
+    GAME.candles - 1,
+  );
+  if (target <= s.i) {
+    pushLog(s, '跳到日期：只能向前跳', 'bad');
+    after();
+    return;
+  }
+  /* 同步循环 ⇒ `createClock` 的 `setInterval` 不可能插进来。三种情况都要停：
+       ① 到目标日期  ② 到 2024-12-31 收盘（`s.over`）
+       ③ **中途账户归零、弹出借贷遮罩**（`s.pending`）—— 少了第三个判据这里会**死循环**：
+          `advanceOneHour` 在 `pending` 下会立刻 return（`s.i` 永远不前进），
+          而 `!s.over` 一直为真，浏览器就卡死了（2026-09-29 离线断言逮到）。 */
+  while (s.i < target && !s.over && !s.pending) advanceOneHour(s);
+  /* 停在借贷遮罩上时**不要**再开上帝面板 —— `draw()` 刚把遮罩铺上，压一张面板上去只会打架 */
+  if (!s.over && !s.pending) openGod(s);
+  after();
+}
+
+/**
+ * 「关闭上帝模式」：退出 `s.god`（⇒ 停止归零保护、HUD 回到常规金额格式）。
+ * ⚠️ **行情位移不还原**：订单冲击池 `s.flow` 留着（那是已发生的历史）；
+ *    手动设价 `s.god.scale` 随 `s.god` 一起消失 —— 这条写进日志，不做静默行为。
+ */
+function onGodOff() {
+  s.god = null;
+  pushLog(s, '上帝模式已关闭 ｜ 手动设价已复位，订单冲击保留', 'info');
+  closePicker();
+  after();
+}
+
+/** 上帝面板里输入框的值 —— 输入框没有动作键，只能从同一个面板里按类名找（两个框各有一个唯一类） */
+const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.value ?? null;
+
 /* ── 开场叙事（Batch 4 · B19）─────────────────────────────────────
    弹窗期间时钟是停的（见 `boot`），点「开始交易」才真正开盘并放一声起手音。 */
 function onIntro() {
@@ -353,7 +490,7 @@ function onLoan(what) {
 function onSettings() {
   if (s.over || s.pending) return;
   cancelReset();
-  openSettings(snd.isMuted());
+  openSettings(s, snd.isMuted());
 }
 
 /** 音效开关：先落盘再改按钮外观，静音时**不响**（否则关掉它还会「嗒」一下） */

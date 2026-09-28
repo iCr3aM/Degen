@@ -590,6 +590,30 @@ html, body {
    破坏性操作与非破坏性操作必须一眼分得开，这一步的颜色变化本身就是确认反馈。 */
 .act.warn { background: var(--down); color: #1a0508; }
 
+/* ══════════════ 上帝模式面板（隐藏入口 · 方案 §2） ══════════════
+   复用 `.confirm` 那副居中盒，比设置面板多一行「输入框 ＋ 按钮」和一行会换行的档位。
+   ⚠️ 输入框**不能挂 `data-*`**（`bind.js` 会 `preventDefault` 掉 `pointerdown`，打不了字），
+      所以它没有动作键，值由 `main.js` 从同一个面板里 `querySelector('.god-in')` 读 —— 见 `bind.js` 的注释。 */
+.set-row.wrap { flex-wrap: wrap; justify-content: flex-start; }
+.god-in {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 0 8px;
+  text-align: right;
+}
+/* 聚焦只换描边色，**不加外发光** —— 与 `.opt.on` / `.set-btn.on` 同一档强调，不引入第三种提示方式 */
+.god-in:focus { outline: none; border-color: var(--accent); }
+/* 数值框的上下箭头在 32px 里会挤掉数字本身（`text-align:right` 下尤其明显），去掉 */
+.god-in[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+.god-in[type="number"]::-webkit-outer-spin-button,
+.god-in[type="number"]::-webkit-inner-spin-button { appearance: none; margin: 0; }
+
 /* ══════════════ 开场叙事（Batch 4 · B19） ══════════════
    复用 `.confirm` 的盒子，**不铺暗底**（不是「点外面就能关掉」的菜单，是这一局的入口）。
    `white-space: pre-line`：文案里的 `\n` 直接当成换行，不在 JS 里塞 `<br>`。 */

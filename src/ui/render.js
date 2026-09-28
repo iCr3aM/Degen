@@ -12,7 +12,7 @@
  */
 
 import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
-import { fmtDate, fmtHour, fmtMoney, fmtPct, fmtRate } from '../core/format.js';
+import { fmtDate, fmtHour, fmtMoney, fmtMoneyCompact, fmtPct, fmtRate } from '../core/format.js';
 import { available, chanOf, equity, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
 import { isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
 import { isLoaded, rangeOf, candleAt, HOURS_PER_DAY } from '../core/market.js';
@@ -40,7 +40,12 @@ export function mount(root) {
   const dateEl = el('span');
   const top = el('div', 'top');
   const who = el('div', 'who');
-  who.append(el('b', null, 'Degen'), dateEl);
+  /* 顶栏标题**同时是上帝模式的隐藏入口**（连点 5 次 · 方案 §2.1）。
+     它挂 `data-god` 不为别的：`bind.js` 只派发带 `data-*` 的元素，没有它就无从接住连点。
+     连点计数与超时状态机在 `main.js`（与「重开本局」的双重确认同一个理由 —— 这里是静态 DOM）。 */
+  const titleEl = el('b', null, 'Degen');
+  titleEl.dataset.god = 'tap';
+  who.append(titleEl, dateEl);
   /* 交易所切换器（GDD §7.2）：从 HUD 第三格搬到这里（2026-09-28），做成**双行**小按钮，
      长得和暂停 / 重开一模一样 ⇒ 玩家一眼知道它可点。
      为什么必须双行：390px 屏 `.who` 占 115px、暂停+重开占 90px，只剩 150px；
@@ -225,6 +230,11 @@ const LOCK_PREV = (() => {
 export function update(refs, s, view) {
   refs.dateEl.textContent = fmtDate(timeOf(s));
 
+  /* 上帝模式下 HUD 切**紧凑格式**（方案 §2.8）：末期权益会长到 1e100 量级，
+     常规的「$ + 千分位 + 一位小数」在 1e15~1e21 那一段有 27 个字符，会直接撑爆 179px 的格子。
+     ⚠️ 正常玩法一律走原格式 —— 列宽必须一动不动。 */
+  const fm = s.god ? fmtMoneyCompact : fmtMoney;
+
   /* 顶栏按钮。⚠️ B30 的**待决态**（`s.pending`）下也要锁死：时钟已经停了，这时候
      「继续 / 暂停」和「设置」都不该可用 —— 玩家只有一个选择要回答（借，还是收摊）。 */
   const lockedUI = !!s.over || !!s.pending;
@@ -235,23 +245,23 @@ export function update(refs, s, view) {
 
   /* 账户三格 */
   const eq = equity(s);
-  refs.eqVal.textContent = fmtMoney(eq);
+  refs.eqVal.textContent = fm(eq);
   refs.eqVal.className = 'num ' + (eq >= GAME.cash ? 'up' : 'down');
   /* 副行两个数**都带符号**（Batch 4 · B17）：正绿负红，与持仓盈亏同一口径。
      颜色写在这里而不是 CSS 默认值 —— 见 `style.css` 里 `.hud .cell u.up` 那段注释。 */
-  refs.eqSub.textContent = `已实现 ${fmtMoney(s.realized, { sign: true })}`;
+  refs.eqSub.textContent = `已实现 ${fm(s.realized, { sign: true })}`;
   refs.eqSub.className = 'num ' + (s.realized >= 0 ? 'up' : 'down');
 
-  refs.cashVal.textContent = fmtMoney(available(s));
+  refs.cashVal.textContent = fm(available(s));
   /* 副行优先级：**有贷款时负债永远最该出现**（B30）—— 它是必须还的一笔钱，
      而「初始 $3,000」是个死常量、零信息量。剩几天按小时差向下取整。 */
   if (s.loan) {
     const left = Math.max(0, Math.ceil((s.loan.dueAt - s.i) / 24));
-    refs.cashSub.textContent = `欠 ${fmtMoney(s.loan.owe)} · ${left}d`;
+    refs.cashSub.textContent = `欠 ${fm(s.loan.owe)} · ${left}d`;
     refs.cashSub.className = 'num down';
   } else if (anyHeld(s)) {
     const u = totalUnrealized(s);
-    refs.cashSub.textContent = `未实现 ${fmtMoney(u, { sign: true })}`;
+    refs.cashSub.textContent = `未实现 ${fm(u, { sign: true })}`;
     refs.cashSub.className = 'num ' + (u >= 0 ? 'up' : 'down');
   } else {
     refs.cashSub.textContent = `初始 ${fmtMoney(GAME.cash)}`;
@@ -359,7 +369,7 @@ export function update(refs, s, view) {
     refs.posSide.textContent = spot ? `${p.sym} 现货` : `${p.sym} ${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
     refs.posSide.className = 'num ' + (p.side === 'long' ? 'side-long' : 'side-short');
     const pnl = unrealizedOf(s, p.sym);
-    refs.posPnl.textContent = fmtMoney(pnl, { sign: true });
+    refs.posPnl.textContent = (s.god ? fmtMoneyCompact : fmtMoney)(pnl, { sign: true });
     refs.posPnl.className = 'num ' + (pnl >= 0 ? 'up' : 'down');
     /* 第三格**只剩保证金率**（Batch 2 · B9，2026-09-29）：原来这里是「保证金率 / 强平价」，
        格宽只有 1/3 屏，两个数一串必然被 `text-overflow` 截掉尾巴（用户实机发现）。
@@ -474,7 +484,7 @@ export function renderOver(root, s) {
   const body = reason === 'defaulted'
     ? `到期还不上借款，账户清零\n倒在 ${fmtDate(timeOf(s))}`
     : win
-      ? `你活到了 ${fmtDate(timeOf(s), false)}\n最终权益 ${fmtMoney(eq)}`
+      ? `你活到了 ${fmtDate(timeOf(s), false)}\n最终权益 ${(s.god ? fmtMoneyCompact : fmtMoney)(eq)}`
         + (owed ? `\n（已扣未还借款 ${fmtMoney(owed)}）` : '')
       : `保证金归零，账户清零\n倒在 ${fmtDate(timeOf(s))}`;
 
@@ -679,16 +689,18 @@ export function openIntro() {
 /* ═════════════════════════ 设置面板（Batch 4 · B21） ═════════════════════════ */
 
 /**
- * 设置。顶栏第三枚「重开」改叫「设置」之后点开的就是这里，目前只有两项：
+ * 设置。顶栏第三枚「重开」改叫「设置」之后点开的就是这里，目前只有三项：
  *   **① 音效开关**（偏好存 `degen_settings`，独立于存档 —— 重开不会把开关一起清掉）
- *   **② 重开本局**（**面板内双重确认**：第一次点变「确认重开」，3 秒不点自动还原）
+ *   **② 订单冲击开关**（方案 §2.7）—— 它是**玩法开关**，所以读的是状态 `s.impactOn`，不是偏好存档
+ *   **③ 重开本局**（**面板内双重确认**：第一次点变「确认重开」，3 秒不点自动还原）
  *
  * ⚠️ 双重确认的**状态机在 `main.js`**（`onReset` / `cancelReset`），不在这里：
  *    面板是静态 DOM、不参与每帧重绘，把「已武装」这个状态放进渲染层只会两处打架。
  *    这里只负责把按钮画出来（初始文案「重开本局」）。
+ * @param {object} s     状态（读 `s.impactOn`）
  * @param {boolean} muted 当前是否静音（由 `sound.js` 持有）
  */
-export function openSettings(muted) {
+export function openSettings(s, muted) {
   closePicker();
   const ov = document.getElementById('overlay');
   if (!ov) return;
@@ -702,7 +714,15 @@ export function openSettings(muted) {
   const sBtn = el('button', 'set-btn' + (muted ? '' : ' on'), muted ? '关' : '开');
   sBtn.dataset.snd = 'toggle';
   sRow.append(el('i', null, '音效'), sBtn);
-  rows.append(sRow);
+
+  /* 订单冲击（方案 §2.7）：默认**开**。关掉只是「不再产生新的冲击」——
+     已经落在地上的行情位移**不还原**（那是已发生的历史），要还原用上帝面板的「复位」。 */
+  const iRow = el('div', 'set-row');
+  const iBtn = el('button', 'set-btn' + (s.impactOn ? ' on' : ''), s.impactOn ? '开' : '关');
+  iBtn.dataset.impact = 'toggle';
+  iRow.append(el('i', null, '订单冲击'), iBtn);
+
+  rows.append(sRow, iRow);
   box.append(rows);
 
   /* 两枚按钮都走 `.act flat`（中性灰）—— 重开是**破坏性**操作，武装后才转红（`.warn`），
@@ -714,6 +734,97 @@ export function openSettings(muted) {
   off.dataset.sclose = '';
   const btns = el('div', 'confirm-btns');
   btns.append(reset, off);
+  box.append(btns);
+
+  back.addEventListener('pointerdown', closePicker);
+  ov.append(back, box);
+  ov.hidden = false;
+  picker = ov;
+}
+
+/* ═════════════════════════ 上帝模式面板（隐藏入口 · 方案 §2） ═════════════════════════ */
+
+/**
+ * 上帝面板。入口是**连点顶栏「Degen」5 次**（计数与超时状态机在 `main.js`，
+ * 与「重开本局」的双重确认同一个理由：这里是静态 DOM、不参与每帧重绘）。
+ *
+ * 四件事：冲击倍率 / 填入资金 / 跳到日期 / 手动砸盘；底部是「关闭上帝模式」。
+ *
+ * ⚠️ **日期框用原生 `<input type="date">`** —— 引第三方控件不值当，原生在手机上直接弹系统日期轮。
+ *    但「跳到」不是改个数字：`main.js` 会拿 `advanceOneHour` **逐小时重放**过去，
+ *    否则 Mt.Gox 归零、币解锁、借款到期这些事件会被整段跳过（等于白送一条命）。
+ * ⚠️ **输入框不能挂 `data-*`**：`bind.js` 拦的是 `[data-*]` 的 `pointerdown` 并会 `preventDefault`，
+ *    挂上去就打不了字了。所以值由动作处理函数从同一个面板里按类名读
+ *    （`god-cash` / `god-date` —— 两个框都带 `god-in` 做样式，但**各有一个唯一类**，
+ *     否则 `querySelector('.god-in')` 永远只能拿到排在前面的那个资金框）。
+ */
+export function openGod(s) {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const back = el('div', 'pick-back');
+  const box = el('div', 'confirm godp');
+  box.append(el('h3', null, '上帝模式'));
+
+  const rows = el('div', 'confirm-rows');
+
+  /* ① 冲击倍率 —— ×1 = 按现实平方根定律；调大之后就成「一脚踢出一个坑」 */
+  const mRow = el('div', 'set-row');
+  mRow.append(el('i', null, '冲击倍率'));
+  for (const k of [1, 10, 100]) {
+    const b = el('button', 'set-btn' + (s.god.mult === k ? ' on' : ''), '×' + k);
+    b.dataset.godmult = String(k);
+    mRow.append(b);
+  }
+  rows.append(mRow);
+
+  /* ② 填入资金 —— 输入框**预填上次填的数**，于是归零之后点一下就补回来，不必再加第二枚按钮 */
+  const cRow = el('div', 'set-row');
+  const cashIn = el('input', 'god-in god-cash');
+  cashIn.type = 'number';
+  cashIn.inputMode = 'decimal';
+  cashIn.min = '0';
+  cashIn.step = '1000';
+  cashIn.value = String(s.god.lastFill);
+  const cBtn = el('button', 'set-btn on', '填入');
+  cBtn.dataset.godcash = '';
+  cRow.append(el('i', null, '资金'), cashIn, cBtn);
+  rows.append(cRow);
+
+  /* ③ 跳到日期 —— **只许向前**（向后跳会让「未来开的仓」凭空出现在历史里） */
+  const dRow = el('div', 'set-row');
+  const dateIn = el('input', 'god-in god-date');
+  dateIn.type = 'date';
+  dateIn.min = '2013-01-01';
+  dateIn.max = '2024-12-31';
+  dateIn.value = fmtDate(timeOf(s), false);
+  const dBtn = el('button', 'set-btn on', '跳到');
+  dBtn.dataset.goddate = '';
+  dRow.append(el('i', null, '日期'), dateIn, dBtn);
+  rows.append(dRow);
+
+  /* ④ 手动砸盘 —— 直接改**当前币**的行情乘数（永久，只有「复位」能还原） */
+  const kRow = el('div', 'set-row wrap');
+  kRow.append(el('i', null, '砸盘'));
+  for (const [k, label] of [[-0.1, '-10%'], [-0.3, '-30%'], [-0.5, '-50%'], [1, '+100%']]) {
+    const b = el('button', 'set-btn', label);
+    b.dataset.godscale = String(k);
+    kRow.append(b);
+  }
+  const rBtn = el('button', 'set-btn', '复位');
+  rBtn.dataset.godreset = '';
+  kRow.append(rBtn);
+  rows.append(kRow);
+
+  box.append(rows);
+
+  const off = el('button', 'act flat', '关闭上帝模式');
+  off.dataset.godoff = '';
+  const close = el('button', 'act flat', '关闭');
+  close.dataset.sclose = '';
+  const btns = el('div', 'confirm-btns');
+  btns.append(off, close);
   box.append(btns);
 
   back.addEventListener('pointerdown', closePicker);

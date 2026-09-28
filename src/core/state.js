@@ -9,7 +9,7 @@
 
 import { GAME } from './config.js';
 
-export const STATE_VERSION = 6;
+export const STATE_VERSION = 7;
 
 export function createState() {
   return {
@@ -50,6 +50,23 @@ export function createState() {
      */
     pulse: [],
 
+    /**
+     * 订单冲击总开关（基础玩法，默认**开**）—— 设置面板里可关。
+     * ⚠️ 它在**主状态**里，不在 `degen_settings`（音效那种纯 UI 偏好）：它会改变权益、强平、
+     *    滑点、资金费的计算结果，是玩法逻辑。放进设置存档会出现「同一份档在不同机器上跑出不同结果」。
+     */
+    impactOn: true,
+
+    /**
+     * 订单冲击池 —— `sym -> { v, at }`：`v` = 累计冲击量（正 = 买上去、负 = 砸下来），
+     * `at` = 写入它的那个 `s.i`。行情位移 = `v × decay(s.i − at)`，**逐根**衰减（Bouchaud 幂律）。
+     *
+     * ⚠️ 与 `pulse` 是两套东西，别混：
+     *    `pulse`  = 「链上转账造成的拥堵」→ 只影响**转账延迟**，不动价格
+     *    这里     = 「下单造成的价格位移」→ 只影响**价格**，不动拥堵
+     */
+    flow: {},
+
     /** 当前正在看的币种 */
     sym: 'BTC',
 
@@ -88,6 +105,18 @@ export function createState() {
     loaned: false,
     loan: null,
     pending: null,
+
+    /** 上帝模式下「已归零」的一次性提示标志 —— 避免每根 K 线刷一条日志；填入资金后清掉 */
+    godRuined: false,
+
+    /**
+     * 上帝模式（连点顶栏「Degen」5 次开启）—— `null` = 从未开启。
+     *   `mult`     ：订单冲击倍率，1 = 按现实平方根定律，面板可调 1~100
+     *   `scale`    ：手动设价，`sym -> 价格乘数`（**全局永久**，靠「复位」还原）
+     *   `lastFill` ：上次「填入资金」用的数，归零后一键补回
+     * ⚠️ 手动设价与订单冲击是两套位移，**相乘**叠加 —— 见 `god.js` 的 `factorFor`。
+     */
+    god: null,
 
     /** 游戏结束：null 或 { reason, at } */
     over: null,

@@ -2,7 +2,7 @@
 
 > 生成时间：2026-09-29　｜　工作目录：`f:\Cr3aM\Desktop\Degen`
 > 用途：暂停开发、切换工作流时的交接说明。回答三件事：**现在站在哪 / 什么没做 / 接下来怎么做**。
-> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v22，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
+> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v23，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
 
 ---
 
@@ -51,6 +51,15 @@ P2-B 的真机回归（验收口径⑩）／ OTC `unlock` / `min` 两个门槛�
 ② 同一轮实测复现了「**单笔名义上限是唯一能封顶的那一条**」（$8.15×10¹⁰⁰ → $2.15×10⁹ @ `k = 25%`），
 **但用户决定暂不重开 §十一**；将来要开的**展示方案已写定在 §十一 11.6**（金额行右侧定宽小字 ＋ 拒绝日志）。
 ⇒ **两个议题都不排期，裁决理由不变**；重开时从 §十六 16.4 与 §十一 11.4/11.6 接着走，不必重新测算。
+**（v23，2026-09-29）① 订单冲击**正常玩也要生效**（设置面板给开关、**默认开**）；
+② 原「自动挂机模式」整节**作废**（用户明确「去掉自动挂机模式」）—— `.trae/documents/自动挂机模式测算方案.md`
+已失效，**不要再按它动手**。本次交付＝**第一步：上帝面板 ＋ 订单冲击层**。
+`src/core/god.js` **新建**（`SHOCK` 0.35 / `decay` β = 0.3 / `addFlow` / `factorFor`），
+唯一收口 `market.candleAt` 乘一个**逐根**系数（`j < at ⇒ 1`，不改历史；未启用时与数据包**逐位相同**）；
+开 / 平仓各写一次池并紧跟 `engine.invalidateSigma()`（**必须**：逐根位移会真的改变 σ）。
+上帝模式（**连点顶栏「Degen」5 次**）＝ 手填资金 / 跳日期 / 手动砸盘 / 冲击倍率，**归零不结束本局**。
+`STATE_VERSION` **6 → 7**（`impactOn` / `flow` / `godRuined` / `god`，v6 老档**不作废**）。
+离线断言 **53/53** ＋ `npm run build` 通过。落地结果与**三处实现时才发现的坑**见 `ROADMAP.MD` **§十七**。
 
 ---
 
@@ -81,7 +90,8 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 ### 单一真相源
 
 - 时钟：`s.i` ＝ 第几根小时 K（唯一刻度）
-- 存档版本：`STATE_VERSION = 6`（key `localStorage.degen_save`；4 → 5 新增 `loaned` / `loan` / `pending`；5 → 6 新增 `chan`）
+- 存档版本：`STATE_VERSION = 7`（key `localStorage.degen_save`；4 → 5 新增 `loaned` / `loan` / `pending`；5 → 6 新增 `chan`；**6 → 7 新增 `impactOn` / `flow` / `godRuined` / `god`**，v6 老档不作废、整体补默认值）
+  > **v7 是玩法口径变更**：升级后的老档**一开仓就会推动行情**（`impactOn` 默认 `true`）—— 不是 bug，是 §14.4 的订单冲击层上线。
   > **P2-B 修订（OTC 史实化）不升版本** —— 新增的全是**静态配置**（`COINS[].otc` ＋ `OTC.base/sigmaRef/p/multCap/max`），
   > 不进存档，故无需迁移。
 - 数据包：`public/data/<SYM>.bin` ＝ gzip(Int32)，**每根 17 字节** ＝ `[o, h-o, l-o, c-o]` int32LE ＋ **尾巴 1 字节成交量份额**，
@@ -95,15 +105,16 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 | 文件 | 职责 |
 | --- | --- |
 | `src/core/config.js` | `GAME` / **`COINS`（含 `unlock` 与 `otc`：该币首次能走场外大宗）** / `EXCHANGES` / **`SPEEDS`（1/5/10/50，唯一真源）** / **`LOAN` ＋ `loanAmountAt`** / **`SUPPLY_CAP`（§15.1 上限，枚）** / **`OTC`（unlock / min / base 年代点差 / sigmaRef / p / multCap / max）＋ `otcBaseAt` / `otcSigmaRefAt` / `otcPremiumOf`** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
-| `src/core/state.js` | `STATE_VERSION`、`createState()`、`cashOf` / `posOf` / `heldSyms` / `anyHeld` / **`capturedOf`（已锁枚数，派生量）** / `pushLog` |
+| `src/core/state.js` | `STATE_VERSION`、`createState()`、`cashOf` / `posOf` / `heldSyms` / `anyHeld` / **`capturedOf`（已锁枚数，派生量）** / `pushLog`；**`impactOn`（订单冲击开关，默认 `true`）/ `flow`（逐根衰减冲击池）/ `godRuined`（上帝模式归零标记）/ `god`（上帝模式 `mult` / `scale` / `lastFill`）** |
+| `src/core/god.js` | **价格位移层（v23 新建）**：`SHOCK`（`share` 0.35 / `beta` 0.3）/ `decay` / `residualAt` / `addFlow` / `factorFor(s, sym, j)` / `enableGod` / `setScale` / `clearScale` —— 纯逻辑零 DOM，唯一消费者是 `market.candleAt` |
 | `src/core/impact.js` | **滑点纯函数（P2-B1）**：`SLIP` 常量 / `sigmaOf(closes)` / `impactOf(q, sigma)` / `fillPrice(price, dir, impact)` —— 零依赖 |
-| `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30）；**通道 `chanOf` / `otcUnlocked` / `otcOpenFor`（P2-B3 ＋ 修订）＋ 开平仓成交价层（P2-B1）** |
+| `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30）；**通道 `chanOf` / `otcUnlocked` / `otcOpenFor`（P2-B3 ＋ 修订）＋ 开平仓成交价层（P2-B1）**；**v23 开 / 平仓各写一次冲击池并紧跟 `invalidateSigma()`（逐根位移会真的改变 σ），`checkRuin` 在 `s.god` 下短路** |
 | `src/core/positions.js` | 逐仓持仓：`isSpot` / 保证金率 / 强平价 / 资金费率 / `unrealizedOf` |
-| `src/core/market.js` | 行情懒加载：`loadCoin` / 取价；**日流动性 `loadLiq` / `liqOf` / `dayIndexOf` / `isLiqLoaded`** |
+| `src/core/market.js` | 行情懒加载：`loadCoin` / 取价；**日流动性 `loadLiq` / `liqOf` / `dayIndexOf` / `isLiqLoaded`**；**`bindFactorSource(fn)` ＋ `candleAt` 末尾乘一个逐根价格系数（v23 订单冲击的唯一收口点，`j < at ⇒ 1`，未启用时与数据包逐位相同）** |
 | `src/core/anchors.js` | **历史锚点表（P2-C，唯一真相源）**：20 条 `ANCHORS`（字段只有 `t` / `title` / `chain` / `congestion`，**没有任何价格字段**）＋ `NEWS_HOURS` / `anchorAt` / `anchorsInRange` / `congestionAnchors` —— 纯逻辑零 DOM |
 | `src/core/congestion.js` | **网络拥堵纯逻辑**：年代表值 / 锚点窗口（**表从 `anchors.js` 派生**，本文件只留坡度算法）/ 进块等待 W 表 / 各所确认数 / `arrivalCandles` / `bumpPulse` / `decayPulse` |
 | `src/core/save.js` | localStorage 落盘与续档 |
-| `src/core/format.js` | 数字/价格格式化 |
+| `src/core/format.js` | 数字/价格格式化；**`fmtMoneyCompact`（上帝模式下 HUD 用的紧凑金额，小于 $1e6 时与 `fmtMoney` 一字不差）** |
 | `src/ui/chart.js` | Canvas 2D K 线（颜色从 CSS 变量读，`style.css` 是颜色唯一真源） |
 | `src/ui/render.js` | DOM 渲染（HUD / 持仓条 / 操作区 / 弹层） |
 | `src/ui/bind.js` | 事件绑定（`data-ex` / `data-act` 分派） |
@@ -111,7 +122,7 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 | `src/ui/sound.js` | **音效**（Batch 4）：Web Audio 合成，零音频文件；开关存 `degen_settings`，**不进存档** |
 | `src/ui/style.css` | 全部样式；**纵向间距只有 8 一档**（8 ＝ 块内，也 ＝ 主页面所有块间；12 只剩弹层内部） |
 | `tools/fetch-data.mjs` | 行情数据管线，产出 `public/data/` |
-| `ROADMAP.MD` | 路线图 v22，**P2 方案全部写在这里** |
+| `ROADMAP.MD` | 路线图 v23，**P2 方案全部写在这里**（**§十七 ＝ 订单冲击 ＋ 上帝模式**） |
 | `GDD.MD` | 设计文档 v1.0 |
 
 ### 常用命令
@@ -444,7 +455,7 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
    **Batch 5（B22–B30）的方案与落地结果留在 §十四 ＋ §十五**（含 §14.12 改动清单 ＋ §15.8），同样**不须再动**
    ⚠️ **B15 之后量区语义已变**：不再是「价格 78% / 量 22% 上下分栏」，而是**量柱半透明叠在 K 线上**
    （价格区吃满整高，量柱最大高度 `clamp(plotH×0.25, 20, 64)`）；**B29 又把标尺从「视野内最大值」改为「视野内 P90」**
-3. 确认 ROADMAP 头部已是 **v22**（P2-A / P2-B / P2-C 均已落地；P4-A / P4-B 暂缓；速度档已收窄为 `1/5/10/50`；**§十六 生活系统评审 = 暂缓**）；§15.1 一律按真实数值实现（2026-09-29 已定）
+3. 确认 ROADMAP 头部已是 **v23**（P2-A / P2-B / P2-C 均已落地；P4-A / P4-B 暂缓；速度档已收窄为 `1/5/10/50`；**§十六 生活系统评审 = 暂缓**；**§十七 订单冲击 ＋ 上帝模式 = 已落地**）；§15.1 一律按真实数值实现（2026-09-29 已定）
 4. P2-B 注意：数据包只有 OHLC ＋ 每根 1 字节当日份额、没有订单簿 ⇒
    滑点只能建「成交价折让」，不能建「逐档吃穿盘口」（这条在 P2-B 已如实落地）
 5. 每改完一步跑 `npm run build`；涉及数据管线改动跑 `npm run data` 并核对 `index.json`

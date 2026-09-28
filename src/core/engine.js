@@ -16,6 +16,7 @@ import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, maxLever
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, fillPrice, impactOf, sigmaOf } from './impact.js';
+import { SHOCK, addFlow } from './god.js';
 import { fmtMoney, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, openPosition, pnlOf,
@@ -248,6 +249,16 @@ export function openTrade(s, side, frac = 1) {
 
   const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost);
   pushLog(s, `${side === 'long' ? '做多' : '做空'} ${s.sym} ${lev}x ｜ 保证金 ${fmtMoney(margin)} @ ${showPrice(fill)}${tag}`, side === 'long' ? 'long' : 'short');
+
+  /* 订单冲击（方案 §2.6）：把这次成交代价的**永久部分**（Almgren–Chriss 的 γQ，实证 35%）
+     沉淀成行情位移 —— 从此处起价格上/下一个台阶，再按 Bouchaud 幂律慢慢回爬。
+     ⚠️ 这不是重复收惩罚：`cost` 是本次成交付出的**全部**代价，这里只把其中一部分留在地上，
+        剩下的就是 AC 里的「暂时冲击」（随成交结束而消失，已由成交价本身承担）。
+     ⚠️ OTC 不写：私下一口价的大宗交易不落公开盘口（与它不消耗供应量同一口径）。 */
+  if (!otc && s.impactOn) {
+    const dir = side === 'long' ? 1 : -1;
+    if (addFlow(s, s.sym, dir * SHOCK.share * cost * (s.god?.mult ?? 1))) invalidateSigma();
+  }
   return { ok: true };
 }
 
@@ -281,6 +292,12 @@ export function closeTrade(s, why = '手动') {
   pushLog(s, `平仓 ${sym} ${pos.lev}x ｜ ${r.pnl >= 0 ? '盈利' : '亏损'} ${fmtMoney(r.pnl)}（${why}）${tag}`,
     r.pnl >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
+
+  /* 订单冲击（方案 §2.6）：**平多 = 卖、平空 = 买**，方向与开仓时相反 —— 与成交价的代价同一口径 */
+  if (!otc && s.impactOn) {
+    const dir = pos.side === 'long' ? -1 : 1;
+    if (addFlow(s, sym, dir * SHOCK.share * cost * (s.god?.mult ?? 1))) invalidateSigma();
+  }
 
   if (checkRuin(s)) return { ok: false, why: s.over.reason };
   return { ok: true };
@@ -320,6 +337,17 @@ function endGame(s, reason) {
  */
 function checkRuin(s) {
   if (!isBankrupt(s)) return false;
+
+  /* 上帝模式：归零**不结束本局**（方案 §2.5）—— 时钟照走，玩家自己在面板里「填入资金」。
+     ⚠️ 提示只写一次（`s.godRuined`），否则每根 K 线都会刷一条一模一样的日志。 */
+  if (s.god) {
+    if (!s.godRuined) {
+      s.godRuined = true;
+      pushLog(s, '上帝模式 ｜ 账户归零，不结束本局', 'bad');
+    }
+    return false;
+  }
+
   if (!s.loaned) {
     s.pending = 'loan';
     s.paused = true;
@@ -558,6 +586,18 @@ export function advanceOneHour(s) {
    不按天缓存的话，每次都要重扫 720 根 K 线。同一天内窗口滑动带来的偏差可以忽略
    （σ 是 30 天的统计量，一天的位移改变不了它多少）。 */
 const sigmaCache = new Map();
+
+/**
+ * 让两个 σ 缓存全部失效（订单冲击 · 方案 §2.6）。
+ *
+ * ⚠️ **这是必须的，不是保险**：价格位移的系数是**逐根**的（一笔单只影响它之后的行情、还按幂律回爬），
+ *    所以它**不是**一个能从收益率里约掉的全局常数 —— 相邻收益率、σ_30日、资金费率、滑点全都会变。
+ *    不在写完 `s.flow` 之后清一次，就会算出「价格在动、波动率不动」这种不自洽的滑点与资金费。
+ */
+export function invalidateSigma() {
+  daySigmaCache.clear();
+  sigmaCache.clear();
+}
 
 /**
  * 近 30 天（`FUNDING.sigmaWindow` 根）的**小时收益标准差** —— 溢价归一化的分母（Batch 4 · B18）。

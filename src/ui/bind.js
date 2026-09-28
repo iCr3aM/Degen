@@ -15,6 +15,9 @@ export const ACTION_KEYS = [
      / `intro`（开场弹窗的「开始交易」）
      Batch 5（B30）：`loan`（归零遮罩上的「借续命」/「就此收摊」） */
   'settings', 'snd', 'reset', 'sclose', 'intro', 'loan',
+  /* 上帝模式 ＋ 订单冲击：`god`（顶栏标题连点 5 次的隐藏入口）/ `impact`（设置面板的冲击开关）
+     / `godmult` `godcash` `goddate` `godscale` `godreset` `godoff`（上帝面板内的各枚按钮） */
+  'god', 'impact', 'godmult', 'godcash', 'goddate', 'godscale', 'godreset', 'godoff',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');
