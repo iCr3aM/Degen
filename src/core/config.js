@@ -53,6 +53,14 @@ export const SPEEDS = [1, 5, 10, 50];
  *    并打一条警告 —— 那时**这个文件要跟着改**。两边一旦不一致，就会出现
  *    GDD §8.2 警告的「解锁了但没数据」黑洞（游戏侧读这里，数据侧读 index.json）。
  *
+ * `otc` = 该币**首次能走场外大宗（OTC）**的时刻（P2-B 修订 · GDD §15.3）——
+ * 与 `unlock` 是两件独立的事：币早上线、OTC 台却要等很多年才做到它。
+ *   BTC 2013-01（`#bitcoin-otc` 2010 年就在做、Genesis 2013 建台 ⇒ 开盘即有，不设等待）
+ *   ETH 2016-06（Circle 原话「2016 Ethereum gets interesting」，ICO 潮年中）
+ *   XRP / DOGE 2018-01（Circle Trade 2018 覆盖 36 种）
+ *   SOL 2021-01（2020-08 才上线，2021 年机构台普遍覆盖主流山寨）
+ * ⚠️ 这四档是**史料推断的近似锚点**，没有一手的「X 币首次在 OTC 台成交」记录。
+ *
  * `src` 是**官方 API** 的数据源标识，按可信度/粒度排序取用（抓数脚本按这个顺序依次补洞）：
  *   - `bitstamp`：Bitstamp v2 OHLC，小时线，USD 本位（BTC 全程 2013-01 起）
  *   - `bitfinex`：Bitfinex v2 candles，小时线，USD 本位
@@ -72,14 +80,14 @@ export const SPEEDS = [1, 5, 10, 50];
  *   SOL  Binance  `SOLUSDT`       2020-08-11 06:00（缺的 20 小时由 Binance.US `SOLUSD` 补齐）
  */
 export const COINS = [
-  { sym: 'BTC',  name: '比特币',  unlock: Date.UTC(2013, 0, 1, 0),  src: { bitstamp: 'btcusd', bitfinex: 'tBTCUSD', binance: 'BTCUSDT',  binanceus: null } },
-  { sym: 'DOGE', name: '狗狗币',  unlock: Date.UTC(2014, 0, 21, 22), src: { bitstamp: null,     bitfinex: null,      binance: 'DOGEUSDT', binanceus: null },
+  { sym: 'BTC',  name: '比特币',  unlock: Date.UTC(2013, 0, 1, 0),  otc: Date.UTC(2013, 0, 1),  src: { bitstamp: 'btcusd', bitfinex: 'tBTCUSD', binance: 'BTCUSDT',  binanceus: null } },
+  { sym: 'DOGE', name: '狗狗币',  unlock: Date.UTC(2014, 0, 21, 22), otc: Date.UTC(2018, 0, 1),  src: { bitstamp: null,     bitfinex: null,      binance: 'DOGEUSDT', binanceus: null },
     cdd: [{ file: 'Poloniex_DOGEUSDT_1h.csv', quote: 'USDT' }, { file: 'Poloniex_DOGEBTC_1h.csv', quote: 'BTC' }] },
-  { sym: 'XRP',  name: '瑞波币',  unlock: Date.UTC(2014, 7, 14, 3),  src: { bitstamp: 'xrpusd', bitfinex: null,      binance: 'XRPUSDT',  binanceus: null },
+  { sym: 'XRP',  name: '瑞波币',  unlock: Date.UTC(2014, 7, 14, 3),  otc: Date.UTC(2018, 0, 1),  src: { bitstamp: 'xrpusd', bitfinex: null,      binance: 'XRPUSDT',  binanceus: null },
     cdd: [{ file: 'Poloniex_XRPUSDT_1h.csv', quote: 'USDT' }, { file: 'Poloniex_XRPBTC_1h.csv', quote: 'BTC' }] },
-  { sym: 'ETH',  name: '以太坊',  unlock: Date.UTC(2015, 7, 8, 6),   src: { bitstamp: 'ethusd', bitfinex: null,      binance: 'ETHUSDT',  binanceus: null },
+  { sym: 'ETH',  name: '以太坊',  unlock: Date.UTC(2015, 7, 8, 6),   otc: Date.UTC(2016, 5, 1),  src: { bitstamp: 'ethusd', bitfinex: null,      binance: 'ETHUSDT',  binanceus: null },
     cdd: [{ file: 'Poloniex_ETHUSDT_1h.csv', quote: 'USDT' }] },
-  { sym: 'SOL',  name: 'Solana',  unlock: Date.UTC(2020, 7, 11, 6),  src: { bitstamp: null,     bitfinex: null,      binance: 'SOLUSDT',  binanceus: 'SOLUSD' } },
+  { sym: 'SOL',  name: 'Solana',  unlock: Date.UTC(2020, 7, 11, 6),  otc: Date.UTC(2021, 0, 1),  src: { bitstamp: null,     bitfinex: null,      binance: 'SOLUSDT',  binanceus: 'SOLUSD' } },
 ];
 
 /** 按符号取币种定义 */
@@ -241,18 +249,84 @@ export const SUPPLY_CAP = {
 
 /**
  * OTC（场外交易 / 大宗交易，P2-B3 · GDD §15.3）—— 大额单子的**逃生门**：
- * 对手方私下一口价成交，**不吃滑点**，代价是一笔固定的溢价。
+ * 对手方私下一口价成交，**不吃滑点**，代价是一笔溢价。
  *
  * 形态（2026-09-29 拍板，勿擅改）：**只有现货 1x** —— 不做杠杆、不做空。
  *   ① 现实里 OTC 就是现货大宗撮合，没有「OTC 永续」这种东西；
  *   ② 若 OTC 能上 100x，它就是「无滑点 ＋ 高杠杆」的纯优解，§14.3 那套滑点对大户直接失效。
  *   ⇒ 复用 `positions.isSpot`（1x 做多 = 现货），**零新增仓位类型**。
  *
- * ⚠️ 三个数都是 GDD §15.3 的原值，**暂不改**：真机跑一局后按实测资产曲线复校
- *    （若门槛拦不到人再下调）。
+ * ⚠️ `unlock` / `min` 两个门槛是 GDD §15.3 的原值，**暂不改**：真机跑一局后按实测资产曲线复校。
+ *
+ * ── 溢价（P2-B 修订 · 史实化，2026-09-29）────────────────────────────────
+ * 原先是**固定 1%**。查证后的史实是：OTC 溢价**既随年代收敛、又随市况炸开** ——
+ *   ① 常态是**双向点差**，机构台 $1M–$10M 档约 0.10%–0.20%（弱来源，仅取量级）；
+ *      越早期场子越薄、做市商越少 ⇒ 点差越宽（2013 的 BTC 场外远贵于 2020）
+ *   ② 危机期做市商撤退 ⇒ 点差炸开（2020-03-12 Coinbase vs Binance 最大价差 $1,000–1,200）；
+ *      中国 USDT/CNY 场外溢价在 2017 牛市 >+5%、2020-03-12 后一度 +8%、2021-05-19 **+5.67%**
+ * 于是改成 **`基准点差(年代)` × `市况倍数(σ_30日)`**：
+ *
+ *     base(t)  = 几何插值，两端锚定（同一写法见 §15.2 的日流动性）
+ *     mult     = clamp( (σ_30日 ÷ σ_基准)^p , 1, multCap )
+ *     溢价     = clamp( base × mult , base , max )
+ *
+ * ⚠️ `σ_基准` **必须按年代分档**：2013 年的 BTC 天天 3% 波动、2020 年只有 2.9%，
+ *    不归一的话 `mult` 度量的是「绝对波动」而不是「相对自己那个年代有多慌」，
+ *    早期会被判成「永远在危机中」。三档取自**实测**（2026-09-29 从 BTC.bin 量出）：
+ *    σ_30日 的年代中位数 = 2013-2015 **3.33%** / 2016-2019 **3.44%** / 2020-2024 **2.89%**
+ * ⚠️ `p = 4`：实测危机期 σ 约为常态的 2–3 倍，而危机点差约为常态的 20–40 倍
+ *    ⇒ p ≈ log(30) / log(2.5) ≈ 3.7，取整 4。
+ * ⚠️ `multCap = 40` 与 `max = 8%` 是**两道不同的闸**：前者夹倍数、后者夹价格。
+ *    落到各年代：2020+ 最多 0.15% × 40 = **6%**（危机期实测 3%–6%）；2016-2019 与 2013-2015
+ *    被 `max` 兜在 **8%**（2013-12 那种 σ 12.3% 的癫狂期正好顶到这里）。
  */
 export const OTC = {
   unlock: 5e6,      // 权益 > $500 万 才解锁（§15.3）
   min: 1e6,         // 单笔名义下限 $100 万（§15.3）
-  premium: 0.01,    // 成交价溢价 1%（买上抬、卖下压，各 1%）
+  base: [           // 基准点差（常态点差）—— 几何插值的锚点，按年代收敛
+    { t: Date.UTC(2013, 0, 1), v: 0.0050 },   // 0.50%：早期场子薄、做市商少
+    { t: Date.UTC(2016, 0, 1), v: 0.0030 },   // 0.30%
+    { t: Date.UTC(2020, 0, 1), v: 0.0015 },   // 0.15%：机构化之后，2020 起不再降
+  ],
+  sigmaRef: [       // σ_基准（该年代的「常态波动」）—— 步骤函数，取实测年代中位数
+    { t: Date.UTC(2013, 0, 1), v: 0.0333 },
+    { t: Date.UTC(2016, 0, 1), v: 0.0344 },
+    { t: Date.UTC(2020, 0, 1), v: 0.0289 },
+  ],
+  p: 4,             // 市况倍数的指数
+  multCap: 40,      // 市况倍数上限
+  max: 0.08,        // 溢价硬上限 8%（任何年代、任何市况）
 };
+
+/** OTC 常态点差 `base(t)` —— 几何插值，两端锚定（同 §15.2 日流动性的写法） */
+export function otcBaseAt(t) {
+  const a = OTC.base;
+  if (t <= a[0].t) return a[0].v;
+  for (let k = 1; k < a.length; k++) {
+    if (t < a[k].t) {
+      const f = (t - a[k - 1].t) / (a[k].t - a[k - 1].t);
+      return a[k - 1].v * Math.pow(a[k].v / a[k - 1].v, f);   // 几何插值
+    }
+  }
+  return a[a.length - 1].v;
+}
+
+/** 该年代的 σ_基准 —— 步骤函数，升序取「最后一个 `t <= 时刻`」 */
+export function otcSigmaRefAt(t) {
+  let v = OTC.sigmaRef[0].v;
+  for (const s of OTC.sigmaRef) { if (s.t <= t) v = s.v; else break; }
+  return v;
+}
+
+/**
+ * 一次 OTC 成交的溢价（买上抬 / 卖下压的幅度）。
+ * @param {number} sigma 该币当前的 σ_30日（`impact.sigmaOf` 的结果，与滑点同一个数）
+ * @param {number} t     游戏时刻（ms）
+ * @returns {number} `base(t)` ~ `OTC.max`
+ */
+export function otcPremiumOf(sigma, t) {
+  const base = otcBaseAt(t);
+  const s = Number.isFinite(sigma) && sigma > 0 ? sigma : otcSigmaRefAt(t);
+  const mult = Math.min(OTC.multCap, Math.max(1, Math.pow(s / otcSigmaRefAt(t), OTC.p)));
+  return Math.min(OTC.max, Math.max(base, base * mult));
+}

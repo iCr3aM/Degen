@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt } from './config.js';
+import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, fillPrice, impactOf, sigmaOf } from './impact.js';
@@ -89,13 +89,25 @@ export const available = s => cashOf(s);
 export const otcUnlocked = s => equity(s) > OTC.unlock;
 
 /**
+ * 当前币**此刻**能不能走 OTC（P2-B 修订 · §15.3）。
+ * OTC 台不是币一上线就做它的：早期只有 BTC（`#bitcoin-otc` 2010 年就在做），
+ * ETH 要等到 2016 的 ICO 潮，XRP/DOGE 要等到 2018，SOL 更晚 —— 时刻表在 `config.COINS[].otc`。
+ */
+export const otcOpenFor = (s, sym = s.sym) => {
+  const coin = coinOf(sym);
+  return !!coin && timeOf(s) >= coin.otc;
+};
+
+/**
  * 当前**生效**的通道：`'book'`（盘口）或 `'otc'`（场外大宗）。
  *
  * ⚠️ OTC 只在「玩家选了它」**且「仍然解锁」**时成立 —— 权益掉回门槛下就自动退回盘口。
  *    否则会出现最别扭的一种状态：切换键已经藏起来了（不满足解锁条件），
  *    而 `s.chan` 还留着 `'otc'`，玩家接着下的每一单都在走一条看不见的通道。
+ * ⚠️ 同理还有**第二个**回退条件（P2-B 修订）：当前币还没开通 OTC ⇒ 也退回盘口。
+ *    换币时若还留着 `'otc'`，玩家会在一个「这个币根本没有的通道」里下单。
  */
-export const chanOf = s => (s.chan === 'otc' && otcUnlocked(s) ? 'otc' : 'book');
+export const chanOf = s => (s.chan === 'otc' && otcUnlocked(s) && otcOpenFor(s) ? 'otc' : 'book');
 
 /**
  * 账户权益归零即破产（GDD §1.3）。
@@ -149,6 +161,13 @@ function impactFor(sym, i, notional) {
 const slipTag = impact => (impact > 0 ? ` ｜ 滑点 ${fmtRate(impact, 2)}` : '');
 
 /**
+ * 一次 OTC 成交的溢价（P2-B 修订 · §15.3）。
+ * **复用同一个 `dailySigma`** —— 不需要第二套「市场有多慌」的度量，它本来就是现成的。
+ * ⚠️ 取「**此刻**」而不是开仓时的：卖出面对的是当时的流动性，不是当初的（§15.3 ⑤）。
+ */
+const otcPremiumFor = (s, sym) => otcPremiumOf(dailySigma(sym, s.i), timeOf(s));
+
+/**
  * 日志里的价格。只做一件事：抹掉浮点乘法的尾噪 ——
  * `13.078 × 1.006` 会算出 `13.156468000000001` 这种东西，直接贴进 nowrap 的日志条很难看。
  * 取 8 位有效数字（数据包本身就是按 8 位有效数字编码的），所以**未触发滑点时与原来一字不差**。
@@ -197,10 +216,10 @@ export function openTrade(s, side, frac = 1) {
   if (otc && margin < OTC.min) return { ok: false, why: `OTC 单笔最少 ${fmtMoney(OTC.min)}` };
 
   /* 成交价（P2-B1 / P2-B3）：盘口价 ± 代价 —— 买抬、卖压，**永远对玩家不利**。
-     代价有两种，同一时刻只有一种成立：盘口是平方根冲击、OTC 是固定 1% 溢价（不吃滑点）。
+     代价有两种，同一时刻只有一种成立：盘口是平方根冲击、OTC 是「基准点差 × 市况倍数」（不吃滑点）。
      ⚠️ 保证金与开仓费都不受它影响（那两项按名义价值算，与成交价无关），
         受影响的是 `size`：买贵了就拿到的币少一点，这才是代价的真实形态。 */
-  const cost = otc ? OTC.premium : impactFor(s.sym, s.i, margin * lev);
+  const cost = otc ? otcPremiumFor(s, s.sym) : impactFor(s.sym, s.i, margin * lev);
   const fill = fillPrice(price, side === 'long' ? 1 : -1, cost);
 
   /* 供应量上限（P2-B2 · §15.1 / §15.4）：买入会从市场里锁走一部分币，锁走的枚数不得越界。
@@ -227,7 +246,7 @@ export function openTrade(s, side, frac = 1) {
   if (otc) pos.otc = true;          // 只给 OTC 仓位打标（`capturedOf` 见到它就跳过）
   s.positions[s.sym] = pos;
 
-  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(OTC.premium, 2)}` : slipTag(cost);
+  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost);
   pushLog(s, `${side === 'long' ? '做多' : '做空'} ${s.sym} ${lev}x ｜ 保证金 ${fmtMoney(margin)} @ ${showPrice(fill)}${tag}`, side === 'long' ? 'long' : 'short');
   return { ok: true };
 }
@@ -252,13 +271,13 @@ export function closeTrade(s, why = '手动') {
 
   /* 成交价（P2-B1 / P2-B3）：**平多是卖、平空是买**，所以方向与开仓时相反 ——
      代价永远对玩家不利：卖掉打点折、买回抬点价。本次成交名义 = 整条仓位（一次性平完）。 */
-  const cost = otc ? OTC.premium : impactFor(sym, s.i, pos.size * price);
+  const cost = otc ? otcPremiumFor(s, sym) : impactFor(sym, s.i, pos.size * price);
   const fill = fillPrice(price, pos.side === 'long' ? -1 : 1, cost);
 
   const r = closePosition(pos, fill, feeRateOf(pos.ex));
   s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
   s.realized += r.pnl - r.fee;
-  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(OTC.premium, 2)}` : slipTag(cost);
+  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost);
   pushLog(s, `平仓 ${sym} ${pos.lev}x ｜ ${r.pnl >= 0 ? '盈利' : '亏损'} ${fmtMoney(r.pnl)}（${why}）${tag}`,
     r.pnl >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
