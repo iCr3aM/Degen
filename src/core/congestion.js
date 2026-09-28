@@ -4,7 +4,8 @@
  * 拥堵指数（0–100）是三个量叠出来的：
  *   ① **年代基础值** —— 年份的纯函数。⚠️ 这是**合成模型**，不是史实数据：
  *      GDD §6.4 只写「根据年份设定」、没给数字，这张表是本项目定的。
- *   ② **历史锚点加成** —— 三段真实拥堵窗口的抬升（2017-05 / 2017-12 / 2021-04）。
+ *   ② **历史锚点加成** —— 真实拥堵窗口的抬升。**表在 `anchors.js`**（P2-C 起唯一真相源）：
+ *      2017-05 / 2017-12 / 2021-04 三条 ＋ P2-C 补的 2015-07 / 2023-05 / 2024-04 三条。
  *   ③ **玩家脉冲** —— 你自己的大额转账把链挤了，48 游戏小时内线性衰减。这是 P2-A 的全部玩法：
  *      §6.5 那个「利用拥堵套利」在单机里没有对手，所以改成**反噬自己**。
  *
@@ -17,6 +18,7 @@
 
 import { GAME, HOUR_MS } from './config.js';
 import { dayIndexOf, liqOf } from './market.js';
+import { congestionAnchors } from './anchors.js';
 
 const DAY_MS = 24 * HOUR_MS;
 
@@ -36,31 +38,28 @@ const baseOfYear = y => YEAR_BASE[clamp(y, 2013, 2024) - 2013];
 /* ───────────────── ② 历史锚点加成 ───────────────── */
 
 /**
- * 三段真实拥堵窗口。△ 的取值落在 GDD §6.4 给的「+30 至 +60，持续 3–10 天」区间内。
+ * 窗口表**不在这里** —— 唯一真相源是 `anchors.js` 的 `ANCHORS`（P2-C），
+ * 本模块只消费它的 BTC 子集（`congestionAnchors()`）。原来这三条就地写死在这里，
+ * 与锚点表并存两份 ⇒ 改一处漏一处。
  *
- * ⚠️ 2017-12 写 **70** 而不是 60：§6.3 把「ICO 狂潮」与「CryptoKitties」记成两行，
+ * ⚠️ 2017-12 的 `add` 写 **70** 而不是 60：§6.3 把「ICO 狂潮」与「CryptoKitties」记成两行，
  *    表里是「+60（CryptoKitties 再叠 +10）」⇒ 峰值 = 70。ROADMAP 的落点验算
  *    「2017-12 窗口指数 90 = 基础 20 + 70」也印证这个读法。
  */
-const ANCHORS = [
-  { from: Date.UTC(2017, 4, 1),  days: 10, add: 40, ramp: 2,   fall: 4 },     // §12.1 首次链上大拥堵
-  { from: Date.UTC(2017, 11, 1), days: 10, add: 70, ramp: 2,   fall: 4 },     // ICO 狂潮 ＋ CryptoKitties
-  { from: Date.UTC(2021, 3, 1),  days: 7,  add: 45, ramp: 1.5, fall: 2.5 },   // §12.1 牛市高峰
-];
 
 /** 窗口内的归一形状：爬升 → 峰值平台 → 回落，取值恒在 [0, 1] */
-function anchorShape(elapsedDays, a) {
-  if (elapsedDays < 0 || elapsedDays >= a.days) return 0;
-  const plateau = a.days - a.ramp - a.fall;
-  if (elapsedDays < a.ramp) return elapsedDays / a.ramp;
-  if (elapsedDays < a.ramp + plateau) return 1;
-  return (a.days - elapsedDays) / a.fall;
+function anchorShape(elapsedDays, c) {
+  if (elapsedDays < 0 || elapsedDays >= c.days) return 0;
+  const plateau = c.days - c.ramp - c.fall;
+  if (elapsedDays < c.ramp) return elapsedDays / c.ramp;
+  if (elapsedDays < c.ramp + plateau) return 1;
+  return (c.days - elapsedDays) / c.fall;
 }
 
 /** 某一时刻的锚点总加成（分钟级平滑，按小时步进时看不出台阶） */
 export function anchorAddAt(t) {
   let sum = 0;
-  for (const a of ANCHORS) sum += a.add * anchorShape((t - a.from) / DAY_MS, a);
+  for (const a of congestionAnchors()) sum += a.congestion.add * anchorShape((t - a.t) / DAY_MS, a.congestion);
   return sum;
 }
 
