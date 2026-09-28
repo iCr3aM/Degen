@@ -92,6 +92,9 @@ function axisLabel(p) {
  *   slots    number            本帧视野的**槽位数**（= `view.js` 的 `count`）。
  *                              ⚠️ 不等于 `candles.length`：币种刚上线时可用根数少于 `count`，
  *                              柱宽必须按槽位算、柱子**右对齐**，否则开局那 1 根 K 线会撑满整屏（B22）。
+ *   anchors  Array<{d:number}>  历史锚点刻度（P2-C）：`d` = **显示单位**下的序号，
+ *                              `1h` 模式是小时序号、`1d` 模式是天序号。
+ *   right    number            视野**最右那根**的显示单位序号 —— 把 `d` 换算成槽位要用它。
  *   topInset number            顶部留白 = 左上角遮罩的实测高度（B27）。不传则退回 `PAD_TOP`。
  *   cssW/cssH number           容器尺寸（CSS 像素）
  *   yPx      number            价格轴的垂直平移（像素，向下为正；`view.js` 持有）
@@ -99,7 +102,7 @@ function axisLabel(p) {
  *                   否则玩家一直往同一边拖时状态里的值会越滚越大，松手再按就从远处跳回来。
  */
 export function drawChart(canvas, o) {
-  const { candles, vols, mark, entry, side, liq } = o;
+  const { candles, vols, mark, entry, side, liq, anchors, right } = o;
   const T = theme();
   const dpr = Math.min(3, (typeof devicePixelRatio === 'number' ? devicePixelRatio : 1) || 1);
   const W = Math.max(1, Math.round(o.cssW));
@@ -252,6 +255,28 @@ export function drawChart(canvas, o) {
       ctx.fillStyle = c.c >= c.o ? T.UP : T.DOWN;
       const x = xAt(k);
       ctx.fillRect(Math.round(x - bw / 2), bot - h, Math.round(bw), h);
+    }
+    ctx.restore();
+  }
+
+  // ── 历史锚点刻度（P2-C · 裁决 ④：**全部锚点都画在当前币上**） ──
+  // 新闻是全市场的（Luna / FTX 这类 `chain: null` 的事件本来就不属于任何一条链），
+  // 看哪条 K 线都该看见同一批历史节点 —— 按链过滤反而要多一套规则，收益不抵成本。
+  // ⚠️ 必须画在 K 线**之上**：默认密度下柱宽 ≈ 4px、刻度正好落在柱心，画在下面就整条被柱身盖住。
+  //    1px 淡色 ＋ 不可交互（移动端没有 hover，不做 tooltip），拖动/缩放照旧不受影响。
+  if (anchors && anchors.length && Number.isFinite(right)) {
+    ctx.save();
+    ctx.strokeStyle = T.MUT;
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = 1;
+    for (const a of anchors) {
+      const k = n - 1 - (right - a.d);          // 最右那根恒等于 `k = n − 1`
+      if (k < 0 || k >= n) continue;            // 视野外的锚点（`slots > n` 时会算到负数）
+      const x = Math.round(xAt(k)) + .5;
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, bot);
+      ctx.stroke();
     }
     ctx.restore();
   }

@@ -116,7 +116,8 @@ function dayBar(sym, d, upto) {
 /**
  * 出一帧要画的 K 线与量柱。这是渲染层唯一的入口，也是**唯一**会写回记录的地方
  * （夹取后的 `right` / `count` 必须落回记录，否则玩家一直往同一边拖时数字会越滚越大）。
- * @returns {{candles:Array, vols:Array<number>, mode:'1h'|'1d', count:number, locked:boolean, yPx:number}}
+ * @returns {{candles:Array, vols:Array<number>, mode:'1h'|'1d', count:number, locked:boolean, yPx:number, right:number}}
+ *   `right` 一并返回（P2-C）：锚点刻度要把「小时序号」换算成视野里的槽位，得知道最右那根是第几根。
  */
 export function windowFor(sym, i, cssW) {
   const { v } = norm(sym, i, cssW);
@@ -144,7 +145,7 @@ export function windowFor(sym, i, cssW) {
       vols.push(share > 0 ? share * (liqOf(sym, dayIndexOf(k)) || 0) : 0);
     }
   }
-  return { candles, vols, mode: v.mode, count: v.count, locked: v.locked, yPx: v.yPx };
+  return { candles, vols, mode: v.mode, count: v.count, locked: v.locked, yPx: v.yPx, right };
 }
 
 /** 视野是否被玩家锁住（锁住 = 不再自动跟随当前根，双击才回最新） */

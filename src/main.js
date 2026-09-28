@@ -12,6 +12,7 @@ import { createState, heldSyms, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded } from './core/market.js';
 import { createClock, chanOf, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp } from './core/engine.js';
+import { anchorAt } from './core/anchors.js';
 import { marginRateOf, isSpot } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, clearOver, renderBoot, hideBoot,
@@ -58,7 +59,10 @@ async function boot() {
   // 数据到位后把杠杆夹到当前年份允许的范围内（读档时年份可能已经变了）
   normalizeLeverage(s);
 
-  clock = createClock(s, { onFrame: () => draw() });
+  /* 新闻窗口内**强制一帧**（P2-C）：一次 `step()` 在 50x 下最多能推进 50 个游戏小时，
+     而渲染被节流到 80ms —— 不强制就会「窗口整个落在两帧之间」，玩家一次都看不到。
+     新闻是 `s.i` 的纯函数，所以这里只做一件事：窗口里别让节流把这一帧吞掉。 */
+  clock = createClock(s, { onFrame: () => draw(!!anchorAt(s.i)) });
   draw();
 
   bindActions(document.body, dispatch);

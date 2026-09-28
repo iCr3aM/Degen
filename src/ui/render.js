@@ -15,8 +15,9 @@ import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, leverageOptionsAt, 
 import { fmtDate, fmtHour, fmtMoney, fmtPct, fmtRate } from '../core/format.js';
 import { available, chanOf, equity, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
 import { isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
-import { isLoaded, rangeOf, candleAt } from '../core/market.js';
+import { isLoaded, rangeOf, candleAt, HOURS_PER_DAY } from '../core/market.js';
 import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
+import { anchorAt, anchorsInRange } from '../core/anchors.js';
 import { anyHeld, posOf } from '../core/state.js';
 import { drawChart } from './chart.js';
 import { windowFor, setYPx } from './view.js';
@@ -118,8 +119,14 @@ export function mount(root) {
     mini('保证金率', posRate),
   );
 
-  /* ── 日志条 ── */
+  /* ── 日志条 ──
+     拆成「标签 ＋ 正文」两个节点（P2-C）：锚点时刻在正文前挂一枚 `新闻` 小标签切到**新闻态**，
+     不带标签时就是原来那一条普通日志。槽位仍是 24px，固定块合计不变 —— 见 ⑤ 的裁决 ③。 */
+  const newsTag = el('i', 'news-tag', '新闻');
+  newsTag.hidden = true;
+  const logText = el('span');
   const logline = el('div', 'logline');
+  logline.append(newsTag, logText);
 
   /* ── 操作区 ── */
   const fracRow = el('div', 'row');
@@ -174,7 +181,7 @@ export function mount(root) {
     symbols, symBtns,
     canvas, chartWrap, chartHead, chSym, chChg, modeBtn, chartEta, chartLock,
     posbar, posSide, posPnl, posRate,
-    logline,
+    logline, newsTag, logText,
     fracBtns, levRow, levBtns, spdBtns,
     chanBtn, longBtn, shortBtn, closeBtn,
     _levSignature: '',
@@ -296,6 +303,14 @@ export function update(refs, s, view) {
   }
 
   const win = windowFor(sym, s.i, view.chartW);
+  /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
+     日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
+     （`count` 可能大于可用根数，这里的下界会算成负数）。 */
+  const hLo = win.mode === '1d' ? (win.right - win.count + 1) * HOURS_PER_DAY : win.right - win.count + 1;
+  const hHi = win.mode === '1d' ? win.right * HOURS_PER_DAY + HOURS_PER_DAY - 1 : win.right;
+  const anchorMarks = anchorsInRange(hLo, hHi).map(a => ({
+    d: win.mode === '1d' ? Math.floor(a.at / HOURS_PER_DAY) : a.at,
+  }));
   /* 图上唯一的入口：K 线、量柱、两条水平线都在这一笔里画。
      ⚠️ 返回值必须写回视野 —— 价格轴的平移限位夹在 `drawChart` 里（换算的唯一真源在那边），
         状态记的是**没夹过**的原始位移，不写回就会越夹越离谱。 */
@@ -304,6 +319,9 @@ export function update(refs, s, view) {
     vols: win.vols,
     /* 槽位数（= 视野要的根数）：柱宽按它算、柱子右对齐，币种刚上线时才不会一根撑满屏（B22） */
     slots: win.count,
+    /* 历史锚点刻度（P2-C）—— 与最右那根一起交给图上换算槽位 */
+    anchors: anchorMarks,
+    right: win.right,
     /* 顶部留白 = 左上角遮罩的**实测**高度（Batch 5 · B27）：量不到时由 `chart.js` 退回自己的兜底常量。
        `getBoundingClientRect` 与 `main.js` 那次取 `chartWrap` 尺寸落在同一帧，不额外多一次强制布局。 */
     topInset: refs.chartHead.getBoundingClientRect().height,
@@ -369,10 +387,23 @@ export function update(refs, s, view) {
      而此刻行情往往已经在跑了 —— 写「等待开盘」等于声称一件不成立的事。
      新开局的「开盘」日志由 `main.js` 的 `onIntro()` 补上，空态几乎只出现在老存档上。 */
   const last = s.log[0];
-  refs.logline.textContent = last
-    ? `[${fmtHour(GAME.start + (last.at ?? s.i) * HOUR_MS)}] ${last.text}`
-    : '—';
-  refs.logline.className = 'logline ' + (last ? (last.kind === 'bad' ? 'down' : last.kind === 'ok' ? 'up' : 'mut') : 'mut');
+  /* **新闻态**（P2-C · 裁决 ③：复用日志条这 24px 槽位，零布局开销）：
+     锚点窗口（`[at, at + 24)`）内改播新闻，**但只要有一条比它更新的日志就让位** ——
+     否则玩家刚开完仓，自己那一拍反馈会被新闻压掉整整 24 游戏小时。
+     新闻是 `s.i` 的纯函数，不存任何「已播过」标志：窗口本身不重叠（锚点稀疏），
+     所以同一句新闻在一局里只可能出现一次。 */
+  const news = anchorAt(s.i);
+  const newsOn = !!news && !(last && last.at > news.at);
+  refs.newsTag.hidden = !newsOn;
+  if (newsOn) {
+    refs.logText.textContent = `[${fmtHour(GAME.start + news.at * HOUR_MS)}] ${news.title}`;
+    refs.logline.className = 'logline news';
+  } else {
+    refs.logText.textContent = last
+      ? `[${fmtHour(GAME.start + (last.at ?? s.i) * HOUR_MS)}] ${last.text}`
+      : '—';
+    refs.logline.className = 'logline ' + (last ? (last.kind === 'bad' ? 'down' : last.kind === 'ok' ? 'up' : 'mut') : 'mut');
+  }
 
   /* 金额档 */
   for (const [k, b] of refs.fracBtns) b.classList.toggle('on', Math.abs(s.sizeFrac - Number(k)) < 1e-9);
