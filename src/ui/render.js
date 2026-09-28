@@ -12,7 +12,7 @@
  */
 
 import { GAME, COINS, EXCHANGES, coinOf, exchangeOf, leverageOptionsAt, feeRateOf, HOUR_MS } from '../core/config.js';
-import { fmtDate, fmtHour, fmtMoney, fmtPct, fmtPrice, fmtRate } from '../core/format.js';
+import { fmtDate, fmtHour, fmtMoney, fmtPct, fmtRate } from '../core/format.js';
 import { available, equity, markPrice, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
 import { isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
 import { isLoaded, rangeOf, candleAt } from '../core/market.js';
@@ -106,7 +106,7 @@ export function mount(root) {
   posbar.append(
     mini('持仓', posSide),
     mini('未实现盈亏', posPnl),
-    mini('保证金率 / 强平价', posRate),
+    mini('保证金率', posRate),
   );
 
   /* ── 日志条 ── */
@@ -209,7 +209,7 @@ export function update(refs, s, view) {
      所以拥堵状态词只出现在选所弹层里，顶栏这一行只承担倒计时。 */
   refs.exRate.textContent = s.transfer
     ? `→ 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`
-    : `费率 ${fmtRate(feeRateOf(s.ex))}`;
+    : `费率 ${fmtRate(feeRateOf(s.ex), 2)}`;
 
   /* 币种条 */
   const now = timeOf(s);
@@ -238,6 +238,8 @@ export function update(refs, s, view) {
     mark,
     entry: cur ? cur.entry : null,
     side: cur ? cur.side : null,
+    /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。现货没有强平价 ⇒ 传 null。 */
+    liq: cur && !isSpot(cur) ? liquidationPrice(cur) : null,
     cssW: view.chartW,
     cssH: view.chartH,
   });
@@ -262,13 +264,16 @@ export function update(refs, s, view) {
     const pnl = unrealizedOf(s, p.sym);
     refs.posPnl.textContent = fmtMoney(pnl, { sign: true });
     refs.posPnl.className = 'num ' + (pnl >= 0 ? 'up' : 'down');
+    /* 第三格**只剩保证金率**（Batch 2 · B9，2026-09-29）：原来这里是「保证金率 / 强平价」，
+       格宽只有 1/3 屏，两个数一串必然被 `text-overflow` 截掉尾巴（用户实机发现）。
+       强平价已搬到 K 线的开仓线左端标签，这一格终于能完整放下一个数。
+       现货（1x 做多）没有维持保证金率这一说 —— 只有币价归零才归零本金（GDD §9.1），填 `--`。 */
     if (spot) {
-      // 现货没有保证金率与强平价（GDD §9.1：只有币价归零才归零本金）
-      refs.posRate.textContent = '无强平';
+      refs.posRate.textContent = '--';
       refs.posRate.className = 'num mut';
     } else {
       const rate = posMark == null ? 0 : marginRateOf(p, posMark);
-      refs.posRate.textContent = `${fmtRate(rate)} / ${fmtPrice(liquidationPrice(p))}`;
+      refs.posRate.textContent = fmtRate(rate);
       refs.posRate.className = 'num ' + (rate < 0.05 ? 'down' : 'mut');
     }
   } else {
@@ -400,7 +405,7 @@ export function pickExchange(s, anchor) {
 
     // 上行：名字 ＋ 费率；下行：这家所自己的事（确认数 / 到账预估 / 为什么不能选）
     const l1 = el('div', 'pick-l1');
-    l1.append(el('b', null, ex.name), el('u', null, `费率 ${fmtRate(ex.fee)}`));
+    l1.append(el('b', null, ex.name), el('u', null, `费率 ${fmtRate(ex.fee, 2)}`));
     const note = notYet ? '还没开业'
       : dead ? '已归零'
         : s.transfer ? '转账在途'
@@ -421,6 +426,59 @@ export function pickExchange(s, anchor) {
 
   back.addEventListener('pointerdown', closePicker);
   ov.append(back, panel);
+  ov.hidden = false;
+  picker = ov;
+}
+
+/**
+ * 换所二次确认（Batch 2 · B10，2026-09-29）。
+ *
+ * 为什么值得多这一步：换所从 P2-A 起是一笔**要等好几根 K 线的链上转账**（2017-12 那种拥堵下是 13 根），
+ * 点错一次就是十几个游戏小时白等，而且那期间所有行都不可点（同时在途只允许一笔）。
+ * 之前是「点一行就立刻搬走」，现在是「点一行 → 问一句 → 才搬」。
+ *
+ * 弹层里只放**做决定需要的三样**：拥堵状态词、预估到账小时数、目标所费率。
+ * 拥堵数字（0–100）与确认数不在这里 —— 前者在选所弹层里已经用状态词表达过，
+ * 后者是上一层的细节（LESS IS MORE）。
+ *
+ * 宽高都不写死：`left/right: 12px` 撑满（与 `#app` 一样的两侧留白），垂直居中。
+ */
+export function confirmExchange(s, id) {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const ex = exchangeOf(id);
+  const congestion = congestionOf(s);
+  const back = el('div', 'pick-back');
+  const box = el('div', 'confirm');
+
+  box.append(el('h3', null, `切换到 ${ex ? ex.name : id}？`));
+
+  const line = (k, v) => {
+    const d = el('div', 'confirm-row');
+    d.append(el('i', null, k), el('span', 'num', v));
+    return d;
+  };
+  const rows = el('div', 'confirm-rows');
+  rows.append(
+    line('拥堵', congestionLabel(congestion)),
+    line('预估到账', `${arrivalCandles(congestion, id)} 小时`),
+    line('费率', fmtRate(ex ? ex.fee : 0, 2)),
+  );
+  box.append(rows);
+
+  // 按钮复用操作区那套 `.act`：确认走绿色实心（= 正向动作），取消走中性灰
+  const ok = el('button', 'act long', '确认切换');
+  ok.dataset.exok = id;
+  const no = el('button', 'act flat', '取消');
+  no.dataset.exno = '';
+  const btns = el('div', 'confirm-btns');
+  btns.append(ok, no);
+  box.append(btns);
+
+  back.addEventListener('pointerdown', closePicker);
+  ov.append(back, box);
   ov.hidden = false;
   picker = ov;
 }

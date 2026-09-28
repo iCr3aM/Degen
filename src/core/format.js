@@ -33,29 +33,41 @@ export function fmtPrice(p) {
 }
 
 /**
- * 金额（USDT）：**固定 $ + 千分位 + 两位小数**，永不换单位。
- * 权益从 $3,000.00 长到 $12,345,678.90 时，只有位数在变，格式一个字符都不变。
+ * 金额（USDT）：**固定 $ + 千分位 + 一位小数**，永不换单位。
+ * 权益从 $3,000.0 长到 $12,345,678.9 时，只有位数在变，格式一个字符都不变。
+ *
+ * ⚠️ 两位 → **一位**（Batch 2 · B7，2026-09-29）：手机上每个数字都要挤在 91–179px 的格子里，
+ *    第二位小数（1 分）在这个游戏里没有任何决策价值 —— 权益 $3,000.0 与 $3,000.00 一样够用。
  */
 export function fmtMoney(n, { sign = false } = {}) {
   if (!Number.isFinite(n)) return '--';
   const neg = n < 0;
   const a = Math.abs(n);
-  const s = a.toFixed(2);
+  const s = a.toFixed(1);
   const [ip, fp] = s.split('.');
   const body = '$' + group(ip) + '.' + fp;
   if (neg) return '-' + body;
   return (sign ? '+' : '') + body;
 }
 
-/** 百分比：涨跌幅 / 保证金率。`+1.23%` / `-4.56%` */
-export function fmtPct(x, digits = 2) {
+/**
+ * 百分比：涨跌幅 / 保证金率。`+1.2%` / `-4.6%`
+ *
+ * ⚠️ 默认两位 → **一位**（Batch 2 · B7）。要更高精度就显式传 `digits`（资金费率传 4）。
+ */
+export function fmtPct(x, digits = 1) {
   if (!Number.isFinite(x)) return '--';
   const v = x * 100;
   return (v >= 0 ? '+' : '') + v.toFixed(digits) + '%';
 }
 
-/** 不带符号的百分比（保证金率这类恒正的值） */
-export function fmtRate(x, digits = 2) {
+/**
+ * 不带符号的百分比（保证金率这类恒正的值）。默认**一位**小数（Batch 2 · B7）。
+ *
+ * ⚠️ **费率必须显式传 2**：四家所是 0.20% / 0.10% / 0.05% / 0.04%，压到一位后
+ *    BitMEX 与 Binance 会双双变成「0.0%」—— 那不是省地方，是把信息抹掉了。
+ */
+export function fmtRate(x, digits = 1) {
   if (!Number.isFinite(x)) return '--';
   return (x * 100).toFixed(digits) + '%';
 }

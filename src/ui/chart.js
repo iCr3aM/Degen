@@ -60,10 +60,11 @@ function axisLabel(p) {
  *   mark     number            当前价（画水平线）
  *   entry    number|null       持仓开仓价
  *   side     'long'|'short'|null
+ *   liq      number|null       强平价（现货传 null）
  *   cssW/cssH number           容器尺寸（CSS 像素）
  */
 export function drawChart(canvas, o) {
-  const { candles, mark, entry, side } = o;
+  const { candles, mark, entry, side, liq } = o;
   const T = theme();
   const dpr = Math.min(3, (typeof devicePixelRatio === 'number' ? devicePixelRatio : 1) || 1);
   const W = Math.max(1, Math.round(o.cssW));
@@ -177,6 +178,21 @@ export function drawChart(canvas, o) {
     ctx.fillStyle = '#1a1405';
     ctx.textAlign = 'left';
     ctx.fillText(tag, plotW - tw + 3, ty);
+
+    // ── 强平价：**贴在开仓线的左端**（Batch 2 · B9，2026-09-29） ──
+    // 为什么搬到这里：原来它和保证金率挤在持仓条第三格里，两个数一起被 `text-overflow` 截断。
+    // 图上这条开仓线本来就横跨整个画布，**左端是空的** —— 放这儿既不占布局、又天然离 K 线最近。
+    // 用 `--down` 红标（在与不在，强平价都是风险信号），与右端金色的开仓价一眼分得开。
+    // 它挂的是**开仓线的 y**：强平价在中长仓里通常远在可视区间之外，单独画线只会永远贴在画布边缘。
+    if (Number.isFinite(liq)) {
+      const ltag = '强 ' + axisLabel(liq);
+      const lw = ctx.measureText(ltag).width + 6;
+      ctx.fillStyle = T.DOWN;
+      ctx.fillRect(0, ty - 8, lw, 16);
+      ctx.fillStyle = '#1a0508';
+      ctx.textAlign = 'left';
+      ctx.fillText(ltag, 3, ty);
+    }
   }
 
   // ── 当前价（实线 + 右端高亮标签） ──

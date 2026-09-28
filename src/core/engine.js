@@ -15,7 +15,7 @@
 import { GAME, HOUR_MS, EXCHANGES, coinOf, exchangeOf, maxLeverageAt, feeRateOf } from './config.js';
 import { candleAt, closeAt, hasCandle, isLoaded, loadCoin } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
-import { fmtRate } from './format.js';
+import { fmtMoney, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, openPosition, pnlOf,
   FUNDING, fundingOf, fundingRateOf,
@@ -131,7 +131,7 @@ export function openTrade(s, side, frac = 1) {
   pos.openFee = fee;
   s.positions[s.sym] = pos;
 
-  pushLog(s, `${side === 'long' ? '做多' : '做空'} ${s.sym} ${lev}x ｜ 保证金 $${margin.toFixed(2)} @ ${price}`, side === 'long' ? 'long' : 'short');
+  pushLog(s, `${side === 'long' ? '做多' : '做空'} ${s.sym} ${lev}x ｜ 保证金 ${fmtMoney(margin)} @ ${price}`, side === 'long' ? 'long' : 'short');
   return { ok: true };
 }
 
@@ -150,7 +150,7 @@ export function closeTrade(s, why = '手动') {
   const r = closePosition(pos, price, feeRateOf(pos.ex));
   s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
   s.realized += r.pnl - r.fee;
-  pushLog(s, `平仓 ${sym} ${pos.lev}x ｜ ${r.pnl >= 0 ? '盈利' : '亏损'} $${r.pnl.toFixed(2)}（${why}）`,
+  pushLog(s, `平仓 ${sym} ${pos.lev}x ｜ ${r.pnl >= 0 ? '盈利' : '亏损'} ${fmtMoney(r.pnl)}（${why}）`,
     r.pnl >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
 
@@ -164,7 +164,7 @@ export function closeTrade(s, why = '手动') {
  * ⚠️ 多仓下它**不再直接等于破产** —— 是否收摊由调用方在清点完全部仓位后看总权益决定。
  */
 function forceLiquidate(s, pos, atPrice) {
-  pushLog(s, `爆仓 ${pos.sym} ${pos.lev}x ｜ 保证金 $${pos.margin.toFixed(2)} 全部损失 @ ${atPrice.toFixed(4)}`, 'bad');
+  pushLog(s, `爆仓 ${pos.sym} ${pos.lev}x ｜ 保证金 ${fmtMoney(pos.margin)} 全部损失 @ ${atPrice.toFixed(4)}`, 'bad');
   s.realized -= pos.margin;
   delete s.positions[pos.sym];
 }
@@ -216,7 +216,7 @@ export function switchExchange(s, id) {
   normalizeLeverage(s);                                // 新所的上限可能更低，夹取一次
 
   const add = bumpPulse(s, amount);                    // > 当日 BTC 流动性的 10% 才算大额
-  pushLog(s, `转账 → ${ex.name} ｜ $${amount.toFixed(2)} ｜ 拥堵${congestionLabel(congestion)} · ${n} 小时后到账`
+  pushLog(s, `转账 → ${ex.name} ｜ ${fmtMoney(amount)} ｜ 拥堵${congestionLabel(congestion)} · ${n} 小时后到账`
     + (add ? ` ｜ 推高拥堵 +${add.toFixed(1)}` : ''), 'info');
   return { ok: true };
 }
@@ -245,7 +245,7 @@ function collapseExchange(s, ex) {
   if (margin) s.realized -= margin;
 
   const hit = lost + margin;
-  pushLog(s, hit > 0 ? `${ex.name} 归零 ｜ 损失 $${hit.toFixed(2)}` : `${ex.name} 归零`,
+  pushLog(s, hit > 0 ? `${ex.name} 归零 ｜ 损失 ${fmtMoney(hit)}` : `${ex.name} 归零`,
     hit > 0 ? 'bad' : 'info');
 
   if (isBankrupt(s)) { endGame(s, OVER.LIQUIDATED); return true; }
@@ -278,7 +278,7 @@ export function advanceOneHour(s) {
     s.books[tr.to] = (s.books[tr.to] ?? 0) + tr.amount;
     s.transfer = null;
     const to = exchangeOf(tr.to);
-    pushLog(s, `到账 ${to ? to.name : tr.to} ｜ $${tr.amount.toFixed(2)}`, 'ok');
+    pushLog(s, `到账 ${to ? to.name : tr.to} ｜ ${fmtMoney(tr.amount)}`, 'ok');
   }
   decayPulse(s);
 
@@ -337,7 +337,10 @@ function settleFunding(s) {
     // 各币各看各的动量，费率并不相同 —— 日志只报一个**按名义价值加权的综合费率**，
     // 它恰好能自洽地解释那个净额，不会出现「费率写 +0.01% 却收钱」这种读不通的情况。
     const rate = net / gross;
-    pushLog(s, `资金费率 ${fmtRate(Math.abs(rate), 4)} ｜ ${net > 0 ? '支出' : '收入'} $${Math.abs(net).toFixed(2)}`,
+    // 文案（Batch 2 · B8，2026-09-29 拍板）：**只写带符号的金额**，不再写「支出 / 收入」四个字 ——
+    // 「−$0.05」已经同时表达了方向和数额，多两个汉字只是把日志条挤爆（日志条一行 nowrap + 省略号）。
+    // 符号取自玩家视角：`net > 0` = 应付 ⇒ 金额取负。
+    pushLog(s, `资金费率 ${fmtRate(Math.abs(rate), 4)} ｜ ${fmtMoney(-net, { sign: true })}`,
       net > 0 ? 'bad' : 'ok');
   }
 

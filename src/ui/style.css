@@ -437,6 +437,33 @@ html, body {
 .pick-row:active:not(:disabled) { background: var(--line); }
 .pick-row:disabled { opacity: .4; cursor: default; }
 
+/* ══════════════ 换所二次确认（Batch 2 · B10） ══════════════
+   挂在同一个 `#overlay` 上（`render.confirmExchange`）。与选所弹层共用 `.pick-back` 暗底，
+   但**居中而不是贴着顶栏**：它不是「选项菜单」，是一个必须回答的问题，居中才有停顿感。
+   `left/right: 12px` 撑满 —— 与 `#app` 同一个两侧留白，任何机型都不溢出。 */
+.confirm {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 12px;
+}
+.confirm h3 { margin: 0; font-size: 14px; font-weight: 600; }
+/* 三行「标签 —— 数值」：行高 20px 排开，不用 gap —— 遵守「纵向间距只有 8 与 12 两档」那条约束 */
+.confirm-rows { margin-top: 12px; }
+.confirm-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  line-height: 20px;
+  font-size: 12px;
+}
+.confirm-row i { font-style: normal; color: var(--mut); }
+.confirm-btns { display: flex; gap: 8px; margin-top: 12px; }
+
 /* 首屏加载 / 出错 */
 .boot {
   position: fixed;

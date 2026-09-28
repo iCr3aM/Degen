@@ -12,7 +12,7 @@ import { createState, heldSyms, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded } from './core/market.js';
 import { createClock, openTrade, closeTrade, switchExchange, timeOf, normalizeLeverage } from './core/engine.js';
-import { mount, update, renderOver, clearOver, renderBoot, hideBoot, pickExchange, closePicker } from './ui/render.js';
+import { mount, update, renderOver, clearOver, renderBoot, hideBoot, pickExchange, confirmExchange, closePicker } from './ui/render.js';
 import { bindActions } from './ui/bind.js';
 
 const root = document.getElementById('app');
@@ -122,6 +122,15 @@ function dispatch(node) {
 
   if (d.sym !== undefined) return onSym(d.sym);
   if (d.ex !== undefined) return onEx(d.ex);
+  /* 换所二次确认的两个出口（Batch 2 · B10）—— 确认键自带目标所 id，所以不需要额外的「待确认」状态。 */
+  if (d.exok !== undefined) {
+    closePicker();
+    const r = switchExchange(s, d.exok);
+    if (!r.ok) pushLog(s, r.why, 'bad');
+    after();
+    return;
+  }
+  if (d.exno !== undefined) { closePicker(); after(); return; }
   if (d.frac !== undefined) { s.sizeFrac = Number(d.frac); after(); return; }
   if (d.lev !== undefined) {
     const want = Number(d.lev);
@@ -149,18 +158,22 @@ function dispatch(node) {
 }
 
 /**
- * 选所：顶栏那枚「名称 / 费率」按钮点开弹层，弹层里点某一家才真的换。
- * 换所是**免费且即时**的，失败（没开业 / 已归零 / 还挂着仓）只记一条日志。
+ * 选所：顶栏那枚「名称 / 费率」按钮点开弹层（`data-ex="pick"`），
+ * 弹层里点某一家（`data-ex=交易所 id`）**不立刻搬** —— 先弹二次确认（Batch 2 · B10），
+ * 确认按钮带 `data-exok=交易所 id`，取消带 `data-exno`。
+ *
+ * 为什么分成三段：换所是一笔要等好几根 K 线的链上转账，点错一次代价是整个等待周期白费。
+ * 失败（没开业 / 已归零 / 还挂着仓）由 `switchExchange` 判，只记一条日志。
  */
 function onEx(id) {
   if (id === 'pick') {
     if (!s.over) pickExchange(s, refs.exBtn);
     return;
   }
-  closePicker();
-  const r = switchExchange(s, id);
-  if (!r.ok) pushLog(s, r.why, 'bad');
-  after();
+  // 点「当前所」这一行：本来就无事可做，直接收掉弹层，不必问一句再切到自己
+  if (id === s.ex) { closePicker(); return; }
+  if (s.over) { closePicker(); return; }
+  confirmExchange(s, id);
 }
 
 function onSym(sym) {

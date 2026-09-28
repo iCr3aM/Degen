@@ -9,7 +9,7 @@
  */
 
 /** 所有动作键。渲染出的 `data-*` 必须落在这里，否则点了没反应。 */
-export const ACTION_KEYS = ['sym', 'ex', 'frac', 'lev', 'speed', 'act', 'pause', 'restart', 'wipe'];
+export const ACTION_KEYS = ['sym', 'ex', 'exok', 'exno', 'frac', 'lev', 'speed', 'act', 'pause', 'restart', 'wipe'];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');
 
