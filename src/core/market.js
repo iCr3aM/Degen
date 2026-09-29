@@ -112,12 +112,8 @@ export function hasCandle(sym, i) {
   return !!r && i >= r[0] && i < r[1];
 }
 
-/**
- * 取第 i 根 K 线。未加载 / 越界时返回 null —— **调用方必须能接受 null**，
- * 因为币种在解锁之前本来就没有行情。
- * @returns {{o:number,h:number,l:number,c:number}|null}
- */
-export function candleAt(sym, i) {
+/** 从数据包解码第 i 根（**不含价格位移**）—— `candleAt` / `rawCloseAt` 共用的底座 */
+function decodeAt(sym, i) {
   const rec = series.get(sym);
   const r = rangeOf(sym);
   if (!rec || !r) return null;
@@ -127,14 +123,39 @@ export function candleAt(sym, i) {
   const k = (i - r[0]) * 4;
   const scale = meta.scale;
   const o = ints[k] / scale;
-  const h = o + ints[k + 1] / scale;
-  const l = o + ints[k + 2] / scale;
-  const c = o + ints[k + 3] / scale;
+  return {
+    o,
+    h: o + ints[k + 1] / scale,
+    l: o + ints[k + 2] / scale,
+    c: o + ints[k + 3] / scale,
+  };
+}
+
+/**
+ * 取第 i 根 K 线。未加载 / 越界时返回 null —— **调用方必须能接受 null**，
+ * 因为币种在解锁之前本来就没有行情。
+ * @returns {{o:number,h:number,l:number,c:number}|null}
+ */
+export function candleAt(sym, i) {
+  const c = decodeAt(sym, i);
+  if (!c) return null;
 
   /* 价格位移：系数按**根**取（一笔单只影响它之后的行情），不是全局常数 —— 见 god.js 的文件头 */
   const f = factorSource ? factorSource(sym, i) : 1;
-  if (f === 1) return { o, h, l, c };
-  return { o: o * f, h: h * f, l: l * f, c: c * f };
+  if (f === 1) return c;
+  return { o: c.o * f, h: c.h * f, l: c.l * f, c: c.c * f };
+}
+
+/**
+ * 第 i 根的收盘价，**不含任何价格位移** —— 就是数据包里的原值。
+ *
+ * ⚠️ 新闻条的涨跌幅走这条（P2-C ①·补）：那个数要的是**真实行情**，
+ *    不能把玩家自己砸出来的位移算进去 —— 上帝模式的 `s.god.scale` 能把价差拉出几十倍，
+ *    届时新闻条会显示一条「历史上根本没发生过」的涨跌幅。
+ */
+export function rawCloseAt(sym, i) {
+  const c = decodeAt(sym, i);
+  return c ? c.c : null;
 }
 
 /**

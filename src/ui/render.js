@@ -15,7 +15,7 @@ import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, leverageOptionsAt, 
 import { fmtDate, fmtHour, fmtMoney, fmtMoneyCompact, fmtPct, fmtRate } from '../core/format.js';
 import { available, chanOf, equity, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
 import { isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
-import { isLoaded, rangeOf, candleAt, HOURS_PER_DAY } from '../core/market.js';
+import { isLoaded, rangeOf, candleAt, rawCloseAt, HOURS_PER_DAY } from '../core/market.js';
 import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { anchorAt, anchorsInRange } from '../core/anchors.js';
 import { anyHeld, posOf } from '../core/state.js';
@@ -29,6 +29,24 @@ const el = (tag, cls, text) => {
   if (text != null) n.textContent = text;
   return n;
 };
+
+/**
+ * 新闻条尾部的**真实涨跌幅**（P2-C ①·补）：新闻之前 24 小时的行情变动，**从数据包现算**。
+ *
+ * 窗口固定取 `[news.at − 24, news.at]`，**不随 `s.i` 推进而变** —— 它是「这条新闻之前市场走了多少」，
+ * 不是「现在走了多少」。
+ * ⚠️ 走 `rawCloseAt`（不含价格位移）：那是玩家自己的单，与「历史上发生了什么」无关；
+ *    上帝模式的 `s.god.scale` 能把价差拉出几十倍，用它算出来的涨跌幅是数据包里根本没有的数。
+ * ⚠️ 无前视：窗口右端 = `news.at`，而新闻只在 `s.i ≥ news.at` 时显示。
+ * 取不到（该币此刻还没上线 / 行情未加载）时整段省略。
+ */
+function newsMove(news) {
+  const sym = news.chain === 'eth' ? 'ETH' : 'BTC';
+  const a = rawCloseAt(sym, news.at - HOURS_PER_DAY);
+  const b = rawCloseAt(sym, news.at);
+  if (!(a > 0) || !(b > 0)) return '';
+  return ` ｜ ${sym} ${fmtPct(b / a - 1, 1)}`;
+}
 
 /**
  * 建骨架。返回一个 refs 对象，`update()` 只认这个对象里的字段。
@@ -427,7 +445,7 @@ export function update(refs, s, view) {
   const newsOn = !!news && !(last && last.at > news.at);
   refs.newsTag.hidden = !newsOn;
   if (newsOn) {
-    refs.logText.textContent = `[${fmtHour(GAME.start + news.at * HOUR_MS)}] ${news.title}`;
+    refs.logText.textContent = `[${fmtHour(GAME.start + news.at * HOUR_MS)}] ${news.title}${newsMove(news)}`;
     refs.logline.className = 'logline news';
   } else {
     refs.logText.textContent = last
