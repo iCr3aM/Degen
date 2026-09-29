@@ -11,7 +11,7 @@
  * 所有会变的数字都挂在 `refs` 上，`update()` 是唯一的写入口。
  */
 
-import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
+import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
 import { fmtDate, fmtHour, fmtMoney, fmtPct, fmtRate } from '../core/format.js';
 import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
@@ -505,6 +505,10 @@ export function update(refs, s, view) {
   refs.tradeModeBtn.textContent = fut ? '合约' : '现货';
   refs.tradeModeBtn.classList.toggle('on', fut);
 
+  /* 该所此刻开没开**融资**（v10）—— 一个数决定两件事：「卖出」能不能开空、杠杆行是不是置灰。
+     ⚠️ 只查**现货表**，与当前模式无关 —— 合约做空是保证金交易，不需要借币。 */
+  const canLev = hasFinancingAt(now, s.ex);
+
   /* 动作行（v9 · §15.3 N4）：「没有的选项不显示」——
      现货三枚（盘口 / 买入 / 卖出）、合约四枚（盘口 / 做多 / 做空 / 平仓），两组互斥。 */
   const spotMode = !fut;
@@ -518,7 +522,12 @@ export function update(refs, s, view) {
      ⚠️ v9：两张表的上限不同（§15.1），切模式必须换一张 —— 所以 `kind` 要进签名。 */
   const kind = fut ? 'fut' : 'spot';
   const opts = leverageOptionsAt(now, s.ex, kind);
-  const sig = kind + ':' + opts.join(',') + '#' + s.lev;
+  /* 「有、但此刻点不动」的一行（v10 · ②）：现货模式下该所没有融资 ⇒ 可选档只剩一个 `1x`。
+     **保留可见**（换所时不再忽隐忽现、K 线高度不跳），但整行走 `.off`（更暗 ＋ 虚线），
+     点一下由 `main.js` 给一条「暂不可用 ｜ 为什么」。
+     ⚠️ 用 `aria-disabled` 而不是 `disabled` —— 后者会连 `pointerdown` 一起吞掉，点了零反馈。 */
+  const levOff = kind === 'spot' && !canLev;
+  const sig = kind + ':' + opts.join(',') + '#' + s.lev + (levOff ? '!' : '');
   if (sig !== refs._levSignature) {
     refs._levSignature = sig;
     refs.levRow.querySelectorAll('.opt').forEach(n => n.remove());
@@ -526,7 +535,13 @@ export function update(refs, s, view) {
     for (const v of opts) {
       const b = el('button', 'opt', v + 'x');
       b.dataset.lev = String(v);
-      b.classList.toggle('on', v === s.lev);
+      if (levOff) {
+        /* 置灰时**不给 `.on`** —— 蓝底 ＋ 虚线会长成第三种没有定义过的样子 */
+        b.classList.add('off');
+        b.setAttribute('aria-disabled', 'true');
+      } else {
+        b.classList.toggle('on', v === s.lev);
+      }
       refs.levRow.append(b);
       refs.levBtns.set(v, b);
     }
@@ -546,7 +561,15 @@ export function update(refs, s, view) {
   refs.shortBtn.disabled = !(tradable && !cur);
   refs.closeBtn.disabled = !cur || lockedUI;
   refs.buyBtn.disabled = !(tradable && dir !== 'long');
-  refs.sellBtn.disabled = !(tradable && dir !== 'short');
+  /* 「卖出」＝开现货空单（要借币，v10）：该所没有融资时**空仓不许开空**。
+     但手上若已经压着一张空单（只可能是旧档），「卖出」仍是它唯一的出口 ⇒ 必须能点，
+     所以只挡「开空」这一种：`dir === null && !canLev`。
+     ⚠️ 这种「点不动」同样走 `aria-disabled` ＋ `.off`（理由同杠杆行），点一下给一条解释。 */
+  const sellOff = !dir && !canLev;
+  refs.sellBtn.disabled = !(tradable && dir !== 'short' && !sellOff);
+  refs.sellBtn.classList.toggle('off', sellOff);
+  if (sellOff) refs.sellBtn.setAttribute('aria-disabled', 'true');
+  else refs.sellBtn.removeAttribute('aria-disabled');
 
   /* 通道切换键**三级状态**（P2-B 修订 · GDD §15.3）：
        ① 权益 ≤ $500 万 ⇒ `hidden` —— 一个 $3,000 开局的玩家不该看见自己用不了的东西

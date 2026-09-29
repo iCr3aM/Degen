@@ -429,6 +429,12 @@ html, body {
 .opt.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .opt:active { background: var(--line); }
 .opt:disabled { opacity: .45; }
+/* 「有、但此刻点不动」的档位（v10 · ②，用户定稿）：比通用禁用（.45，含义是「条件没到」）
+   再暗一档（.28），并额外加**虚线边框** —— 它是「这个功能在此刻根本不存在」，
+   与小方块那种「明暗差」相比，多一道形状线索才够一眼分得开。
+   ⚠️ 它**不用 `disabled` 属性**（那一档仍挂 `aria-disabled`）：`disabled` 会把
+      `pointerdown` 一起吞掉，玩家点上去零反馈；保留可点，由分派层回一句「暂不可用 ｜ 为什么」。 */
+.opt.off { opacity: .28; border-style: dashed; cursor: default; }
 
 /* 主操作按钮：做多 / 做空 / 平仓 —— 高 40px（2026-09-28 三次拍板，原 44px）
    —— 44px 与次级 34px 的落差仍显重，压到 40 后主次差 8px（恰好一个块内间距），
@@ -460,6 +466,10 @@ html, body {
 /* 主按钮是实心块，按压态不能用 `background` 顶掉语义色 ⇒ 压暗一档 */
 .act:active { filter: brightness(.88); }
 .act:disabled { opacity: .45; }
+/* 同上（v10 · ②）：「有、但此刻点不动」的主操作键（现货空单借不到币时的「卖出」）。
+   实心色块没有边框可虚，改用**压暗 ＋ 去色**——把红/绿压成灰，一眼看出它不是一枚能按的键。
+   ⚠️ 规则写在 `.act:active` 之后，同优先级下由源码顺序取胜，按压态不会把去色顶掉。 */
+.act.off { opacity: .28; filter: grayscale(.7); cursor: default; }
 
 /* ══════════════ 资产页（A6 · 方案 §6.2） ══════════════
    ① 总资产 ② 资金曲线（Step 2）③ 买U（Step 2）④ 持仓列表 —— 本步先落 ① 与 ④。 */

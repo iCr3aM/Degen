@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, hasLeverageKindAt, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf } from './config.js';
+import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
@@ -256,6 +256,15 @@ export function openTrade(s, side, frac = 1) {
      都不是「私下一口价买现货」能承接的）。 */
   const otc = chanOf(s) === 'otc';
   if (otc && side === 'short') return { ok: false, why: 'OTC 通道只有现货，不能做空' };
+
+  /* 现货做空要先**借到币**（v10 · 史实口径）：该所此刻没有融资市场就借不到 ⇒ 空单无从谈起。
+     判据是 `hasFinancingAt`（＝现货表上限 > 1）—— Mt.Gox / BitMEX 现货 / 2019-07 前的 Binance
+     只有 1x，也就是「用自己的钱买币」，没有任何出借方。
+     ⚠️ 只拦**开仓**：已在场的仓位照常持有，平仓也不受影响（否则旧档里那张空单会被关在里面）。
+     ⚠️ 也**因此**根除了「1x 现货空单没有强平线」：那种仓位从源头就开不出来了。 */
+  if (side === 'short' && spotOf(s, otc) && !hasFinancingAt(timeOf(s), s.ex)) {
+    return { ok: false, why: '现货做空 暂不可用 ｜ 该所此刻没有融资业务' };
+  }
 
   const coin = coinOf(s.sym);
   if (!coin || !isLoaded(s.sym)) return { ok: false, why: '行情还没加载完' };

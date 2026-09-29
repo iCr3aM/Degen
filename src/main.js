@@ -7,7 +7,7 @@
  *   main.js 是唯一把两边连起来的地方（也是唯一允许读时钟的地方）
  */
 
-import { GAME, HOUR_MS, maxLeverageAt } from './core/config.js';
+import { GAME, HOUR_MS, hasFinancingAt, maxLeverageAt } from './core/config.js';
 import { createState, heldSyms, posOf, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource } from './core/market.js';
@@ -308,6 +308,14 @@ function dispatch(node) {
     /* OTC 通道只有现货 ⇒ 杠杆被锁在 1x。这里只给一条日志、**不改 s.lev** ——
        他切回盘口时那个杠杆还在，不必重新点一遍（Batch 5 的 `数据不擅自改` 口径）。 */
     if (chanOf(s) === 'otc') { pushLog(s, 'OTC 通道只有现货，杠杆固定 1x', 'info'); after(); return; }
+    /* 该所此刻没有融资 ⇒ 杠杆行是**置灰不可点**的（v10 · ②）。它挂的是 `aria-disabled` 而不是
+       `disabled`，正是为了能让这一下走到这里 —— 给一句「暂不可用 ｜ 为什么」，而不是毫无反应。
+       判据与渲染层、与 `engine.openTrade` 同源（`hasFinancingAt`），三处不各算一遍。 */
+    if (levKind(s) === 'spot' && !hasFinancingAt(timeOf(s), s.ex)) {
+      pushLog(s, '杠杆 暂不可用 ｜ 该所此刻没有融资业务', 'info');
+      after();
+      return;
+    }
     const want = Number(d.lev);
     /* 上限取**本单走的那张表**（§15.1）—— 现货档位与合约档位是两套数，不能拿一张去夹另一张。 */
     s.lev = Math.max(1, Math.min(want, maxLeverageAt(timeOf(s), s.ex, levKind(s))));
@@ -351,6 +359,13 @@ function dispatch(node) {
   if (d.buy !== undefined || d.sell !== undefined) {
     if (s.mode === 'fut' && futuresAvailable(s)) return;
     const side = d.buy !== undefined ? 'long' : 'short';
+    /* 现货做空要先借到币（v10）：与 `engine.openTrade` 同一条判据，这里先拦一次只为把日志
+       降成 `info`（引擎那一份是 `bad`）—— 规则本身仍只在 core，UI 不另算一遍。 */
+    if (side === 'short' && levKind(s) === 'spot' && !hasFinancingAt(timeOf(s), s.ex)) {
+      pushLog(s, '现货做空 暂不可用 ｜ 该所此刻没有融资业务', 'info');
+      after();
+      return;
+    }
     const pos = posOf(s, s.sym);
     if (!pos) {
       const r = openTrade(s, side, s.sizeFrac);
