@@ -23,6 +23,7 @@ import {
   FUNDING, fundingOf, fundingRateOf,
 } from './positions.js';
 import { cashOf, capturedOf, heldSyms, posOf, pushLog } from './state.js';
+import { pathOf } from './simulate.js';
 
 /** 交易所归零前多少毫秒给一条预警日志（7 天） */
 const WARN_LEAD = 7 * 24 * HOUR_MS;
@@ -331,14 +332,26 @@ export function closeTrade(s, why = '手动') {
 }
 
 /**
+ * 「致命那一针」的对外出口（S3-附 · ROADMAP §19.6.3）—— 由 `main.js` 注入，
+ * core 不认识 UI（与 `market.bindFactorSource` 同一套路）；不注入时零开销。
+ * ⚠️ 报出去的是**一瞬的事实**（币 / 小时 / 那一段 tick），要不要记、记多久由 UI 决定 ——
+ *    它**不写 `s`**：`save()` 是整对象序列化，写进状态就等于落盘。
+ */
+let onLiquidate = null;
+export function bindLiquidateHook(fn) { onLiquidate = fn || null; }
+
+/**
  * 强平单个仓位。触发条件是**当根 K 线的高/低**打穿强平价。
  * 结算按 GDD §10「爆仓 = 破产」：整笔保证金归零，账户其余部分原样保留。
  * ⚠️ 多仓下它**不再直接等于破产** —— 是否收摊由调用方在清点完全部仓位后看总权益决定。
+ * @param {number} atPrice 成交价（S3 起 ＝ **第一次穿越强平价那一 tick 的价**，不再是强平价本身）
+ * @param {number} k       那一 tick 在该小时细路径里的**段号**（`0 … N−1`）—— 只给「图上标致命针」用
  */
-function forceLiquidate(s, pos, atPrice) {
+function forceLiquidate(s, pos, atPrice, k) {
   pushLog(s, `爆仓 ${pos.sym} ${pos.lev}x ｜ 保证金 ${fmtMoney(pos.margin)} 全部损失 @ ${atPrice.toFixed(4)}`, 'bad');
   s.realized -= pos.margin;
   delete s.positions[pos.sym];
+  if (onLiquidate) onLiquidate(pos.sym, s.i, k);
 }
 
 function endGame(s, reason) {
@@ -721,14 +734,35 @@ function liquidateAll(s) {
     if (!c) continue;
 
     const liq = liquidationPrice(pos);
-    const hit = pos.side === 'long' ? c.l <= liq : c.h >= liq;
+    const long = pos.side === 'long';
+    const hit = long ? c.l <= liq : c.h >= liq;
     // 强平价一定是「可达」的：多头被砸到 liq（≤ 当根低点），空头被拉到 liq（≥ 当根高点）
     // 兜底：即便没打穿强平价，保证金率也可能已经趴在维持线上（例如极端跳空或刚扣完资金费）
-    const mark = pos.side === 'long' ? c.l : c.h;
-    if (hit || isLiquidatable(pos, mark)) {
-      forceLiquidate(s, pos, liq);
-      if (checkRuin(s)) return true;
+    const mark = long ? c.l : c.h;
+    if (!hit && !isLiquidatable(pos, mark)) continue;
+
+    /* S3（ROADMAP §19.6.3）：爆仓落在**哪一 tick、什么价**由细路径决定。
+       为什么这不会多爆仓：`simulate.pathOf` 保证 `min(p) ≡ L`、`max(p) ≡ H`（S1 红线 1）
+       ⇒「细路径穿越强平价」与「当根 l/h 穿越」**互为充要**，上面 `hit` 的判据一个字没改 ——
+       变的只是**时点与成交价**（改前是直接拿 `liq` 当成交价写日志）。
+       ⚠️ 兜底命中（路径并未穿越）时取该小时路径**极值所在的那一段**，成交价仍按 `liq` 记
+          （与改前逐位相同），只是给「图上标致命针」配一支有意义的刻度。 */
+    const p = pathOf(s.seed, sym, s.i, c);
+    const last = p.length - 1;             // ＝ 该小时的 tick 段数 N
+    let k = 0, at = liq;
+    if (hit) {
+      /* 全路径取「**第一个**穿越强平价的点」—— `p` 覆盖 `[0, N]`，段号因此夹到 `N−1` */
+      for (let j = 0; j <= last; j++) {
+        if (long ? p[j] <= liq : p[j] >= liq) { k = Math.min(j, last - 1); at = p[j]; break; }
+      }
+    } else {
+      let ext = long ? Infinity : -Infinity;
+      for (let j = 0; j <= last; j++) {
+        if (long ? p[j] < ext : p[j] > ext) { ext = p[j]; k = Math.min(j, last - 1); }
+      }
     }
+    forceLiquidate(s, pos, at, k);
+    if (checkRuin(s)) return true;
   }
   return false;
 }

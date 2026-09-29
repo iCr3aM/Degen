@@ -19,6 +19,7 @@ import { isLoaded, rangeOf, candleAt, HOURS_PER_DAY } from '../core/market.js';
 import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { anchorAt, anchorsInRange } from '../core/anchors.js';
 import { anyHeld, posOf } from '../core/state.js';
+import { ticksPerHour } from '../core/simulate.js';
 import { drawChart } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 
@@ -312,26 +313,40 @@ export function update(refs, s, view) {
     refs.chChg.textContent = '';
   }
 
-  const win = windowFor(sym, s.i, view.chartW);
+  /* 「致命那一针」（S3-附）：`view.liq` 是 `main.js` 的一句短记忆，只在它属于当前币时才算数 ——
+     换算成**全局 tick 序号**（`hour × N + k`）交给视野，视野再按桶折算成槽位交给画布。
+     只在细刻度档画（`view.js` 对粗档一律返回 `liqSlot: null`）。 */
+  const liqTick = view.liq && view.liq.sym === sym
+    ? view.liq.hour * ticksPerHour() + view.liq.k
+    : null;
+  const win = windowFor(sym, s.i, view.chartW, s.seed, liqTick);
   /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
      日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
-     （`count` 可能大于可用根数，这里的下界会算成负数）。 */
-  const hLo = win.mode === '1d' ? (win.right - win.count + 1) * HOURS_PER_DAY : win.right - win.count + 1;
-  const hHi = win.mode === '1d' ? win.right * HOURS_PER_DAY + HOURS_PER_DAY - 1 : win.right;
-  const anchorMarks = anchorsInRange(hLo, hHi).map(a => ({
-    d: win.mode === '1d' ? Math.floor(a.at / HOURS_PER_DAY) : a.at,
-  }));
+     （`count` 可能大于可用根数，这里的下界会算成负数）。
+     ⚠️ **细刻度档不画锚点**（ROADMAP §19.6.6 ③）：锚点是小时级历史节点，2 ~ 12 小时的窗口里没有意义，
+        而且省掉了「小时序号 → 桶槽位」这一层换算。 */
+  let anchorMarks = [];
+  if (win.mode !== '1t') {
+    const hLo = win.mode === '1d' ? (win.right - win.count + 1) * HOURS_PER_DAY : win.right - win.count + 1;
+    const hHi = win.mode === '1d' ? win.right * HOURS_PER_DAY + HOURS_PER_DAY - 1 : win.right;
+    anchorMarks = anchorsInRange(hLo, hHi).map(a => ({
+      d: win.mode === '1d' ? Math.floor(a.at / HOURS_PER_DAY) : a.at,
+    }));
+  }
   /* 图上唯一的入口：K 线、量柱、两条水平线都在这一笔里画。
      ⚠️ 返回值必须写回视野 —— 价格轴的平移限位夹在 `drawChart` 里（换算的唯一真源在那边），
         状态记的是**没夹过**的原始位移，不写回就会越夹越离谱。 */
   const effY = drawChart(refs.canvas, {
     candles: win.candles,
     vols: win.vols,
-    /* 槽位数（= 视野要的根数）：柱宽按它算、柱子右对齐，币种刚上线时才不会一根撑满屏（B22） */
-    slots: win.count,
+    /* 槽位数（= 视野要的根数）：柱宽按它算、柱子右对齐，币种刚上线时才不会一根撑满屏（B22）。
+       细刻度档下它是**聚合后的桶数**（`win.count` 是 tick 数，不能直接当槽位用）。 */
+    slots: win.slots,
     /* 历史锚点刻度（P2-C）—— 与最右那根一起交给图上换算槽位 */
     anchors: anchorMarks,
     right: win.right,
+    /* 「致命那一针」（S3-附）：槽位号由 `view.js` 折算好；粗档恒为 null */
+    liqSlot: win.liqSlot,
     /* 顶部留白 = 左上角遮罩的**实测**高度（Batch 5 · B27）：量不到时由 `chart.js` 退回自己的兜底常量。
        `getBoundingClientRect` 与 `main.js` 那次取 `chartWrap` 尺寸落在同一帧，不额外多一次强制布局。 */
     topInset: refs.chartHead.getBoundingClientRect().height,
@@ -346,8 +361,8 @@ export function update(refs, s, view) {
   });
   if (effY !== win.yPx) setYPx(sym, effY);
 
-  /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种 */
-  refs.modeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
+  /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种（`main.js` 里定的目标档） */
+  refs.modeBtn.textContent = win.mode === '1d' ? '1日' : win.mode === '1t' ? '30秒' : '1h';
   /* 锁视野提示（Batch 3 · B14）：拖动/缩放之后才出现，双击复位后自己消失 */
   refs.chartLock.hidden = !win.locked;
 

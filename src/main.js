@@ -11,7 +11,7 @@ import { GAME, HOUR_MS, maxLeverageAt } from './core/config.js';
 import { createState, heldSyms, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource } from './core/market.js';
-import { createClock, chanOf, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour } from './core/engine.js';
+import { createClock, chanOf, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { clearScale, enableGod, factorFor, setScale } from './core/god.js';
 import { fmtMoney } from './core/format.js';
@@ -48,6 +48,11 @@ const GOD_TAP_MS = 1500;
 let godTaps = 0;
 let godTapAt = 0;
 
+/* 「致命那一针」的一句短记忆（S3-附 · ROADMAP §19.6.3）：`{ sym, hour, k }`，**只记最近一次、覆盖式**。
+   ⚠️ **不进存档**（拍板口径）：`save()` 是整对象序列化，写进 `s` 就等于落盘；它只活在渲染进程里，
+      重开本局走 `location.reload()`，这个变量自然归零。由 `engine` 的注入式回调喂进来。 */
+let liqMark = null;
+
 /* ───────────────────────────── 启动 ───────────────────────────── */
 
 async function boot() {
@@ -69,6 +74,10 @@ async function boot() {
         所以历史 K 线不会被重新标定，收益率会真的变 ⇒ σ 会变（见 `engine.invalidateSigma`）。
      ⚠️ 没有上帝位移也没有冲击池时 `factorFor` 恒返回 1，`candleAt` 走原路径 —— **逐位相同**。 */
   bindFactorSource((sym, j) => factorFor(s, sym, j));
+
+  /* 「致命那一针」（S3-附）：同上 —— core 不认识 UI，由这里接线。爆仓发生时记下那一段 tick，
+     渲染层在**细刻度档**把它折算成槽位画一枚浅红竖线（粗档不画）。 */
+  bindLiquidateHook((sym, hour, k) => { liqMark = { sym, hour, k }; });
 
   refs = mount(root);
   hideBoot();
@@ -203,7 +212,12 @@ function draw(force = false) {
 
   if (!refs) return;
   const rect = refs.chartWrap.getBoundingClientRect();
-  const view = { chartW: Math.max(1, Math.round(rect.width)), chartH: Math.max(1, Math.round(rect.height - 2)) };
+  /* `liq`：「致命那一针」的短记忆（S3-附）—— 渲染层只在它属于当前币、且视野处在细刻度档时才画 */
+  const view = {
+    chartW: Math.max(1, Math.round(rect.width)),
+    chartH: Math.max(1, Math.round(rect.height - 2)),
+    liq: liqMark,
+  };
 
   try {
     update(refs, s, view);
@@ -287,9 +301,11 @@ function dispatch(node) {
   }
   if (d.speed !== undefined) { s.speed = Number(d.speed); after(); return; }
   /* 粒度切换（Batch 3 · B12）：小字上写的是**当前**粒度，点一下切到另一种。
+     ⚠️ **非 1h 的一律切回 1h**（S2）：细刻度档（`1t`）没有自己的按钮 —— 它靠**放大**进入
+        （`view.zoomBy`），退出有两条路：缩回小时档，或点这枚小字直接回 1h。
      只动视野，不动玩法 —— `s.i` 永远还是「第几根小时 K」。 */
   if (d.mode !== undefined) {
-    setMode(s.sym, viewOf(s.sym).mode === '1d' ? '1h' : '1d', s.i, chartW());
+    setMode(s.sym, viewOf(s.sym).mode === '1h' ? '1d' : '1h', s.i, chartW());
     after();
     return;
   }

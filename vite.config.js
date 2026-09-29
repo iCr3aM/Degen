@@ -7,6 +7,11 @@ import { defineConfig } from 'vite';
  * 2. 文件名不带哈希 —— 覆盖上传方便，缓存由 `?v=` 那套另说（P4 再加）。
  * 3. `assetsInlineLimit: 0` —— 行情数据包（public/data/*.bin）本来就不走打包，
  *    这里只是保证 JS/CSS 不被内联成 base64。
+ *
+ * ⚠️ `target: 'es2020'`（S2 时从 es2019 升上来）：S0 的 `rng.js` 用 **BigInt 字面量**（`0n` 那种）
+ *    做 splitmix64，而 BigInt 字面量是 ES2020 才有的语法 —— es2019 下 esbuild 直接报错。
+ *    这个目标与项目本来的口径一致：`market.js` 依赖 `DecompressionStream`（2023 起才铺开）、
+ *    `Blob.stream()` 等，本来就不是给老浏览器准备的。
  */
 export default defineConfig({
   base: './',
@@ -16,7 +21,7 @@ export default defineConfig({
     assetsDir: 'assets',
     emptyOutDir: true,
     sourcemap: false,
-    target: 'es2019',
+    target: 'es2020',
     assetsInlineLimit: 0,
     modulePreload: { polyfill: false },
     rollupOptions: {

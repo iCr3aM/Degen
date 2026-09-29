@@ -2,7 +2,7 @@
 
 > 生成时间：2026-09-29　｜　工作目录：`f:\Cr3aM\Desktop\Degen`
 > 用途：暂停开发、切换工作流时的交接说明。回答三件事：**现在站在哪 / 什么没做 / 接下来怎么做**。
-> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v27，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
+> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v29，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
 
 ---
 
@@ -96,6 +96,20 @@ C3/C4 保持；C6/C7 不做；C5 改判；C8 只做 B 层且不急），裁决�
 > ＋ `npm run build` 通过。见 `ROADMAP.MD` **§19.4**。
 > ⑤ ⚠️ **接线属 S2（渲染 LOD）/ S3（玩法接入）**：`market.js` / `engine.js` / `view.js` / `chart.js` / `positions.js` **一行未改**，
 > 所以**现在跑游戏的行为与 S0 完全一致**（`simulate.js` 尚无消费者，build 时被 tree-shake）。
+> **（v29，2026-09-29）S2「渲染 LOD」＋ S3 第一项「tick 级强平 ＋ 图上标致命针」已落地（接线完成）** ——
+> ① `view.js` 新增第三档 **`1t`（30 秒）**：最粗可见 `12 × TICK.perHour = 1440` tick（＝ 12 小时，与 `1h` 最细的 12 根**同跨度** ⇒ 捏合无跳变）；
+> `bounds()` / `norm()` / `zoomBy()` / `setMode()` 各加一支，**`panBy()` / `resetView()` 零改动**；新增 `fineWindow()` 做 **min/max 桶聚合**。
+> ⚠️ **桶必须不跨小时**（`tEnd = min(t0 + bucket − 1, hh·N + N − 1, right)`）—— 否则含针那一桶会盖上相邻小时，**针被抹平**。
+> `1t` 的入口只有**捏合放大**（`1h` 缩到最细仍继续放大即换档）；出口 = 缩回去，或点粒度小字回 `1h`（`main.js` 改成「非 `1h` 的一律回 `1h`」）。
+> ② `engine.liquidateAll` **判据一个字没改**（仍是 `c.l <= liq` / `c.h >= liq`），只把成交价由「直接取 `liq`」换成
+> **细路径上第一次穿越强平价那一 tick 的价**；`forceLiquidate` 多收一个段号 `k`。爆仓**集合不变**，变的是时点 / 价格。
+> ③ 新增 **`bindLiquidateHook(fn)`**（注入式，与 `market.bindFactorSource` 同一套路）→ `main.js` 模块变量 `liqMark`（**不进存档**）
+> → `render.js` 折成全局 tick 序号 → `view.js` 折成槽位 → `chart.js` 画一枚 `--down` 半透明竖线（**粗档恒 `null`**）。
+> ④ ⚠️ **构建目标 `es2019` → `es2020`**（`vite.config.js`）：S0 的 `rng.js` 用 **BigInt 字面量**，S2 是**第一个**把 `simulate.js`（→ `rng.js`）
+> 拖进打包图的消费者 —— 在此之前它只被离线脚本 import，从未进过 bundle，所以一直没暴露。
+> ⑤ 离线断言 **176/176** ＋ `npm run build` 通过（T1 与**改前 `view.js`**（从 `git HEAD` 取）逐位对拍 / T3 桶不破锚点 / T7「细路径穿越 ⟺ 当根 l·h 穿越」240 组 / T8 引擎实跑冒烟）。
+> ⑥ ⏳ **仍未做**：`1t` 的**实机**确认（390px ＋ 真机各一次）＋ `FUNDING` 细周期 / C6（S3 其余项，未排期）；
+> **上帝模式科学计数法仍未动**（S2 只动 K 线视图，没碰 HUD 金额行 —— 见下 §三 第 3 条）。
 
 ---
 
@@ -144,24 +158,24 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 | `src/core/config.js` | `GAME` / **`COINS`（含 `unlock` 与 `otc`：该币首次能走场外大宗）** / `EXCHANGES` / **`SPEEDS`（1/5/10/50，唯一真源）** / **`TICK.perHour`（S1：每根真实小时 K 展开成 120 根 30 秒细刻度，唯一真源）** / **`LOAN` ＋ `loanAmountAt`** / **`SUPPLY_CAP`（§15.1 上限，枚）** / **`OTC`（unlock / min / base 年代点差 / sigmaRef / p / multCap / max）＋ `otcBaseAt` / `otcSigmaRefAt` / `otcPremiumOf`** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
 | `src/core/state.js` | `STATE_VERSION`（**9**）、`createState()`、`cashOf` / `posOf` / `heldSyms` / `anyHeld` / **`capturedOf`（已锁枚数，派生量）** / `pushLog`；**`seed`（S0 全局随机种子，入存档）**；**`impactOn`（订单冲击开关，默认 `true`）/ `flow`（逐根衰减冲击池）/ `godRuined`（上帝模式归零标记）/ `god`（上帝模式 `mult` / `scale` / `lastFill`）** |
 | `src/core/rng.js` | **确定性随机数（S0 新建）**：`splitmix64` / `mulberry32`（取一次）/ `hashStr`（字符串→uint32，**全项目唯一口径**）/ `rand(seed, symHash, hour, tick, chanHash)` —— **无状态哈希式**纯函数，零依赖零 DOM；细粒度模拟的地基 |
-| `src/core/simulate.js` | **细粒度模拟层（S1 新建，⚠️ 尚无消费者 / 未接线）**：`pathOf(seed, sym, hour, ohlc)` → 长度 `N+1` 的细价格路径（**四锚点逐位命中**：布朗桥两端结构性为 0 ＋ 极值两侧各自归一）/ `weightsOf(seed, sym, hour)` → 长度 `N` 的 U 型量权重（`Σw = 1`）/ `ticksPerHour()` / `clearSimCache()`；两级 LRU（512 条），**懒生成、不落盘、不进存档** |
+| `src/core/simulate.js` | **细粒度模拟层（S1 新建，S2/S3 起已接线）**：`pathOf(seed, sym, hour, ohlc)` → 长度 `N+1` 的细价格路径（**四锚点逐位命中**：布朗桥两端结构性为 0 ＋ 极值两侧各自归一）/ `weightsOf(seed, sym, hour)` → 长度 `N` 的 U 型量权重（`Σw = 1`）/ `ticksPerHour()` / `clearSimCache()`；两级 LRU（512 条），**懒生成、不落盘、不进存档**。消费者：`view.js`（细刻度档）＋ `engine.js`（tick 级强平） |
 | `src/core/god.js` | **价格位移层（v23 新建）**：`SHOCK`（`share` 0.35 / `beta` 0.3 / `listMax` 8）/ `decay` / `residualAt` / `addFlow` / `factorFor(s, sym, j)` / `enableGod` / `setScale` / `clearScale` —— 纯逻辑零 DOM，唯一消费者是 `market.candleAt` |
 | `src/core/impact.js` | **滑点纯函数（P2-B1）**：`SLIP` 常量 / `sigmaOf(closes)` / `impactOf(q, sigma)` / `fillPrice(price, dir, impact)` —— 零依赖 |
-| `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30）；**通道 `chanOf` / `otcUnlocked` / `otcOpenFor`（P2-B3 ＋ 修订）＋ 开平仓成交价层（P2-B1）**；**v23 开 / 平仓各写一次冲击池并紧跟 `invalidateSigma()`（逐根位移会真的改变 σ），`checkRuin` 在 `s.god` 下短路** |
+| `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30）；**通道 `chanOf` / `otcUnlocked` / `otcOpenFor`（P2-B3 ＋ 修订）＋ 开平仓成交价层（P2-B1）**；**v23 开 / 平仓各写一次冲击池并紧跟 `invalidateSigma()`（逐根位移会真的改变 σ），`checkRuin` 在 `s.god` 下短路**；**S3：`liquidateAll` 判据不变（`c.l`/`c.h` 穿越），但成交价 / 段号取自 `pathOf` 的**首次**穿越点；新增注入式 `bindLiquidateHook(fn)`** |
 | `src/core/positions.js` | 逐仓持仓：`isSpot` / 保证金率 / 强平价 / 资金费率 / `unrealizedOf` |
 | `src/core/market.js` | 行情懒加载：`loadCoin` / 取价；**日流动性 `loadLiq` / `liqOf` / `dayIndexOf` / `isLiqLoaded`**；**`bindFactorSource(fn)` ＋ `candleAt` 末尾乘一个逐根价格系数（v23 订单冲击的唯一收口点，`j < at ⇒ 1`，未启用时与数据包逐位相同）** |
 | `src/core/anchors.js` | **历史锚点表（P2-C，唯一真相源）**：20 条 `ANCHORS`（字段只有 `t` / `title` / `chain` / `congestion`，**没有任何价格字段**）＋ `NEWS_HOURS` / `anchorAt` / `anchorsInRange` / `congestionAnchors` —— 纯逻辑零 DOM |
 | `src/core/congestion.js` | **网络拥堵纯逻辑**：年代表值 / 锚点窗口（**表从 `anchors.js` 派生**，本文件只留坡度算法）/ 进块等待 W 表 / 各所确认数 / `arrivalCandles` / `bumpPulse` / `decayPulse` |
 | `src/core/save.js` | localStorage 落盘与续档；**本轮不做兼容：`migrate()` 已删除，版本不符即丢弃** |
 | `src/core/format.js` | 数字/价格格式化；**`fmtMoneyCompact`（上帝模式下 HUD 用的紧凑金额，小于 $1e6 时与 `fmtMoney` 一字不差）** |
-| `src/ui/chart.js` | Canvas 2D K 线（颜色从 CSS 变量读，`style.css` 是颜色唯一真源） |
-| `src/ui/render.js` | DOM 渲染（HUD / 持仓条 / 操作区 / 弹层） |
+| `src/ui/chart.js` | Canvas 2D K 线（颜色从 CSS 变量读，`style.css` 是颜色唯一真源）；**`slots` 是「本帧槽位数」契约（细刻度档下 ＝ 聚合后的桶数）；S3-附 起多一个可选入参 `liqSlot` 画「致命那一针」竖线（粗档恒 `null`）** |
+| `src/ui/render.js` | DOM 渲染（HUD / 持仓条 / 操作区 / 弹层）；**把 `view.liq` 折成全局 tick 序号传给 `view.windowFor`（S3-附）；细刻度档不画锚点刻度** |
 | `src/ui/bind.js` | 事件绑定（`data-ex` / `data-act` 分派） |
-| `src/ui/view.js` | **K 线视野**：看哪一段 / 看多密 / 1h·1d / 价格轴平移多少（纯 UI 状态，不进存档） |
+| `src/ui/view.js` | **K 线视野**：看哪一段 / 看多密 / **三档 `1h` / `1d` / `1t`（S2：30 秒细刻度，最粗 1440 tick ＝ 12 小时，桶聚合 ＋ 桶不跨小时）** / 价格轴平移多少（纯 UI 状态，不进存档）；`windowFor(sym, i, cssW, seed, liqTick)` 是渲染层唯一入口 |
 | `src/ui/sound.js` | **音效**（Batch 4）：Web Audio 合成，零音频文件；开关存 `degen_settings`，**不进存档** |
 | `src/ui/style.css` | 全部样式；**纵向间距只有 8 一档**（8 ＝ 块内，也 ＝ 主页面所有块间；12 只剩弹层内部） |
 | `tools/fetch-data.mjs` | 行情数据管线，产出 `public/data/` |
-| `ROADMAP.MD` | 路线图 **v27**，**方案全部写在这里**（**§十七 ＝ 订单冲击 ＋ 上帝模式**；**§十八 ＝ C1–C8 裁决**；**§十九 ＝ 细粒度模拟 ＋ RNG 种子（S0–S5，S0/S1 已落地）**） |
+| `ROADMAP.MD` | 路线图 **v29**，**方案全部写在这里**（**§十七 ＝ 订单冲击 ＋ 上帝模式**；**§十八 ＝ C1–C8 裁决**；**§十九 ＝ 细粒度模拟 ＋ RNG 种子（S0–S5，S0/S1/S2/S3-第一项 已落地）**） |
 | `GDD.MD` | 设计文档 v1.0 |
 
 ### 常用命令
@@ -529,11 +543,14 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
    三选项：**A 只改 GDD 声明** / ✅ **B 按年代分工具（`leverageKindAt` → `'margin'`/`'perp'`）—— 2026-09-29 已拍板选此案** / C 连交割合约也区分（不做）。
    ⚠️ 若走 B：Bitfinex 真实 15% 维持线**比现在的 0.5% 严得多**（3.33x 现在要逆向 29.5% 才爆、按史实只需 15%），手感会变。
    **代码未动**（待实现），与 **B19 / C5(b)** 是同一件事的三个面，**一并落地**。出处见方案 §9。
-3. 确认 ROADMAP 头部已是 **v27**（P2-A / P2-B / P2-C 均已落地；P4-A / P4-B 暂缓；速度档已收窄为 `1/5/10/50`；**§十六 生活系统评审 = 暂缓**；**§十七 订单冲击 ＋ 上帝模式 = 已落地**；**§十八 交易模型 C1–C8 拍板 = 已定，L1（C1＋C2）已落地、见 §18.8**；**§十九 细粒度模拟 ＋ RNG 种子 = 方案已定，S0 / S1 已落地（`rng.js` / `simulate.js`，`STATE_VERSION` 9）、S4 肉鸽 ⏸ 暂缓、S2 / S3 未开工**）；§15.1 一律按真实数值实现（2026-09-29 已定）
-   ⚠️ **S1 已落地的含义**：`simulate.js` 是**纯 core、尚无消费者** —— **游戏行为与 S0 完全一致**，
-   想看到细粒度效果必须先做 **S2（渲染 LOD）** 或 **S3（玩法接入）**；**不要在没做 S2/S3 的情况下宣称「细粒度已上线」**。
+3. 确认 ROADMAP 头部已是 **v29**（P2-A / P2-B / P2-C 均已落地；P4-A / P4-B 暂缓；速度档已收窄为 `1/5/10/50`；**§十六 生活系统评审 = 暂缓**；**§十七 订单冲击 ＋ 上帝模式 = 已落地**；**§十八 交易模型 C1–C8 拍板 = 已定，L1（C1＋C2）已落地、见 §18.8**；**§十九 细粒度模拟 ＋ RNG 种子 = S0 / S1 / S2 / S3-第一项 均已落地（`rng.js` / `simulate.js` / `view.js` 的 `1t` 档 / tick 级强平 ＋ 图上标致命针）、S4 肉鸽 ⏸ 暂缓、S3 其余项（`FUNDING` 细周期 / C6）未排期**）；§15.1 一律按真实数值实现（2026-09-29 已定）
+   ⚠️ **S2 / S3 已落地的含义**：`simulate.js` 现在**有消费者了** —— `view.js`（细刻度档）与 `engine.js`（tick 级强平）。
+   **游戏可见行为只有两处不同**：① 捏合放大到 `1h` 最细之后继续放大，会进入 **`1t`（30 秒）档**，能看到小时内部的针；
+   ② 爆仓的**日志价格**由「强平价」变成「细路径第一次穿越强平价那一 tick 的价」（**爆仓的小时集合不变**，红线：判据没改）。
+   ⚠️ **`1t` 只做「看」不做「玩」**：`s.i` 语义、`SPEEDS`、时钟全都没动；**不要在 `1t` 档里加任何玩法**。
+   ⚠️ **构建目标是 `es2020`（不是 es2019）**：`rng.js` 用 BigInt 字面量；改回 es2019 会直接 build 失败。
    ⚠️ **口径（v26 起）**：本项目**本身就是模拟器** ⇒ **UI 与文档一律不做「这是模拟」的声明**，口径只写**代码注释**（`ROADMAP.MD` §19.5 第 6 条）。
-   ⚠️ **上帝模式科学计数法**是**待办**（等 S2 新 UI 接入后取消 `fmtMoneyCompact` 的 e 写法），**现在不要动 `format.js`**。
+   ⚠️ **上帝模式科学计数法**是**待办**（要的是 HUD 金额行加宽；S2 只动 K 线视图、**没碰 HUD**）⇒ **现在不要动 `format.js`**。
 4. P2-B 注意：数据包只有 OHLC ＋ 每根 1 字节当日份额、没有订单簿 ⇒
    滑点只能建「成交价折让」，不能建「逐档吃穿盘口」（这条在 P2-B 已如实落地）
 5. 每改完一步跑 `npm run build`；涉及数据管线改动跑 `npm run data` 并核对 `index.json`

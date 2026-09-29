@@ -208,7 +208,7 @@ vol[k] = hourQuote · w[k] / Σw             # 归一 ⇒ 小时总成交额守�
 | [config.js](file:///f:/Cr3aM/Desktop/Degen/src/core/config.js) | `HOUR_MS` / `HOURS_PER_DAY` / `GAME.candles` / `SPEEDS` | ✅ **已加** `TICK.perHour`（120 ＝ 30 秒）；**`SPEEDS` 不动** | 小 |
 | **新增 `src/core/rng.js`** | — | ✅ **已落地（S0）**：`splitmix64` / `mulberry32` / `hashStr` / `rand`＋ `s.seed` | **新文件** |
 | **新增 `src/core/simulate.js`** | — | ✅ **已落地（S1）**：`pathOf`（布朗桥 ＋ 两侧归一）／ `weightsOf`（U 型量）／ `ticksPerHour` / `clearSimCache`；**懒生成 ＋ LRU** | **新文件（核心）** |
-| [market.js](file:///f:/Cr3aM/Desktop/Degen/src/core/market.js) | `candleAt` 直接读数据包 | 保持为「**锚点读取器**」不变；新增 `tickAt(sym, hour, k)` 走 `simulate` | 小（**旧函数一字不改**） |
+| [market.js](file:///f:/Cr3aM/Desktop/Degen/src/core/market.js) | `candleAt` 直接读数据包 | 保持为「**锚点读取器**」不变 | **零改动**（2026-09-29 简化：**不再新增 `tickAt`** —— 消费者只有 `view.js` 与 `engine.js` 两处，上层直传 `s.seed` 调 `simulate.pathOf` 即可，见 ROADMAP §19.6.2） |
 | [engine.js](file:///f:/Cr3aM/Desktop/Degen/src/core/engine.js) | `timeOf` / `markPrice` 取 `closeAt(s.i)` | `markPrice` 在「细粒度观察模式」下取当前 tick；`advanceOneHour` 不变 | 中 |
 | [positions.js](file:///f:/Cr3aM/Desktop/Degen/src/core/positions.js) | 强平用**整根 K 线高低点** | 改用 **tick 级高低点** ⇒ 「用针爆仓」；`FUNDING.hours = 8` 可细化到 tick 结算 | **中（收益最大）** |
 | [impact.js](file:///f:/Cr3aM/Desktop/Degen/src/core/impact.js) | `σ_30日`（日收益） | 可加 tick 级 σ；C2 的日内份额可直接由 U 型曲线给出 | 小 |
@@ -278,8 +278,8 @@ vol[k] = hourQuote · w[k] / Σw             # 归一 ⇒ 小时总成交额守�
 |---|---|---|---|
 | **S0** | **RNG 种子系统**（新增 `rng.js` ＋ `s.seed` ＋ 断言：同种子同结果、换种子不同结果） | 无 | ✅ **已落地**（2026-09-29）—— 见下方「S0 落地结果」 |
 | **S1** | **细粒度模拟层**（新增 `simulate.js`：布朗桥 ＋ 钉极值 ＋ U 型量；断言：O/C 逐位命中、H/L 精确、量守恒） | S0 | ✅ **已落地**（2026-09-29）—— 见下方「S1 落地结果」 |
-| **S2** | **渲染 LOD**（`view.js` ＋ `chart.js`：远聚合/近逐根 ＋ max/min 金字塔） | S1 | UI 风险最高，需实机；**新 UI 接入时应一并取消上帝模式的科学计数法**（见下） |
-| **S3** | **玩法接入**：tick 级强平（用针爆仓）／ `FUNDING` 细周期 ／ C6 冲击回弹复活 | S1 | **手感改动最大** |
+| **S2** | **渲染 LOD**（`view.js` ＋ `chart.js`：远聚合/近逐根 ＋ max/min 金字塔） | S1 | ✅ **已落地**（2026-09-29）—— 落点与断言见 ROADMAP §19.4 / §19.6；**验收 5 待实机** |
+| **S3** | **玩法接入**：tick 级强平（用针爆仓）／ `FUNDING` 细周期 ／ C6 冲击回弹复活 | S1 | ✅ **第一项（tick 级强平 ＋ 图上标致命针）已落地**（2026-09-29）；`FUNDING` 细周期 / C6 未排期 |
 | **S4** | **肉鸽化**：种子局 / 每日挑战 / 种子码 / 随机事件流 | S0–S3 | ⏸ **暂缓**（2026-09-29 用户拍板：先不做） |
 | **S5** | 之前被否的交易所规则（**B18–B25**）＋ **B26 永续区分** 一并落地 | S1 | 与「模拟」无强耦合，可并行 |
 
