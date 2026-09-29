@@ -2,7 +2,7 @@
 
 > 生成时间：2026-09-29　｜　工作目录：`f:\Cr3aM\Desktop\Degen`
 > 用途：暂停开发、切换工作流时的交接说明。回答三件事：**现在站在哪 / 什么没做 / 接下来怎么做**。
-> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v25，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
+> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v26，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
 
 ---
 
@@ -74,9 +74,18 @@ C3/C4 保持；C6/C7 不做；C5 改判；C8 只做 B 层且不急），裁决�
 游戏转为「**模拟器 ＋ 肉鸽**」；⇒ 之前被否的 **30 分钟粒度 / C6 冲击回弹 / C8 逐档盘口 / B18–B25** 全部重新获得落点。
 ② **B26 拍板「B 案」**（按年代区分 `'margin'` / `'perp'`）。
 ③ 两条工程口径：**本轮不做存档兼容**（删除 `save.js` 的 `migrate()` 链、老档丢弃重开，正式版后再补）＋「**已 less 了，现在要 more**」。
-**可行性方案另起一份**：`.trae/documents/细粒度模拟与RNG方案.md`（三层时间轴 / 30 秒主干 / 无状态哈希 RNG `splitmix64`→`mulberry32` /
-全模块接入表 / S0–S5 分期 / 风险红线，**代码一行未动**）。一句话：**可行**，前提由「不许合成价格」改为「**锚点逐位命中**」，
-`s.i` 语义不变 ⇒ 既有模块大面积零改动。
+> **可行性方案另起一份**：`.trae/documents/细粒度模拟与RNG方案.md`（三层时间轴 / 30 秒主干 / 无状态哈希 RNG `splitmix64`→`mulberry32` /
+> 全模块接入表 / S0–S5 分期 / 风险红线）。一句话：**可行**，前提由「不许合成价格」改为「**锚点逐位命中**」，
+> `s.i` 语义不变 ⇒ 既有模块大面积零改动。
+> **（v27，2026-09-29）S0「RNG 种子系统」已落地；S4 肉鸽 ⏸ 暂缓；两条口径修正** ——
+> ① 新建 `src/core/rng.js`（四导出 `splitmix64` / `mulberry32` / `hashStr` / `rand`，无状态哈希式），
+> `config.GAME.seed = 1` ＋ `state.createState().seed`（入存档），**`STATE_VERSION` 8 → 9**；
+> `save.js` 的 `migrate()` **整链已删除**（19.3「不做存档兼容」真正落地：`v !== STATE_VERSION ⇒ 丢弃 → 开新局`）。
+> 离线断言 **32/32** ＋ `npm run build` 通过。见 `ROADMAP.MD` **§十九 §19.4**。**S4 肉鸽化整块 ⏸ 暂缓**。
+> ② **口径修正 A（不声明）**：本项目**本身就是模拟器** ⇒ **UI 与文档一律不做「这是模拟」的声明**，
+> 口径**只写进代码注释**（§19.5 第 6 条已改写）。
+> ③ **口径修正 B（科学计数法）**：上帝模式的 `fmtMoneyCompact` 目前 `|n| ≥ 1e6` 会切 `$1.23e8`（旧 HUD 格子 179px 的权宜）；
+> 用户指出「接入了新的 ui 修改后应该可以不需要科学计数法」⇒ **S2 新 UI 落地时改回 `fmtMoney`**，之前保持现状。
 
 ---
 
@@ -107,10 +116,11 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 ### 单一真相源
 
 - 时钟：`s.i` ＝ 第几根小时 K（唯一刻度）
-- 存档版本：`STATE_VERSION = 8`（key `localStorage.degen_save`；4 → 5 新增 `loaned` / `loan` / `pending`；5 → 6 新增 `chan`；**6 → 7 新增 `impactOn` / `flow` / `godRuined` / `god`**；**7 → 8 把 `flow[sym]` 由单池 `{v,at}` 改逐笔列表 `[{v,at},…]`（C1）**，v6/v7 老档均不作废、整体补默认值 / 包成列表）
-  > **v7 是玩法口径变更**：升级后的老档**一开仓就会推动行情**（`impactOn` 默认 `true`）—— 不是 bug，是 §14.4 的订单冲击层上线。
-  > **P2-B 修订（OTC 史实化）不升版本** —— 新增的全是**静态配置**（`COINS[].otc` ＋ `OTC.base/sigmaRef/p/multCap/max`），
-  > 不进存档，故无需迁移。
+- 存档版本：`STATE_VERSION = 9`（key `localStorage.degen_save`）。
+  > ⚠️ **本轮起不做存档兼容**（v26/2026-09-29 拍板）：**`migrate()` 迁移链已整条删除**，`v !== STATE_VERSION` 的档**读到即丢弃、开新局**。
+  > 历史版本轨迹（仅供追溯，已无迁移代码）：4 新增 `loaned`/`loan`/`pending`；5 → 6 新增 `chan`；6 → 7 新增 `impactOn`/`flow`/`godRuined`/`god`；7 → 8 `flow[sym]` 由单池改逐笔列表（C1）；**8 → 9 新增 `seed`（S0）**。
+  > **玩法口径提醒（v7）**：老档升级后会**一开仓就推动行情**（`impactOn` 默认 `true`）—— 不是 bug，是 §14.4 的订单冲击层上线。
+  > **P2-B 修订（OTC 史实化）不升版本** —— 新增的全是**静态配置**（`COINS[].otc` ＋ `OTC.base/sigmaRef/p/multCap/max`），不进存档。
 - 数据包：`public/data/<SYM>.bin` ＝ gzip(Int32)，**每根 17 字节** ＝ `[o, h-o, l-o, c-o]` int32LE ＋ **尾巴 1 字节成交量份额**，
   再除一个每币固定的 `scale`；**不存时间戳**
 - 日流动性：`public/data/liq.bin` ＝ gzip(Float32)，**每日每币一个美元成交额**（4,383 天 × 5 币，86 KB → gzip 63 KB）；
@@ -122,15 +132,16 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 | 文件 | 职责 |
 | --- | --- |
 | `src/core/config.js` | `GAME` / **`COINS`（含 `unlock` 与 `otc`：该币首次能走场外大宗）** / `EXCHANGES` / **`SPEEDS`（1/5/10/50，唯一真源）** / **`LOAN` ＋ `loanAmountAt`** / **`SUPPLY_CAP`（§15.1 上限，枚）** / **`OTC`（unlock / min / base 年代点差 / sigmaRef / p / multCap / max）＋ `otcBaseAt` / `otcSigmaRefAt` / `otcPremiumOf`** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
-| `src/core/state.js` | `STATE_VERSION`、`createState()`、`cashOf` / `posOf` / `heldSyms` / `anyHeld` / **`capturedOf`（已锁枚数，派生量）** / `pushLog`；**`impactOn`（订单冲击开关，默认 `true`）/ `flow`（逐根衰减冲击池）/ `godRuined`（上帝模式归零标记）/ `god`（上帝模式 `mult` / `scale` / `lastFill`）** |
-| `src/core/god.js` | **价格位移层（v23 新建）**：`SHOCK`（`share` 0.35 / `beta` 0.3）/ `decay` / `residualAt` / `addFlow` / `factorFor(s, sym, j)` / `enableGod` / `setScale` / `clearScale` —— 纯逻辑零 DOM，唯一消费者是 `market.candleAt` |
+| `src/core/state.js` | `STATE_VERSION`（**9**）、`createState()`、`cashOf` / `posOf` / `heldSyms` / `anyHeld` / **`capturedOf`（已锁枚数，派生量）** / `pushLog`；**`seed`（S0 全局随机种子，入存档）**；**`impactOn`（订单冲击开关，默认 `true`）/ `flow`（逐根衰减冲击池）/ `godRuined`（上帝模式归零标记）/ `god`（上帝模式 `mult` / `scale` / `lastFill`）** |
+| `src/core/rng.js` | **确定性随机数（S0 新建）**：`splitmix64` / `mulberry32`（取一次）/ `hashStr`（字符串→uint32，**全项目唯一口径**）/ `rand(seed, symHash, hour, tick, chanHash)` —— **无状态哈希式**纯函数，零依赖零 DOM；细粒度模拟的地基 |
+| `src/core/god.js` | **价格位移层（v23 新建）**：`SHOCK`（`share` 0.35 / `beta` 0.3 / `listMax` 8）/ `decay` / `residualAt` / `addFlow` / `factorFor(s, sym, j)` / `enableGod` / `setScale` / `clearScale` —— 纯逻辑零 DOM，唯一消费者是 `market.candleAt` |
 | `src/core/impact.js` | **滑点纯函数（P2-B1）**：`SLIP` 常量 / `sigmaOf(closes)` / `impactOf(q, sigma)` / `fillPrice(price, dir, impact)` —— 零依赖 |
 | `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30）；**通道 `chanOf` / `otcUnlocked` / `otcOpenFor`（P2-B3 ＋ 修订）＋ 开平仓成交价层（P2-B1）**；**v23 开 / 平仓各写一次冲击池并紧跟 `invalidateSigma()`（逐根位移会真的改变 σ），`checkRuin` 在 `s.god` 下短路** |
 | `src/core/positions.js` | 逐仓持仓：`isSpot` / 保证金率 / 强平价 / 资金费率 / `unrealizedOf` |
 | `src/core/market.js` | 行情懒加载：`loadCoin` / 取价；**日流动性 `loadLiq` / `liqOf` / `dayIndexOf` / `isLiqLoaded`**；**`bindFactorSource(fn)` ＋ `candleAt` 末尾乘一个逐根价格系数（v23 订单冲击的唯一收口点，`j < at ⇒ 1`，未启用时与数据包逐位相同）** |
 | `src/core/anchors.js` | **历史锚点表（P2-C，唯一真相源）**：20 条 `ANCHORS`（字段只有 `t` / `title` / `chain` / `congestion`，**没有任何价格字段**）＋ `NEWS_HOURS` / `anchorAt` / `anchorsInRange` / `congestionAnchors` —— 纯逻辑零 DOM |
 | `src/core/congestion.js` | **网络拥堵纯逻辑**：年代表值 / 锚点窗口（**表从 `anchors.js` 派生**，本文件只留坡度算法）/ 进块等待 W 表 / 各所确认数 / `arrivalCandles` / `bumpPulse` / `decayPulse` |
-| `src/core/save.js` | localStorage 落盘与续档 |
+| `src/core/save.js` | localStorage 落盘与续档；**本轮不做兼容：`migrate()` 已删除，版本不符即丢弃** |
 | `src/core/format.js` | 数字/价格格式化；**`fmtMoneyCompact`（上帝模式下 HUD 用的紧凑金额，小于 $1e6 时与 `fmtMoney` 一字不差）** |
 | `src/ui/chart.js` | Canvas 2D K 线（颜色从 CSS 变量读，`style.css` 是颜色唯一真源） |
 | `src/ui/render.js` | DOM 渲染（HUD / 持仓条 / 操作区 / 弹层） |
@@ -139,7 +150,7 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 | `src/ui/sound.js` | **音效**（Batch 4）：Web Audio 合成，零音频文件；开关存 `degen_settings`，**不进存档** |
 | `src/ui/style.css` | 全部样式；**纵向间距只有 8 一档**（8 ＝ 块内，也 ＝ 主页面所有块间；12 只剩弹层内部） |
 | `tools/fetch-data.mjs` | 行情数据管线，产出 `public/data/` |
-| `ROADMAP.MD` | 路线图 v23，**P2 方案全部写在这里**（**§十七 ＝ 订单冲击 ＋ 上帝模式**） |
+| `ROADMAP.MD` | 路线图 **v26**，**方案全部写在这里**（**§十七 ＝ 订单冲击 ＋ 上帝模式**；**§十八 ＝ C1–C8 裁决**；**§十九 ＝ 细粒度模拟 ＋ RNG 种子（S0–S5）**） |
 | `GDD.MD` | 设计文档 v1.0 |
 
 ### 常用命令
@@ -395,7 +406,7 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
 - `config.js` **必须保持纯 ESM ＋ 零依赖 ＋ 不碰浏览器/Node API**（Node 侧要 import 它）
 - 数据源优先级链：`Bitstamp → Bitfinex → Binance → Binance.US（仅补 SOL 缺口）→ CDD → Kraken 归档（备查/校验）`
 - 后一个源**只补前面留下的空洞，绝不覆盖**
-- 改动 `STATE_VERSION` 必须同步写迁移，否则存档作废
+- 改动 `STATE_VERSION` 时**不再写迁移**（v26 起不做存档兼容）：**版本不符的旧档一律丢弃、开新局**，只认当前版本
 
 ---
 
@@ -442,7 +453,8 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
   那一帧若被 `draw()` 的 80ms 节流吞掉，借贷遮罩永远出不来 ⇒ `main.js` 需要 `loanDrawn` 这类标志 ＋ 强制 `force = true`
 - **收窄任何「档位表 / 取值域」都要顺手清理旧档**：速度档删掉 `2x` / `20x` 后（v17），
   停在旧档位的存档会让 `render.js` 的 `s.speed === v` 全部落空 ⇒ **一排按钮全不亮、时钟却按旧倍率飞跑**。
-  这类改动**不升 `STATE_VERSION`**（不是结构变更），但必须在 `save.js` 的 `migrate()` 末尾夹一次。
+  ⚠️ **v26 起这条自动消解** —— 迁移链已删除，版本不符的档直接丢弃；**同版本档的取值域必然合法**（写入时就是当前的档位表）。
+  将来若重新引入迁移，这条约束要一并恢复。
 
 ---
 
@@ -506,7 +518,9 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
    三选项：**A 只改 GDD 声明** / ✅ **B 按年代分工具（`leverageKindAt` → `'margin'`/`'perp'`）—— 2026-09-29 已拍板选此案** / C 连交割合约也区分（不做）。
    ⚠️ 若走 B：Bitfinex 真实 15% 维持线**比现在的 0.5% 严得多**（3.33x 现在要逆向 29.5% 才爆、按史实只需 15%），手感会变。
    **代码未动**（待实现），与 **B19 / C5(b)** 是同一件事的三个面，**一并落地**。出处见方案 §9。
-3. 确认 ROADMAP 头部已是 **v25**（P2-A / P2-B / P2-C 均已落地；P4-A / P4-B 暂缓；速度档已收窄为 `1/5/10/50`；**§十六 生活系统评审 = 暂缓**；**§十七 订单冲击 ＋ 上帝模式 = 已落地**；**§十八 交易模型 C1–C8 拍板 = 已定，L1（C1＋C2）已落地、见 §18.8**；**§十九 细粒度模拟 ＋ 肉鸽 ＋ RNG 种子 = 方案已定、代码未动**）；§15.1 一律按真实数值实现（2026-09-29 已定）
+3. 确认 ROADMAP 头部已是 **v26**（P2-A / P2-B / P2-C 均已落地；P4-A / P4-B 暂缓；速度档已收窄为 `1/5/10/50`；**§十六 生活系统评审 = 暂缓**；**§十七 订单冲击 ＋ 上帝模式 = 已落地**；**§十八 交易模型 C1–C8 拍板 = 已定，L1（C1＋C2）已落地、见 §18.8**；**§十九 细粒度模拟 ＋ RNG 种子 = 方案已定，S0 已落地（`STATE_VERSION` 9）、S4 肉鸽 ⏸ 暂缓、S1 未开工**）；§15.1 一律按真实数值实现（2026-09-29 已定）
+   ⚠️ **口径（v26 起）**：本项目**本身就是模拟器** ⇒ **UI 与文档一律不做「这是模拟」的声明**，口径只写**代码注释**（`ROADMAP.MD` §19.5 第 6 条）。
+   ⚠️ **上帝模式科学计数法**是**待办**（等 S2 新 UI 接入后取消 `fmtMoneyCompact` 的 e 写法），**现在不要动 `format.js`**。
 4. P2-B 注意：数据包只有 OHLC ＋ 每根 1 字节当日份额、没有订单簿 ⇒
    滑点只能建「成交价折让」，不能建「逐档吃穿盘口」（这条在 P2-B 已如实落地）
 5. 每改完一步跑 `npm run build`；涉及数据管线改动跑 `npm run data` 并核对 `index.json`

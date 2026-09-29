@@ -9,7 +9,7 @@
 
 import { GAME } from './config.js';
 
-export const STATE_VERSION = 8;
+export const STATE_VERSION = 9;
 
 export function createState() {
   return {
@@ -17,6 +17,12 @@ export function createState() {
 
     /** 当前处在全程第几根小时 K 线（0 = 2013-01-01 00:00 UTC） */
     i: 0,
+
+    /**
+     * 本局的全局随机种子（S0 · 细粒度模拟的地基）—— 所有细刻度随机数的唯一源头
+     * （见 `rng.js` 的 `rand`）。现在恒为 `GAME.seed`，S4 肉鸽化时才改由玩家输入 / 日期派生。
+     */
+    seed: GAME.seed,
 
     /** 当前所在的交易所 id（见 `config.EXCHANGES`）—— 开局那 $3,000 存在 Mt.Gox */
     ex: GAME.ex,
