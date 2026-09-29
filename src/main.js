@@ -7,18 +7,20 @@
  *   main.js 是唯一把两边连起来的地方（也是唯一允许读时钟的地方）
  */
 
-import { GAME, HOUR_MS, hasFinancingAt, maxLeverageAt } from './core/config.js';
+import { GAME, COINS, HOUR_MS, hasFinancingAt, maxLeverageAt } from './core/config.js';
 import { createState, heldSyms, posOf, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource } from './core/market.js';
 import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
+import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { enableGod, factorFor } from './core/god.js';
 import { fmtMoney } from './core/format.js';
 import { canLiquidate, marginRateOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
-  pickExchange, confirmExchange, closePicker, openIntro, openGod, showPage, openLog,
+  pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
+  renderReview, openNodeCard, openYearPick,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -39,6 +41,24 @@ let clock = null;
 let resetNode = null;
 let resetArmed = false;
 let resetTimer = 0;
+
+/* 主菜单里「开始游戏」的**双重确认**（需求 4 · 方案 §2）：有档时第一次点只「武装」并把按钮变红，
+   3 秒内再点一次才真重开。与上面那套是**同一手法**，但状态各自独立（菜单先于设置页存在）。 */
+let menuNode = null;
+let menuArmed = false;
+let menuTimer = 0;
+
+/* ── 历史回顾模式（需求 4 ·《主菜单与历史回顾模式方案》§3）─────────────────
+   `rv` 非 null 就是「正处在回顾态」。**模块级变量、不进 `s`、不进存档**
+   （与 `tab` / `godTaps` / `liqMark` 同一口径）：重开一局走 `location.reload()`，它自然归零 ——
+   `STATE_VERSION` 因此**不动**（仍 11，方案 §6）。
+   ⚠️ 回顾**有自己的一支时钟**（下面那三行 `rvTimer/rvLast/rvAcc`）：不能复用 `createClock` ——
+      它闭包捕获 `s`，读的是 `s.paused` / `s.speed` / `s.over`，而回顾态一条都不该碰。
+   `rv` = `{ i, sym, speed, paused, seen:Set<number>, log:Array }` */
+let rv = null;
+let rvTimer = 0;
+let rvLast = 0;
+let rvAcc = 0;
 
 /* 上帝模式的隐藏入口（方案 §2.1）：**1.5 秒内连点顶栏「Degen」5 次**。
    与上面那套双重确认同一个理由 —— 顶栏是静态 DOM、不参与每帧重绘，武装状态只能放在这里。
@@ -106,14 +126,24 @@ async function boot() {
     zoom: f => { zoomBy(s.sym, f, s.i, chartW()); draw(true); },
     reset: () => { snd.tap(); resetView(s.sym); draw(true); },
   });
+  /* 回顾页那块 K 线的同一套手势（方案 §3.2「复用 `simulate.js` / `view.js`」）——
+     唯一区别是它推的是 `rv.i` 而不是 `s.i`（回顾的「当前」在 `rv` 里）。 */
+  bindChart(refs.rvCanvas, {
+    pan: (dx, dy) => { if (!rv) return; panBy(rv.sym, dx, dy, rv.i, chartW()); draw(true); },
+    zoom: f => { if (!rv) return; zoomBy(rv.sym, f, rv.i, chartW()); draw(true); },
+    reset: () => { if (!rv) return; snd.tap(); resetView(rv.sym); draw(true); },
+  });
   setInterval(() => save(s), 10000);
   window.addEventListener('beforeunload', () => save(s));
 
-  /* 开场叙事（Batch 4 · B19）：**只在新开局弹一次**。
-     ⚠️ 弹窗期间**时钟不启动** —— 玩家点「开始交易」（`onIntro`）才真正开盘，
-        否则读完三行字回来，行情已经自己走了几十根。 */
-  if (isNewGame) openIntro();
-  else clock.start();
+  /* 主菜单（需求 4 · 方案 §2）：**一律先弹它**，三个入口决定后续走向 ——
+       开始游戏 → （有档先二次确认）开新局 → 开场叙事
+       继续游戏 → 直接 `clock.start()`（读档续玩，不弹开场白）
+       历史回顾 → 只读回顾模式
+     ⚠️ 菜单期间**时钟不启动**（与开场叙事同一条）：玩家选完才真正开盘，
+        否则停在这一屏时行情已经自己走了几十根。
+     ⚠️ 「继续游戏」只在**这一局确实读到档**时出现（`isNewGame` 的反面）。 */
+  openMenu({ canContinue: !isNewGame });
 }
 
 /** 保证某个币的数据已加载；失败只记一条日志，不让整个游戏崩掉 */
@@ -141,8 +171,12 @@ async function ensureLiq() {
 
 /* ───────────────────────────── 每帧 ───────────────────────────── */
 
-/** K 线区的 CSS 宽度。手势换算「一像素 = 多少根」要用**同一份**，所以单独留一个入口 */
-const chartW = () => Math.max(1, Math.round(refs.chartWrap.getBoundingClientRect().width));
+/** K 线区的 CSS 宽度。手势换算「一像素 = 多少根」要用**同一份**，所以单独留一个入口。
+ *  ⚠️ 回顾页有自己那一块 K 线区（`rvWrap`）—— 两者可见性互斥，量哪个由 `rv` 决定。 */
+const chartW = () => {
+  const node = rv ? refs.rvWrap : refs.chartWrap;
+  return Math.max(1, Math.round(node.getBoundingClientRect().width));
+};
 
 /**
  * 渲染节流到 ~12fps。K 线一秒钟最多走 20 根（20x），12fps 足够把每一根都画出来，
@@ -213,7 +247,8 @@ function soundFromTick(s) {
 }
 
 function draw(force = false) {
-  if ((s.over && !overDrawn) || (s.pending && !pendingDrawn)) force = true;
+  /* 回顾态没有「结束 / 待决遮罩」这回事（回顾不判破产、也没有账户）⇒ 那两个强制帧的判据只在正常玩法下算 */
+  if (!rv && ((s.over && !overDrawn) || (s.pending && !pendingDrawn))) force = true;
   const now = performance.now();
   if (!force && now - lastDraw < 80) return;
   lastDraw = now;
@@ -222,13 +257,15 @@ function draw(force = false) {
   /* ⚠️ **先切页，再量尺寸**（A6 · 方案 §6）：隐藏的 `.trade-page` 是 `display:none`，
      量出来是 0×0；顺序反了的话第一帧拿到的是上一页的尺寸（切回交易页就会画成一张空图，
      而且暂停态下**不会再有任何一帧**把它救回来）。 */
-  showPage(refs, tab);
-  const rect = refs.chartWrap.getBoundingClientRect();
-  /* `liq`：「致命那一针」的短记忆（S3-附）—— 渲染层只在它属于当前币、且视野处在细刻度档时才画 */
+  showPage(refs, rv ? 'review' : tab);
+  /* 回顾页量的是它自己那块 K 线区（两页的 DOM 各有一套，方案 §3.2） */
+  const rect = (rv ? refs.rvWrap : refs.chartWrap).getBoundingClientRect();
+  /* `liq`：「致命那一针」的短记忆（S3-附）—— 渲染层只在它属于当前币、且视野处在细刻度档时才画。
+     回顾没有爆仓这回事 ⇒ 恒 null。 */
   const view = {
     chartW: Math.max(1, Math.round(rect.width)),
     chartH: Math.max(1, Math.round(rect.height - 2)),
-    liq: liqMark,
+    liq: rv ? null : liqMark,
     /* 当前页：K 线只在交易页画（另两页没有 K 线） */
     tab,
     /* 音效偏好归 `sound.js` 管，不进主状态 —— 设置页那个开关的文案由渲染层每帧从这里取 */
@@ -236,6 +273,8 @@ function draw(force = false) {
   };
 
   try {
+    /* 回顾态走**另一条渲染线**：它只读 `rv`（模块级），一个字都不写 `s`，也绝不碰那几张遮罩 */
+    if (rv) { renderReview(refs, rv, view); return; }
     update(refs, s, view);
     if (s.over) {
       closePicker();
@@ -274,6 +313,10 @@ function dispatch(node) {
     && d.buy === undefined && d.sell === undefined && d.reset === undefined
     && d.intro === undefined) snd.tap();   // 开场两枚键已有专属的起手音（`snd.begin`），不叠轻点声
 
+  /* 主菜单三入口（需求 4 · 方案 §2）：`start` / `continue` / `review`。 */
+  if (d.menu !== undefined) return onMenu(d.menu, node);
+  /* 回顾页的全部动作（需求 4 · 方案 §3）：值即子命令，见 `onReview`。 */
+  if (d.review !== undefined) return onReview(d.review);
   /* 开场的两枚入口（v11 · ③）：`d.intro` 是 `'new'`（我是新手）或 `'old'`（我是老手）——
      它只决定 `s.hintOn`，叙事文案两者一样。 */
   if (d.intro !== undefined) return onIntro(d.intro);
@@ -358,6 +401,12 @@ function dispatch(node) {
         （`view.zoomBy`），退出有两条路：缩回小时档，或点这枚小字直接回 1h。
      只动视野，不动玩法 —— `s.i` 永远还是「第几根小时 K」。 */
   if (d.mode !== undefined) {
+    /* ⚠️ 回顾页那枚粒度小字走 `rv.i` / `rv.sym` —— 回顾的「现在」不在 `s` 里（方案 §3.3）。 */
+    if (rv) {
+      setMode(rv.sym, viewOf(rv.sym).mode === '1h' ? '1d' : '1h', rv.i, chartW());
+      draw(true);
+      return;
+    }
     setMode(s.sym, viewOf(s.sym).mode === '1h' ? '1d' : '1h', s.i, chartW());
     after();
     return;
@@ -556,6 +605,199 @@ function onGodOff() {
 
 /** 上帝面板里输入框的值 —— 输入框没有动作键，只能从同一个面板里按类名找（两个框各有一个唯一类） */
 const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.value ?? null;
+
+/* ── 主菜单（需求 4 · 方案 §2）────────────────────────────────────
+   三个入口。菜单期间时钟是停的（见 `boot`），选完才真正开盘。
+
+   · `continue`：读档续玩 —— 直接开盘，**不弹开场白**（世界观只在开新局时讲一遍）。
+   · `start`   ：无档 ⇒ 直接转开场叙事；**有档 ⇒ 先「武装」**（按钮变红，3 秒内再点一次才重开），
+                 走既有 `onWipe()`（`disableSave` ＋ `wipe` ＋ reload）——**不新写重开逻辑**。
+   · `review`  ：只读回顾模式（`enterReview`）。 */
+function onMenu(kind, node) {
+  if (kind === 'continue') {
+    closePicker();
+    clock.start();
+    after();
+    return;
+  }
+  if (kind === 'review') return enterReview();
+  /* kind === 'start' */
+  if (isNewGame) {                 // 无档：直接进开场叙事（新手 / 老手）
+    closePicker();
+    openIntro();
+    return;
+  }
+  /* 有档：双重确认（与设置页那套 `onReset` 同一手法，状态各自独立） */
+  if (!menuArmed) {
+    menuArmed = true;
+    menuNode = node;
+    node.textContent = '确认重开';
+    node.classList.add('warn');
+    clearTimeout(menuTimer);
+    menuTimer = setTimeout(cancelMenuArm, 3000);
+    return;
+  }
+  cancelMenuArm();
+  onWipe();                        // disableSave ＋ wipe ＋ reload ⇒ 回来后是无档的新局
+}
+
+/** 撤销主菜单的武装：超时或重开前都要还原按钮，免得下次开局还是红的 */
+function cancelMenuArm() {
+  clearTimeout(menuTimer);
+  menuArmed = false;
+  if (menuNode) {
+    menuNode.textContent = '开始游戏';
+    menuNode.classList.remove('warn');
+    menuNode = null;
+  }
+}
+
+/* ── 历史回顾（需求 4 · 方案 §3）────────────────────────────────────
+   独立回顾页 ＋ 复用 `market.js` / `chart.js`（拍板 4）。这一整块与 `s` **零耦合**：
+   不写状态、不写存档、不判破产，退出后回到主菜单，玩家那一局一根 K 线都没动过。 */
+
+/** 进回顾：从 2013-01-01 00:00 起，100x 巡航 */
+function enterReview() {
+  closePicker();
+  clock.stop();                                  // 双保险：主菜单期间它本来就没启动
+  rv = { i: 0, sym: 'BTC', speed: 100, paused: false, seen: new Set(), log: [] };
+  rvAcc = 0;
+  resetView('BTC');                              // 视野回默认（上次回顾留下的姿势不带到这一次）
+  pushRv('开盘 · 2013 年 1 月，门头沟', 'info', 0);
+  rvStart();
+  draw(true);
+  if (!isLoaded('BTC')) ensureCoin('BTC').then(() => draw(true));
+}
+
+/** 退出回顾：停掉那支专属时钟，回主菜单（方案 §2：退出后回到主菜单） */
+function exitReview() {
+  rvStop();
+  rv = null;
+  rvAcc = 0;
+  draw(true);                                    // `rv` 归 nil ⇒ `showPage` 自动切回交易页
+  openMenu({ canContinue: !isNewGame });
+}
+
+/** 回顾日志（**加长那一栏**的内容源）：节点史实 ＋ 里程碑，只装回顾自己的东西 */
+function pushRv(text, kind = 'info', at = rv.i) {
+  const head = rv.log[rv.log.length - 1];
+  if (head && head.at === at && head.text === text) return;
+  rv.log.push({ at, text, kind });
+  if (rv.log.length > 60) rv.log.shift();
+}
+
+/** 这一段路里有没有「新币上线」—— 那是时间轴上最实在的里程碑 */
+function milestoneBetween(a, b) {
+  for (const c of COINS) {
+    const at = Math.round((c.unlock - GAME.start) / HOUR_MS);
+    if (at > a && at <= b) pushRv(`${c.sym} 上线`, 'info', at);
+  }
+}
+
+function rvStart() { if (!rvTimer) { rvLast = 0; rvTimer = setInterval(rvStep, 50); } }
+function rvStop() { if (rvTimer) { clearInterval(rvTimer); rvTimer = 0; } }
+
+/**
+ * 回顾的时钟 —— 与 `engine.createClock` **同一套写法**（`setInterval` ＋ 真实间隔补时 ＋
+ * `dt` 封顶 1 秒），只是它推的是 `rv.i` 而不是 `s.i`。
+ *
+ * 两条回顾专有的规则：
+ *   ① **减速曲线**：真正推进的档位 = `min(玩家选的档, speedAt(i))` ⇒ 节点前自动慢下来；
+ *   ② **一步不许跨过节点**：100x 下一拍（50ms）要推进约 5 根，直接 `i + 1` 会从 `at − 1`
+ *      跳到 `at + 3`，节点卡永远弹不出来。每走一步都夹在「下一个未跳过的节点」上。
+ */
+function rvStep() {
+  if (!rv) { rvStop(); return; }
+  const now = performance.now();
+  const dt = rvLast ? Math.min(1, (now - rvLast) / 1000) : 0;
+  rvLast = now;
+  if (rv.paused) return;
+
+  rvAcc += dt * Math.min(rv.speed, speedAt(rv.i, rv.seen));
+  let moved = false;
+  let guard = 0;
+  while (rvAcc >= 1 && guard++ < 400) {
+    rvAcc -= 1;
+    const next = nextNodeAt(rv.i, rv.seen);
+    const prevI = rv.i;
+    rv.i = next ? Math.min(rv.i + 1, next.at) : rv.i + 1;
+    moved = true;
+    milestoneBetween(prevI, rv.i);
+
+    /* 走到 2024-12-31 收盘：停住（回顾到此为止，没有结算画面） */
+    if (rv.i >= GAME.candles - 1) {
+      rv.i = GAME.candles - 1;
+      rv.paused = true;
+      rvAcc = 0;
+      pushRv('回顾结束 · 2024 年 12 月', 'ok', rv.i);
+      break;
+    }
+    /* 命中一个**没跳过**的节点：暂停 ＋ 弹史实卡（方案 §3.5） */
+    const node = nodeAt(rv.i);
+    if (node && !rv.seen.has(node.at)) {
+      rv.paused = true;
+      rvAcc = 0;
+      pushRv(node.title, 'ok', node.at);
+      openNodeCard(node);
+      break;
+    }
+  }
+  if (moved) draw(true);
+}
+
+/** 回顾页的全部动作（`data-review` 的值即子命令） */
+function onReview(kind) {
+  if (!rv) return;                                 // 状态机不靠 DOM 兜底
+  if (kind === 'exit') return exitReview();
+  if (kind === 'pause') {
+    /* 已到 2024-12-31 收盘：只准停、不准再放行 —— 否则 `rvStep` 一拍后又把它按回去，按钮标签闪一帧 */
+    if (rv.paused && rv.i >= GAME.candles - 1) return;
+    rv.paused = !rv.paused; rvAcc = 0; draw(true); return;
+  }
+  /* 节点卡三枚：继续 / 跳过这一个 / 跳过全部（方案 §3.5） */
+  if (kind === 'go') { closePicker(); rv.paused = false; draw(true); return; }
+  if (kind === 'skip') {
+    const n = nodeAt(rv.i);
+    if (n) rv.seen.add(n.at);                      // 「跳过」**只影响本节点**（验收 ④）
+    closePicker();
+    rv.paused = false;
+    draw(true);
+    return;
+  }
+  if (kind === 'skipall') {
+    for (const n of RV_NODES) rv.seen.add(n.at);   // 一键压到纯巡航（≈17.5 min）
+    closePicker();
+    rv.paused = false;
+    draw(true);
+    return;
+  }
+  if (kind.startsWith('spd:')) { rv.speed = Number(kind.slice(4)); rvAcc = 0; draw(true); return; }
+  if (kind === 'years') { openYearPick(new Date(GAME.start + rv.i * HOUR_MS).getUTCFullYear()); return; }
+  if (kind.startsWith('year:')) return jumpYear(Number(kind.slice(5)));
+  if (kind.startsWith('sym:')) return switchRvSym(kind.slice(4));
+}
+
+/** 跳到某一年的 1 月 1 日 00:00；路上错过的节点不补弹（回顾是「看」，不是「打卡」） */
+function jumpYear(y) {
+  closePicker();
+  const at = Math.round((Date.UTC(y, 0, 1) - GAME.start) / HOUR_MS);
+  rv.i = Math.max(0, Math.min(at, GAME.candles - 1));
+  rvAcc = 0;
+  resetView(rv.sym);                               // 跳完视野跟到新的「当前」
+  pushRv(`跳到 ${y} 年`, 'info', rv.i);
+  draw(true);
+}
+
+/** 回顾里切币（拍板 2：可切币）—— 那个币此刻还没上线就点不动 */
+function switchRvSym(sym) {
+  if (rv.sym === sym) return;
+  const c = COINS.find(x => x.sym === sym);
+  if (c && GAME.start + rv.i * HOUR_MS < c.unlock) return;
+  rv.sym = sym;
+  resetView(sym);
+  draw(true);
+  if (!isLoaded(sym)) ensureCoin(sym).then(() => draw(true));
+}
 
 /* ── 开场叙事（Batch 4 · B19）─────────────────────────────────────
    弹窗期间时钟是停的（见 `boot`），点了「我是新手 / 我是老手」才真正开盘并放一声起手音。

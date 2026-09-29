@@ -18,6 +18,7 @@ import { canLiquidate, isSpot, liquidationPrice, marginRateOf } from '../core/po
 import { isLoaded, rangeOf, candleAt, rawCloseAt, HOURS_PER_DAY } from '../core/market.js';
 import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { anchorAt, anchorsInRange, anchorOfAt } from '../core/anchors.js';
+import { RV_SPEEDS } from '../core/review.js';
 import { anyHeld, heldSyms, posOf } from '../core/state.js';
 import { ticksPerHour } from '../core/simulate.js';
 import { drawChart } from './chart.js';
@@ -295,6 +296,58 @@ export function mount(root) {
   const settingsPage = el('div', 'page settings-page');
   settingsPage.append(setCard, resetRow);
 
+  /* ── 回顾页（需求 4 ·《主菜单与历史回顾模式方案》§3）──
+     去功能清单（方案 §3.1）：**没有**操作区 / HUD / 持仓条 / 交易所键 / 底部 Tab / 各种遮罩。
+     顶上只留三样：日期（可点开年份跳转）、速度档（回顾专属 1x/10x/100x）、暂停 / 退出。
+     ⚠️ 顶栏与 Tab 是**三页常驻**的（建在 `.page` 之外），所以进回顾时要靠 `#app.rv`
+        把这两块藏掉（见 `showPage`）—— 不然回顾页会同时出现两套顶栏。
+     ⚠️ 币种条与 K 线**各有自己一套节点**（不复用交易页那些）：两页的可见性互斥，
+        复用同一份节点会让「隐藏页量尺寸为 0」那个坑复发（见 `draw()`）。 */
+  const rvDate = el('button', 'ic rv-date');
+  rvDate.dataset.review = 'years';
+  const rvSpdBtns = new Map();
+  const rvSpdBox = el('div', 'rv-spd');
+  for (const v of RV_SPEEDS) {
+    const b = el('button', 'opt', v + 'x');
+    b.dataset.review = 'spd:' + v;
+    rvSpdBox.append(b);
+    rvSpdBtns.set(v, b);
+  }
+  const rvPause = el('button', 'ic', '暂停');
+  rvPause.dataset.review = 'pause';
+  const rvExit = el('button', 'ic', '退出');
+  rvExit.dataset.review = 'exit';
+  const rvTools = el('div', 'tools');
+  rvTools.append(rvSpdBox, rvPause, rvExit);
+  const rvTop = el('div', 'top rv-top');
+  rvTop.append(rvDate, rvTools);
+
+  const rvSymbols = el('div', 'symbols');
+  const rvSymBtns = new Map();
+  for (const c of COINS) {
+    const b = el('button', 'sym', c.sym);
+    b.dataset.review = 'sym:' + c.sym;
+    rvSymbols.append(b);
+    rvSymBtns.set(c.sym, b);
+  }
+
+  const rvCanvas = el('canvas');
+  const rvSym = el('b');
+  const rvChg = el('span');
+  const rvModeBtn = el('button', 'chip');
+  rvModeBtn.dataset.mode = 'toggle';
+  const rvHead = el('div', 'chart-head');
+  rvHead.append(rvSym, rvChg, rvModeBtn);
+  const rvWrap = el('div', 'chart-wrap');
+  rvWrap.append(rvCanvas, rvHead);
+
+  /* 日志栏**加长**（方案 §3.6）：回顾页没有操作区 / HUD / 持仓条，省下的高度全给它 ——
+     固定几行常驻、超出就在面板内滚（与日志浮层同一套 `.log-row`，两个入口一副样子）。 */
+  const rvLogs = el('div', 'rv-logs');
+
+  const reviewPage = el('div', 'page review-page');
+  reviewPage.append(rvTop, rvSymbols, rvWrap, rvLogs);
+
   /* ── 底部 Tab（44px · §6.1）──
      ⚠️ 这 44px **全部从 K 线区扣**：固定块合计 431 → 475px，K 线区 405 → 361px（390×844）。
         实机若觉得挤，先把 Tab 降到 40px —— **不动 HUD / 持仓条**。 */
@@ -306,9 +359,13 @@ export function mount(root) {
     tabs.append(b);
     tabBtns.set(k, b);
   }
-  const pages = new Map([['trade', tradePage], ['assets', assetsPage], ['settings', settingsPage]]);
+  const pages = new Map([
+    ['trade', tradePage], ['assets', assetsPage], ['settings', settingsPage],
+    /* 回顾页也进这张表 —— `showPage` 的可见性开关只认它（方案 §3.2） */
+    ['review', reviewPage],
+  ]);
 
-  root.append(top, tradePage, assetsPage, settingsPage, tabs);
+  root.append(top, tradePage, assetsPage, settingsPage, reviewPage, tabs);
 
   return {
     root, dateEl, pauseBtn,
@@ -322,8 +379,12 @@ export function mount(root) {
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asTotal, asNote, asList,
     sndBtn, impBtn, hintBtn,
+    /* 回顾页（需求 4 · 方案 §3） */
+    rvTop, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
+    rvWrap, rvCanvas, rvHead, rvSym, rvChg, rvModeBtn, rvLogs,
     _levSignature: '',
     _posListSig: null,
+    _rvLogSig: '',
   };
 }
 
@@ -333,11 +394,14 @@ export function mount(root) {
  * ⚠️ 它由 `main.js` 的 `draw()` 在**量 K 线尺寸之前**调用，而不是放在 `update()` 里：
  *    隐藏的 `.trade-page` 是 `display:none`，量出来是 0×0 —— 先切页、再量，尺寸才是真的。
  * @param {object} refs `mount()` 的返回值
- * @param {'trade'|'assets'|'settings'} name
+ * @param {'trade'|'assets'|'settings'|'review'} name
  */
 export function showPage(refs, name) {
   for (const [k, n] of refs.pages) n.classList.toggle('on', k === name);
   for (const [k, b] of refs.tabBtns) b.classList.toggle('on', k === name);
+  /* 回顾页要把**三页常驻**的顶栏与 Tab 藏掉（`.page` 之外的节点，靠 `#app.rv` 这个开关）——
+     不藏的话回顾页会顶着两套顶栏（一套交易页的交易所键、一套回顾自己的）。 */
+  refs.root.classList.toggle('rv', name === 'review');
 }
 
 function cell(label, valueEl, subEl) {
@@ -635,6 +699,63 @@ export function update(refs, s, view) {
 }
 
 /**
+ * K 线的**选项装配 ＋ 一次绘制**（需求 4 · 方案 §3.2 那个「唯一要碰交易页渲染的地方」）。
+ *
+ * 抽出来的唯一理由：回顾页要画**同一副 K 线**（同一份 `chart.js` / `view.js`），
+ * 两处各写一份选项迟早会走样。**输出逐位相同** —— 这是纯抽取，没改任何取值。
+ *
+ * @param {object} o
+ *   `canvas` / `head` 两个节点（回顾页各有一套，所以由调用方传进来）；
+ *   `sym` / `i` 看哪个币的第几根；`view` 本帧尺寸；`mark` 标记价；
+ *   `cur` 当前仓位（**回顾页恒传 null** —— 回顾没有持仓）；`seed` 细刻度种子；`liqTick` 致命一针
+ * @returns {object} `windowFor` 的返回值（`mode` / `count` / `locked` / `right` / `liqSlot` 都要用）
+ */
+function chartOpts({ canvas, head, sym, i, view, mark, cur, seed, liqTick = null }) {
+  const win = windowFor(sym, i, view.chartW, seed, liqTick);
+  /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
+     日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
+     （`count` 可能大于可用根数，这里的下界会算成负数）。
+     ⚠️ **细刻度档不画锚点**（ROADMAP §19.6.6 ③）：锚点是小时级历史节点，2 ~ 12 小时的窗口里没有意义，
+        而且省掉了「小时序号 → 桶槽位」这一层换算。 */
+  let anchorMarks = [];
+  if (win.mode !== '1t') {
+    const hLo = win.mode === '1d' ? (win.right - win.count + 1) * HOURS_PER_DAY : win.right - win.count + 1;
+    const hHi = win.mode === '1d' ? win.right * HOURS_PER_DAY + HOURS_PER_DAY - 1 : win.right;
+    anchorMarks = anchorsInRange(hLo, hHi).map(a => ({
+      d: win.mode === '1d' ? Math.floor(a.at / HOURS_PER_DAY) : a.at,
+    }));
+  }
+  /* 图上唯一的入口：K 线、量柱、两条水平线都在这一笔里画。
+     ⚠️ 返回值必须写回视野 —— 价格轴的平移限位夹在 `drawChart` 里（换算的唯一真源在那边），
+        状态记的是**没夹过**的原始位移，不写回就会越夹越离谱。 */
+  const effY = drawChart(canvas, {
+    candles: win.candles,
+    vols: win.vols,
+    /* 槽位数（= 视野要的根数）：柱宽按它算、柱子右对齐，币种刚上线时才不会一根撑满屏（B22）。
+       细刻度档下它是**聚合后的桶数**（`win.count` 是 tick 数，不能直接当槽位用）。 */
+    slots: win.slots,
+    /* 历史锚点刻度（P2-C）—— 与最右那根一起交给图上换算槽位 */
+    anchors: anchorMarks,
+    right: win.right,
+    /* 「致命那一针」（S3-附）：槽位号由 `view.js` 折算好；粗档恒为 null */
+    liqSlot: win.liqSlot,
+    /* 顶部留白 = 左上角遮罩的**实测**高度（Batch 5 · B27）：量不到时由 `chart.js` 退回自己的兜底常量。
+       `getBoundingClientRect` 与 `main.js` 那次取尺寸落在同一帧，不额外多一次强制布局。 */
+    topInset: head.getBoundingClientRect().height,
+    mark,
+    entry: cur ? cur.entry : null,
+    side: cur ? cur.side : null,
+    /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。现货 1x 没有强平价 ⇒ 传 null。 */
+    liq: cur && canLiquidate(cur) ? liquidationPrice(cur) : null,
+    cssW: view.chartW,
+    cssH: view.chartH,
+    yPx: win.yPx,
+  });
+  if (effY !== win.yPx) setYPx(sym, effY);
+  return win;
+}
+
+/**
  * K 线的**全部**绘制与浮字（从 `update()` 里整块抽出来，2026-09-29）—— 唯一理由：
  * 它只在交易页做（见 `update()` 里那段注释）。抽出来比在里面嵌一层 `if` 更好读，
  * 也避免了整个 `update()` 被推进一级缩进。
@@ -657,47 +778,9 @@ function syncChart(refs, s, view, sym, cur, mark) {
   const liqTick = view.liq && view.liq.sym === sym
     ? view.liq.hour * ticksPerHour() + view.liq.k
     : null;
-  const win = windowFor(sym, s.i, view.chartW, s.seed, liqTick);
-  /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
-     日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
-     （`count` 可能大于可用根数，这里的下界会算成负数）。
-     ⚠️ **细刻度档不画锚点**（ROADMAP §19.6.6 ③）：锚点是小时级历史节点，2 ~ 12 小时的窗口里没有意义，
-        而且省掉了「小时序号 → 桶槽位」这一层换算。 */
-  let anchorMarks = [];
-  if (win.mode !== '1t') {
-    const hLo = win.mode === '1d' ? (win.right - win.count + 1) * HOURS_PER_DAY : win.right - win.count + 1;
-    const hHi = win.mode === '1d' ? win.right * HOURS_PER_DAY + HOURS_PER_DAY - 1 : win.right;
-    anchorMarks = anchorsInRange(hLo, hHi).map(a => ({
-      d: win.mode === '1d' ? Math.floor(a.at / HOURS_PER_DAY) : a.at,
-    }));
-  }
-  /* 图上唯一的入口：K 线、量柱、两条水平线都在这一笔里画。
-     ⚠️ 返回值必须写回视野 —— 价格轴的平移限位夹在 `drawChart` 里（换算的唯一真源在那边），
-        状态记的是**没夹过**的原始位移，不写回就会越夹越离谱。 */
-  const effY = drawChart(refs.canvas, {
-    candles: win.candles,
-    vols: win.vols,
-    /* 槽位数（= 视野要的根数）：柱宽按它算、柱子右对齐，币种刚上线时才不会一根撑满屏（B22）。
-       细刻度档下它是**聚合后的桶数**（`win.count` 是 tick 数，不能直接当槽位用）。 */
-    slots: win.slots,
-    /* 历史锚点刻度（P2-C）—— 与最右那根一起交给图上换算槽位 */
-    anchors: anchorMarks,
-    right: win.right,
-    /* 「致命那一针」（S3-附）：槽位号由 `view.js` 折算好；粗档恒为 null */
-    liqSlot: win.liqSlot,
-    /* 顶部留白 = 左上角遮罩的**实测**高度（Batch 5 · B27）：量不到时由 `chart.js` 退回自己的兜底常量。
-       `getBoundingClientRect` 与 `main.js` 那次取 `chartWrap` 尺寸落在同一帧，不额外多一次强制布局。 */
-    topInset: refs.chartHead.getBoundingClientRect().height,
-    mark,
-    entry: cur ? cur.entry : null,
-    side: cur ? cur.side : null,
-    /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。现货 1x 没有强平价 ⇒ 传 null。 */
-    liq: cur && canLiquidate(cur) ? liquidationPrice(cur) : null,
-    cssW: view.chartW,
-    cssH: view.chartH,
-    yPx: win.yPx,
+  const win = chartOpts({
+    canvas: refs.canvas, head: refs.chartHead, sym, i: s.i, view, mark, cur, seed: s.seed, liqTick,
   });
-  if (effY !== win.yPx) setYPx(sym, effY);
 
   /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种（`main.js` 里定的目标档） */
   refs.modeBtn.textContent = win.mode === '1d' ? '1日' : win.mode === '1t' ? '30秒' : '1h';
@@ -1065,7 +1148,161 @@ export function openIntro() {
   picker = ov;
 }
 
-/* ═════════════════════════ 设置（Batch 4 · B21 → A6 改页） ═════════════════════════ */
+/**
+ * 主菜单（需求 4 ·《主菜单与历史回顾模式方案》§2，2026-09-29）。`boot()` 走完**一律先弹它**，
+ * 三个入口决定后续：开始游戏 / 继续游戏（仅在有档时出现）/ 历史回顾。
+ *
+ * ⚠️ 与 `openIntro` 同一范式：**无暗底、全屏、必须在按钮里选一个才走**（它不是「点外面能关掉的菜单」）；
+ *    弹窗期间时钟不启动（`main.js` 的 `clock.start()` 排在 `onMenu` 之后）。
+ * ⚠️ 「继续游戏」在**没有存档**时整枚不出现（LESS IS MORE：没有的选项不显示）；
+ *    「开始游戏」在有档时会先变「确认重开」（双重确认的状态机在 `main.js`，理由同 `onReset`）。
+ */
+export function openMenu({ canContinue = false } = {}) {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const box = el('div', 'confirm intro');
+  box.append(el('h3', null, 'Degen · 加密交易员'));
+  box.append(el('p', null,
+    '2013 年 1 月 → 2024 年 12 月。\n'
+    + '行情就是真实历史，没人替你兜底。'));
+
+  const btns = el('div', 'menu-btns');
+  const start = el('button', 'act long', '开始游戏');
+  start.dataset.menu = 'start';
+  btns.append(start);
+  if (canContinue) {
+    const cont = el('button', 'act flat', '继续游戏');
+    cont.dataset.menu = 'continue';
+    btns.append(cont);
+  }
+  const review = el('button', 'act chan', '历史回顾');
+  review.dataset.menu = 'review';
+  btns.append(review);
+  box.append(btns);
+
+  ov.append(box);
+  ov.hidden = false;
+  picker = ov;
+}
+
+/* ═════════════════════════ 历史回顾（需求 4 · 方案 §3） ═════════════════════════ */
+
+/**
+ * 回顾页每帧写入口（需求 4 ·《主菜单与历史回顾模式方案》§3）。
+ *
+ * ⚠️ 它与 `update()` 是**两条渲染线**：回顾态下 `.trade-page` 是 `display:none`，
+ *    交易页那些块一个字都不该被写。
+ * ⚠️ **只读**：不碰 `s`、不写存档、不判破产 —— 状态全在 `main.js` 的 `rv`（模块级变量）里。
+ * ⚠️ 回顾**没有持仓**，所以 `chartOpts` 的 `cur` 恒传 `null`（图上不画开仓线 / 强平线）。
+ * @param {object} rv `{ i, sym, speed, paused, log }`
+ */
+export function renderReview(refs, rv, view) {
+  const now = GAME.start + rv.i * HOUR_MS;
+  refs.rvDate.textContent = fmtDate(now, false);
+  refs.rvPauseBtn.textContent = rv.paused ? '继续' : '暂停';
+  refs.rvPauseBtn.classList.toggle('on', rv.paused);
+  for (const [v, b] of refs.rvSpdBtns) b.classList.toggle('on', rv.speed === v);
+
+  /* 币种条：**可切**（拍板 2）—— 但那个币此刻还没上线就点不动（与交易页同一条口径）。
+     回顾不画解锁进度环（那是「离解锁还有多久」的玩法表达，回顾里没有意义）。 */
+  for (const c of COINS) {
+    const b = refs.rvSymBtns.get(c.sym);
+    b.classList.toggle('on', rv.sym === c.sym);
+    b.disabled = now < c.unlock;
+  }
+
+  const sym = rv.sym;
+  const mark = isLoaded(sym) ? (candleAt(sym, rv.i)?.c ?? null) : null;
+  const prev = candle24(sym, rv.i);
+  refs.rvSym.textContent = sym;
+  if (mark != null && prev) {
+    refs.rvChg.textContent = `24h ${fmtPct(mark / prev - 1)}`;
+    refs.rvChg.className = mark >= prev ? 'up' : 'down';
+  } else {
+    refs.rvChg.textContent = '';
+  }
+
+  const win = chartOpts({
+    canvas: refs.rvCanvas, head: refs.rvHead, sym, i: rv.i, view, mark, cur: null, seed: GAME.seed,
+  });
+  refs.rvModeBtn.textContent = win.mode === '1d' ? '1日' : win.mode === '1t' ? '30秒' : '1h';
+
+  /* 回顾日志（加长的那一栏）：只在**最新一条**变化时重建（与资产页那个列表同一套签名写法）。
+     倒序铺 —— 最新在上，与交易页日志条同向。 */
+  const top = rv.log[rv.log.length - 1];
+  const sig = top ? `${top.at}|${top.text}` : '';
+  if (sig !== refs._rvLogSig) {
+    refs._rvLogSig = sig;
+    refs.rvLogs.textContent = '';
+    for (let k = rv.log.length - 1; k >= 0; k--) {
+      const e = rv.log[k];
+      const row = el('div', 'log-row ' + (e.kind === 'bad' ? 'down' : e.kind === 'ok' ? 'up' : 'mut'));
+      row.append(el('u', null, fmtHour(GAME.start + e.at * HOUR_MS)), el('span', null, e.text));
+      refs.rvLogs.append(row);
+    }
+    if (!refs.rvLogs.childElementCount) refs.rvLogs.append(el('div', 'log-row mut', '—'));
+  }
+}
+
+/**
+ * 节点卡（方案 §3.5）—— 命中关键节点时暂停 ＋ 弹出的一张史实卡。
+ * 复用 `.confirm` 那副弹层骨架；**不给暗底**（无 `.pick-back`）：它不是「点外面能关掉的菜单」，
+ * 必须在三枚按钮里选一个才走 —— 与主菜单 / 开场叙事同一条。
+ *
+ * 三枚：**继续**（恢复巡航）/ **跳过这个节点**（本节点不再弹）/ **跳过全部**（一键压到纯巡航）。
+ */
+export function openNodeCard(node) {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const box = el('div', 'confirm nodecard');
+  box.append(el('h3', null, fmtDate(GAME.start + node.at * HOUR_MS, false)));
+  box.append(el('p', null, node.note ? `${node.title}\n${node.note}` : node.title));
+
+  const go = el('button', 'act long', '继续');
+  go.dataset.review = 'go';
+  const skip = el('button', 'act flat', '跳过');
+  skip.dataset.review = 'skip';
+  const all = el('button', 'act flat', '跳过全部');
+  all.dataset.review = 'skipall';
+  const btns = el('div', 'confirm-btns');
+  btns.append(go, skip, all);
+  box.append(btns);
+
+  ov.append(box);
+  ov.hidden = false;
+  picker = ov;
+}
+
+/**
+ * 年份跳转（方案 §3.3 的「可切日期」；§9.3 的交互形态在此定为**年份小格**）。
+ * 12 年 × 一格，跳过去落在那一年的 1 月 1 日 00:00 —— 日粒度是回顾能表达的最细跨度。
+ */
+export function openYearPick(curYear) {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const back = el('div', 'pick-back');
+  const box = el('div', 'confirm');
+  box.append(el('h3', null, '跳到年份'));
+  const grid = el('div', 'year-grid');
+  for (let y = 2013; y <= 2024; y++) {
+    const b = el('button', 'opt', String(y));
+    b.dataset.review = 'year:' + y;
+    if (y === curYear) b.classList.add('on');
+    grid.append(b);
+  }
+  box.append(grid);
+
+  back.addEventListener('pointerdown', closePicker);
+  ov.append(back, box);
+  ov.hidden = false;
+  picker = ov;
+}
 
 /**
  * 设置原先是**弹层**（`openSettings`），A6（方案 §6.2，2026-09-29）起整体搬成**设置页**：

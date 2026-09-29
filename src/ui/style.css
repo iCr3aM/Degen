@@ -768,3 +768,49 @@ html, body {
   font-size: 13px;
 }
 .boot .err { color: var(--down); white-space: pre-wrap; word-break: break-all; font-size: 12px; text-align: left; max-width: 100%; }
+
+/* ══════════════ 主菜单 ＋ 历史回顾（需求 4 · 方案 §2 / §3） ══════════════ */
+
+/* 主菜单三入口**纵向**排（开始 / 继续 / 历史回顾）——
+   `.confirm-btns` 是横排（那是「二选一」），这里是「选一条路」，竖排读起来更像菜单。 */
+.menu-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+/* ⚠️ `.act` 自带 `flex: 1`（横排时等分宽度），纵向 flex 下会变成等分高度、把卡片拉满屏 */
+.menu-btns .act { flex: none; }
+
+/* 节点卡：复用 `.confirm` 骨架，正文用 `.intro p` 那一副（可折行、`pre-line` 认 `\n`） */
+.nodecard p {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--mut);
+  white-space: pre-line;
+}
+
+/* 年份跳转：12 格 3 列（2013–2024），跳过去落在那一年的 1 月 1 日 */
+.year-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.year-grid .opt { height: 32px; }
+
+/* 回顾态：把**三页常驻**的顶栏与底部 Tab 藏掉（方案 §3.1「只留一个回顾页」）。
+   `.page` 之外的节点没有别的开关，所以只能靠 `#app.rv` 这个类；
+   ⚠️ 用 `display:none`（不是 `visibility`）—— 隐藏的顶栏里那些按钮不该还能被点到。 */
+#app.rv > .top, #app.rv > .tabs { display: none; }
+
+/* 回顾页顶栏：左边是**可点的日期**（点开年份跳转），右边是速度档 / 暂停 / 退出。
+   ⚠️ 宽度必须放开 —— `.top .ic` 是给顶栏那两枚定宽 42px 的（防「确认重开」撑宽），
+      日期是 10 个字符，42px 会被截掉。 */
+.top .ic.rv-date { width: auto; padding: 0 8px; font-size: 12px; }
+/* 速度档：三枚小方键，与操作区那套 `.opt` 同一副样子，只是不被 flex 等分 */
+.rv-spd { display: flex; gap: 4px; }
+.rv-spd .opt { flex: none; width: 46px; }
+
+/* 回顾页的日志栏 —— **加长**（方案 §3.6）：没有操作区 / HUD / 持仓条，省下的高度全给它。
+   固定 6 行（6 × 16 + 8 = 104px），放不下就在面板内滚；内容走与日志浮层同一套 `.log-row`。 */
+.rv-logs {
+  flex: none;
+  height: 104px;
+  margin-bottom: 8px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 4px 0;
+}
