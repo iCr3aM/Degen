@@ -16,7 +16,7 @@ import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, maxLever
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
-import { SHOCK, addFlow } from './god.js';
+import { SHOCK, addFlow, residualOfSide } from './god.js';
 import { fmtMoney, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, openPosition, pnlOf,
@@ -363,10 +363,14 @@ export function closeTrade(s, why = '手动') {
     r.pnl >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
 
-  /* 订单冲击（方案 §2.6）：**平多 = 卖、平空 = 买**，方向与开仓时相反 —— 与成交价的代价同一口径 */
+  /* 订单冲击（方案 §2.6 ＋ **A2**，2026-09-29 拍板）：**平多 = 卖、平空 = 买**，方向与开仓时相反。
+     A2 口径 = 「返还款打对折」：基数是**开仓方向此刻的残存值** `R`（不是开仓时的原值），写回 `−giveBack·R`。
+     ⇒ 砸出的坑只回填一半；且新写的反向笔幅度 ≤ 同向残存值 ⇒ **过冲在数学上不可能发生**
+        （原来那种「弹得比原价还高」正是「先写的衰减多、后写的衰减少」这条不对称造成的）。 */
   if (!otc && s.impactOn) {
-    const dir = pos.side === 'long' ? -1 : 1;
-    if (addFlow(s, sym, dir * SHOCK.share * cost)) invalidateSigma();
+    const dir = pos.side === 'long' ? 1 : -1;
+    const back = SHOCK.giveBack * residualOfSide(s, sym, s.i, dir);
+    if (addFlow(s, sym, -dir * back)) invalidateSigma();
   }
 
   if (checkRuin(s)) return { ok: false, why: s.over.reason };
