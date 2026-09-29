@@ -21,7 +21,7 @@ import {
   pickExchange, confirmExchange, closePicker, openIntro, openGod, showPage,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
-import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
+import { panBy, zoomBy, resetView, setMode, syncModeToSpeed, viewOf } from './ui/view.js';
 import * as snd from './ui/sound.js';
 
 const root = document.getElementById('app');
@@ -89,6 +89,9 @@ async function boot() {
 
   // 数据到位后把杠杆夹到当前年份允许的范围内（读档时年份可能已经变了）
   normalizeLeverage(s);
+  /* 速度 → 粒度（v11 · ④ 第一步）：读档时速度可能是 50x，开局这里先同步一次，
+     否则「存量档停在 1h ＋ 50x 速度」会与「速度定粒度」的口径不一致。 */
+  syncModeToSpeed(s.sym, s.speed, s.i, chartW());
 
   /* 新闻窗口内**强制一帧**（P2-C）：一次 `step()` 在 50x 下最多能推进 50 个游戏小时，
      而渲染被节流到 80ms —— 不强制就会「窗口整个落在两帧之间」，玩家一次都看不到。
@@ -228,6 +231,9 @@ function draw(force = false) {
   const view = {
     chartW: Math.max(1, Math.round(rect.width)),
     chartH: Math.max(1, Math.round(rect.height - 2)),
+    /* 当前显示粒度（v11 · ④）：顶栏时间**跟着粒度走** —— 日线档只到日期。
+       与 K 线共用 `view.js` 那一份记录，不另存一份状态。 */
+    mode: viewOf(s.sym).mode,
     liq: liqMark,
     /* 当前页：K 线只在交易页画（另两页没有 K 线） */
     tab,
@@ -335,7 +341,14 @@ function dispatch(node) {
     after();
     return;
   }
-  if (d.speed !== undefined) { s.speed = Number(d.speed); after(); return; }
+  /* 速度（v11 · ④ 第一步）：**速度定粒度** —— 换速度就把当前币的显示粒度强制同步过去
+     （1x → 细刻度 / 5x·10x → 小时 / 50x → 日线）。手动捏合只在本档内临时生效。 */
+  if (d.speed !== undefined) {
+    s.speed = Number(d.speed);
+    syncModeToSpeed(s.sym, s.speed, s.i, chartW());
+    after();
+    return;
+  }
   /* 模式切换（U1 · ROADMAP §21.4；v9 · §15.6 N3）：现货 ⇄ 合约。它决定的是**整张杠杆表**
      与**整行动作键的字面**（现货＝买入/卖出、合约＝做多/做空/平仓），见 `engine.spotOf` / `levKind`。
      ⚠️ `data-mode2`（操作区那枚模式键），不是 `data-mode`（那是 K 线粒度小字）。
@@ -432,6 +445,9 @@ function onEx(id) {
 function onSym(sym) {
   if (s.sym === sym) return;
   s.sym = sym;
+  /* 粒度是**按币各存一份**的 ⇒ 刚切过来的币多半还停在默认 `1h`；这里按当前速度同步一次，
+     否则 50x 下切个币就会退回到「一小时一根」，与「速度定粒度」的口径不一致。 */
+  syncModeToSpeed(sym, s.speed, s.i, chartW());
   // 切到一个没加载过的币：先重画一次（会显示「无行情数据」），拉到之后再刷新
   after();
   if (!isLoaded(sym)) ensureCoin(sym).then(() => draw(true));
@@ -588,6 +604,8 @@ function onWarn() {
   s.warnAt = null;
   s.paused = true;
   s.speed = 1;
+  /* 速度被压回 1x ⇒ 粒度也跟着回到细刻度档（v11 · ④：速度定粒度） */
+  syncModeToSpeed(s.sym, s.speed, s.i, chartW());
   after();
 }
 
@@ -612,6 +630,7 @@ function onTab(name) {
   tab = name;
   s.paused = true;      // 切页即暂停
   s.speed = 1;          // ⚠️ 写进主状态（会落盘）：切一次页就丢掉 50x 的选择，这是拍板语义
+  syncModeToSpeed(s.sym, s.speed, s.i, chartW());   // 速度定粒度（v11 · ④）—— 回 1x 就回细刻度
   closePicker();
   after();
 }

@@ -304,16 +304,41 @@ export function resetView(sym) {
 export function setMode(sym, mode, i, cssW) {
   const v = viewOf(sym);
   if (v.mode === mode) return v;
-  /* 右端先统一换算成**小时序号**（三档口径各不同），再落到目标档 */
+  /* 右端先统一换算成**小时序号**（三档口径各不同），再落到目标档。
+     ⚠️ 落到 `1t` 时必须乘回 `N` 并取该小时**最后一 tick**（与 `zoomBy` 的换档落点是同一刻度）——
+        少了这一步，`right` 会以「小时数」冒充「tick 序号」，被 `norm` 夹到数据最左端。 */
   const hour = v.mode === '1d' ? v.right * HOURS_PER_DAY + HOURS_PER_DAY - 1
     : v.mode === '1t' ? Math.floor(v.right / N)
       : v.right;
-  v.right = mode === '1d' ? Math.floor(hour / HOURS_PER_DAY) : Math.min(i, hour);
+  v.right = mode === '1d' ? Math.floor(hour / HOURS_PER_DAY)
+    : mode === '1t' ? Math.min(i, hour) * N + N - 1
+      : Math.min(i, hour);
   v.mode = mode;
   v.count = 0;
   v.yPx = 0;
   norm(sym, i, cssW);
   return v;
+}
+
+/* ═════════════════ 速度 → 粒度（v11 · ④ 第一步） ═════════════════
+ * 口径（2026-09-29 拍板）：**速度定粒度，时间推进口径完全不动** ——
+ *   1x → 细刻度 `1t` / 5x·10x → 小时 `1h` / 50x → 日线 `1d`
+ * 390px 视口实测「一屏真实秒数」：12 / 13.6 / 6.8 / 32.6 s，四档滚动速度平滑
+ * （细刻度 1440 tick ＝ 12 小时，与 1h 最细那 12 根同跨度 ⇒ 换档无跳变）。
+ *
+ * ⚠️ **时间仍是 1 游戏小时/真实秒 × 速度**（`s.i` 语义一行没改）：粒度只是「看」的窗口。
+ *    ⇒ 1x 的细刻度档是「看针」用的（一屏 12 秒滚完），不是常态；要看大势就按 5x/10x。
+ * ⚠️ 手动捏合 / 粒度小字仍可在**本档内**临时改档（`zoomBy`），**下次点速度再被拉回来** ——
+ *    这就是「手动捏合在该档内临时生效」这条拍板语义。
+ */
+const SPEED_MODE = new Map([[1, '1t'], [5, '1h'], [10, '1h'], [50, '1d']]);
+
+/** 该速度档的**规范粒度**（表里没有的速度退回 `1h`，理论上不会发生） */
+export const modeForSpeed = speed => SPEED_MODE.get(speed) || '1h';
+
+/** 按速度把某币的粒度**强制**同步过去（切速 / 切币 / 开局 / 读档 / 回到 1x 时调用） */
+export function syncModeToSpeed(sym, speed, i, cssW) {
+  return setMode(sym, modeForSpeed(speed), i, cssW);
 }
 
 /**
