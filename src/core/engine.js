@@ -18,7 +18,7 @@ import { warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow, residualOfSide } from './god.js';
-import { fmtMoney, fmtMoneyShort, fmtRate } from './format.js';
+import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, openPosition, pnlOf,
   FUNDING, fundingOf, fundingRateOf, canLiquidate, paysFunding,
@@ -216,11 +216,9 @@ const slipTag = (impact, count = 1) =>
 const otcPremiumFor = (s, sym) => otcPremiumOf(dailySigma(sym, s.i), timeOf(s));
 
 /**
- * 日志里的价格。只做一件事：抹掉浮点乘法的尾噪 ——
- * `13.078 × 1.006` 会算出 `13.156468000000001` 这种东西，直接贴进 nowrap 的日志条很难看。
- * 取 8 位有效数字（数据包本身就是按 8 位有效数字编码的），所以**未触发滑点时与原来一字不差**。
+ * 日志里的价格走 `fmtLogPrice`（本轮 ②）—— `≥ $1` 固定 1 位小数、`< $1` 保留有效数字。
+ * 原来这里有个 `showPrice`（取 8 位有效数字抹浮点尾噪），已随本轮删除：`toFixed` 本来就不带尾噪。
  */
-const showPrice = v => Number(v.toPrecision(8));
 
 /* ───────────────────────────── 交易动作 ───────────────────────────── */
 
@@ -333,7 +331,10 @@ export function openTrade(s, side, frac = 1) {
   /* 字面跟着模式走（v9 · §15.6 N4「没有的选项不显示」的同一条口径）：现货模式的操作键是
      **买入 / 卖出**，日志若还写「做多 / 做空」，就与玩家刚按下的那枚键对不上了。 */
   const verb = spot ? (side === 'long' ? '买入' : '卖出') : (side === 'long' ? '做多' : '做空');
-  pushLog(s, `${verb} ${s.sym} ${lev}x｜保证金 ${fmtMoneyShort(margin)} @ ${showPrice(fill)}${tag}`, side === 'long' ? 'long' : 'short');
+  /* 手续费必须**写进日志**（本轮 ② · 用户拍板）：它已经真的从余额里扣掉了（上面那两行），
+     玩家却只看到「保证金 $3,000.0」——账对不上。`fee` 就是本笔按名义价值收的那一次。 */
+  pushLog(s, `${verb} ${s.sym} ${lev}x｜保证金 ${fmtMoneyShort(margin)} @ ${fmtLogPrice(fill)}｜手续费 ${fmtMoneyShort(fee)}${tag}`,
+    side === 'long' ? 'long' : 'short');
 
   /* 订单冲击（方案 §2.6）：把这次成交代价的**永久部分**（Almgren–Chriss 的 γQ，实证 35%）
      沉淀成行情位移 —— 从此处起价格上/下一个台阶，再按 Bouchaud 幂律慢慢回爬。
@@ -378,8 +379,16 @@ export function closeTrade(s, why = '手动') {
   s.realized += r.pnl - r.fee;
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
   const tag = otc ? `｜OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
-  pushLog(s, `平仓 ${sym} ${pos.lev}x｜${r.pnl >= 0 ? '盈利' : '亏损'} ${fmtMoneyShort(r.pnl)} · ${why}${tag}`,
-    r.pnl >= 0 ? 'ok' : 'bad');
+  /* 盈亏 ＋ 手续费（本轮 ② · 用户拍板）：
+     - **回合净额** = 毛盈亏 − 开仓费 − 平仓费。开仓费在开仓那一刻已经从余额扣过一次
+       （`s.realized -= fee`），这里若只报毛盈亏，玩家看到的「盈利」会比自己钱包里多出来的钱大。
+     - **手续费**报的是**本回合两笔之和**（开 ＋ 平），与「净额 = 毛额 − 这条手续费」对得上。
+     ⚠️ `s.realized` 本来就是净口径（开仓扣一次、这里再加 `pnl − fee`），这两行只是把显示补齐，
+        账目一个字没动。 */
+  const fees = (pos.openFee ?? 0) + r.fee;
+  const net = r.pnl - fees;
+  pushLog(s, `平仓 ${sym} ${pos.lev}x｜${net >= 0 ? '盈利' : '亏损'} ${fmtMoneyShort(net)} · ${why}｜手续费 ${fmtMoneyShort(fees)}${tag}`,
+    net >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
 
   /* 订单冲击（方案 §2.6 ＋ **A2**，2026-09-29 拍板）：**平多 = 卖、平空 = 买**，方向与开仓时相反。
@@ -414,8 +423,8 @@ export function bindLiquidateHook(fn) { onLiquidate = fn || null; }
  */
 function forceLiquidate(s, pos, atPrice, k) {
   /* 串形与开仓 / 平仓对齐（2026-09-29）：`｜` 两侧不留白、金额走 `fmtMoneyShort`、
-     价格走 `showPrice`（原来这里单独用 `toFixed(4)`，`64000` 会写成 `64000.0000`，白吃 36px）。 */
-  pushLog(s, `爆仓 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)} 全部损失 @ ${showPrice(atPrice)}`, 'bad');
+     价格走 `fmtLogPrice`（本轮 ② —— 原来这里是 `showPrice`，现在统一 ≥$1 一位小数）。 */
+  pushLog(s, `爆仓 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)} 全部损失 @ ${fmtLogPrice(atPrice)}`, 'bad');
   s.realized -= pos.margin;
   delete s.positions[pos.sym];
   if (onLiquidate) onLiquidate(pos.sym, s.i, k);

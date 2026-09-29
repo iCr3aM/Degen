@@ -175,6 +175,51 @@ export function closeAt(sym, i) {
   return c ? c.c : null;
 }
 
+/* ═════════════════ 流通量（manifest.circulating，本轮 ⑤） ═════════════════
+ * 数据长什么样：`{ [sym]: { unit, points: { 'YYYY-MM-DD': 数量 } } }`（`tools/fetch-data.mjs` 落盘）。
+ * 它是**逐年几个锚点**、不是逐日序列 —— 所以这里按**小时序号线性插值**，
+ * 两点之间是直线。市值 = 本值 × 标记价，只用来在 K 线头部报一个量级，不参与任何玩法判定。
+ *
+ * ⚠️ 只读 `manifest`（已在内存里，**不额外下载任何文件**）。
+ * ⚠️ 单位是「该币自己的币数」—— 头部要的就是这个，不做任何美元换算。
+ */
+let supplyPts = null;          // sym -> [{ h, n }]（h = 自 manifest.start 起的小时序号，升序）
+
+function supplyPoints(sym) {
+  if (!manifest || !manifest.circulating) return null;
+  const c = manifest.circulating[sym];
+  if (!c || !c.points) return null;
+  if (!supplyPts) supplyPts = new Map();
+  let arr = supplyPts.get(sym);
+  if (arr) return arr;
+  arr = Object.keys(c.points)
+    .map(d => ({ h: Math.round((Date.parse(`${d}T00:00:00Z`) - manifest.start) / HOUR_MS), n: c.points[d] }))
+    .sort((a, b) => a.h - b.h);
+  supplyPts.set(sym, arr);
+  return arr;
+}
+
+/**
+ * 第 i 根的**流通量**（该币自己的币数）；区间外**取端点值**（不外推）。
+ * @returns {number|null} 清单里没有这个币 ⇒ null（调用方一律省略这一格）
+ */
+export function supplyAt(sym, i) {
+  const arr = supplyPoints(sym);
+  if (!arr || !arr.length) return null;
+  if (i <= arr[0].h) return arr[0].n;
+  const last = arr[arr.length - 1];
+  if (i >= last.h) return last.n;
+  for (let k = 1; k < arr.length; k++) {
+    if (i <= arr[k].h) {
+      const a = arr[k - 1];
+      const b = arr[k];
+      const span = b.h - a.h;
+      return span > 0 ? a.n + (b.n - a.n) * ((i - a.h) / span) : b.n;
+    }
+  }
+  return last.n;
+}
+
 /* ═════════════════ 日流动性（liq.bin，P2-A 拥堵脉冲 / P2-B 滑点共用） ═════════════════
  * 与 K 线包不同的三点，都是刻意的：
  *   ① **整包一次加载** —— 只有 86 KB（gzip 63 KB），且拥堵计算随时要用（连 BTC 都要），

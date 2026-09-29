@@ -12,10 +12,10 @@
  */
 
 import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
-import { fmtDate, fmtHour, fmtMoney, fmtMoneyShort, fmtPct, fmtRate, moneyTierHeld } from '../core/format.js';
+import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
-import { canLiquidate, isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
-import { isLoaded, rangeOf, candleAt, rawCloseAt, HOURS_PER_DAY } from '../core/market.js';
+import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
+import { isLoaded, rangeOf, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { anchorAt, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
@@ -138,13 +138,19 @@ export function mount(root) {
   /* ── K 线 ── */
   const canvas = el('canvas');
   const chSym = el('b');
+  /* 币种右边两枚**次要读数**（本轮 ⑤）：市值 ＝ 流通量 × 标记价；流通 ＝ 该币的流通数量。
+     都用 `<i>`（同 `.hud .cell i` / `.confirm-row i` 的用法：斜体复位、默认次要色）。
+     ⚠️ **必须在同一行**：`.chart-head` 的实测高度就是 K 线的绘图上沿（`topInset`），
+        多一行等于白白吃掉十几个像素的可画区。窄屏放不下时由 CSS 先压缩这两枚（省略号）。 */
+  const chMcap = el('i');
+  const chSupp = el('i');
   const chChg = el('span');
   const chartHead = el('div', 'chart-head');
   /* 粒度切换（Batch 3 · B12，拍板「K 线左上角遮罩里加一枚可点小字」）：
      字面是**当前**粒度，点一下切到另一种。做成 `button` 才有点击态，也为触屏留住命中面积。 */
   const modeBtn = el('button', 'chip');
   modeBtn.dataset.mode = 'toggle';
-  chartHead.append(chSym, chChg, modeBtn);
+  chartHead.append(chSym, chMcap, chSupp, chChg, modeBtn);
   /* K 线**右上角**那一列浮字（两枚都压在画布上、**不占布局高度**）：
        · 在途转账倒计时（P2-A）：只在有转账时显示
        · 锁视野提示（Batch 3 · B14）：只在玩家拖动/缩放之后显示
@@ -333,11 +339,13 @@ export function mount(root) {
 
   const rvCanvas = el('canvas');
   const rvSym = el('b');
+  const rvMcap = el('i');
+  const rvSupp = el('i');
   const rvChg = el('span');
   const rvModeBtn = el('button', 'chip');
   rvModeBtn.dataset.mode = 'toggle';
   const rvHead = el('div', 'chart-head');
-  rvHead.append(rvSym, rvChg, rvModeBtn);
+  rvHead.append(rvSym, rvMcap, rvSupp, rvChg, rvModeBtn);
   const rvWrap = el('div', 'chart-wrap');
   rvWrap.append(rvCanvas, rvHead);
 
@@ -372,7 +380,7 @@ export function mount(root) {
     exBtn, exName, exRate,
     eqVal, eqSub, cashVal, cashSub,
     symbols, symBtns,
-    canvas, chartWrap, chartHead, chSym, chChg, modeBtn, chartEta, chartLock,
+    canvas, chartWrap, chartHead, chSym, chMcap, chSupp, chChg, modeBtn, chartEta, chartLock,
     posbar, posSide, posPnl, posRate,
     logline, newsTag, logTime, logText,
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
@@ -381,7 +389,7 @@ export function mount(root) {
     sndBtn, impBtn, hintBtn,
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
-    rvWrap, rvCanvas, rvHead, rvSym, rvChg, rvModeBtn, rvLogs,
+    rvWrap, rvCanvas, rvHead, rvSym, rvMcap, rvSupp, rvChg, rvModeBtn, rvLogs,
     _levSignature: '',
     _posListSig: null,
     _rvLogSig: '',
@@ -551,7 +559,15 @@ export function update(refs, s, view) {
     } else {
       const rate = posMark == null ? 0 : marginRateOf(p, posMark);
       refs.posRate.textContent = fmtRate(rate);
-      refs.posRate.className = 'num ' + (rate < 0.05 ? 'down' : 'mut');
+      /* **三档颜色**（本轮 ⑥ · 用户拍板「像 OKX 一样」）—— 判据不是 `rate` 的绝对值，
+         而是**按本仓自己的杠杆归一化的安全垫** `safetyOf`：
+           开仓那一刻 = 1（满垫）、触及维持保证金率 = 0（该强平了）。
+         ⚠️ 用绝对值会全错：100x 刚开出来时 `rate` 就是 1%，任何「< 5% 转红」的阈值都会
+            让所有高杠杆仓位常年贴在红区，颜色不再携带任何信息。
+         分档（与 `main.js` 那声预警同一个判据，不各写一份）：
+           `> 0.5` 绿 · 安全 ｜ `0.2 ~ 0.5` 金 · 注意 ｜ `≤ 0.2` 红 · 危险 */
+      const safe = safetyOf(p, posMark ?? 0);
+      refs.posRate.className = 'num ' + (safe <= 0.2 ? 'down' : safe <= 0.5 ? 'gold' : 'up');
     }
   } else {
     for (const n of [refs.posSide, refs.posPnl, refs.posRate]) {
@@ -756,6 +772,19 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur, seed, liqTick = null
 }
 
 /**
+ * 币种右边那两枚读数（**市值 / 流通**，本轮 ⑤）—— 交易页与回顾页**共用同一份算法**。
+ * 取不到（清单里没有这个币 / 行情还没加载）就返回空串：那一格自己消失，**不留 `--`**。
+ *
+ * ⚠️ 市值用 `mark`（**含**价格位移）：它是「这个币此刻值多少」的读数，必须与屏幕上那根现价一致。
+ * ⚠️ 流通量走 `supplyAt` 的**线性插值**（`manifest.circulating` 是逐年几个锚点，不是逐日序列）。
+ */
+function capText(sym, i, mark) {
+  const sup = supplyAt(sym, i);
+  if (sup == null || mark == null || !(mark > 0)) return { mcap: '', supp: '' };
+  return { mcap: `市值 ${fmtCap(sup * mark)}`, supp: `流通 ${fmtQty(sup)}` };
+}
+
+/**
  * K 线的**全部**绘制与浮字（从 `update()` 里整块抽出来，2026-09-29）—— 唯一理由：
  * 它只在交易页做（见 `update()` 里那段注释）。抽出来比在里面嵌一层 `if` 更好读，
  * 也避免了整个 `update()` 被推进一级缩进。
@@ -765,6 +794,9 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur, seed, liqTick = null
 function syncChart(refs, s, view, sym, cur, mark) {
   const prev = candle24(sym, s.i);
   refs.chSym.textContent = sym;
+  const cap = capText(sym, s.i, mark);
+  refs.chMcap.textContent = cap.mcap;
+  refs.chSupp.textContent = cap.supp;
   if (mark != null && prev) {
     refs.chChg.textContent = `24h ${fmtPct(mark / prev - 1)}`;
     refs.chChg.className = mark >= prev ? 'up' : 'down';
@@ -807,41 +839,53 @@ function syncChart(refs, s, view, sym, cur, mark) {
 function posListSignature(s) {
   return heldSyms(s).map(sym => {
     const p = s.positions[sym];
-    return `${sym}:${p.side}:${p.lev}:${isSpot(p) ? 's' : 'f'}:${unrealizedOf(s, sym).toFixed(2)}`;
+    return `${sym}:${p.side}:${p.lev}:${isSpot(p) ? 's' : 'f'}:${p.entry}:${unrealizedOf(s, sym).toFixed(2)}`;
   }).join('|');
 }
 
 /**
- * 按**现货 / 合约**分组列出全部持仓（§6.2 ④）—— 用途是**跨币复盘**：
- * 一行一个币，「方向 ＋ 杠杆」在左、未实现盈亏在右。
+ * 按**普通现货 / 杠杆现货 / 合约**三组列出全部持仓（§6.2 ④；本轮 ⑦ 由两组拆成三组）——
+ * 用途是**跨币复盘**：一行一个币，「方向 ＋ 杠杆 ＋ 开仓价」在左、未实现盈亏在右。
+ *
+ * ⚠️ 现货为什么再拆一刀（用户 2026-09-29 拍板）：**普通现货（1x）与杠杆现货的风险不是一回事** ——
+ *    前者只有币价归零才归零本金（`canLiquidate` 为假，永远没有强平线），后者借了钱 / 币、
+ *    有维持保证金、会被强平。混在一组里，「哪些仓会被强平」这个最重要的问题一眼看不出来。
  * ⚠️ 与交易页那条持仓条不是重复（§14.7）：那条只看当前币、承担「风险仪表」的职责。
- * ⚠️ 组内写「方向 ＋ 倍数」：合约写 `多 20x` / `空 5x`，现货写 `买入 3.3x` / `卖出 2x`
- *    （v9 · §15.6 N4 —— 现货从 §15.6 起也带杠杆、也能做空，不再恒为「1x 做多」）。
+ * ⚠️ **开仓价**本轮加进来（用户拍板）：跨币复盘时「这笔单是贵还是便宜」必须能就地看出来，
+ *    否则只有盈亏数字，换个币就不知道成本在哪。格式化走 `fmtLogPrice` —— 与日志串同一口径。
  */
 function buildPosList(box, s) {
   box.textContent = '';
-  const spot = [];
-  const fut = [];
-  for (const sym of heldSyms(s)) (isSpot(s.positions[sym]) ? spot : fut).push(sym);
+  const cash = [];   // 普通现货：1x
+  const sLev = [];   // 杠杆现货：借来的钱 / 币，有强平线
+  const fut = [];    // 合约
+  for (const sym of heldSyms(s)) {
+    const p = s.positions[sym];
+    if (!isSpot(p)) fut.push(sym);
+    else if (p.lev > 1) sLev.push(sym);
+    else cash.push(sym);
+  }
 
-  if (!spot.length && !fut.length) {
+  if (!cash.length && !sLev.length && !fut.length) {
     box.append(el('div', 'pcard prow mut', '暂无持仓'));
     return;
   }
 
-  for (const [label, syms] of [['现货', spot], ['合约', fut]]) {
+  for (const [label, syms] of [['普通现货', cash], ['杠杆现货', sLev], ['合约', fut]]) {
     if (!syms.length) continue;
     box.append(el('h4', null, label));
     const card = el('div', 'pcard');
     for (const sym of syms) {
       const p = s.positions[sym];
       const pnl = unrealizedOf(s, sym);
+      /* 方向字面与交易页持仓条一一对应（v9 · §15.6 N4）：现货写「买入 / 卖出」、合约写「多 / 空」。 */
+      const dirText = isSpot(p)
+        ? `${p.side === 'long' ? '买入' : '卖出'} ${p.lev}x`
+        : `${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
       const row = el('div', 'prow');
       row.append(
         el('b', null, sym),
-        el('span', 'mut', isSpot(p)
-          ? `${p.side === 'long' ? '买入' : '卖出'} ${p.lev}x`
-          : `${p.side === 'long' ? '多' : '空'} ${p.lev}x`),
+        el('span', 'mut', `${dirText} · 开仓 ${fmtLogPrice(p.entry)}`),
         el('b', 'num ' + (pnl >= 0 ? 'up' : 'down'), fmtMoney(pnl, { sign: true })),
       );
       card.append(row);
@@ -1187,6 +1231,49 @@ export function openMenu({ canContinue = false } = {}) {
   picker = ov;
 }
 
+/* ═════════════════════════ 新手分步引导（本轮 ④） ═════════════════════════ */
+
+/**
+ * 一步引导：把**目标控件**用主色框圈出来（框外整片压暗），底下给一句话 ＋ 一枚「下一步」。
+ *
+ * 三条刻意的选择：
+ *   ① **不用 `.pick-back` 暗底、改用环形阴影**：盒子本身透明，`box-shadow` 半径开到 9999px，
+ *      于是框外全暗、框内全亮 —— 一个元素同时做到「暗底 ＋ 挖洞」；
+ *   ② 整个 `#overlay` 照旧铺满全屏、吃点击 ⇒ 引导期间底下那些键点不到，
+ *      玩家只能按「下一步」往前走（也就不会误开一个弹层把引导挤掉）；
+ *   ③ 目标由调用方给**节点**（`main.js` 从 `refs` 里取），这里只量它的外接矩形。
+ *
+ * ⚠️ 位置**只量一次**：引导期间游戏是暂停的（`main.js` 起手就 `s.paused = true`），
+ *    界面尺寸不会变，不需要每帧跟着目标重算。
+ * @param {Element} target 要圈出来的控件
+ * @param {string} text 一句话说明（含「第 N / M 步」前缀由调用方拼好）
+ * @param {boolean} isLast 末步 ⇒ 按钮文案换成「开始交易」
+ */
+export function openGuide(target, text, isLast) {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov || !target) return;
+
+  const ring = el('div', 'guide-ring');
+  const r = target.getBoundingClientRect();
+  ring.style.left = `${r.left}px`;
+  ring.style.top = `${r.top}px`;
+  ring.style.width = `${r.width}px`;
+  ring.style.height = `${r.height}px`;
+
+  const box = el('div', 'guide-box');
+  box.append(el('p', 'guide-text', text));
+  const btns = el('div', 'confirm-btns');
+  const btn = el('button', 'act long', isLast ? '开始交易' : '下一步');
+  btn.dataset.guide = 'next';
+  btns.append(btn);
+  box.append(btns);
+
+  ov.append(ring, box);
+  ov.hidden = false;
+  picker = ov;
+}
+
 /* ═════════════════════════ 历史回顾（需求 4 · 方案 §3） ═════════════════════════ */
 
 /**
@@ -1217,6 +1304,9 @@ export function renderReview(refs, rv, view) {
   const mark = isLoaded(sym) ? (candleAt(sym, rv.i)?.c ?? null) : null;
   const prev = candle24(sym, rv.i);
   refs.rvSym.textContent = sym;
+  const cap = capText(sym, rv.i, mark);   // 市值 / 流通：与交易页同一份读数（本轮 ⑤）
+  refs.rvMcap.textContent = cap.mcap;
+  refs.rvSupp.textContent = cap.supp;
   if (mark != null && prev) {
     refs.rvChg.textContent = `24h ${fmtPct(mark / prev - 1)}`;
     refs.rvChg.className = mark >= prev ? 'up' : 'down';
@@ -1230,7 +1320,9 @@ export function renderReview(refs, rv, view) {
   refs.rvModeBtn.textContent = win.mode === '1d' ? '1日' : win.mode === '1t' ? '30秒' : '1h';
 
   /* 回顾日志（加长的那一栏）：只在**最新一条**变化时重建（与资产页那个列表同一套签名写法）。
-     倒序铺 —— 最新在上，与交易页日志条同向。 */
+     倒序铺 —— 最新在上，与交易页日志条同向。
+     ⚠️ 时间前缀只写**日期**（本轮 ⑧ · 用户拍板）：回顾跨度是 12 年，时分没有任何信息量；
+        交易页那条日志写时分是因为它讲的是「今天几小时前」，两者口径本来就不同。 */
   const top = rv.log[rv.log.length - 1];
   const sig = top ? `${top.at}|${top.text}` : '';
   if (sig !== refs._rvLogSig) {
@@ -1239,7 +1331,7 @@ export function renderReview(refs, rv, view) {
     for (let k = rv.log.length - 1; k >= 0; k--) {
       const e = rv.log[k];
       const row = el('div', 'log-row ' + (e.kind === 'bad' ? 'down' : e.kind === 'ok' ? 'up' : 'mut'));
-      row.append(el('u', null, fmtHour(GAME.start + e.at * HOUR_MS)), el('span', null, e.text));
+      row.append(el('u', null, fmtDate(GAME.start + e.at * HOUR_MS, false)), el('span', null, e.text));
       refs.rvLogs.append(row);
     }
     if (!refs.rvLogs.childElementCount) refs.rvLogs.append(el('div', 'log-row mut', '—'));
@@ -1259,7 +1351,10 @@ export function openNodeCard(node) {
   if (!ov) return;
 
   const box = el('div', 'confirm nodecard');
-  box.append(el('h3', null, fmtDate(GAME.start + node.at * HOUR_MS, false)));
+  /* 标题行带上**这件事讲的币**（本轮 ⑨）：图上已经切到那个币了，卡面说清楚是哪张图 ——
+     否则「SOL 回到 $120」这类标题在 BTC 的语境里会让人以为图没切过去。 */
+  const when = fmtDate(GAME.start + node.at * HOUR_MS, false);
+  box.append(el('h3', null, node.sym ? `${when} · ${node.sym}` : when));
   box.append(el('p', null, node.note ? `${node.title}\n${node.note}` : node.title));
 
   const go = el('button', 'act long', '继续');

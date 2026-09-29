@@ -33,6 +33,25 @@ export function fmtPrice(p) {
 }
 
 /**
+ * 日志串里的**成交价**（本轮 ② · 用户 2026-09-29 拍板）：
+ *   - **≥ $1 ⇒ 固定 1 位小数**（`13.1` / `1,234.5`）—— 日志里的第二位小数（甚至第三四位）
+ *     对玩家毫无决策价值，只会把 nowrap 的日志条撑长；
+ *   - **< $1 ⇒ 交给 `fmtPrice`**（`0.5234` / `0.00012345`）—— 这类币压低到 1 位会变成 `0.5`
+ *     甚至 `0.0`，那是把信息抹掉而不是省地方（与 `fmtRate` 必须显式传 2 位同一个道理）。
+ *
+ * ⚠️ 只给**日志**用。K 线轴 / 强平价标签 / 持仓条那些位置要的是精确读数，仍走 `fmtPrice`。
+ * ⚠️ 它顺带干掉了 `engine.js` 原来那个 `showPrice`（8 位有效数字去浮点尾噪）：
+ *    `toFixed` 本来就不带尾噪，`< $1` 那支又走 `fmtPrice`（内部也是 `toFixed`）。
+ */
+export function fmtLogPrice(p) {
+  if (!Number.isFinite(p)) return '--';
+  const a = Math.abs(p);
+  if (a < 1) return fmtPrice(p);
+  const [ip, fp] = a.toFixed(1).split('.');
+  return (p < 0 ? '-' : '') + group(ip) + '.' + fp;
+}
+
+/**
  * 金额（USDT）：**固定 $ + 千分位 + 一位小数**，永不换单位。
  * 权益从 $3,000.0 长到 $12,345,678.9 时，只有位数在变，格式一个字符都不变。
  *
@@ -117,6 +136,44 @@ export function fmtMoneyShort(n, { sign = false, minTier = 0 } = {}) {
   const body = shortBody(a, Math.max(minTier, moneyTier(a)));
   if (body == null) return fmtMoney(n, { sign });    // < 1e5：与 fmtMoney 逐位相同
   return (n < 0 ? '-' : sign ? '+' : '') + body;
+}
+
+/**
+ * **币的数量**（流通量这类）：`10.6M` / `483.0M` / `147.44B`，**不带 `$`**。
+ *
+ * 与 `fmtMoneyShort` 共用同一套后缀表（`TIER_UNIT`），只有两处不同：
+ *   - 没有货币符号；
+ *   - `< 1e4` 走**千分位整数**（`8,200`）—— 数量不需要小数，整数已经读得出来。
+ * ⚠️ 单独一个函数而不是给 `fmtMoneyShort` 加个开关：那个的职责是**金额**，
+ *    `$` 与 `sign` 都是它的语义；混进来会逼着每个调用点都多想一层。
+ */
+export function fmtQty(n) {
+  if (!Number.isFinite(n)) return '--';
+  const a = Math.abs(n);
+  if (a < 1e4) return group(String(Math.round(a)));
+  const tier = a < 1e6 ? 1 : a < 1e9 ? 2 : 3;
+  const [base, suf, d] = TIER_UNIT[tier];
+  const s = (a / base).toFixed(d);
+  if (Number(s) >= 1000) {                        // 进位兜底：`999,999` → `1000.0K` ⇒ 抬一档
+    if (tier === 1) return (a / 1e6).toFixed(1) + 'M';
+    if (tier === 2) return (a / 1e9).toFixed(2) + 'B';
+  }
+  return s + suf;
+}
+
+/**
+ * **市值**（流通量 × 价格）：`$1.98T` / `$376.4B` / `$12.3M`。
+ *
+ * 只比 `fmtMoneyShort` 多一档 `T` —— BTC 在 2021 / 2024 的市值是 `$1.3e12` / `$1.98e12`，
+ * 走 `B` 会印成 `$1300.0B`（四个数字位，撑爆 K 线头部那一行）。
+ * ⚠️ **不改 `fmtMoneyShort`**：它是权益 / 盈亏用的金额格式，改它的档位等于改存档外的既有读数，
+ *    而市值只有这一处消费 —— 各给各的档，互不影响。
+ */
+export function fmtCap(n) {
+  if (!Number.isFinite(n)) return '--';
+  const a = Math.abs(n);
+  if (a >= 1e12) return (n < 0 ? '-' : '') + '$' + (a / 1e12).toFixed(2) + 'T';
+  return fmtMoneyShort(n);
 }
 
 /**

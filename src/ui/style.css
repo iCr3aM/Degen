@@ -291,11 +291,27 @@ html, body {
      它同时是 K 线的 `topInset`（render.js 把实测高度传给 chart.js 当绘图上沿），
      遮罩每矮 1px，K 线可画区就多 1px，价格轴最上那一档与强平价才不会被压住。 */
   padding: 4px 8px;
+  /* 本轮 ⑤ 加了「市值 / 流通」两枚之后这一行变长 —— 两条兜底：
+       `max-width:100%` ＋ `overflow:hidden` 保证**任何机型**都不会把字溢出画布；
+       真正先让步的是下面 `.chart-head i`（可压缩、带省略号），最右那枚粒度小字永远保得住。 */
+  max-width: 100%;
+  overflow: hidden;
   background: rgba(16, 19, 23, .72);   /* = --panel-2 的七成不透明 */
   pointer-events: none;
 }
 .chart-head b { font-size: 14px; font-weight: 600; }
 .chart-head span { font-size: 12px; }
+/* 币种右边两枚**次要读数**（本轮 ⑤）：市值 / 流通。字号压到 12px 与 `.chart-head span` 同档
+   （`.chart-head` 自己是 13px，`<i>` 不继承那两条规则）。`min-width:0 ＋ overflow:hidden`
+   是刻意的：它们窄屏时**先缩**（省略号），把位置让给币种与粒度小字。 */
+.chart-head i {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--mut);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* 粒度小字（Batch 3 · B12）：遮罩里唯一可点的东西，所以单独把事件收回来。
    高 20px 是触屏能稳稳点中的下限；底色沿用面板色，只在按下时变主色。 */
 .chart-head .chip {
@@ -690,6 +706,30 @@ html, body {
 .confirm-row i { font-style: normal; color: var(--mut); }
 .confirm-btns { display: flex; gap: 8px; margin-top: 12px; }
 
+/* ══════════════ 新手分步引导（本轮 ④ · 高亮 ＋ 一句话） ══════════════
+   聚光靠**环形阴影**：盒子本身透明，`box-shadow` 半径开到 9999px，
+   于是盒子**外面**整片压暗、盒内保持全亮 —— 一个元素同时做到「暗底 ＋ 挖洞」，
+   不必再叠一层遮罩去算洞的位置（也就不用算圆角 / 多块高亮的边界）。
+   ⚠️ 整个 `#overlay` 照旧铺满全屏、吃点击 ⇒ 引导期间底下那些键点不到，玩家只能往前走。 */
+.guide-ring {
+  position: absolute;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 0 9999px rgba(6, 9, 15, .72);
+}
+/* 卡片贴底（Tab 条 44px 之上 ＋ 安全区），不去挡被高亮的那个块；
+   内边距 / 行距都复用弹层那一档（12px）。 */
+.guide-box {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 12px;
+}
+.guide-text { margin: 0; font-size: 12px; line-height: 18px; }
+
 /* ══════════════ 设置面板（Batch 4 · B21） ══════════════
    复用 `.confirm` 那副居中盒（同一个 `#overlay`、同一层暗底），只多两种零件：
    一行「标签 —— 32px 小开关」和一枚会转红的破坏性按钮。 */
@@ -814,3 +854,14 @@ html, body {
   border: 1px solid var(--line);
   padding: 4px 0;
 }
+
+/* 日志栏的滚动条：**不用原生样式**（本轮 ⑧ · 用户拍板）—— 原生那条在深色面板上是一根亮灰白条，
+   带箭头、带槽、带圆角，与全局「中性 + 直角」的配色完全不是一套。这里换成 4px 的细条：
+   槽透明、滑块走 `--line`（悬停提亮到 `--mut`）。
+   ⚠️ 两处日志栏共用（回顾页的 `.rv-logs` 与浮层的 `.log-list`）—— 它们是一套东西。 */
+.rv-logs, .log-list { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.rv-logs::-webkit-scrollbar, .log-list::-webkit-scrollbar { width: 4px; }
+.rv-logs::-webkit-scrollbar-track, .log-list::-webkit-scrollbar-track { background: transparent; }
+.rv-logs::-webkit-scrollbar-thumb, .log-list::-webkit-scrollbar-thumb { background: var(--line); }
+.rv-logs::-webkit-scrollbar-thumb:hover, .log-list::-webkit-scrollbar-thumb:hover { background: var(--mut); }
+.rv-logs::-webkit-scrollbar-button, .log-list::-webkit-scrollbar-button { display: none; }

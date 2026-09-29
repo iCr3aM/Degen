@@ -16,11 +16,11 @@ import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { enableGod, factorFor } from './core/god.js';
 import { fmtMoney } from './core/format.js';
-import { canLiquidate, marginRateOf } from './core/positions.js';
+import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
-  renderReview, openNodeCard, openYearPick,
+  renderReview, openNodeCard, openYearPick, openGuide,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -77,6 +77,30 @@ let liqMark = null;
    ⚠️ **模块级变量，不进 `s`**（§9 B6 拍板）：它和 `godTaps` / `resetArmed` 一样只是**界面位置**，
       与 `view.js` 的「看哪一段」同一口径 —— 进存档只会污染状态位，重开一局还得记得清。 */
 let tab = 'trade';
+
+/* 「打开日志浮层之前是不是暂停态」（本轮 ①）—— 日志浮层**结束即暂停**，关掉时若不记住原状态，
+   就会把玩家的手动暂停静默解除。与上面那些同一个口径：纯界面状态，**不进 `s`**。 */
+let logWasPaused = false;
+
+/* ── 新手分步引导（本轮 ④）──────────────────────────────────────
+   形态（用户 2026-09-29 拍板）：**高亮目标 ＋ 一句话**，逐步前进（`openGuide` 负责画）。
+   ⚠️ 状态是**模块级变量**（`null` = 没在引导），不进 `s`、不进存档 —— 与 `tab` / `rv` /
+      `logWasPaused` 同一口径，`STATE_VERSION` 因此**不动**（11）。
+   ⚠️ 只在**新局 ＋ 开场选了「我是新手」**（`isNewGame && s.hintOn`）时启动一次：
+      读档续玩、或选了「我是老手」，都不弹。
+   ⚠️ 引导期间**暂停**（`s.paused = true`）：读字的时候行情不该跑，而遮罩本来就吃掉了
+      底下所有点击 —— 玩家除了「下一步」什么也做不了，让它跑纯属白走 K 线。 */
+let guideStep = null;
+
+/** 六步：交易所 → 币种条 → 行情区 → 下单区 → 持仓条 → 底部 Tab。目标从 `refs` 现取（不缓存节点）。 */
+const GUIDE = [
+  { at: () => refs.exBtn, text: '交易所。点它换所 —— 搬钱要等链上确认，路上还可能被拥堵拖住。' },
+  { at: () => refs.symbols, text: '币种条。五个币按真实上线时间逐个解锁，点一下切换行情。' },
+  { at: () => refs.chartWrap, text: '行情区。捏合放大能看到 30 秒级的细刻度，拖动可以回看历史。' },
+  { at: () => refs.buyBtn, text: '下单区。先选金额与杠杆，再按「买入 / 做多」开仓。' },
+  { at: () => refs.posbar, text: '持仓条。开仓后这里显示方向、未实现盈亏与保证金率。' },
+  { at: () => refs.tabBtns.get('trade'), text: '底部三个页：交易 / 资产 / 设置。随时切回来看盘。' },
+];
 
 /* ───────────────────────────── 启动 ───────────────────────────── */
 
@@ -229,16 +253,17 @@ function soundFromTick(s) {
     }
   }
 
-  /* 保证金率跌破 5%：**进入**那一刻响一次，回到安全区后重置（不然每帧都在响）。
-     与持仓条第三格同一个判据（`rate < 0.05` 转红）。
+  /* 安全垫跌破 **0.2（红区）**：**进入**那一刻响一次，回到注意区之上后重置（不然每帧都在响）。
+     与持仓条第三格**同一个判据**（本轮 ⑥ 起两边都走 `safetyOf`，不再各写一个阈值）——
+     原来是拿保证金率绝对值卡 `< 5%`，那会让 100x 仓位一开出来就响（它开出来就只有 1%）。
      ⚠️ 不可强平的仓位（现货 1x）没有维持保证金率这一说，跳过 —— 判据统一走 `canLiquidate`
         （v9 · §15.4：现货带杠杆后 1x 以外也能强平，`isSpot` 已经不回答这个问题）。 */
   for (const sym of heldSyms(s)) {
     const pos = s.positions[sym];
     if (!canLiquidate(pos)) { warnedSyms.delete(sym); continue; }
     const mark = markPrice(s, sym);
-    const rate = mark == null ? 1 : marginRateOf(pos, mark);
-    if (rate < 0.05) {
+    const safe = mark == null ? 1 : safetyOf(pos, mark);
+    if (safe <= 0.2) {
       if (!warnedSyms.has(sym)) { warnedSyms.add(sym); snd.warn(); }
     } else {
       warnedSyms.delete(sym);
@@ -313,6 +338,30 @@ function dispatch(node) {
     && d.buy === undefined && d.sell === undefined && d.reset === undefined
     && d.intro === undefined) snd.tap();   // 开场两枚键已有专属的起手音（`snd.begin`），不叠轻点声
 
+  /* ── 暂停闸门（本轮 ① · 操作逻辑审计）──────────────────────────────────
+     **暂停时必须被拦住的只有「会动钱」的四个动作**：下单（`buy`/`sell`/`long`/`short`）、
+     平仓（`close`）、换所（`ex` 弹层 ＋ `exok` 二次确认）、盘口 ⇄ OTC 切换（`chan`）。
+     其余一律**照常可用**（用户 2026-09-29 拍板）：杠杆档 / 金额档 / 现货合约 / 切币 /
+     粒度 / 切页 / 日志浮层 / 设置页（音效·新手提示·重开）/ 上帝面板 / 暂停键本身。
+     理由：那些只改「下一单的参数」，此时既没有行情在走、也没有一笔单会成交 ——
+     拦它们只会让玩家以为界面坏了。
+
+     ⚠️ **不能**写成 dispatch 顶部的 `if (s.paused) return`：`onTab` 是「切页即暂停」，
+        一刀切会把设置页的音效 / 订单冲击 / 重开、以及三页常驻的暂停键一起冻死。
+     ⚠️ 回顾态走自己的 `rv.paused`，且那一屏不碰账户 ⇒ 这里只在正常玩法下生效（`!rv`）。
+     ⚠️ 给一条日志而不是静默吞掉：玩家按了键没反应时，「为什么」比「没反应」重要。 */
+  if (!rv && s.paused && (d.buy !== undefined || d.sell !== undefined
+    || d.act === 'long' || d.act === 'short' || d.act === 'close'
+    || d.ex !== undefined || d.exok !== undefined || d.chan !== undefined)) {
+    pushLog(s, '已暂停 ｜ 先点顶栏「继续」再进行交易', 'info');
+    after();
+    return;
+  }
+
+  /* 新手分步引导的「下一步」（本轮 ④）：只在引导期间存在，值固定 `'next'`。
+     ⚠️ 它**不能**被上面那条暂停闸门拦下 —— 引导期间 `s.paused` 恒为真，而它正是走完引导的唯一出口。 */
+  if (d.guide !== undefined) return nextGuide();
+
   /* 主菜单三入口（需求 4 · 方案 §2）：`start` / `continue` / `review`。 */
   if (d.menu !== undefined) return onMenu(d.menu, node);
   /* 回顾页的全部动作（需求 4 · 方案 §3）：值即子命令，见 `onReview`。 */
@@ -326,7 +375,8 @@ function dispatch(node) {
   if (d.warn !== undefined) return onWarn();
   if (d.hint !== undefined) return onHintToggle();
   /* 日志浮层（v11 · ⑤ · 方案 §20.2.1）：点日志条**整条**打开，回看最近 30 条（含被截尾的全句）。
-     与选所弹层同一手法 —— **不暂停**：它是「回看」，不改变任何要玩家回答的东西。 */
+     ⚠️ 它是**唯一会碰时钟的浮层**：打开即**暂停 ＋ 归 1x**，关掉以 1x 续跑（用户 2026-09-29 拍板，
+        理由见 `onLogOpen`）—— 选所 / 二次确认那些走 `closePicker()`，一行都不动速度。 */
   if (d.log !== undefined) return onLogOpen();
   /* A6：底部 Tab 切页（`data-tab="trade|assets|settings"`）。
      ⚠️ 原来的 `data-settings`（顶栏那枚「设置」）已随 A6 撤掉 —— 设置整体成了一个页。 */
@@ -664,9 +714,42 @@ function enterReview() {
   rvAcc = 0;
   resetView('BTC');                              // 视野回默认（上次回顾留下的姿势不带到这一次）
   pushRv('开盘 · 2013 年 1 月，门头沟', 'info', 0);
+  syncRvMode();                                  // ⑧：起手就是 1 日线（巡航段看日线才看得完 12 年）
   rvStart();
   draw(true);
   if (!isLoaded('BTC')) ensureCoin('BTC').then(() => draw(true));
+}
+
+/**
+ * 回顾的粒度**自动跟随巡航速度**（本轮 ⑧ · 用户拍板 —— 比「事件前手动切 1h」少一次操作）：
+ *   - 巡航段（离下一个节点 > 1 游戏日 ⇒ `100x`）⇒ **1 日线**（12 年才看得完，一根一天）；
+ *   - 进入节点前的减速区（`≤ 1 日` ⇒ `10x` / `1x`）⇒ **自动切回 1 小时线** ——
+ *     等史实卡弹出来时，玩家看到的已经是一根根小时 K，针就在眼前。
+ * ⚠️ `setMode` 幂等（档位没变直接 return），所以每一拍都调一次是**零成本**的；
+ *    也正因为这样，「卡一关掉、速度回到 100x」会自动切回日线，不必另写一支。
+ */
+function syncRvMode() {
+  if (!rv) return;
+  setMode(rv.sym, speedAt(rv.i, rv.seen) > 24 ? '1d' : '1h', rv.i, chartW());
+}
+
+/**
+ * 把回顾切到**这个事件讲的币**上（本轮 ⑨ · 用户拍板「其他币种事件自动切到那个币看针」）。
+ * 节点表里 `sym` 缺省是 `BTC`，所以每个节点都会调一次 —— 上一个节点若是 ETH，
+ * 下一个 BTC 节点会自动切回来，不会出现「卡面说 BTC、图上是 ETH」。
+ * ⚠️ 币还没上线就原地不动（节点日期都晚于该币 `unlock`，这条只是状态机不靠数据兜底）。
+ */
+function reviewFocus(node) {
+  const sym = node.sym || 'BTC';
+  if (rv.sym !== sym) {
+    const c = COINS.find(x => x.sym === sym);
+    if (c && GAME.start + rv.i * HOUR_MS >= c.unlock) {
+      rv.sym = sym;
+      resetView(sym);
+      if (!isLoaded(sym)) ensureCoin(sym).then(() => draw(true));
+    }
+  }
+  syncRvMode();
 }
 
 /** 退出回顾：停掉那支专属时钟，回主菜单（方案 §2：退出后回到主菜单） */
@@ -737,12 +820,13 @@ function rvStep() {
     if (node && !rv.seen.has(node.at)) {
       rv.paused = true;
       rvAcc = 0;
+      reviewFocus(node);        // ⑨：事件讲的是别的币就先切过去 —— 针在它自己的图上
       pushRv(node.title, 'ok', node.at);
       openNodeCard(node);
       break;
     }
   }
-  if (moved) draw(true);
+  if (moved) { syncRvMode(); draw(true); }
 }
 
 /** 回顾页的全部动作（`data-review` 的值即子命令） */
@@ -754,13 +838,16 @@ function onReview(kind) {
     if (rv.paused && rv.i >= GAME.candles - 1) return;
     rv.paused = !rv.paused; rvAcc = 0; draw(true); return;
   }
-  /* 节点卡三枚：继续 / 跳过这一个 / 跳过全部（方案 §3.5） */
-  if (kind === 'go') { closePicker(); rv.paused = false; draw(true); return; }
+  /* 节点卡三枚：继续 / 跳过这一个 / 跳过全部（方案 §3.5）
+     ⚠️ 三枚都要在放行前 `syncRvMode()`（⑧）：卡是在减速区里弹出来的（小时线），
+        一关掉速度就回到 100x ⇒ 粒度也该当场跟着回到日线，不然会多闪一帧小时线。 */
+  if (kind === 'go') { closePicker(); rv.paused = false; syncRvMode(); draw(true); return; }
   if (kind === 'skip') {
     const n = nodeAt(rv.i);
     if (n) rv.seen.add(n.at);                      // 「跳过」**只影响本节点**（验收 ④）
     closePicker();
     rv.paused = false;
+    syncRvMode();
     draw(true);
     return;
   }
@@ -768,6 +855,7 @@ function onReview(kind) {
     for (const n of RV_NODES) rv.seen.add(n.at);   // 一键压到纯巡航（≈17.5 min）
     closePicker();
     rv.paused = false;
+    syncRvMode();
     draw(true);
     return;
   }
@@ -785,6 +873,7 @@ function jumpYear(y) {
   rvAcc = 0;
   resetView(rv.sym);                               // 跳完视野跟到新的「当前」
   pushRv(`跳到 ${y} 年`, 'info', rv.i);
+  syncRvMode();                                    // ⑧：跳回巡航段 ⇒ 粒度跟着回日线
   draw(true);
 }
 
@@ -795,6 +884,7 @@ function switchRvSym(sym) {
   if (c && GAME.start + rv.i * HOUR_MS < c.unlock) return;
   rv.sym = sym;
   resetView(sym);
+  syncRvMode();                                    // ⑧：切币不改变速度，但档位要按新币的边界重新夹一次
   draw(true);
   if (!isLoaded(sym)) ensureCoin(sym).then(() => draw(true));
 }
@@ -811,6 +901,45 @@ function onIntro(kind) {
   pushLog(s, '开盘 · 2013 年 1 月，门头沟', 'info');
   clock.start();
   snd.begin();
+  /* 新手 ＋ 新局 ⇒ 接一段分步引导（本轮 ④）。⚠️ 排在 `clock.start()` 之后、`after()` 之前：
+     引导自己会把时钟压回暂停，`after()` 顺手把「暂停」也落盘（关掉标签页再回来仍是暂停态）。 */
+  if (isNewGame && s.hintOn) startGuide();
+  after();
+}
+
+/* ── 新手分步引导（本轮 ④）—— 六步走完就开盘 ──────────────────────
+   `showGuide` / `nextGuide` 都不调 `after()`：引导是 `#overlay` 上的一层，
+   与每帧重绘无关；`s.paused` 只在开（`startGuide`）与收（`endGuide`）各写一次。 */
+
+function startGuide() {
+  guideStep = 0;
+  s.paused = true;         // 读字的时候行情不该跑
+  s.speed = 1;
+  showGuide();
+}
+
+/** 画当前这一步。目标取不到（理论不可达）就**直接收摊**，不让玩家卡在一步空引导上。 */
+function showGuide() {
+  const st = GUIDE[guideStep];
+  const target = st && st.at();
+  if (!target) { endGuide(); return; }
+  openGuide(target, `第 ${guideStep + 1} / ${GUIDE.length} 步 · ${st.text}`, guideStep === GUIDE.length - 1);
+}
+
+/** 「下一步」：走完最后一步 ⇒ 收摊开盘 */
+function nextGuide() {
+  if (guideStep == null) return;
+  guideStep++;
+  if (guideStep >= GUIDE.length) { endGuide(); return; }
+  showGuide();
+}
+
+/** 收摊：**开盘 ＋ 1x**（与「切回交易页自动续跑」同一条口径，玩家不必再点一次「继续」） */
+function endGuide() {
+  guideStep = null;
+  closePicker();
+  s.paused = false;
+  s.speed = 1;
   after();
 }
 
@@ -847,19 +976,23 @@ function onWarn() {
  *    50x 下开着面板读 30 条，行情早跑掉几十个游戏日。
  *    恢复走 `openLog` 传下去的回调 —— **只有日志这一个浮层会碰时钟**；
  *    选所 / 换所二次确认那些走 `closePicker()`，一行都不动速度。
+ * ⚠️ **暂停态要记忆**（本轮 ① 修 bug）：玩家自己点过暂停、再打开日志回看，关掉后必须
+ *    **仍然暂停**。原来 `onLogClose` 无条件 `s.paused = false`，等于把玩家的手动暂停静默解除。
  */
 function onLogOpen() {
   if (s.over || s.pending) return;
+  logWasPaused = s.paused;
   s.paused = true;
   s.speed = 1;
   openLog(s, onLogClose);
   after();
 }
 
-/** 日志浮层关闭后：**以 1x 续跑**（不恢复原来那一档 —— 与「切页即暂停 ＋ 速度归 1x」同一口径） */
+/** 日志浮层关闭后：**以 1x 续跑**（不恢复原来那一档 —— 与「切页即暂停 ＋ 速度归 1x」同一口径），
+ *  但**打开前若是暂停态就保持暂停**（本轮 ①）。 */
 function onLogClose() {
   if (s.over || s.pending) return;
-  s.paused = false;
+  s.paused = logWasPaused;
   s.speed = 1;
   after();
 }
@@ -871,20 +1004,23 @@ function onLogClose() {
       不能写进 `refs` —— 一重绘就被抹掉。 */
 
 /**
- * 切页。口径（§6.3 已拍板）：
- *   - **切页即暂停 ＋ 速度归 1x**，包括切到**设置页**（P2：不留「切到设置页时间还在跑」的例外）
- *   - 切回交易页**仍然暂停** —— 恢复入口始终是顶栏那枚「暂停」，它在三页都常驻
+ * 切页。口径（§6.3 已拍板；本轮 ⑦ 追加一条）：
+ *   - 离开交易页（去资产 / 设置）⇒ **暂停 ＋ 速度归 1x**（P2：不留「切到设置页时间还在跑」的例外）
+ *   - **切回交易页 ⇒ 自动 1x 续跑**（用户 2026-09-29 拍板）：去别的页只是看一眼，
+ *     回来就该接着玩，不必再点一次「继续」。原来那条「切回仍然暂停」的手感是多余的。
  *   - 结束 / 借贷待决时不许切页（与顶栏那两枚按钮的 `lockedUI` 同一条判据；遮罩本来就盖住了 Tab 条）
  * ⚠️ 离开设置页要撤销「重开本局」的武装态：那个按钮是静态 DOM，不还原的话切回来它还是红的，
  *    一点就真重开（`cancelReset` 是超时 / 关面板 / 切页三条路共用的还原口）。
+ * ⚠️ 暂停闸门（`dispatch` 顶部那条）仍然管用：切回交易页后**只有这一瞬间**是自动运行的，
+ *    玩家随时可以点顶栏「暂停」把下单 / 换所挡住。
  */
 function onTab(name) {
   if (s.over || s.pending) return;
   if (name === tab) return;
   if (tab === 'settings') cancelReset();
   tab = name;
-  s.paused = true;      // 切页即暂停
-  s.speed = 1;          // ⚠️ 写进主状态（会落盘）：切一次页就丢掉 50x 的选择，这是拍板语义
+  s.paused = name !== 'trade';   // 切回交易页 ⇒ 自动续跑
+  s.speed = 1;                   // ⚠️ 写进主状态（会落盘）：切一次页就丢掉 50x 的选择，这是拍板语义
   closePicker();
   after();
 }

@@ -67,6 +67,26 @@ export function isLiquidatable(pos, price) {
 }
 
 /**
+ * **归一化的安全垫**（本轮 ⑥ · 用户 2026-09-29 拍板）—— 开仓那一刻 = `1`、触及维持保证金率 = `0`。
+ *
+ *   `safetyOf = (保证金率 − 维持保证金率) ÷ (1/杠杆 − 维持保证金率)`
+ *
+ * 为什么不用 `marginRateOf` 的绝对值做 UI 判据：**分子分母都随杠杆缩放**，
+ * 100x 刚开出来时保证金率就是 1%（离强平只剩一半垫子），而 3x 刚开出来是 33%。
+ * 拿一个固定阈值（如 5%）去卡，高杠杆仓位会**常年贴在红区**，颜色就不带信息了。
+ * 归一化之后「同一个 `safetyOf` 在任何杠杆下含义相同」：0.5 = 垫子用掉一半。
+ *
+ * ⚠️ 不可强平的仓位（现货 1x）恒返回 `1`：它没有维持线这一说，也就永远不进入注意 / 危险区。
+ */
+export function safetyOf(pos, price) {
+  if (!canLiquidate(pos)) return 1;
+  const open = 1 / pos.lev;
+  const span = open - GAME.maintRate;
+  if (!(span > 0)) return 0;
+  return (marginRateOf(pos, price) - GAME.maintRate) / span;
+}
+
+/**
  * 强平价 —— 让「保证金率 = 维持保证金率」成立的那个价格。
  * 由 margin + dir×(P − entry)×size = maintRate × notional 解出：
  *   P = entry + dir × (maintRate × notional − margin) / size
