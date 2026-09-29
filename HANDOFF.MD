@@ -2,7 +2,7 @@
 
 > 生成时间：2026-09-29　｜　工作目录：`f:\Cr3aM\Desktop\Degen`
 > 用途：暂停开发、切换工作流时的交接说明。回答三件事：**现在站在哪 / 什么没做 / 接下来怎么做**。
-> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v30，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
+> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v31，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
 
 ---
 
@@ -146,6 +146,25 @@ C3/C4 保持；C6/C7 不做；C5 改判；C8 只做 B 层且不急），裁决�
 > ④ **验证**：临时离线断言 **31/31** ＋ `npm run build` 通过（脚本已删）。细节见 `ROADMAP.MD` **§26.11**。
 > ⇒ **待拍板剩 10 条**（§20.8 2 ＋ §21.8 3 ＋ §22.6 3 ＋ §23.5 2；§24.9 与 §26.10 各两条均已答）。
 > ⚠️ **待实机目视**：日志尾巴新增的「· N 笔」在 390px 视口是否挤爆日志条（若挤，改 `pushLog` 第二段即可，不动口径）。
+> **（v31，2026-09-29）10 条待拍板一次拍完 ＋ 三批落地 ⇒ 待拍板清零；`STATE_VERSION` 9 → 10。**
+> ① **§二十 S3 其余项**：**`FUNDING` 保持 8h**（8h 是 BitMEX / Binance 史实默认，改细只会把日志冲成流水、收益为零）／
+> **C6 冲击回弹保持不做**（卡在红线 1：tick 路径的锚点就是位移后的 O / H / L / C）⇒ **S3 其余项清空**。
+> ② **§二十一 现货屯币**：**U1 显式模式键「做」** ＋ **U2 累计消耗「做」**，**U3 资产页持仓列表 ⏸ 暂缓**。
+> U1 把「现货 / 合约」从自动判定改为**显式模式键**（键落在操作区**「金额」行末尾**，字面随模式切换 `现货` ⇄ `合约`）：
+> `spotOf(s, side, lev, otc) = !!otc || (s.mode === 'spot' && side === 'long' && lev === 1)`；
+> 仓位**在开仓那一刻打 `spot` 标**（`positions.isSpot` 改为 `pos => !!pos.spot`），**之后固定不变**；
+> `config.GAME.mode = 'spot'` ⇒ **默认与旧自动判定逐位相同**（开局观感一字未变）。
+> U2 加 `s.consumed{}`（累计买入枚数，**平仓不退还**、OTC 与做空不计入），`state.js` 加 `consumedOf`。
+> 落点 8 文件：`config` / `state` / `positions` / `engine` / `render` / `bind` / `main` ＋ GDD §9.1 口径改写；
+> **`STATE_VERSION` 9 → 10**（老档依「不做兼容」丢弃重开）。
+> ③ **§二十二 体验小改**：**G1-a「做」**（`fmtMoneyCompact` 判据由「量级 ≥ 1e6 切 e 记法」改成「**渲染宽度 > 20 字符**才切」，
+> `format.js` 一行、`render.js` 零改动）／ **G2 长按币「不做」**（捕获阶段派发 ⇒ 长按必然先切币，比「点一下 ＋ 点平仓」更慢）／
+> **§22.4 P4-C 文本修正照改**（`ROADMAP.MD` §六 P4-C 已改标 ✅ 已闭合（不做））。
+> ④ **§二十三 运维零碎**：**Kraken 归档保留**（442.1 MB，选 A）／ **B6 HUD 副行保持原状**（两者语义不同，不是重复）⇒ 只回写文档。
+> ⑤ **验证**：离线断言 **42/42** ＋ `npm run build` 通过（脚本已删）。落地结果见 `ROADMAP.MD` **§21.9** / **§22.7**。
+> ⇒ ✅ **待拍板清零**（§20.8 / §21.8 / §22.6 / §23.5 全部已答；§24.9 与 §26.10 早前已答）。
+> ⏳ **仅剩实机目视**：「金额」行由 3 枚变 4 枚在 375px / 390px 不折行不溢出、模式键字面与高亮同步、
+> 合约模式 1x 做多的持仓条第三格不再显示 `--`、G1-a 的「20 字符」预算与 B1 日志尾巴「· N 笔」在 390px 的实际表现。
 
 ---
 
@@ -176,9 +195,9 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 ### 单一真相源
 
 - 时钟：`s.i` ＝ 第几根小时 K（唯一刻度）
-- 存档版本：`STATE_VERSION = 9`（key `localStorage.degen_save`）。
+- 存档版本：`STATE_VERSION = 10`（key `localStorage.degen_save`）。
   > ⚠️ **本轮起不做存档兼容**（v26/2026-09-29 拍板）：**`migrate()` 迁移链已整条删除**，`v !== STATE_VERSION` 的档**读到即丢弃、开新局**。
-  > 历史版本轨迹（仅供追溯，已无迁移代码）：4 新增 `loaned`/`loan`/`pending`；5 → 6 新增 `chan`；6 → 7 新增 `impactOn`/`flow`/`godRuined`/`god`；7 → 8 `flow[sym]` 由单池改逐笔列表（C1）；**8 → 9 新增 `seed`（S0）**。
+  > 历史版本轨迹（仅供追溯，已无迁移代码）：4 新增 `loaned`/`loan`/`pending`；5 → 6 新增 `chan`；6 → 7 新增 `impactOn`/`flow`/`godRuined`/`god`；7 → 8 `flow[sym]` 由单池改逐笔列表（C1）；**8 → 9 新增 `seed`（S0）**；**9 → 10 新增 `mode`（U1 显式现货 / 合约键）＋ `consumed`（U2 累计买入枚数）**。
   > **玩法口径提醒（v7）**：老档升级后会**一开仓就推动行情**（`impactOn` 默认 `true`）—— 不是 bug，是 §14.4 的订单冲击层上线。
   > **P2-B 修订（OTC 史实化）不升版本** —— 新增的全是**静态配置**（`COINS[].otc` ＋ `OTC.base/sigmaRef/p/multCap/max`），不进存档。
 - 数据包：`public/data/<SYM>.bin` ＝ gzip(Int32)，**每根 17 字节** ＝ `[o, h-o, l-o, c-o]` int32LE ＋ **尾巴 1 字节成交量份额**，
@@ -191,27 +210,27 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/core/config.js` | `GAME` / **`COINS`（含 `unlock` 与 `otc`：该币首次能走场外大宗）** / `EXCHANGES` / **`SPEEDS`（1/5/10/50，唯一真源）** / **`TICK.perHour`（S1：每根真实小时 K 展开成 120 根 30 秒细刻度，唯一真源）** / **`LOAN` ＋ `loanAmountAt`** / **`SUPPLY_CAP`（§15.1 上限，枚）** / **`OTC`（unlock / min / base 年代点差 / sigmaRef / p / multCap / max）＋ `otcBaseAt` / `otcSigmaRefAt` / `otcPremiumOf`** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
-| `src/core/state.js` | `STATE_VERSION`（**9**）、`createState()`、`cashOf` / `posOf` / `heldSyms` / `anyHeld` / **`capturedOf`（已锁枚数，派生量）** / `pushLog`；**`seed`（S0 全局随机种子，入存档）**；**`impactOn`（订单冲击开关，默认 `true`）/ `flow`（逐根衰减冲击池）/ `godRuined`（上帝模式归零标记）/ `god`（上帝模式 `mult` / `scale` / `lastFill`）** |
+| `src/core/config.js` | `GAME`（**含 `seed` 与 `mode`：`mode` 默认 `'spot'`，见 U1**） / **`COINS`（含 `unlock` 与 `otc`：该币首次能走场外大宗）** / `EXCHANGES` / **`SPEEDS`（1/5/10/50，唯一真源）** / **`TICK.perHour`（S1：每根真实小时 K 展开成 120 根 30 秒细刻度，唯一真源）** / **`LOAN` ＋ `loanAmountAt`** / **`SUPPLY_CAP`（§15.1 上限，枚）** / **`OTC`（unlock / min / base 年代点差 / sigmaRef / p / multCap / max）＋ `otcBaseAt` / `otcSigmaRefAt` / `otcPremiumOf`** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
+| `src/core/state.js` | `STATE_VERSION`（**10**）、`createState()`（含 `mode` / `consumed`）、`cashOf` / `posOf` / `heldSyms` / `anyHeld` / **`capturedOf`（已锁枚数，派生量）** / **`consumedOf`（U2 累计买入枚数）** / `pushLog`；**`seed`（S0 全局随机种子，入存档）**；**`impactOn`（订单冲击开关，默认 `true`）/ `flow`（逐根衰减冲击池）/ `godRuined`（上帝模式归零标记）/ `god`（上帝模式 `mult` / `scale` / `lastFill`）** |
 | `src/core/rng.js` | **确定性随机数（S0 新建）**：`splitmix64` / `mulberry32`（取一次）/ `hashStr`（字符串→uint32，**全项目唯一口径**）/ `rand(seed, symHash, hour, tick, chanHash)` —— **无状态哈希式**纯函数，零依赖零 DOM；细粒度模拟的地基 |
 | `src/core/simulate.js` | **细粒度模拟层（S1 新建，S2/S3 起已接线）**：`pathOf(seed, sym, hour, ohlc)` → 长度 `N+1` 的细价格路径（**四锚点逐位命中**：布朗桥两端结构性为 0 ＋ 极值两侧各自归一）/ `weightsOf(seed, sym, hour)` → 长度 `N` 的 U 型量权重（`Σw = 1`）/ `ticksPerHour()` / `clearSimCache()`；两级 LRU（512 条），**懒生成、不落盘、不进存档**。消费者：`view.js`（细刻度档）＋ `engine.js`（tick 级强平） |
 | `src/core/god.js` | **价格位移层（v23 新建）**：`SHOCK`（`share` 0.35 / `beta` 0.3 / `listMax` 8）/ `decay` / `residualAt` / `addFlow` / `factorFor(s, sym, j)` / `enableGod` / `setScale` / `clearScale` —— 纯逻辑零 DOM，唯一消费者是 `market.candleAt` |
-| `src/core/impact.js` | **滑点纯函数（P2-B1）**：`SLIP` 常量 / `sigmaOf(closes)` / `impactOf(q, sigma)` / `fillPrice(price, dir, impact)` —— 零依赖 |
-| `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30）；**通道 `chanOf` / `otcUnlocked` / `otcOpenFor`（P2-B3 ＋ 修订）＋ 开平仓成交价层（P2-B1）**；**v23 开 / 平仓各写一次冲击池并紧跟 `invalidateSigma()`（逐根位移会真的改变 σ），`checkRuin` 在 `s.god` 下短路**；**S3：`liquidateAll` 判据不变（`c.l`/`c.h` 穿越），但成交价 / 段号取自 `pathOf` 的**首次**穿越点；新增注入式 `bindLiquidateHook(fn)`** |
-| `src/core/positions.js` | 逐仓持仓：`isSpot` / 保证金率 / 强平价 / 资金费率 / `unrealizedOf` |
+| `src/core/impact.js` | **滑点纯函数（P2-B1）**：`SLIP` 常量 / `sigmaOf(closes)` / `impactOf(q, sigma)` / `fillPrice(price, dir, impact)` / `hourShareK`（C2 日内分母倍数）；**C8-B1：`BOOK = { sliceShare: .03, maxTranches: 8 }` ＋ `bookFills(q, cost)`（笔数按名义份额摊，无 UI）** —— 零依赖 |
+| `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30）；**通道 `chanOf` / `otcUnlocked` / `otcOpenFor`（P2-B3 ＋ 修订）＋ 开平仓成交价层（P2-B1）＋ `hourLiqOf`（C2 分母唯一处）＋ `slipTag(impact, count)`（C8-B1）**；**U1：`spotOf(s, side, lev, otc)` 决定新仓是否打 `spot` 标 ＋ U2 开仓累加 `s.consumed`**；**v23 开 / 平仓各写一次冲击池并紧跟 `invalidateSigma()`（逐根位移会真的改变 σ），`checkRuin` 在 `s.god` 下短路**；**S3：`liquidateAll` 判据不变（`c.l`/`c.h` 穿越），但成交价 / 段号取自 `pathOf` 的**首次**穿越点；新增注入式 `bindLiquidateHook(fn)`** |
+| `src/core/positions.js` | 逐仓持仓：**`isSpot = pos => !!pos.spot`（U1：开仓那一刻打标、之后固定不变）** / 保证金率 / 强平价 / 资金费率 / `unrealizedOf` |
 | `src/core/market.js` | 行情懒加载：`loadCoin` / 取价；**日流动性 `loadLiq` / `liqOf` / `dayIndexOf` / `isLiqLoaded`**；**`bindFactorSource(fn)` ＋ `candleAt` 末尾乘一个逐根价格系数（v23 订单冲击的唯一收口点，`j < at ⇒ 1`，未启用时与数据包逐位相同）** |
 | `src/core/anchors.js` | **历史锚点表（P2-C，唯一真相源）**：20 条 `ANCHORS`（字段只有 `t` / `title` / `chain` / `congestion`，**没有任何价格字段**）＋ `NEWS_HOURS` / `anchorAt` / `anchorsInRange` / `congestionAnchors` —— 纯逻辑零 DOM |
 | `src/core/congestion.js` | **网络拥堵纯逻辑**：年代表值 / 锚点窗口（**表从 `anchors.js` 派生**，本文件只留坡度算法）/ 进块等待 W 表 / 各所确认数 / `arrivalCandles` / `bumpPulse` / `decayPulse` |
 | `src/core/save.js` | localStorage 落盘与续档；**本轮不做兼容：`migrate()` 已删除，版本不符即丢弃** |
-| `src/core/format.js` | 数字/价格格式化；**`fmtMoneyCompact`（上帝模式下 HUD 用的紧凑金额，小于 $1e6 时与 `fmtMoney` 一字不差）** |
+| `src/core/format.js` | 数字/价格格式化；**`fmtMoneyCompact`（上帝模式下 HUD 用的紧凑金额，G1-a 起判据改为「**`fmtMoney` 渲染 > 20 字符**才切 e 记法」，其余情形与 `fmtMoney` 一字不差）** |
 | `src/ui/chart.js` | Canvas 2D K 线（颜色从 CSS 变量读，`style.css` 是颜色唯一真源）；**`slots` 是「本帧槽位数」契约（细刻度档下 ＝ 聚合后的桶数）；S3-附 起多一个可选入参 `liqSlot` 画「致命那一针」竖线（粗档恒 `null`）** |
-| `src/ui/render.js` | DOM 渲染（HUD / 持仓条 / 操作区 / 弹层）；**把 `view.liq` 折成全局 tick 序号传给 `view.windowFor`（S3-附）；细刻度档不画锚点刻度** |
-| `src/ui/bind.js` | 事件绑定（`data-ex` / `data-act` 分派） |
+| `src/ui/render.js` | DOM 渲染（HUD / 持仓条 / 操作区 / 弹层）；**把 `view.liq` 折成全局 tick 序号传给 `view.windowFor`（S3-附）；细刻度档不画锚点刻度**；**U1：操作区「金额」行末尾多一枚模式键（`data-mode2`，字面 `现货` ⇄ `合约`，合约时带 `.on`）** |
+| `src/ui/bind.js` | 事件绑定（`data-ex` / `data-act` 分派）；**`ACTION_KEYS` 含 `mode2`（U1 模式键，注意与粒度键 `mode` 区分）** |
 | `src/ui/view.js` | **K 线视野**：看哪一段 / 看多密 / **三档 `1h` / `1d` / `1t`（S2：30 秒细刻度，最粗 1440 tick ＝ 12 小时，桶聚合 ＋ 桶不跨小时）** / 价格轴平移多少（纯 UI 状态，不进存档）；`windowFor(sym, i, cssW, seed, liqTick)` 是渲染层唯一入口 |
 | `src/ui/sound.js` | **音效**（Batch 4）：Web Audio 合成，零音频文件；开关存 `degen_settings`，**不进存档** |
 | `src/ui/style.css` | 全部样式；**纵向间距只有 8 一档**（8 ＝ 块内，也 ＝ 主页面所有块间；12 只剩弹层内部） |
 | `tools/fetch-data.mjs` | 行情数据管线，产出 `public/data/` |
-| `ROADMAP.MD` | 路线图 **v29**，**方案全部写在这里**（**§十七 ＝ 订单冲击 ＋ 上帝模式**；**§十八 ＝ C1–C8 裁决**；**§十九 ＝ 细粒度模拟 ＋ RNG 种子（S0–S5，S0/S1/S2/S3-第一项 已落地）**） |
+| `ROADMAP.MD` | 路线图 **v31**，**方案全部写在这里**（**§十七 ＝ 订单冲击 ＋ 上帝模式**；**§十八 ＝ C1–C8 裁决**；**§十九 ＝ 细粒度模拟 ＋ RNG 种子（S0–S5，S0/S1/S2/S3-第一项 已落地）**；**§二十 ～ §二十四 ＝ v30 五份方案（v31 已全部裁决）＋ §二十六 C8-B**） |
 | `GDD.MD` | 设计文档 v1.0 |
 
 ### 常用命令
@@ -247,6 +266,8 @@ Windows 上脚本会自举系统代理（`DEGEN_NO_PROXY=1` 可绕过）。
 - **标的 Tab** —— 币种切换
 - **多仓与交易模式** —— 每币一条仓位的**逐仓**表，可同时 BTC 多单 ＋ ETH 空单，各自独立强平价；
   `1x 做多 ＝ 现货`（不参与资金费率、不因 0.5% 维持线强平），做空或 ≥2x ＝ 合约；
+  **（v31 · U1 改写）**：改为**显式模式键**判定 —— 现货模式下 1x 做多 ⇒ 现货，合约模式下 1x 做多 ⇒ 合约，
+  做空与任何 ≥2x 恒为合约，OTC 通道恒为现货；**默认 `mode = 'spot'` ⇒ 与上面这条旧自动判定逐位相同**；
   单仓爆仓 ≠ 破产（破产始终看账户总权益）；`STATE_VERSION` 2 → 3
 - **存档（P4-18a 提前做完）** —— 每 10s ＋ 关页时落盘
 
@@ -442,6 +463,9 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
 | 2015-07 spam 攻击 / 2016-09~10 ETH DoS / 2023-05 / 2024-04 四条锚点 | 不擅自扩锚点（要补需先动 GDD §12.1） |
 | 终局称号系统 | 只做爆仓 ＋ 收盘结算两条路径 |
 | 生活系统 | P3 整块暂缓 |
+| 订单簿「真数据」 | v30 §24.10 调研结论：许可 / 覆盖 / 体积三重墙 ⇒ 不可行，本线已关闭 |
+| `FUNDING` 细周期 / C6 冲击回弹 | v31 裁决保持现状（8h 是史实默认；C6 卡在「tick 路径的锚点就是位移后的 O/H/L/C」） |
+| P4-C 长按币弹快捷操作（G2） | v31 裁决不做（`bind.js` 在捕获阶段派发 ⇒ 长按必然先切币，净收益为零） |
 | Coinglass API | 小时线历史深度最多 720 天，不支持早期交易所，需付费 ⇒ 对项目无用 |
 
 ---
@@ -468,6 +492,9 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
 - 数据源优先级链：`Bitstamp → Bitfinex → Binance → Binance.US（仅补 SOL 缺口）→ CDD → Kraken 归档（备查/校验）`
 - 后一个源**只补前面留下的空洞，绝不覆盖**
 - 改动 `STATE_VERSION` 时**不再写迁移**（v26 起不做存档兼容）：**版本不符的旧档一律丢弃、开新局**，只认当前版本
+- **「现货 / 合约」判定（U1 起）**：`spotOf(s, side, lev, otc) = !!otc || (s.mode === 'spot' && side === 'long' && lev === 1)`，
+  **开仓那一刻**把 `spot` 写进仓位、**之后固定不变**（`isSpot = pos => !!pos.spot`）；**不要再从 `side/lev` 反推**
+- **固定块高度 431px 是硬预算**：`U1` 的模式键是塞在「金额」行末尾的第 4 枚，**不新开操作区行**
 
 ---
 
@@ -528,8 +555,8 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
    `openTrade()` 一行不动），只当背景知识读，不要再实现
 2. **没有已排期的新功能了** —— P2 三大块（**P2-A / P2-B / P2-C**）已全部收口，
    **P4-A（终局称号）与 P4-B（本地战绩）在 2026-09-29 由用户决定「暂缓」**（P4-B 的设计已写定备查，
-   **代码未动**，见 `ROADMAP.MD` §六 P4-B）；**P4-C 只剩「长按币弹快捷操作」**（K 线双指缩放 / 拖动
-   早在 Batch 3 · B13/B14 已做），未排期。
+   **代码未动**，见 `ROADMAP.MD` §六 P4-B）；**P4-C 已闭合**：K 线双指缩放 / 拖动早在 Batch 3 · B13/B14 已做，
+   「长按币弹快捷操作」在 2026-09-29 裁决**不做**（捕获阶段派发 ⇒ 长按必然先切币，净收益为零，见 §22.4 / §六 P4-C）。
    ⇒ **下一步实际只剩「实机确认」**（见本节第 4 条）。
    ⚠️ **P4-B 暂缓这件事不要擅自推翻**：想开工前先问一句。
    ⚠️ **生活系统（GDD §5）同样是「已评审完毕、决定暂缓」** —— 实测数据在 `ROADMAP.MD` **§十六**，
@@ -548,18 +575,17 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
    ⏸ **有一份「未拍板」的方案在等**：`\.trae/documents/上帝模式与现货模块方案.md` 的
    **v2 追加（§5–§10）＝ 底部 Tab（资产/交易/设置）＋ 美元/USDT 货币体系 ＋ 交易页改造**
    （多笔加仓 / 追加保证金 / 部分平仓）。**代码一行未动**，等 §9 的 **B1–B10** 逐条拍板后才开工。
-   ⏸ **（v30 · 最新、优先级最高）方案与调研在等，共 14 条待拍板 —— 载体是 `ROADMAP.MD` §二十 ～ §二十四 ＋ §二十六（§二十五 是索引）**：
-   ① **§二十 S3 其余项**（`FUNDING` 细周期 ＋ C6 回弹，各三案 —— 均推荐「保持现状」）；
-   ② **§二十一 现货屯币模块**（U1 显式模式键 / U2 累计消耗 / U3 资产页持仓列表，三个可独立最小项）；
-   ③ **§二十二 体验小改**（G1 上帝模式金额格式 ＋ G2 长按币 —— G2 复核结论是**建议不做**）；
-   ④ **§二十三 运维零碎**（GDD §10 已关闭 / Kraken 归档三案 / B6 HUD 副行保持原状）；
+   ✅ **（v30 一次出齐的五份方案 ＋ §二十六 C8-B；v31 已全部裁决 ⇒ 待拍板清零）** 载体是 `ROADMAP.MD` §二十 ～ §二十六（§二十五 是索引）：
+   ① **§二十 S3 其余项**（`FUNDING` 细周期 ＋ C6 回弹）⇒ **v31 裁决：保持 8h ＋ C6 不做**（S3 其余项清空）；
+   ② **§二十一 现货屯币模块**（U1 显式模式键 / U2 累计消耗 / U3 资产页持仓列表）⇒ **U1 / U2 做并已落地、U3 暂缓**；
+   ③ **§二十二 体验小改**（G1 上帝模式金额格式 ＋ G2 长按币）⇒ **G1-a 做并已落地、G2 不做**；
+   ④ **§二十三 运维零碎**（GDD §10 已关闭 / Kraken 归档三案 / B6 HUD 副行）⇒ **Kraken 保留 ＋ B6 不改**；
    ⑤ **§二十四 订单簿真数据调研** —— ✅ **已跑完，§24.10 结论：真数据不可行、本线关闭、不再重开**；
-   ⑥ **§二十六 C8-B「合成盘口」**（真数据判死后的兜底）：**B1 成交引擎**（无 UI、口径逐位不变）／**B2 限价挂单**（带 UI ＋ `STATE_VERSION` 10）；**我方倾向＝只做 B1**。
-   **代码与数据一字未动，本轮亦未 commit**；**逐条拍板后才动手，拍板前只读不写。**
-   ✅ **同日更新（2026-09-29）**：**§26.10 ① 已答「做」且 B1 已落地** —— `impact.js` 加 `BOOK` ＋ `bookFills`、
-   `engine.js` 抽出 `hourLiqOf` 并给日志加「· N 笔」；**`STATE_VERSION` 仍 9、未挂单成交价与改动前逐位相同**，
-   临时离线断言 **31/31** ＋ `npm run build` 通过（细节 `ROADMAP.MD` **§26.11**）；**§26.10 ② 已答「另起一轮」**
-   ⇒ **待拍板减至 10 条**（§20.8 2 ＋ §21.8 3 ＋ §22.6 3 ＋ §23.5 2）。
+   ⑥ **§二十六 C8-B「合成盘口」**（真数据判死后的兜底）：**B1 成交引擎**（无 UI、口径逐位不变）／**B2 限价挂单**（带 UI ＋ `STATE_VERSION` 11）；**B1 已落地、B2 「另起一轮」**。
+   ✅ **（v31，2026-09-29）全部裁决已落地，待拍板清零** ——
+   U1 显式模式键 ＋ U2 累计消耗（`STATE_VERSION` **9 → 10**）、G1-a（`format.js` 一行）、
+   `ROADMAP.MD` §六 P4-C 改标「已闭合（不做）」、Kraken 与 B6 只回写文档；离线断言 **42/42** ＋ `npm run build` 通过。
+   落地结果见 `ROADMAP.MD` **§21.9** / **§22.7**。**剩下只有实机目视**（见 v31 块末尾）。
    同批还有 `TRADEMODEL.MD`（评估稿，2026-09-29 重写）里的 **C1 冲击池多笔叠加 / C2 冲击分母细化到小时**
    —— ✅ **这两条已拍板「做」**（见下面 v5 追加）。**不要因为「文档里写了」就当已批准。**
    ⏸ **v3 追加（§11）＝ 手续费与跨所转账通道（史实审计）**：现货/合约费率史实化（Mt.Gox 0.6%、
@@ -591,20 +617,18 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
    三选项：**A 只改 GDD 声明** / ✅ **B 按年代分工具（`leverageKindAt` → `'margin'`/`'perp'`）—— 2026-09-29 已拍板选此案** / C 连交割合约也区分（不做）。
    ⚠️ 若走 B：Bitfinex 真实 15% 维持线**比现在的 0.5% 严得多**（3.33x 现在要逆向 29.5% 才爆、按史实只需 15%），手感会变。
    **代码未动**（待实现），与 **B19 / C5(b)** 是同一件事的三个面，**一并落地**。出处见方案 §9。
-3. 确认 ROADMAP 头部已是 **v30**（P2-A / P2-B / P2-C 均已落地；P4-A / P4-B 暂缓；速度档已收窄为 `1/5/10/50`；**§十六 生活系统评审 = 暂缓**；**§十七 订单冲击 ＋ 上帝模式 = 已落地**；**§十八 交易模型 C1–C8 拍板 = 已定，L1（C1＋C2）已落地、见 §18.8**；**§十九 细粒度模拟 ＋ RNG 种子 = S0 / S1 / S2 / S3-第一项 均已落地（`rng.js` / `simulate.js` / `view.js` 的 `1t` 档 / tick 级强平 ＋ 图上标致命针）、S4 肉鸽 ⏸ 暂缓、S3 其余项（`FUNDING` 细周期 / C6）未排期**）；**（§二十 ～ §二十四 = v30 一次出齐的五份方案 ＋ §24.10 调研结论 ＋ §二十六 C8-B 方案；§26.10 ① B1 已答「做」并已落地、② B2 已答「另起一轮」，待拍板剩 10 条）**；§15.1 一律按真实数值实现（2026-09-29 已定）
-   ⚠️ **v30 这些方案「一行未落地」**：`FUNDING` 细周期 / C6 回弹 / 现货屯币 U1–U3 / 上帝金额格式 / 长按币 / Kraken 归档 / **C8-B 合成盘口** ——
-   全部只写在 ROADMAP §二十–§二十六（**§24.10 是已跑完的调研结论，不是待办**：真数据不可行、本线已关闭）；
-   代码与数据**一字未动**；**逐条拍板后才开工**，拍板前不要按文档里写的直接改。
-   ⚠️ **唯一例外（2026-09-29 同日）**：**C8-B1 已拍板并被本文件记为「已落地」** ——
-   `impact.js` 的 `BOOK` ＋ `bookFills`、`engine.js` 的 `hourLiqOf` ＋ `slipTag(count)`，见 `ROADMAP.MD` **§26.11**；
-   **上列其余各项仍未动**，且 **B2 限价挂单是「另起一轮」，不在本轮。**
+3. 确认 ROADMAP 头部已是 **v31**（P2-A / P2-B / P2-C 均已落地；P4-A / P4-B 暂缓、**P4-C 已闭合（长按币不做）**；速度档已收窄为 `1/5/10/50`；**§十六 生活系统评审 = 暂缓**；**§十七 订单冲击 ＋ 上帝模式 = 已落地**；**§十八 交易模型 C1–C8 拍板 = 已定，L1（C1＋C2）已落地、见 §18.8**；**§十九 细粒度模拟 ＋ RNG 种子 = S0 / S1 / S2 / S3-第一项 均已落地（`rng.js` / `simulate.js` / `view.js` 的 `1t` 档 / tick 级强平 ＋ 图上标致命针）、S4 肉鸽 ⏸ 暂缓、S3 其余项 = v31 裁决「保持不变」⇒ 清空**）；**（§二十 ～ §二十四 = v30 一次出齐的五份方案 ＋ §24.10 调研结论 ＋ §二十六 C8-B 方案；§26.10 ① B1 已落地、② B2「另起一轮」；v31 把剩余 10 条一次拍完并落地 ⇒ 待拍板清零、见 §21.9 / §22.7）**；§15.1 一律按真实数值实现（2026-09-29 已定）
+   ✅ **v30 那些「一行未落地」的方案已在 v31 处置完毕**：`FUNDING` 细周期 / C6 回弹 / G2 长按币 **裁决不做**；
+   现货屯币 **U1 ＋ U2 已落地**（U3 暂缓）；上帝金额格式 **G1-a 已落地**；Kraken 归档 **裁决保留**、B6 只回写文档；
+   **C8-B1 已落地**（`impact.js` 的 `BOOK` ＋ `bookFills`、`engine.js` 的 `hourLiqOf` ＋ `slipTag(count)`，见 `ROADMAP.MD` **§26.11**）。
+   **唯一仍未动的**：**B2 限价挂单**（带 UI ＋ `STATE_VERSION` 11，用户裁决「另起一轮」）—— 不要顺手开工。
    ⚠️ **S2 / S3 已落地的含义**：`simulate.js` 现在**有消费者了** —— `view.js`（细刻度档）与 `engine.js`（tick 级强平）。
    **游戏可见行为只有两处不同**：① 捏合放大到 `1h` 最细之后继续放大，会进入 **`1t`（30 秒）档**，能看到小时内部的针；
    ② 爆仓的**日志价格**由「强平价」变成「细路径第一次穿越强平价那一 tick 的价」（**爆仓的小时集合不变**，红线：判据没改）。
    ⚠️ **`1t` 只做「看」不做「玩」**：`s.i` 语义、`SPEEDS`、时钟全都没动；**不要在 `1t` 档里加任何玩法**。
    ⚠️ **构建目标是 `es2020`（不是 es2019）**：`rng.js` 用 BigInt 字面量；改回 es2019 会直接 build 失败。
    ⚠️ **口径（v26 起）**：本项目**本身就是模拟器** ⇒ **UI 与文档一律不做「这是模拟」的声明**，口径只写**代码注释**（`ROADMAP.MD` §19.5 第 6 条）。
-   ⚠️ **上帝模式科学计数法**是**待办**（要的是 HUD 金额行加宽；S2 只动 K 线视图、**没碰 HUD**）⇒ **现在不要动 `format.js`**。
+   ⚠️ **上帝模式科学计数法已在 v31（G1-a）落地**：`fmtMoneyCompact` 的判据从「量级 ≥ 1e6」改成「`fmtMoney` 渲染 > **20 字符**才切 e 记法」（`format.js` 一行、`render.js` 零改动）⇒ 常规巨额（如 `$100,000,000,000.0`，18 字符）已显示完整千分位；**20 字符这个预算依赖机型字体度量，待 390px 实机目视**。**`format.js` 不要再动**。
 4. P2-B 注意：数据包只有 OHLC ＋ 每根 1 字节当日份额、没有订单簿 ⇒
    滑点只能建「成交价折让」，不能建「逐档吃穿盘口」（这条在 P2-B 已如实落地）
 5. 每改完一步跑 `npm run build`；涉及数据管线改动跑 `npm run data` 并核对 `index.json`

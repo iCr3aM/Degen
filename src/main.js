@@ -300,6 +300,14 @@ function dispatch(node) {
     return;
   }
   if (d.speed !== undefined) { s.speed = Number(d.speed); after(); return; }
+  /* 模式切换（U1 · ROADMAP §21.4）：现货 ⇄ 合约。只影响**「1x 做多」**这一种组合 ——
+     做空与 ≥2x 恒为合约，OTC 通道恒为现货，都与它无关（见 `engine.spotOf`）。
+     ⚠️ `data-mode2`（操作区那枚模式键），不是 `data-mode`（那是 K 线粒度小字）。 */
+  if (d.mode2 !== undefined) {
+    s.mode = s.mode === 'spot' ? 'fut' : 'spot';
+    after();
+    return;
+  }
   /* 粒度切换（Batch 3 · B12）：小字上写的是**当前**粒度，点一下切到另一种。
      ⚠️ **非 1h 的一律切回 1h**（S2）：细刻度档（`1t`）没有自己的按钮 —— 它靠**放大**进入
         （`view.zoomBy`），退出有两条路：缩回小时档，或点这枚小字直接回 1h。

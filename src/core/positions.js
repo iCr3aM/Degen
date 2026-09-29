@@ -25,13 +25,16 @@ import { GAME } from './config.js';
  * @param {number} margin 保证金
  * @param {number} lev    杠杆
  * @param {number} feeRate 费率（开仓按名义价值收一次）
+ * @param {boolean} spot 是否现货（U1 · ROADMAP §21.4）—— 由调用方按 `s.mode` / 通道算好传进来，
+ *   开仓那一刻**定死**在仓位上（`isSpot` 读的就是它）。见 `engine.openTrade()` 里的表达式。
  */
-export function openPosition(sym, side, price, margin, lev, feeRate) {
+export function openPosition(sym, side, price, margin, lev, feeRate, spot = false) {
   const notional = margin * lev;
   return {
     sym,
     side,
     lev,
+    spot,                 // 现货标记（U1）：一旦开仓就固定，不再随 `s.mode` 变
     margin,
     entry: price,
     size: notional / price,
@@ -90,13 +93,16 @@ export function closePosition(pos, price, feeRate) {
 /* ───────────────────────── 现货 / 合约（GDD §9.1） ───────────────────────── */
 
 /**
- * 现货判定：**1x 做多就是现货**（2026-09-28 拍板「由杠杆自动区分」）。
+ * 现货判定（U1 · 2026-09-29 改判，ROADMAP §21.4）—— **读仓位自己的 `spot` 标记**。
+ *
+ * ⚠️ 它不再由 `side / lev` 推出来。开仓那一刻由 `engine.openTrade()` 按 `s.mode` 算好写进仓位，
+ *    之后**固定不变** —— 玩家中途切换模式不会改变已有仓位的性质（那才符合直觉）。
+ *    `'spot'` 模式下的 1x 做多 ⇒ 现货；`'fut'` 模式下的 1x 做多 ⇒ 合约（也付资金费）；
+ *    做空与任何 ≥2x **恒为合约**；OTC 通道**恒为现货**。
  *   - 现货：只有币价归零才归零本金，**不因 0.5% 维持保证金率被强平** —— 所以引擎要跳过它
- *   - 合约：做空、或任何 ≥2x 的仓位，走维持保证金率那一套
- * 这样不用多一行「模式」切换：Mt.Gox 全程只有 1x，玩家在门头沟做多天然就是现货。
- * 要注意方向与杠杆两个条件都得满足：1x 做空是合约（有强平），2x 做多也是合约。
+ *   - 合约：走维持保证金率那一套
  */
-export const isSpot = pos => pos.side === 'long' && pos.lev === 1;
+export const isSpot = pos => !!(pos && pos.spot);
 
 /* ───────────────────────── 资金费率（GDD §9.5） ───────────────────────── */
 

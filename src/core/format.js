@@ -53,7 +53,8 @@ export function fmtMoney(n, { sign = false } = {}) {
 /**
  * 紧凑金额（**上帝模式专用** · 方案 §2.8）。
  *
- * `|n| < 100 万` 时与 `fmtMoney` 一字不差；之后切成「3 位有效数字 ＋ e 指数」。
+ * 与 `fmtMoney` 一字不差的情形由**渲染宽度**决定（G1-a）：只要 `fmtMoney` 渲染不超 20 字符就原样返回；
+ * 之后切成「3 位有效数字 ＋ e 指数」。
  * 为什么必须有它：`toFixed` 在 `|n| ≥ 1e21` 时会退化成指数写法，所以 `$8.15e100` 反而"碰巧"渲染得下，
  * 但中间那一段 `1e15 ~ 1e21` 会老实输出 27 个字符，直接撑爆 179px 的 HUD 格子。
  *
@@ -62,7 +63,10 @@ export function fmtMoney(n, { sign = false } = {}) {
 export function fmtMoneyCompact(n, { sign = false } = {}) {
   if (!Number.isFinite(n)) return '--';
   const a = Math.abs(n);
-  if (a < 1e6) return fmtMoney(n, { sign });
+  // G1-a（ROADMAP §22.1）：启用判据由「量级 ≥ 1e6」改成「渲染宽度」—— `fmtMoney` 渲染不超 **20 字符**
+  // （HUD 格内容宽 ≈145px ÷ 12px 等宽 ≈7.2px/字符）就照常返回完整千分位，只有真正撑不下的值才退到 e 记法。
+  // 好处：阈值不是魔数，随 `sign` / 负号 / 字体度量自动适配，且切点恰好是「会溢出」的那一刻。
+  if (fmtMoney(n, { sign }).length <= 20) return fmtMoney(n, { sign });
   let e = Math.floor(Math.log10(a));
   let m = a / Math.pow(10, e);
   if (m >= 9.995) { e += 1; m = a / Math.pow(10, e); }   // 别让尾数进位成 "10.00"

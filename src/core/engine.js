@@ -224,6 +224,19 @@ const showPrice = v => Number(v.toPrecision(8));
 /* ───────────────────────────── 交易动作 ───────────────────────────── */
 
 /**
+ * 这笔开仓是不是**现货**（U1 · ROADMAP §21.4）—— 开仓那一刻算一次，写进仓位后**固定不变**。
+ *
+ * 规则（三件事，缺一不可）：
+ *   - **OTC 通道恒为现货**（§15.3：私下一口价买现货，与模式无关）；
+ *   - 否则看 `s.mode`：只有 `'spot'` **且**「1x 做多」才是现货 ⇒ `'fut'` 下的 1x 做多也是合约（付资金费、有强平价）；
+ *   - **做空与任何 ≥2x 恒为合约** —— 它们本来就需要维持保证金，与本开关无关。
+ *
+ * ⚠️ 改动前这里是 `side === 'long' && lev === 1`（纯规则）。默认 `s.mode = 'spot'` 时，
+ *    本式子与旧式**逐值等价** ⇒ 不点那枚「模式」键的玩家，开局观感与旧版一字不变。
+ */
+const spotOf = (s, side, lev, otc) => !!otc || (s.mode === 'spot' && side === 'long' && lev === 1);
+
+/**
  * 按比例下单。`frac` 是「用掉多少可用保证金」，对应操作区的 1/4 · 1/2 · 全部。
  *
  * 多仓（2026-09-28）：**同一个币只许一条仓位**，不同币可以同时持有（BTC 多 + ETH 空）。
@@ -287,12 +300,16 @@ export function openTrade(s, side, frac = 1) {
   s.realized -= fee;
   s.lev = lev;
 
-  const pos = openPosition(s.sym, side, fill, margin, lev, feeRate);
+  const pos = openPosition(s.sym, side, fill, margin, lev, feeRate, spotOf(s, side, lev, otc));
   pos.i = s.i;
   pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
   pos.openFee = fee;
   if (otc) pos.otc = true;          // 只给 OTC 仓位打标（`capturedOf` 见到它就跳过）
   s.positions[s.sym] = pos;
+
+  /* 累计消耗（U2 · ROADMAP §21.4）：这笔买入从市场里拿走了多少枚，**只增不减**、平仓不退还。
+     ⚠️ 与 `capturedOf`（瞬时口径，进 `SUPPLY_CAP` 校验）**并存互不影响**；OTC 不算（不消耗流通量）。 */
+  if (!otc && side === 'long') s.consumed[s.sym] = (s.consumed[s.sym] ?? 0) + margin * lev / fill;
 
   /* 笔数（C8-B1）：同一份代价，报出它相当于拆成了几笔。OTC 是私下一口价、不吃滑点 ⇒ 不报。 */
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(s.sym, s.i), cost);

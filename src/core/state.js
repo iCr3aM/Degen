@@ -9,7 +9,7 @@
 
 import { GAME } from './config.js';
 
-export const STATE_VERSION = 9;
+export const STATE_VERSION = 10;
 
 export function createState() {
   return {
@@ -40,6 +40,14 @@ export function createState() {
      * 全仓模式是 GDD §9.2 里「后期解锁」的东西，本版不做。
      */
     positions: {},
+
+    /**
+     * 累计消耗（U2 · ROADMAP §21.4）—— `sym -> 玩家一共从市场里买走了多少枚`。
+     * ⚠️ 与 `capturedOf`（**瞬时**口径，平仓即归零）相对：这里**只增不减**，平仓**不退还**
+     *    （币是真的被你囤走了，卖回去也是先买走后卖出两件事）。目前**没有消费者** ——
+     *    只为口径完整与将来的「资产页持仓列表」（U3）。暂不影响任何玩法判定。
+     */
+    consumed: {},
 
     /**
      * 在途的链上转账（P2-A）—— `null` 或 `{ amount, from, to, departAt, arriveAt }`。
@@ -78,6 +86,15 @@ export function createState() {
 
     /** 当前正在看的币种 */
     sym: 'BTC',
+
+    /**
+     * 下单模式（U1 · ROADMAP §21.4）—— `'spot'`（现货，默认）或 `'fut'`（合约）。
+     * ⚠️ 它只决定**「1x 做多」**这一种组合的语义：`'spot'` ⇒ 现货（不强平、不付资金费）；
+     *    `'fut'` ⇒ 合约（也付资金费、也有强平价）。**做空与任何 ≥2x 恒为合约**（与模式无关），
+     *    因为那两种本来就需要维持保证金 —— 见 `engine.openTrade()` 里那个 `spot` 表达式。
+     * ⚠️ OTC 通道恒为现货（不随它变）。
+     */
+    mode: GAME.mode,
 
     /**
      * 下单通道（P2-B3 · GDD §15.3）—— `'book'`（盘口，默认）或 `'otc'`（场外大宗）。
@@ -164,6 +181,12 @@ export function capturedOf(s, sym) {
 
 /** 是否持有任何仓位 */
 export const anyHeld = s => heldSyms(s).length > 0;
+
+/**
+ * 某个币**累计被玩家买走的枚数**（U2 · ROADMAP §21.4）—— 与 `capturedOf` 的**瞬时口径**相对：
+ * 这里只增不减，平仓也不退还（币真的被囤走了）。⚠️ 目前**没有消费者**，只为口径完整与将来的资产页。
+ */
+export const consumedOf = (s, sym) => (s.consumed ? s.consumed[sym] ?? 0 : 0);
 
 /** 日志上限：只留最近这些条，免得存档无限膨胀 */
 export const LOG_MAX = 60;

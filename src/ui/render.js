@@ -144,6 +144,12 @@ export function mount(root) {
     fracRow.append(b);
     fracBtns.set(String(f), b);
   }
+  /* 模式键（U1 · ROADMAP §21.4）：铺在**「金额」行末尾**（用户裁决 —— 不新增行，保住 431px 固定块）。
+     与通道键 / 粒度小字同一约定：**字面即现状**（显示「现货」就是现货模式）。
+     它只决定「1x 做多」的语义 —— 做空与 ≥2x 恒为合约，OTC 通道恒为现货，都与它无关。 */
+  const tradeModeBtn = el('button', 'opt', '现货');
+  tradeModeBtn.dataset.mode2 = 'toggle';
+  fracRow.append(tradeModeBtn);
 
   const levRow = el('div', 'row');
   levRow.append(el('span', 'lbl', '杠杆'));
@@ -188,7 +194,7 @@ export function mount(root) {
     canvas, chartWrap, chartHead, chSym, chChg, modeBtn, chartEta, chartLock,
     posbar, posSide, posPnl, posRate,
     logline, newsTag, logText,
-    fracBtns, levRow, levBtns, spdBtns,
+    fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
     chanBtn, longBtn, shortBtn, closeBtn,
     _levSignature: '',
   };
@@ -432,6 +438,12 @@ export function update(refs, s, view) {
 
   /* 金额档 */
   for (const [k, b] of refs.fracBtns) b.classList.toggle('on', Math.abs(s.sizeFrac - Number(k)) < 1e-9);
+
+  /* 模式键（U1 · §21.4）：字面是**当前**模式。`合约` 时走 `.on` —— 与通道键同一约定：
+     偏离默认态（现货）才高亮，让玩家一眼看见「我这一单是合约」。 */
+  const fut = s.mode !== 'spot';
+  refs.tradeModeBtn.textContent = fut ? '合约' : '现货';
+  refs.tradeModeBtn.classList.toggle('on', fut);
 
   /* 杠杆档：可选档位随「时间 + 所选交易所」变化，签名变了才重建按钮 */
   const opts = leverageOptionsAt(now, s.ex);
