@@ -18,7 +18,7 @@ import { fmtMoney } from './core/format.js';
 import { marginRateOf, isSpot } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, clearOver, renderBoot, hideBoot,
-  pickExchange, confirmExchange, closePicker, openIntro, openSettings, openGod,
+  pickExchange, confirmExchange, closePicker, openIntro, openGod, showPage,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -34,8 +34,8 @@ const isNewGame = !saved;
 
 let refs = null;
 let clock = null;
-/* 设置面板里「重开本局」的**双重确认**状态机（Batch 4 · B21）。
-   面板是静态 DOM、不参与每帧重绘，所以武装状态只能放在这里 —— 见 `render.openSettings` 的注释。 */
+/* 设置页里「重开本局」的**双重确认**状态机（Batch 4 · B21）。
+   面板是静态 DOM、不参与每帧重绘，所以武装状态只能放在这里 —— 见 `render.js` 的设置页那段注释。 */
 let resetNode = null;
 let resetArmed = false;
 let resetTimer = 0;
@@ -52,6 +52,11 @@ let godTapAt = 0;
    ⚠️ **不进存档**（拍板口径）：`save()` 是整对象序列化，写进 `s` 就等于落盘；它只活在渲染进程里，
       重开本局走 `location.reload()`，这个变量自然归零。由 `engine` 的注入式回调喂进来。 */
 let liqMark = null;
+
+/* 当前页（A6 · 方案 §6.3）—— `'trade'|'assets'|'settings'`。
+   ⚠️ **模块级变量，不进 `s`**（§9 B6 拍板）：它和 `godTaps` / `resetArmed` 一样只是**界面位置**，
+      与 `view.js` 的「看哪一段」同一口径 —— 进存档只会污染状态位，重开一局还得记得清。 */
+let tab = 'trade';
 
 /* ───────────────────────────── 启动 ───────────────────────────── */
 
@@ -211,12 +216,20 @@ function draw(force = false) {
   lastDraw = now;
 
   if (!refs) return;
+  /* ⚠️ **先切页，再量尺寸**（A6 · 方案 §6）：隐藏的 `.trade-page` 是 `display:none`，
+     量出来是 0×0；顺序反了的话第一帧拿到的是上一页的尺寸（切回交易页就会画成一张空图，
+     而且暂停态下**不会再有任何一帧**把它救回来）。 */
+  showPage(refs, tab);
   const rect = refs.chartWrap.getBoundingClientRect();
   /* `liq`：「致命那一针」的短记忆（S3-附）—— 渲染层只在它属于当前币、且视野处在细刻度档时才画 */
   const view = {
     chartW: Math.max(1, Math.round(rect.width)),
     chartH: Math.max(1, Math.round(rect.height - 2)),
     liq: liqMark,
+    /* 当前页：K 线只在交易页画（另两页没有 K 线） */
+    tab,
+    /* 音效偏好归 `sound.js` 管，不进主状态 —— 设置页那个开关的文案由渲染层每帧从这里取 */
+    muted: snd.isMuted(),
   };
 
   try {
@@ -253,17 +266,19 @@ function dispatch(node) {
 
   if (d.intro !== undefined) return onIntro();
   if (d.loan !== undefined) return onLoan(d.loan);
-  if (d.settings !== undefined) return onSettings();
-  if (d.snd !== undefined) return onSoundToggle(node);
+  /* A6：底部 Tab 切页（`data-tab="trade|assets|settings"`）。
+     ⚠️ 原来的 `data-settings`（顶栏那枚「设置」）已随 A6 撤掉 —— 设置整体成了一个页。 */
+  if (d.tab !== undefined) return onTab(d.tab);
+  if (d.snd !== undefined) return onSoundToggle();
   if (d.reset !== undefined) return onReset(node);
-  if (d.sclose !== undefined) return onCloseSettings();
+  if (d.sclose !== undefined) return onClosePanel();
 
   /* ── 上帝模式 ＋ 订单冲击（隐藏入口 · 方案 §2）──
-     `god` 是标题上的连点入口，「订单冲击」开关在设置面板里，其余三枚在上帝面板里（`data-god*`）。
+     `god` 是标题上的连点入口，「订单冲击」开关在**设置页**里，其余三枚在上帝面板里（`data-god*`）。
      ⚠️ 上帝模式**只有「跳日期 / 填资金 / 关掉」三件事**（2026-09-29 瘦身）：原来那两套价格能力
         （倍率 `godmult`、手动砸盘 `godscale` / 复位 `godreset`）已整体删除。 */
   if (d.god !== undefined) return onGodTap();
-  if (d.impact !== undefined) return onImpactToggle(node);
+  if (d.impact !== undefined) return onImpactToggle();
   if (d.godcash !== undefined || d.goddate !== undefined || d.godoff !== undefined) {
     /* 这几枚只可能出现在上帝面板里，而面板只在 `s.god` 非空时打开。这一行是**状态机不靠 DOM 兜底**：
        万一面板被别的路径留下来（比如读到一份 `god: null` 的档），这里不能抛异常。 */
@@ -400,12 +415,10 @@ function onGodTap() {
 /**
  * 订单冲击开关（方案 §2.7）—— **玩法开关**，落在主状态 `s.impactOn`（不是 `degen_settings`）。
  * ⚠️ 关掉只是「不再产生新的冲击」，**已落地的行情位移不还原**（那是已发生的历史）。
- *    按钮文案得**手改**：面板不参与每帧重绘（与 `onSoundToggle` 同一个理由）。
+ * ⚠️ 与音效开关同理：按钮外观由 `update()` 同步，不在这里手改节点。
  */
-function onImpactToggle(node) {
+function onImpactToggle() {
   s.impactOn = !s.impactOn;
-  node.textContent = s.impactOn ? '开' : '关';
-  node.classList.toggle('on', s.impactOn);
   after();
 }
 
@@ -501,27 +514,46 @@ function onLoan(what) {
   after();
 }
 
-/* ── 设置面板（Batch 4 · B21）─────────────────────────────────────
-   顶栏第三枚按钮由「重开」改为「设置」：重开挪进面板，且必须**双重确认** ——
-   它是全屏唯一会毁掉整局的操作，用一个 42px 的小按钮一键完成太危险。
-   ⚠️ 面板是**静态 DOM**（不参与每帧重绘），所以「已武装」这个状态只能存在这里，
+/* ── 底部 Tab · 设置页（A6 · 方案 §6.3）─────────────────────────────
+   设置从「顶栏一枚按钮 ＋ 弹层」改成**第三个页**；重开本局仍在页内，且必须**双重确认** ——
+   它是全屏唯一会毁掉整局的操作，一键完成太危险。
+   ⚠️ 页是**静态 DOM**（不参与每帧重绘），所以「已武装」这个状态只能存在这里，
       不能写进 `refs` —— 一重绘就被抹掉。 */
-function onSettings() {
+
+/**
+ * 切页。口径（§6.3 已拍板）：
+ *   - **切页即暂停 ＋ 速度归 1x**，包括切到**设置页**（P2：不留「切到设置页时间还在跑」的例外）
+ *   - 切回交易页**仍然暂停** —— 恢复入口始终是顶栏那枚「暂停」，它在三页都常驻
+ *   - 结束 / 借贷待决时不许切页（与顶栏那两枚按钮的 `lockedUI` 同一条判据；遮罩本来就盖住了 Tab 条）
+ * ⚠️ 离开设置页要撤销「重开本局」的武装态：那个按钮是静态 DOM，不还原的话切回来它还是红的，
+ *    一点就真重开（`cancelReset` 是超时 / 关面板 / 切页三条路共用的还原口）。
+ */
+function onTab(name) {
   if (s.over || s.pending) return;
-  cancelReset();
-  openSettings(s, snd.isMuted());
+  if (name === tab) return;
+  if (tab === 'settings') cancelReset();
+  tab = name;
+  s.paused = true;      // 切页即暂停
+  s.speed = 1;          // ⚠️ 写进主状态（会落盘）：切一次页就丢掉 50x 的选择，这是拍板语义
+  closePicker();
+  after();
 }
 
-/** 音效开关：先落盘再改按钮外观，静音时**不响**（否则关掉它还会「嗒」一下） */
-function onSoundToggle(node) {
+/**
+ * 音效开关：先落盘再重画，静音时**不响**（否则关掉它还会「嗒」一下）。
+ * ⚠️ 按钮的文案 / 高亮**不在这里手改**：设置页是常驻骨架，`update()` 每帧从 `view.muted`
+ *    同步（`after()` 会强制画一帧，所以反馈仍是即时的）。
+ */
+function onSoundToggle() {
   const muted = !snd.isMuted();
   snd.setMuted(muted);
-  node.textContent = muted ? '关' : '开';
-  node.classList.toggle('on', !muted);
   if (!muted) snd.tap();
+  after();
 }
 
-function onCloseSettings() {
+function onClosePanel() {
+  /* ⚠️ 现在只剩**上帝面板**用 `data-sclose`（设置已改成页，出口是底部 Tab）。
+     顺手撤销重开的武装态：上帝面板在任意页都能开（连点标题），多这一句不亏。 */
   cancelReset();
   closePicker();
   after();

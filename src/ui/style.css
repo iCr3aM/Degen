@@ -70,6 +70,34 @@ html, body {
 .mut { color: var(--mut); }
 .gold { color: var(--gold); }
 
+/* ══════════════ 三页框架 ＋ 底部 Tab（A6 · 方案 §6） ══════════════
+   顶栏与 Tab 条建在三个 `.page` **之外** ⇒ 它们三页常驻（§6.2）。
+   页只切**可见性**：骨架仍然每帧不重建，切页只是换一个 `display`。
+   ⚠️ 隐藏页必须是 `display:none` —— 否则 K 线区量出来的尺寸是错的（见 `main.js` 的 `draw()`）。 */
+.page { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; }
+.page.on { display: flex; }
+/* 资产 / 设置页没有 K 线那条弹性块，内容长了就在**页内**滚（`#app` 自己仍然不滚，约束 ③） */
+.page:not(.trade-page) { overflow-y: auto; }
+
+/* 44px **全部从 K 线区扣**（§6.1）：固定块合计 431 → 475px，K 线区 405 → 361px（390×844）。
+   实机若觉得挤先降到 40px，**不动 HUD / 持仓条**。
+   按钮各自带上边框那道 1px 分隔线（选中态用 `inset` 阴影加粗到 2px，不占布局、不跳）。 */
+.tabs { flex: none; display: flex; height: 44px; }
+.tab {
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--line);
+  color: var(--mut);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tab.on { color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+.tab:active { background: var(--line); }
+
 /* ══════════════ 顶部状态栏 ══════════════ */
 .top {
   flex: none;
@@ -432,6 +460,51 @@ html, body {
 /* 主按钮是实心块，按压态不能用 `background` 顶掉语义色 ⇒ 压暗一档 */
 .act:active { filter: brightness(.88); }
 .act:disabled { opacity: .45; }
+
+/* ══════════════ 资产页（A6 · 方案 §6.2） ══════════════
+   ① 总资产 ② 资金曲线（Step 2）③ 买U（Step 2）④ 持仓列表 —— 本步先落 ① 与 ④。 */
+
+/* 总资产卡：复用交易页 HUD 那副格子（同样的 `.cell` 三行结构，字色 / 行高全部一致）。
+   **单列**是过渡态：Step 2 拆成 USD / USDT 分列两格 ＋ 一行合计。 */
+.hud.one { grid-template-columns: 1fr; }
+
+/* 持仓列表：按**现货 / 合约**分组（组名走 `h4`），组内是一个 `.pcard`，行与行之间一条细线。
+   用途是**跨币复盘** —— 与交易页那条「只看当前币」的持仓条不是重复（§14.7）。 */
+.plist { margin-top: 8px; padding-bottom: 8px; }
+.plist h4 {
+  margin: 0;
+  height: 24px;
+  line-height: 24px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mut);
+}
+.plist h4:not(:first-child) { margin-top: 8px; }
+.pcard { background: var(--panel); border: 1px solid var(--line); }
+.prow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+.prow + .prow { border-top: 1px solid var(--line); }
+/* 中间那格（方向 ＋ 杠杆）吃掉余量，长了就在自己这一格截尾，不挤两边 */
+.prow > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prow > b:last-child { flex: none; }
+
+/* ══════════════ 设置页（A6 · 方案 §6.2） ══════════════
+   原设置弹层那三件原样搬成页：两个开关（`.set-row` ＋ `.set-btn` 全部复用）+ 重开本局。
+   页没有「关闭」出口 —— 底部 Tab 就是出口。 */
+.set-card {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+/* 行距 8（约束 ④：块内间距只有 8）—— 行高由 `.set-btn` 的 32px 撑开 */
+.set-card .set-row + .set-row { margin-top: 8px; }
 
 /* 爆仓 / 结算遮罩 */
 .over {

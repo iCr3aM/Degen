@@ -18,7 +18,7 @@ import { isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
 import { isLoaded, rangeOf, candleAt, rawCloseAt, HOURS_PER_DAY } from '../core/market.js';
 import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { anchorAt, anchorsInRange } from '../core/anchors.js';
-import { anyHeld, posOf } from '../core/state.js';
+import { anyHeld, heldSyms, posOf } from '../core/state.js';
 import { ticksPerHour } from '../core/simulate.js';
 import { drawChart } from './chart.js';
 import { windowFor, setYPx } from './view.js';
@@ -90,13 +90,11 @@ export function mount(root) {
   exBtn.append(exName, exRate);
   const pauseBtn = el('button', 'ic', '暂停');
   pauseBtn.dataset.pause = '';
-  /* 第三枚：`重开` → **`设置`**（Batch 4 · B21）。重开本身搬进设置面板并加二次确认 ——
-     顶栏只留「一看就知道点得动」的入口，误触一下就清档的风险从根上消失。
-     文案仍是 2 个汉字，`.top .ic` 的 42px 定宽不用改，布局一动不动。 */
-  const settingsBtn = el('button', 'ic', '设置');
-  settingsBtn.dataset.settings = '';
+  /* 第三枚「设置」**已撤**（A6 · 方案 §6.2，2026-09-29）：设置不是「下单」也不是「盯盘」，
+     语义上属**设置** ⇒ 整体搬去设置页（`.settings-page`）。顶栏只剩「交易所 / 暂停」两枚，
+     加上 `.who` 一共四样，**三页常驻**（§6.2）。 */
   const tools = el('div', 'tools');
-  tools.append(exBtn, pauseBtn, settingsBtn);
+  tools.append(exBtn, pauseBtn);
   top.append(who, tools);
 
   /* ── 账户两格：交易所搬去顶栏后退回两列（2026-09-28），手机上每格从 91px 回到 179px，
@@ -216,10 +214,65 @@ export function mount(root) {
   const trade = el('div', 'trade');
   trade.append(fracRow, levRow, spdRow, actRow);
 
-  root.append(top, hud, symbols, chartWrap, posbar, logline, trade);
+  /* ══════════════ 三页框架（A6 · 方案 §6）══════════════
+     三页只切**可见性**（`.page.on`），骨架仍然只建一次 —— 与全屏「只改文字与 class」同一条规矩。
+     顶栏建在三个 `.page` **之外** ⇒ 它天然三页常驻（§6.2）。
+     ⚠️ 隐藏页是 `display:none`，量出来的尺寸是 0：所以 K 线只在交易页画（见 `syncChart`），
+        且**可见性必须在量尺寸之前落**（`main.js` 的 `draw()` 先调 `showPage`）。 */
+  const tradePage = el('div', 'page trade-page');
+  tradePage.append(hud, symbols, chartWrap, posbar, logline, trade);
+
+  /* ── 资产页 v0（§6.2 的 ① 与 ④；② 曲线 / ③ 买U 属 Step 2）──
+     先落「现有数据就能算的两样」：**总资产**（复用 `equity`）＋ **持仓列表**（现货 / 合约分组）。
+     ⚠️ 与交易页那条持仓条**不是重复**（§14.7）：那条只看当前币、是开仓后的风险仪表；
+        这里是**跨币复盘**。 */
+  const asTotal = el('b', 'num');
+  const asNote = el('u', 'num');
+  const asBox = el('div', 'hud one');
+  asBox.append(cell('总资产', asTotal, asNote));
+  const asList = el('div', 'plist');
+  const assetsPage = el('div', 'page assets-page');
+  assetsPage.append(asBox, asList);
+
+  /* ── 设置页（原设置弹层那三件，原封不动搬成页 · §6.2）──
+     ⚠️ 两个开关的文案 / 高亮**每帧由 `update()` 从状态与偏好同步**，不在这里手改节点：
+        页是静态 DOM，`onSoundToggle` 再手改一遍就会两处打架（从前弹层不参与重绘，才允许手改）。
+     ⚠️ 「重开本局」的双重确认状态机仍在 `main.js`（`onReset` / `cancelReset`），理由同前。 */
+  const sndBtn = el('button', 'set-btn on', '开');
+  sndBtn.dataset.snd = 'toggle';
+  const impBtn = el('button', 'set-btn on', '开');
+  impBtn.dataset.impact = 'toggle';
+  const setCard = el('div', 'set-card');
+  const sndRow = el('div', 'set-row');
+  sndRow.append(el('i', null, '音效'), sndBtn);
+  const impRow = el('div', 'set-row');
+  impRow.append(el('i', null, '订单冲击'), impBtn);
+  setCard.append(sndRow, impRow);
+  const resetBtn = el('button', 'act flat', '重开本局');
+  resetBtn.dataset.reset = '';
+  /* 按钮必须包在 `.row` 里：`.act` 自己带 `flex: 1`，直接放进纵向 flex 的 `.page` 会被拉满整屏 */
+  const resetRow = el('div', 'row');
+  resetRow.append(resetBtn);
+  const settingsPage = el('div', 'page settings-page');
+  settingsPage.append(setCard, resetRow);
+
+  /* ── 底部 Tab（44px · §6.1）──
+     ⚠️ 这 44px **全部从 K 线区扣**：固定块合计 431 → 475px，K 线区 405 → 361px（390×844）。
+        实机若觉得挤，先把 Tab 降到 40px —— **不动 HUD / 持仓条**。 */
+  const tabs = el('div', 'tabs');
+  const tabBtns = new Map();
+  for (const [k, label] of [['trade', '交易'], ['assets', '资产'], ['settings', '设置']]) {
+    const b = el('button', 'tab', label);
+    b.dataset.tab = k;
+    tabs.append(b);
+    tabBtns.set(k, b);
+  }
+  const pages = new Map([['trade', tradePage], ['assets', assetsPage], ['settings', settingsPage]]);
+
+  root.append(top, tradePage, assetsPage, settingsPage, tabs);
 
   return {
-    root, dateEl, pauseBtn, settingsBtn,
+    root, dateEl, pauseBtn,
     exBtn, exName, exRate,
     eqVal, eqSub, cashVal, cashSub,
     symbols, symBtns,
@@ -228,8 +281,24 @@ export function mount(root) {
     logline, newsTag, logText,
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
     chanBtn, longBtn, shortBtn, closeBtn,
+    pages, tabBtns, asTotal, asNote, asList,
+    sndBtn, impBtn,
     _levSignature: '',
+    _posListSig: null,
   };
+}
+
+/**
+ * 切页 —— **可见性的唯一写入口**（`.page.on` ＋ Tab 高亮一起翻）。
+ *
+ * ⚠️ 它由 `main.js` 的 `draw()` 在**量 K 线尺寸之前**调用，而不是放在 `update()` 里：
+ *    隐藏的 `.trade-page` 是 `display:none`，量出来是 0×0 —— 先切页、再量，尺寸才是真的。
+ * @param {object} refs `mount()` 的返回值
+ * @param {'trade'|'assets'|'settings'} name
+ */
+export function showPage(refs, name) {
+  for (const [k, n] of refs.pages) n.classList.toggle('on', k === name);
+  for (const [k, b] of refs.tabBtns) b.classList.toggle('on', k === name);
 }
 
 function cell(label, valueEl, subEl) {
@@ -264,18 +333,28 @@ const LOCK_PREV = (() => {
 /**
  * @param {object} refs  `mount()` 的返回值
  * @param {object} s     状态
- * @param {object} view  { chartW, chartH } —— K 线区实测尺寸
+ * @param {object} view  `{ chartW, chartH, tab, muted }` —— K 线区实测尺寸 ＋ 当前页 ＋ 是否静音
+ *   （后两项由 `main.js` 注入：它们一个是界面位置、一个是浏览器偏好，都不属于 `core` 的状态）
  */
 export function update(refs, s, view) {
+  const onTrade = view.tab === 'trade';
+
   refs.dateEl.textContent = fmtDate(timeOf(s));
 
   /* 顶栏按钮。⚠️ B30 的**待决态**（`s.pending`）下也要锁死：时钟已经停了，这时候
-     「继续 / 暂停」和「设置」都不该可用 —— 玩家只有一个选择要回答（借，还是收摊）。 */
+     「继续 / 暂停」和切页都不该可用 —— 玩家只有一个选择要回答（借，还是收摊）。
+     ⚠️ 切页在 `main.js` 的 `onTab` 里也拦了一道（状态机不能只靠 DOM 兜底）。 */
   const lockedUI = !!s.over || !!s.pending;
   refs.pauseBtn.textContent = s.paused ? '继续' : '暂停';
   refs.pauseBtn.classList.toggle('on', s.paused);
   refs.pauseBtn.disabled = lockedUI;
-  refs.settingsBtn.disabled = lockedUI;
+
+  /* 设置页那两个开关（静态 DOM，不重建）：文案与高亮**只从这里写**。
+     `view.muted` 由 `main.js` 注入（音效偏好归 `sound.js` 管，不是主状态）。 */
+  refs.sndBtn.textContent = view.muted ? '关' : '开';
+  refs.sndBtn.classList.toggle('on', !view.muted);
+  refs.impBtn.textContent = s.impactOn ? '开' : '关';
+  refs.impBtn.classList.toggle('on', s.impactOn);
 
   /* 账户三格 */
   const eq = equity(s);
@@ -337,77 +416,10 @@ export function update(refs, s, view) {
   const sym = s.sym;
   const cur = posOf(s, sym);
   const mark = markPrice(s, sym);
-  const prev = candle24(sym, s.i);
-  refs.chSym.textContent = sym;
-  if (mark != null && prev) {
-    refs.chChg.textContent = `24h ${fmtPct(mark / prev - 1)}`;
-    refs.chChg.className = mark >= prev ? 'up' : 'down';
-  } else {
-    refs.chChg.textContent = '';
-  }
-
-  /* 「致命那一针」（S3-附）：`view.liq` 是 `main.js` 的一句短记忆，只在它属于当前币时才算数 ——
-     换算成**全局 tick 序号**（`hour × N + k`）交给视野，视野再按桶折算成槽位交给画布。
-     只在细刻度档画（`view.js` 对粗档一律返回 `liqSlot: null`）。 */
-  const liqTick = view.liq && view.liq.sym === sym
-    ? view.liq.hour * ticksPerHour() + view.liq.k
-    : null;
-  const win = windowFor(sym, s.i, view.chartW, s.seed, liqTick);
-  /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
-     日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
-     （`count` 可能大于可用根数，这里的下界会算成负数）。
-     ⚠️ **细刻度档不画锚点**（ROADMAP §19.6.6 ③）：锚点是小时级历史节点，2 ~ 12 小时的窗口里没有意义，
-        而且省掉了「小时序号 → 桶槽位」这一层换算。 */
-  let anchorMarks = [];
-  if (win.mode !== '1t') {
-    const hLo = win.mode === '1d' ? (win.right - win.count + 1) * HOURS_PER_DAY : win.right - win.count + 1;
-    const hHi = win.mode === '1d' ? win.right * HOURS_PER_DAY + HOURS_PER_DAY - 1 : win.right;
-    anchorMarks = anchorsInRange(hLo, hHi).map(a => ({
-      d: win.mode === '1d' ? Math.floor(a.at / HOURS_PER_DAY) : a.at,
-    }));
-  }
-  /* 图上唯一的入口：K 线、量柱、两条水平线都在这一笔里画。
-     ⚠️ 返回值必须写回视野 —— 价格轴的平移限位夹在 `drawChart` 里（换算的唯一真源在那边），
-        状态记的是**没夹过**的原始位移，不写回就会越夹越离谱。 */
-  const effY = drawChart(refs.canvas, {
-    candles: win.candles,
-    vols: win.vols,
-    /* 槽位数（= 视野要的根数）：柱宽按它算、柱子右对齐，币种刚上线时才不会一根撑满屏（B22）。
-       细刻度档下它是**聚合后的桶数**（`win.count` 是 tick 数，不能直接当槽位用）。 */
-    slots: win.slots,
-    /* 历史锚点刻度（P2-C）—— 与最右那根一起交给图上换算槽位 */
-    anchors: anchorMarks,
-    right: win.right,
-    /* 「致命那一针」（S3-附）：槽位号由 `view.js` 折算好；粗档恒为 null */
-    liqSlot: win.liqSlot,
-    /* 顶部留白 = 左上角遮罩的**实测**高度（Batch 5 · B27）：量不到时由 `chart.js` 退回自己的兜底常量。
-       `getBoundingClientRect` 与 `main.js` 那次取 `chartWrap` 尺寸落在同一帧，不额外多一次强制布局。 */
-    topInset: refs.chartHead.getBoundingClientRect().height,
-    mark,
-    entry: cur ? cur.entry : null,
-    side: cur ? cur.side : null,
-    /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。现货没有强平价 ⇒ 传 null。 */
-    liq: cur && !isSpot(cur) ? liquidationPrice(cur) : null,
-    cssW: view.chartW,
-    cssH: view.chartH,
-    yPx: win.yPx,
-  });
-  if (effY !== win.yPx) setYPx(sym, effY);
-
-  /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种（`main.js` 里定的目标档） */
-  refs.modeBtn.textContent = win.mode === '1d' ? '1日' : win.mode === '1t' ? '30秒' : '1h';
-  /* 锁视野提示（Batch 3 · B14）：拖动/缩放之后才出现，双击复位后自己消失 */
-  refs.chartLock.hidden = !win.locked;
-
-  /* 在途转账倒计时（K 线右上角）。两个数字与顶栏那行同源，但这里多一个「去哪儿」——
-     玩家一眼能确认钱在往哪家所的路上。 */
-  if (s.transfer) {
-    const to = exchangeOf(s.transfer.to);
-    refs.chartEta.hidden = false;
-    refs.chartEta.textContent = `${to ? to.name : s.transfer.to} · 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`;
-  } else {
-    refs.chartEta.hidden = true;
-  }
+  /* ⚠️ **K 线只在交易页画**（A6 · 方案 §6.2）：另两页没有 K 线，`.trade-page` 是 `display:none`，
+     量出来的画布尺寸是 0×0。不跳过的话 `windowFor(dw≈1)` 会算出畸形视野，还会把夹取后的
+     `yPx` 反写回 `view.js`（污染那一段的真实位移）。 */
+  if (onTrade) syncChart(refs, s, view, sym, cur, mark);
 
   /* 持仓条：只显示当前所选币；**无持仓也常驻**（三格填 `--`），见 mount() 的注释 */
   if (cur) {
@@ -511,6 +523,150 @@ export function update(refs, s, view) {
   refs.chanBtn.disabled = !(unlocked && otcOpenFor(s));
   refs.chanBtn.textContent = chan === 'otc' ? 'OTC' : '盘口';
   refs.chanBtn.classList.toggle('on', chan === 'otc');
+
+  /* 资产页（§6.2 ①②④ 的 v0）：总资产 ＋ 持仓列表。切到别的页就不写 —— 那是隐藏 DOM，
+     而且这个列表是**重建**出来的，白建一遍不如不建。 */
+  if (view.tab === 'assets') {
+    refs.asTotal.textContent = fmtMoney(eq);
+    refs.asTotal.className = 'num ' + (eq >= GAME.cash ? 'up' : 'down');
+    refs.asNote.textContent = `已实现 ${fmtMoney(s.realized, { sign: true })}`;
+    refs.asNote.className = 'num ' + (s.realized >= 0 ? 'up' : 'down');
+    const listSig = posListSignature(s);
+    if (listSig !== refs._posListSig) {
+      refs._posListSig = listSig;
+      buildPosList(refs.asList, s);
+    }
+  }
+}
+
+/**
+ * K 线的**全部**绘制与浮字（从 `update()` 里整块抽出来，2026-09-29）—— 唯一理由：
+ * 它只在交易页做（见 `update()` 里那段注释）。抽出来比在里面嵌一层 `if` 更好读，
+ * 也避免了整个 `update()` 被推进一级缩进。
+ * @param {number|null} mark 当前币标记价（`update()` 已经取过，不重复取）
+ * @param {object|null} cur  当前币仓位
+ */
+function syncChart(refs, s, view, sym, cur, mark) {
+  const prev = candle24(sym, s.i);
+  refs.chSym.textContent = sym;
+  if (mark != null && prev) {
+    refs.chChg.textContent = `24h ${fmtPct(mark / prev - 1)}`;
+    refs.chChg.className = mark >= prev ? 'up' : 'down';
+  } else {
+    refs.chChg.textContent = '';
+  }
+
+  /* 「致命那一针」（S3-附）：`view.liq` 是 `main.js` 的一句短记忆，只在它属于当前币时才算数 ——
+     换算成**全局 tick 序号**（`hour × N + k`）交给视野，视野再按桶折算成槽位交给画布。
+     只在细刻度档画（`view.js` 对粗档一律返回 `liqSlot: null`）。 */
+  const liqTick = view.liq && view.liq.sym === sym
+    ? view.liq.hour * ticksPerHour() + view.liq.k
+    : null;
+  const win = windowFor(sym, s.i, view.chartW, s.seed, liqTick);
+  /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
+     日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
+     （`count` 可能大于可用根数，这里的下界会算成负数）。
+     ⚠️ **细刻度档不画锚点**（ROADMAP §19.6.6 ③）：锚点是小时级历史节点，2 ~ 12 小时的窗口里没有意义，
+        而且省掉了「小时序号 → 桶槽位」这一层换算。 */
+  let anchorMarks = [];
+  if (win.mode !== '1t') {
+    const hLo = win.mode === '1d' ? (win.right - win.count + 1) * HOURS_PER_DAY : win.right - win.count + 1;
+    const hHi = win.mode === '1d' ? win.right * HOURS_PER_DAY + HOURS_PER_DAY - 1 : win.right;
+    anchorMarks = anchorsInRange(hLo, hHi).map(a => ({
+      d: win.mode === '1d' ? Math.floor(a.at / HOURS_PER_DAY) : a.at,
+    }));
+  }
+  /* 图上唯一的入口：K 线、量柱、两条水平线都在这一笔里画。
+     ⚠️ 返回值必须写回视野 —— 价格轴的平移限位夹在 `drawChart` 里（换算的唯一真源在那边），
+        状态记的是**没夹过**的原始位移，不写回就会越夹越离谱。 */
+  const effY = drawChart(refs.canvas, {
+    candles: win.candles,
+    vols: win.vols,
+    /* 槽位数（= 视野要的根数）：柱宽按它算、柱子右对齐，币种刚上线时才不会一根撑满屏（B22）。
+       细刻度档下它是**聚合后的桶数**（`win.count` 是 tick 数，不能直接当槽位用）。 */
+    slots: win.slots,
+    /* 历史锚点刻度（P2-C）—— 与最右那根一起交给图上换算槽位 */
+    anchors: anchorMarks,
+    right: win.right,
+    /* 「致命那一针」（S3-附）：槽位号由 `view.js` 折算好；粗档恒为 null */
+    liqSlot: win.liqSlot,
+    /* 顶部留白 = 左上角遮罩的**实测**高度（Batch 5 · B27）：量不到时由 `chart.js` 退回自己的兜底常量。
+       `getBoundingClientRect` 与 `main.js` 那次取 `chartWrap` 尺寸落在同一帧，不额外多一次强制布局。 */
+    topInset: refs.chartHead.getBoundingClientRect().height,
+    mark,
+    entry: cur ? cur.entry : null,
+    side: cur ? cur.side : null,
+    /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。现货没有强平价 ⇒ 传 null。 */
+    liq: cur && !isSpot(cur) ? liquidationPrice(cur) : null,
+    cssW: view.chartW,
+    cssH: view.chartH,
+    yPx: win.yPx,
+  });
+  if (effY !== win.yPx) setYPx(sym, effY);
+
+  /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种（`main.js` 里定的目标档） */
+  refs.modeBtn.textContent = win.mode === '1d' ? '1日' : win.mode === '1t' ? '30秒' : '1h';
+  /* 锁视野提示（Batch 3 · B14）：拖动/缩放之后才出现，双击复位后自己消失 */
+  refs.chartLock.hidden = !win.locked;
+
+  /* 在途转账倒计时（K 线右上角）。两个数字与顶栏那行同源，但这里多一个「去哪儿」——
+     玩家一眼能确认钱在往哪家所的路上。 */
+  if (s.transfer) {
+    const to = exchangeOf(s.transfer.to);
+    refs.chartEta.hidden = false;
+    refs.chartEta.textContent = `${to ? to.name : s.transfer.to} · 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`;
+  } else {
+    refs.chartEta.hidden = true;
+  }
+}
+
+/* ═════════════════════════ 资产页 · 持仓列表 ═════════════════════════ */
+
+/**
+ * 持仓列表的**签名** —— 列表是**重建**的，只在签名变化时重建（与杠杆档同一套写法）。
+ * 签名里带上格式化后的盈亏，所以价格一动（在资产页点「继续」时会）数字跟着走。
+ */
+function posListSignature(s) {
+  return heldSyms(s).map(sym => {
+    const p = s.positions[sym];
+    return `${sym}:${p.side}:${p.lev}:${isSpot(p) ? 's' : 'f'}:${unrealizedOf(s, sym).toFixed(2)}`;
+  }).join('|');
+}
+
+/**
+ * 按**现货 / 合约**分组列出全部持仓（§6.2 ④）—— 用途是**跨币复盘**：
+ * 一行一个币，「方向 ＋ 杠杆」在左、未实现盈亏在右。
+ * ⚠️ 与交易页那条持仓条不是重复（§14.7）：那条只看当前币、承担「风险仪表」的职责。
+ * ⚠️ 现货恒为「1x 做多」（U1），所以组内不再重复写方向，只写 `1x`。
+ */
+function buildPosList(box, s) {
+  box.textContent = '';
+  const spot = [];
+  const fut = [];
+  for (const sym of heldSyms(s)) (isSpot(s.positions[sym]) ? spot : fut).push(sym);
+
+  if (!spot.length && !fut.length) {
+    box.append(el('div', 'pcard prow mut', '暂无持仓'));
+    return;
+  }
+
+  for (const [label, syms] of [['现货', spot], ['合约', fut]]) {
+    if (!syms.length) continue;
+    box.append(el('h4', null, label));
+    const card = el('div', 'pcard');
+    for (const sym of syms) {
+      const p = s.positions[sym];
+      const pnl = unrealizedOf(s, sym);
+      const row = el('div', 'prow');
+      row.append(
+        el('b', null, sym),
+        el('span', 'mut', isSpot(p) ? '1x' : `${p.side === 'long' ? '多' : '空'} ${p.lev}x`),
+        el('b', 'num ' + (pnl >= 0 ? 'up' : 'down'), fmtMoney(pnl, { sign: true })),
+      );
+      card.append(row);
+    }
+    box.append(card);
+  }
 }
 
 /* ───────────────────────── 小工具 ───────────────────────── */
@@ -740,61 +896,20 @@ export function openIntro() {
   picker = ov;
 }
 
-/* ═════════════════════════ 设置面板（Batch 4 · B21） ═════════════════════════ */
+/* ═════════════════════════ 设置（Batch 4 · B21 → A6 改页） ═════════════════════════ */
 
 /**
- * 设置。顶栏第三枚「重开」改叫「设置」之后点开的就是这里，目前只有三项：
+ * 设置原先是**弹层**（`openSettings`），A6（方案 §6.2，2026-09-29）起整体搬成**设置页**：
  *   **① 音效开关**（偏好存 `degen_settings`，独立于存档 —— 重开不会把开关一起清掉）
  *   **② 订单冲击开关**（方案 §2.7）—— 它是**玩法开关**，所以读的是状态 `s.impactOn`，不是偏好存档
- *   **③ 重开本局**（**面板内双重确认**：第一次点变「确认重开」，3 秒不点自动还原）
+ *   **③ 重开本局**（**页内双重确认**：第一次点变「确认重开」，3 秒不点自动还原）
  *
- * ⚠️ 双重确认的**状态机在 `main.js`**（`onReset` / `cancelReset`），不在这里：
- *    面板是静态 DOM、不参与每帧重绘，把「已武装」这个状态放进渲染层只会两处打架。
- *    这里只负责把按钮画出来（初始文案「重开本局」）。
- * @param {object} s     状态（读 `s.impactOn`）
- * @param {boolean} muted 当前是否静音（由 `sound.js` 持有）
+ * ⚠️ 三件东西的 DOM 都在 `mount()` 里一次建好（页是常驻骨架，不像弹层每次现建），
+ *    两个开关的文案 / 高亮由 `update()` 每帧从状态同步。
+ * ⚠️ 双重确认的**状态机仍在 `main.js`**（`onReset` / `cancelReset`）：页是静态 DOM、
+ *    不参与每帧重绘，把「已武装」这个状态放进渲染层只会两处打架。
+ * ⚠️ 这个页**没有「关闭」出口** —— 底部 Tab 就是出口（切回交易 / 资产）。
  */
-export function openSettings(s, muted) {
-  closePicker();
-  const ov = document.getElementById('overlay');
-  if (!ov) return;
-
-  const back = el('div', 'pick-back');
-  const box = el('div', 'confirm');
-  box.append(el('h3', null, '设置'));
-
-  const rows = el('div', 'confirm-rows');
-  const sRow = el('div', 'set-row');
-  const sBtn = el('button', 'set-btn' + (muted ? '' : ' on'), muted ? '关' : '开');
-  sBtn.dataset.snd = 'toggle';
-  sRow.append(el('i', null, '音效'), sBtn);
-
-  /* 订单冲击（方案 §2.7）：默认**开**。关掉只是「不再产生新的冲击」——
-     已经落在地上的行情位移**不还原**（那是已发生的历史），要还原用上帝面板的「复位」。 */
-  const iRow = el('div', 'set-row');
-  const iBtn = el('button', 'set-btn' + (s.impactOn ? ' on' : ''), s.impactOn ? '开' : '关');
-  iBtn.dataset.impact = 'toggle';
-  iRow.append(el('i', null, '订单冲击'), iBtn);
-
-  rows.append(sRow, iRow);
-  box.append(rows);
-
-  /* 两枚按钮都走 `.act flat`（中性灰）—— 重开是**破坏性**操作，武装后才转红（`.warn`），
-     颜色变化的本身就是那一步确认的反馈。文案「重开本局」与「确认重开」都是 4 个字，
-     切换时按钮宽度不跳。 */
-  const reset = el('button', 'act flat', '重开本局');
-  reset.dataset.reset = '';
-  const off = el('button', 'act flat', '关闭');
-  off.dataset.sclose = '';
-  const btns = el('div', 'confirm-btns');
-  btns.append(reset, off);
-  box.append(btns);
-
-  back.addEventListener('pointerdown', closePicker);
-  ov.append(back, box);
-  ov.hidden = false;
-  picker = ov;
-}
 
 /* ═════════════════════════ 上帝模式面板（隐藏入口 · 方案 §2） ═════════════════════════ */
 
