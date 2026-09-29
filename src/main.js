@@ -375,14 +375,18 @@ function dispatch(node) {
   if (d.buy !== undefined || d.sell !== undefined) {
     if (s.mode === 'fut' && futuresAvailable(s)) return;
     const side = d.buy !== undefined ? 'long' : 'short';
-    /* 现货做空要先借到币（v10）：与 `engine.openTrade` 同一条判据，这里先拦一次只为把日志
-       降成 `info`（引擎那一份是 `bad`）—— 规则本身仍只在 core，UI 不另算一遍。 */
-    if (side === 'short' && levKind(s) === 'spot' && !hasFinancingAt(timeOf(s), s.ex)) {
+    const pos = posOf(s, s.sym);
+    /* ⚠️ **融资判据必须排在「有没有仓位」之后**（2026-09-29 修 bug）：手上压着一张多仓时，
+       「卖出」是**平多**，平仓不需要借币 ⇒ 与融资无关。原来这条写在 `posOf` **之前**，
+       于是在 Mt.Gox（现货只有 1x、无融资）买进现货之后**再也卖不出去**，还误报
+       「现货做空 暂不可用 ｜ 该所此刻没有融资业务」——那是开空才需要的条件。
+       现在只拦「**空仓开空**」这一种，判据与渲染层 `sellOff = !dir && !canLev` 完全一致。
+       `engine.openTrade` 那边本来就是对的（先 `posOf` 再判融资），这里补的是主入口。 */
+    if (!pos && side === 'short' && levKind(s) === 'spot' && !hasFinancingAt(timeOf(s), s.ex)) {
       pushLog(s, '现货做空 暂不可用 ｜ 该所此刻没有融资业务', 'info');
       after();
       return;
     }
-    const pos = posOf(s, s.sym);
     if (!pos) {
       const r = openTrade(s, side, s.sizeFrac);
       if (!r.ok) pushLog(s, r.why, 'bad');
@@ -597,10 +601,25 @@ function onWarn() {
 /**
  * 打开日志浮层（⑤ · 方案 §20.2.1）。
  * ⚠️ 结束 / 待决时不弹（同 `onEx`）：那一刻遮罩已经替掉了界面，回看日志没有意义。
+ * ⚠️ **打开即暂停 ＋ 速度归 1x，关闭后以 1x 续跑**（2026-09-29 用户拍板）：日志是给眼睛读的，
+ *    50x 下开着面板读 30 条，行情早跑掉几十个游戏日。
+ *    恢复走 `openLog` 传下去的回调 —— **只有日志这一个浮层会碰时钟**；
+ *    选所 / 换所二次确认那些走 `closePicker()`，一行都不动速度。
  */
 function onLogOpen() {
   if (s.over || s.pending) return;
-  openLog(s);
+  s.paused = true;
+  s.speed = 1;
+  openLog(s, onLogClose);
+  after();
+}
+
+/** 日志浮层关闭后：**以 1x 续跑**（不恢复原来那一档 —— 与「切页即暂停 ＋ 速度归 1x」同一口径） */
+function onLogClose() {
+  if (s.over || s.pending) return;
+  s.paused = false;
+  s.speed = 1;
+  after();
 }
 
 /* ── 底部 Tab · 设置页（A6 · 方案 §6.3）─────────────────────────────

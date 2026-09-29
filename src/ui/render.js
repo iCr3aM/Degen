@@ -177,10 +177,14 @@ export function mount(root) {
         这一行只放得下一句被截尾的话，回看在浮层里做（`openLog`）。 */
   const newsTag = el('i', 'news-tag', '新闻');
   newsTag.hidden = true;
+  /* 时间与正文**拆成两格**（2026-09-29 用户要求）：时间写 `00:00`（不套方括号）、**恒为次要灰**；
+     正文按 `kind` 上色（`bad` 红 / `ok` 绿 / 其余灰）—— 与浮层 `.log-row` 是同一副样子。
+     原来整行共用一个 class，时间会被正文的颜色一起染掉（爆仓那条连时间都是红的）。 */
+  const logTime = el('u', 'num');
   const logText = el('span');
   const logline = el('div', 'logline');
   logline.dataset.log = '';
-  logline.append(newsTag, logText);
+  logline.append(newsTag, logTime, logText);
 
   /* ── 操作区 ── */
   const fracRow = el('div', 'row');
@@ -313,7 +317,7 @@ export function mount(root) {
     symbols, symBtns,
     canvas, chartWrap, chartHead, chSym, chChg, modeBtn, chartEta, chartLock,
     posbar, posSide, posPnl, posRate,
-    logline, newsTag, logText,
+    logline, newsTag, logTime, logText,
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asTotal, asNote, asList,
@@ -507,14 +511,19 @@ export function update(refs, s, view) {
   const news = anchorAt(s.i);
   const newsOn = !!news && !(last && last.at > news.at);
   refs.newsTag.hidden = !newsOn;
+  /* ⚠️ 颜色只上在**正文**那一格（`refs.logText`）：时间恒为 `--mut`（颜色落点是 CSS 的
+     `.logline > u`）。改这里就要连 CSS 一起看，两处是一件事。 */
+  refs.logTime.hidden = !newsOn && !last;
   if (newsOn) {
-    refs.logText.textContent = `[${fmtHour(GAME.start + news.at * HOUR_MS)}] ${news.title}${newsMove(news)}`;
+    refs.logTime.textContent = fmtHour(GAME.start + news.at * HOUR_MS);
+    refs.logText.textContent = `${news.title}${newsMove(news)}`;
+    refs.logText.className = '';
     refs.logline.className = 'logline news';
   } else {
-    refs.logText.textContent = last
-      ? `[${fmtHour(GAME.start + (last.at ?? s.i) * HOUR_MS)}] ${last.text}`
-      : '—';
-    refs.logline.className = 'logline ' + (last ? (last.kind === 'bad' ? 'down' : last.kind === 'ok' ? 'up' : 'mut') : 'mut');
+    refs.logTime.textContent = last ? fmtHour(GAME.start + (last.at ?? s.i) * HOUR_MS) : '';
+    refs.logText.textContent = last ? last.text : '—';
+    refs.logText.className = last ? (last.kind === 'bad' ? 'down' : last.kind === 'ok' ? 'up' : 'mut') : 'mut';
+    refs.logline.className = 'logline';
   }
 
   /* 金额档 */
@@ -990,7 +999,7 @@ export function closePicker() {
  *   ③ 正文**允许折行** —— 这正是它存在的理由（日志条那句被截尾的话在这里要读全）。
  * ⚠️ 只读 `s.log`，不写任何状态 ⇒ 与时间推进、存档都无关。
  */
-export function openLog(s) {
+export function openLog(s, onClose) {
   closePicker();
   const ov = document.getElementById('overlay');
   if (!ov) return;
@@ -1008,7 +1017,10 @@ export function openLog(s) {
   if (!list.childElementCount) list.append(el('div', 'log-row mut', '—'));
   box.append(list);
 
-  back.addEventListener('pointerdown', closePicker);
+  /* ⚠️ 关闭走**回调**而不是直接 `closePicker`（2026-09-29 需求 2）：`closePicker` 被选所 /
+     二次确认 / 切页多处共用，不能在它里面恢复时钟（关个选所弹层就解除暂停是错的）。
+     只有日志浮层这个入口知道要「关了就 1x 续跑」。 */
+  back.addEventListener('pointerdown', () => { closePicker(); if (onClose) onClose(); });
   ov.append(back, box);
   ov.hidden = false;
   picker = ov;
