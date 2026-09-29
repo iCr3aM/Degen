@@ -209,8 +209,21 @@ export const consumedOf = (s, sym) => (s.consumed ? s.consumed[sym] ?? 0 : 0);
 /** 日志上限：只留最近这些条，免得存档无限膨胀 */
 export const LOG_MAX = 60;
 
-/** 追加一条日志（新的在前） */
+/**
+ * 追加一条日志（新的在前）。
+ *
+ * ⚠️ **相邻同文案折叠**（2026-09-29 拍板）：若与最新一条的正文**完全相同**，只把它的时候戳
+ *    推到 `s.i`，不再新增一条。置灰键（如「杠杆 暂不可用 ｜ 该所此刻没有融资业务」）长期置灰，
+ *    连点十几次就会用同一句话刷满整格；折叠后「点了 12 次」在日志里就是一条，
+ *    且时间戳停在最后一次点击 —— 正是「只留最新一次的那条」。
+ *    只在**相邻**时折叠（中间夹了别的日志就各留一条），所以时间线不会被压平。
+ * ⚠️ 判据只用 `text`、**不含** `kind`：同一句话在不同入口可能一个 `info` 一个 `bad`
+ *    （如「现货做空 暂不可用」主入口是 `info`、引擎兜底是 `bad`），带上 kind 判就会漏合并。
+ * ⚠️ 结构零变化（仍是 `{at,text,kind}`）⇒ 不改 `STATE_VERSION`，老档照读。
+ */
 export function pushLog(s, text, kind = 'info') {
+  const head = s.log[0];
+  if (head && head.text === text) { head.at = s.i; return; }
   s.log.unshift({ at: s.i, text, kind });
   if (s.log.length > LOG_MAX) s.log.length = LOG_MAX;
 }

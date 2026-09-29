@@ -413,7 +413,9 @@ export function bindLiquidateHook(fn) { onLiquidate = fn || null; }
  * @param {number} k       那一 tick 在该小时细路径里的**段号**（`0 … N−1`）—— 只给「图上标致命针」用
  */
 function forceLiquidate(s, pos, atPrice, k) {
-  pushLog(s, `爆仓 ${pos.sym} ${pos.lev}x ｜ 保证金 ${fmtMoney(pos.margin)} 全部损失 @ ${atPrice.toFixed(4)}`, 'bad');
+  /* 串形与开仓 / 平仓对齐（2026-09-29）：`｜` 两侧不留白、金额走 `fmtMoneyShort`、
+     价格走 `showPrice`（原来这里单独用 `toFixed(4)`，`64000` 会写成 `64000.0000`，白吃 36px）。 */
+  pushLog(s, `爆仓 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)} 全部损失 @ ${showPrice(atPrice)}`, 'bad');
   s.realized -= pos.margin;
   delete s.positions[pos.sym];
   if (onLiquidate) onLiquidate(pos.sym, s.i, k);
@@ -503,8 +505,8 @@ export function switchExchange(s, id) {
   normalizeLeverage(s);                                // 新所的上限可能更低，夹取一次
 
   const add = bumpPulse(s, amount);                    // > 当日 BTC 流动性的 10% 才算大额
-  pushLog(s, `转账 → ${ex.name} ｜ ${fmtMoneyShort(amount)} ｜ ${congestionLabel(congestion)} · ${n} 小时后到账`
-    + (add ? ` ｜ 推高拥堵 +${add.toFixed(1)}` : ''), 'info');
+  pushLog(s, `转账 → ${ex.name}｜${fmtMoneyShort(amount)}｜${congestionLabel(congestion)} · ${n} 小时后到账`
+    + (add ? `｜推高拥堵 +${add.toFixed(1)}` : ''), 'info');
   return { ok: true };
 }
 
