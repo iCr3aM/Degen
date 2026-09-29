@@ -21,7 +21,7 @@ export const GAME = {
   end: Date.UTC(2025, 0, 1),
   /** 12 年 = 4383 天 = 105,192 根小时 K */
   candles: (Date.UTC(2025, 0, 1) - Date.UTC(2013, 0, 1)) / HOUR_MS,
-  /** 初始资金 $3,000 USDT */
+  /** 初始资金 $3,000 **USD（美元法币，不是 USDT）** —— 两格账本的口径见方案 §7 */
   cash: 3000,
   /** 开局资金放在哪家交易所（GDD §7.2：2013 年只有 Mt.Gox 一个选择） */
   ex: 'mtgox',
@@ -127,52 +127,65 @@ export const coinOf = sym => COINS.find(c => c.sym === sym) || null;
 /**
  * 四家交易所（GDD §7.1 / §7.2）—— 全是**史实里的真名**，玩家一眼能对上当年的新闻。
  *
- * 每家三个字段：
+ * 每家字段：
  *   - `open` / `close`：开业与归零时刻（`close: null` = 活到现在）。
  *     `close` 不只是「不能再用」的标记，还是**归零事件**的触发点（见 `engine.advanceOneHour`）：
  *     到点那一刻，该所余额清零、挂在该所的持仓一并作废。Mt.Gox 的 2014-02-25 就是本作最重的一记闷棍。
- *   - `steps`：杠杆上限阶梯，升序取「最后一个 `from <= t`」。**上限只随所选交易所**，不再按年份。
- *   - `fee`  ：吃单费率（单边），开仓与平仓各收一次。
+ *   - `spotSteps`：**现货融资**（margin）的杠杆上限阶梯，升序取「最后一个 `from <= t`」。
+ *   - `futSteps` ：**合约**（线性 USDT 本位永续）的杠杆上限阶梯；**`null` ＝ 该所永不提供合约**。
+ *   - `fee`      ：吃单费率（单边），开仓与平仓各收一次。
  *
- * 史实出处（2026-09-28 核实，勿再凭记忆改动）：
- *   Mt.Gox   2014-02-25 停止一切交易（本项目以这天为归零点），此前仅现货 1x
- *   Bitfinex 2013 年上线即 3.3x；2020-01-30 → 5x；2021-02-17 → 10x（均为官方公告）
- *   BitMEX   2014 年 3x；**2016-05-13 XBTUSD 永续上线才给到 100x**
+ * ⚠️ **两张表是两回事**（v9 · 方案 §15，2026-09-29 拍板）：史实上「现货融资上限」与「合约上限」
+ *    从来不是同一个数 —— Bitfinex 现货 3.3x / 合约 100x，BitMEX 没有现货 / 合约 100x。
+ *    改动前它们被混成一张 `steps`，于是 2013 年在 Mt.Gox 也能看到 100x 这种笑话。
+ *
+ * 史实出处（2026-09-29 二次核实，勿再凭记忆改动）：
+ *   Mt.Gox   2014-02-25 停止一切交易（本项目以这天为归零点），此前**仅现货 1x、无融资**
+ *   Bitfinex 现货 2013 年上线即 3.3x（＝初始保证金 30%）；2020-01-30 → 5x；2021-02-17 → 10x（官方公告）。
+ *            合约 **2019-09-02** 才上线（`BTCF0/USDt0`：USDT 抵押、逐仓、最高 100x）
+ *   BitMEX   没有现货（本作把它的现货抽象为 1x）；合约 **2016-05-13** `XBTUSD` 永续上线才给到 100x
  *            （2015-10 的 100x 属于季度交割合约，本作实现的是线性 USDT 本位永续，故挂在永续上线日）
- *   Binance  2017-07-14 上线，起初仅现货；2019-09-01 起提供 20x
+ *   Binance  2017-07-14 上线，起初仅现货 1x；2019-07-11 保证金交易上线（固定 3:1）。
+ *            合约 2019-09-01 上线，125x → 2021-07-19 起限 20x
+ *
+ * ⚠️ **所有合约上线日都在 USDT 发行（2014-11）之后** ⇒ 「合约保证金必须 USDT」堵不死玩家的路（§15.2）。
  */
 export const EXCHANGES = [
   {
     id: 'mtgox', name: 'Mt.Gox',
     open: Date.UTC(2013, 0, 1), close: Date.UTC(2014, 1, 25),
-    steps: [{ from: Date.UTC(2013, 0, 1), max: 1 }],
+    spotSteps: [{ from: Date.UTC(2013, 0, 1), max: 1 }],
+    futSteps: null,
     fee: 0.002,
   },
   {
     id: 'bitfinex', name: 'Bitfinex',
     open: Date.UTC(2013, 0, 1), close: null,
-    steps: [
+    spotSteps: [
       { from: Date.UTC(2013, 0, 1),  max: 3.3 },
       { from: Date.UTC(2020, 0, 30), max: 5 },
       { from: Date.UTC(2021, 1, 17), max: 10 },
     ],
+    futSteps: [{ from: Date.UTC(2019, 8, 2), max: 100 }],
     fee: 0.001,
   },
   {
     id: 'bitmex', name: 'BitMEX',
     open: Date.UTC(2014, 0, 1), close: null,
-    steps: [
-      { from: Date.UTC(2014, 0, 1),  max: 3 },
-      { from: Date.UTC(2016, 4, 13), max: 100 },
-    ],
+    spotSteps: [{ from: Date.UTC(2014, 0, 1), max: 1 }],
+    futSteps: [{ from: Date.UTC(2016, 4, 13), max: 100 }],
     fee: 0.0005,
   },
   {
     id: 'binance', name: 'Binance',
     open: Date.UTC(2017, 6, 14), close: null,
-    steps: [
+    spotSteps: [
       { from: Date.UTC(2017, 6, 14), max: 1 },
-      { from: Date.UTC(2019, 8, 1),  max: 20 },
+      { from: Date.UTC(2019, 6, 11), max: 3 },
+    ],
+    futSteps: [
+      { from: Date.UTC(2019, 8, 1),  max: 125 },
+      { from: Date.UTC(2021, 6, 19), max: 20 },
     ],
     fee: 0.0004,
   },
@@ -186,21 +199,42 @@ export function exchangesAt(t) {
   return EXCHANGES.filter(e => e.open <= t && (e.close == null || t < e.close));
 }
 
-/** 某一时刻、某家交易所的最高杠杆 */
-export function maxLeverageAt(t, exId) {
+/** 取某家交易所某一类的杠杆阶梯（`kind`：`'spot'` 现货融资 / `'fut'` 合约）；该所不提供时为 `null` */
+export const stepsOf = (ex, kind = 'spot') => (kind === 'fut' ? ex.futSteps : ex.spotSteps);
+
+/**
+ * 某家交易所**此刻**提不提供该类杠杆（v9 · §15.3 N3）—— 判据 = 阶梯存在且首档已生效。
+ * UI 用它决定那枚「现货 / 合约」模式键出不出现（＝「没有的选项不显示」）。
+ */
+export function hasLeverageKindAt(t, exId, kind = 'spot') {
+  const ex = exchangeOf(exId);
+  if (!ex) return false;
+  const steps = stepsOf(ex, kind);
+  return !!steps && steps.length > 0 && steps[0].from <= t;
+}
+
+/** 某一时刻、某家交易所、某一类的最高杠杆（该所不提供这一类时返回 1） */
+export function maxLeverageAt(t, exId, kind = 'spot') {
   const ex = exchangeOf(exId);
   if (!ex) return 1;
+  const steps = stepsOf(ex, kind);
+  if (!steps) return 1;
   let max = 1;
-  for (const s of ex.steps) { if (s.from <= t) max = s.max; else break; }
+  for (const s of steps) { if (s.from <= t) max = s.max; else break; }
   return max;
 }
 
-/** 可选杠杆档位：从 1 到当前上限，取这几个常用值（GDD §18.1 的杠杆选择器） */
-const LEV_LADDER = [1, 2, 3, 5, 10, 20, 50, 100];
+/**
+ * 可选杠杆档位：从 1 到当前上限，取这几个常用值（GDD §18.1 的杠杆选择器）。
+ * ⚠️ **`125` 必须在表里**：它是 Binance 合约的史实上限（§15.1），
+ *    而 `100` 是 BitMEX / Bitfinex 的上限 —— 少了 125，「上限补进」那条虽然也能凑出这一格，
+ *    但 125 与 100 之间就没有任何可选的中间档，档位表的语义会变得含糊。
+ */
+const LEV_LADDER = [1, 2, 3, 5, 10, 20, 50, 100, 125];
 
-/** 某一时刻、某家交易所可选的杠杆档位（1 与上限必在列表内） */
-export function leverageOptionsAt(t, exId) {
-  const max = maxLeverageAt(t, exId);
+/** 某一时刻、某家交易所、某一类可选的杠杆档位（1 与上限必在列表内） */
+export function leverageOptionsAt(t, exId, kind = 'spot') {
+  const max = maxLeverageAt(t, exId, kind);
   const out = LEV_LADDER.filter(v => v <= max);
   if (!out.includes(max)) out.push(max);   // 上限不是整数档时直接补进来（Bitfinex 史实 3.3x）
   if (!out.includes(1)) out.unshift(1);

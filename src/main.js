@@ -8,14 +8,14 @@
  */
 
 import { GAME, HOUR_MS, maxLeverageAt } from './core/config.js';
-import { createState, heldSyms, pushLog } from './core/state.js';
+import { createState, heldSyms, posOf, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource } from './core/market.js';
-import { createClock, chanOf, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook } from './core/engine.js';
+import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { enableGod, factorFor } from './core/god.js';
 import { fmtMoney } from './core/format.js';
-import { marginRateOf, isSpot } from './core/positions.js';
+import { canLiquidate, marginRateOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openGod, showPage,
@@ -195,10 +195,12 @@ function soundFromTick(s) {
   }
 
   /* 保证金率跌破 5%：**进入**那一刻响一次，回到安全区后重置（不然每帧都在响）。
-     与持仓条第三格同一个判据（`rate < 0.05` 转红），现货没有维持保证金率这一说，跳过。 */
+     与持仓条第三格同一个判据（`rate < 0.05` 转红）。
+     ⚠️ 不可强平的仓位（现货 1x）没有维持保证金率这一说，跳过 —— 判据统一走 `canLiquidate`
+        （v9 · §15.4：现货带杠杆后 1x 以外也能强平，`isSpot` 已经不回答这个问题）。 */
   for (const sym of heldSyms(s)) {
     const pos = s.positions[sym];
-    if (isSpot(pos)) { warnedSyms.delete(sym); continue; }
+    if (!canLiquidate(pos)) { warnedSyms.delete(sym); continue; }
     const mark = markPrice(s, sym);
     const rate = mark == null ? 1 : marginRateOf(pos, mark);
     if (rate < 0.05) {
@@ -262,7 +264,8 @@ function dispatch(node) {
 
   /* 通用轻点反馈（Batch 4 · B20）—— 除了**成交 / 重开**这两类有专属音的动作，其余键都响这一声。
      逻辑：一次点击最多响一次，任何时刻都不会叠。 */
-  if (d.act !== 'long' && d.act !== 'short' && d.act !== 'close' && d.reset === undefined) snd.tap();
+  if (d.act !== 'long' && d.act !== 'short' && d.act !== 'close'
+    && d.buy === undefined && d.sell === undefined && d.reset === undefined) snd.tap();
 
   if (d.intro !== undefined) return onIntro();
   if (d.loan !== undefined) return onLoan(d.loan);
@@ -306,16 +309,23 @@ function dispatch(node) {
        他切回盘口时那个杠杆还在，不必重新点一遍（Batch 5 的 `数据不擅自改` 口径）。 */
     if (chanOf(s) === 'otc') { pushLog(s, 'OTC 通道只有现货，杠杆固定 1x', 'info'); after(); return; }
     const want = Number(d.lev);
-    s.lev = Math.max(1, Math.min(want, maxLeverageAt(timeOf(s), s.ex)));
+    /* 上限取**本单走的那张表**（§15.1）—— 现货档位与合约档位是两套数，不能拿一张去夹另一张。 */
+    s.lev = Math.max(1, Math.min(want, maxLeverageAt(timeOf(s), s.ex, levKind(s))));
     after();
     return;
   }
   if (d.speed !== undefined) { s.speed = Number(d.speed); after(); return; }
-  /* 模式切换（U1 · ROADMAP §21.4）：现货 ⇄ 合约。只影响**「1x 做多」**这一种组合 ——
-     做空与 ≥2x 恒为合约，OTC 通道恒为现货，都与它无关（见 `engine.spotOf`）。
-     ⚠️ `data-mode2`（操作区那枚模式键），不是 `data-mode`（那是 K 线粒度小字）。 */
+  /* 模式切换（U1 · ROADMAP §21.4；v9 · §15.6 N3）：现货 ⇄ 合约。它决定的是**整张杠杆表**
+     与**整行动作键的字面**（现货＝买入/卖出、合约＝做多/做空/平仓），见 `engine.spotOf` / `levKind`。
+     ⚠️ `data-mode2`（操作区那枚模式键），不是 `data-mode`（那是 K 线粒度小字）。
+     ⚠️ 该所此刻**没有合约**时这枚键根本不显示，但**状态机不靠 DOM 兜底**（同 `onChan`）：
+        少了这一行，`s.mode` 就会切到一张不存在的杠杆表上。 */
   if (d.mode2 !== undefined) {
+    if (!futuresAvailable(s)) return;
     s.mode = s.mode === 'spot' ? 'fut' : 'spot';
+    /* 切模式后重新夹取杠杆：两张表的上限不同（如 Binance 现货 3x / 合约 125x），
+       不夹的话从合约切回现货会带着一个现货拿不到的档位（`engine.normalizeLeverage` 顺带兜住模式）。 */
+    normalizeLeverage(s);
     after();
     return;
   }
@@ -333,6 +343,28 @@ function dispatch(node) {
   if (d.restart !== undefined) return doRestart();
   if (d.wipe !== undefined) return onWipe();
 
+  /* 现货模式那两枚动作键（v9 · §15.3 N4）：**买入＝借 U 做多、卖出＝借币做空**。
+     ⚠️ 反向那一枚**自己承担平仓**（现货模式没有独立的「平仓」键）：
+          空仓 ⇒ 开仓；持有反向仓 ⇒ 平掉它；持有同向仓 ⇒ 什么都不做。
+        同向那一格在渲染层本来就是禁用的，这里再挡一次是「状态机不靠 DOM 兜底」（同 `onChan`）。
+     ⚠️ 合约模式下这两枚不显示，同样挡一次 —— 否则会从一个不该存在的入口开出一张合约单。 */
+  if (d.buy !== undefined || d.sell !== undefined) {
+    if (s.mode === 'fut' && futuresAvailable(s)) return;
+    const side = d.buy !== undefined ? 'long' : 'short';
+    const pos = posOf(s, s.sym);
+    if (!pos) {
+      const r = openTrade(s, side, s.sizeFrac);
+      if (!r.ok) pushLog(s, r.why, 'bad');
+      else snd.open();
+    } else if (pos.side !== side) {
+      /* `why` 写玩家按下的那枚键：平多＝卖出（卖出手上的币）、平空＝买回（买回借出的币） */
+      const r = closeTrade(s, side === 'long' ? '买回' : '卖出');
+      if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
+      else snd.close();
+    }
+    after();
+    return;
+  }
   if (d.act === 'long' || d.act === 'short') {
     const r = openTrade(s, d.act, s.sizeFrac);
     if (!r.ok) pushLog(s, r.why, 'bad');

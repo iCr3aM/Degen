@@ -13,8 +13,8 @@
 
 import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
 import { fmtDate, fmtHour, fmtMoney, fmtPct, fmtRate } from '../core/format.js';
-import { available, chanOf, equity, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
-import { isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
+import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
+import { canLiquidate, isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
 import { isLoaded, rangeOf, candleAt, rawCloseAt, HOURS_PER_DAY } from '../core/market.js';
 import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { anchorAt, anchorsInRange } from '../core/anchors.js';
@@ -174,9 +174,12 @@ export function mount(root) {
     fracRow.append(b);
     fracBtns.set(String(f), b);
   }
-  /* 模式键（U1 · ROADMAP §21.4）：铺在**「金额」行末尾**（用户裁决 —— 不新增行，保住 431px 固定块）。
+  /* 模式键（U1 · ROADMAP §21.4；v9 · §15.6 N3 加条件）：铺在**「金额」行末尾**
+     （用户裁决 —— 不新增行，保住 431px 固定块）。
      与通道键 / 粒度小字同一约定：**字面即现状**（显示「现货」就是现货模式）。
-     它只决定「1x 做多」的语义 —— 做空与 ≥2x 恒为合约，OTC 通道恒为现货，都与它无关。 */
+     ⚠️ v9 起它决定的是**整张杠杆表 ＋ 整行动作键的字面**（现货＝买入/卖出、合约＝做多/做空/平仓），
+        不再是「只影响 1x 做多」那一个小开关。
+     ⚠️ 该所此刻**没有合约**时整枚不出现（`futuresAvailable`）——「没有的选项不显示」。 */
   const tradeModeBtn = el('button', 'opt', '现货');
   tradeModeBtn.dataset.mode2 = 'toggle';
   fracRow.append(tradeModeBtn);
@@ -201,6 +204,15 @@ export function mount(root) {
   shortBtn.dataset.act = 'short';
   const closeBtn = el('button', 'act flat', '平仓');
   closeBtn.dataset.act = 'close';
+  /* 现货模式那两枚（v9 · §15.3 N4）：借 U 买入＝多、借币卖出＝空。
+     ⚠️ 「卖出」**同时是平多**（现货模式没有独立的「平仓」键）—— 反向那一枚自己承担平仓：
+        手上没有仓位时它是开仓，持有反向仓时它是平仓（分派逻辑见 `main.js` 的 `d.buy` / `d.sell`）。
+     ⚠️ 与 做多/做空/平仓 **互斥显示**：模式一变，这五枚里只留三枚（「没有的选项不显示」）。
+        两组在 DOM 里的顺序已经排好，隐藏一组不会打乱剩下那组的次序。 */
+  const buyBtn = el('button', 'act long', '买入');
+  buyBtn.dataset.buy = '';
+  const sellBtn = el('button', 'act short', '卖出');
+  sellBtn.dataset.sell = '';
   /* 通道切换键（P2-B3 · GDD §15.3）：铺在底行最左。字面是**当前**通道，点一下切到另一种 ——
      与 K 线左上角那枚粒度小字同一约定，全屏只有一套「字面即现状」的切法。
      它是四枚里唯一的**方框**（其余三枚是实心块）：它不是「一次成交」，是「换一条成交路径」。
@@ -209,7 +221,7 @@ export function mount(root) {
   const chanBtn = el('button', 'act chan', '盘口');
   chanBtn.dataset.chan = 'toggle';
   const actRow = el('div', 'row');
-  actRow.append(chanBtn, longBtn, shortBtn, closeBtn);
+  actRow.append(chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn);
 
   const trade = el('div', 'trade');
   trade.append(fracRow, levRow, spdRow, actRow);
@@ -280,7 +292,7 @@ export function mount(root) {
     posbar, posSide, posPnl, posRate,
     logline, newsTag, logText,
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
-    chanBtn, longBtn, shortBtn, closeBtn,
+    chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asTotal, asNote, asList,
     sndBtn, impBtn,
     _levSignature: '',
@@ -424,9 +436,13 @@ export function update(refs, s, view) {
   /* 持仓条：只显示当前所选币；**无持仓也常驻**（三格填 `--`），见 mount() 的注释 */
   if (cur) {
     const p = cur;
-    const spot = isSpot(p);
     const posMark = markPrice(s, p.sym);
-    refs.posSide.textContent = spot ? `${p.sym} 现货` : `${p.sym} ${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
+    refs.posSide.textContent = isSpot(p)
+      /* 字面（v9 · §15.6 N4）：现货写「买入 / 卖出 Nx」—— 与操作区那两枚键一一对应。
+         原来这里笼统写「现货」两个字，是因为现货恒为 1x 做多；§15.6 N2 起现货**也带杠杆、
+         也能做空**，光写「现货」就说不清方向与倍数了。 */
+      ? `${p.sym} ${p.side === 'long' ? '买入' : '卖出'} ${p.lev}x`
+      : `${p.sym} ${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
     refs.posSide.className = 'num ' + (p.side === 'long' ? 'side-long' : 'side-short');
     const pnl = unrealizedOf(s, p.sym);
     refs.posPnl.textContent = fmtMoney(pnl, { sign: true });
@@ -434,8 +450,9 @@ export function update(refs, s, view) {
     /* 第三格**只剩保证金率**（Batch 2 · B9，2026-09-29）：原来这里是「保证金率 / 强平价」，
        格宽只有 1/3 屏，两个数一串必然被 `text-overflow` 截掉尾巴（用户实机发现）。
        强平价已搬到 K 线的开仓线左端标签，这一格终于能完整放下一个数。
-       现货（1x 做多）没有维持保证金率这一说 —— 只有币价归零才归零本金（GDD §9.1），填 `--`。 */
-    if (spot) {
+       现货 **1x** 没有维持保证金率这一说 —— 只有币价归零才归零本金（GDD §9.1），填 `--`。
+       ⚠️ v9（§15.3 N5）：判据从「是不是现货」换成 `canLiquidate` —— 现货**杠杆**仓照样有强平线。 */
+    if (!canLiquidate(p)) {
       refs.posRate.textContent = '--';
       refs.posRate.className = 'num mut';
     } else {
@@ -478,15 +495,30 @@ export function update(refs, s, view) {
   /* 金额档 */
   for (const [k, b] of refs.fracBtns) b.classList.toggle('on', Math.abs(s.sizeFrac - Number(k)) < 1e-9);
 
-  /* 模式键（U1 · §21.4）：字面是**当前**模式。`合约` 时走 `.on` —— 与通道键同一约定：
-     偏离默认态（现货）才高亮，让玩家一眼看见「我这一单是合约」。 */
-  const fut = s.mode !== 'spot';
+  /* 模式键（U1 · §21.4；v9 · §15.6 N3）：字面是**当前**模式。`合约` 时走 `.on` ——
+     与通道键同一约定：偏离默认态（现货）才高亮，让玩家一眼看见「我这一单是合约」。
+     ⚠️ **该所此刻没有合约时整枚不出现**，且一切按现货处理。
+        `s.mode` 的回退在 `engine.normalizeLeverage` 里做 —— 渲染层**只读不写**状态。 */
+  const futAvail = futuresAvailable(s);
+  const fut = futAvail && s.mode !== 'spot';
+  refs.tradeModeBtn.hidden = !futAvail;
   refs.tradeModeBtn.textContent = fut ? '合约' : '现货';
   refs.tradeModeBtn.classList.toggle('on', fut);
 
-  /* 杠杆档：可选档位随「时间 + 所选交易所」变化，签名变了才重建按钮 */
-  const opts = leverageOptionsAt(now, s.ex);
-  const sig = opts.join(',') + '#' + s.lev;
+  /* 动作行（v9 · §15.3 N4）：「没有的选项不显示」——
+     现货三枚（盘口 / 买入 / 卖出）、合约四枚（盘口 / 做多 / 做空 / 平仓），两组互斥。 */
+  const spotMode = !fut;
+  refs.buyBtn.hidden = !spotMode;
+  refs.sellBtn.hidden = !spotMode;
+  refs.longBtn.hidden = spotMode;
+  refs.shortBtn.hidden = spotMode;
+  refs.closeBtn.hidden = spotMode;
+
+  /* 杠杆档：可选档位随「时间 ＋ 所选交易所 ＋ 模式」变化，签名变了才重建按钮。
+     ⚠️ v9：两张表的上限不同（§15.1），切模式必须换一张 —— 所以 `kind` 要进签名。 */
+  const kind = fut ? 'fut' : 'spot';
+  const opts = leverageOptionsAt(now, s.ex, kind);
+  const sig = kind + ':' + opts.join(',') + '#' + s.lev;
   if (sig !== refs._levSignature) {
     refs._levSignature = sig;
     refs.levRow.querySelectorAll('.opt').forEach(n => n.remove());
@@ -503,12 +535,18 @@ export function update(refs, s, view) {
   /* 速度档 */
   for (const [v, b] of refs.spdBtns) b.classList.toggle('on', s.speed === v);
 
-  /* 主按钮可用性：做多/做空看「当前币还没仓位」，平仓看「当前币有仓位」。
-     `lockedUI`（结束 / 待借贷决策）下一律不可用 —— 待决态只留遮罩上那两枚按钮。 */
-  const canTrade = !lockedUI && !cur && mark != null && isLoaded(sym);
-  refs.longBtn.disabled = !canTrade;
-  refs.shortBtn.disabled = !canTrade;
+  /* 主按钮可用性。
+     ⚠️ `lockedUI`（结束 / 待借贷决策）下一律不可用 —— 待决态只留遮罩上那两枚按钮。
+     · 合约模式：做多 / 做空看「当前币还没仓位」，平仓看「当前币有仓位」（现状不变）
+     · 现货模式（v9）：买入 / 卖出 **手上有仓位时也照样可用** —— 反向那一枚就是平仓；
+       同向那一枚禁掉（同一个币只许一条仓位，让它点出「已有持仓」的错误日志没有意义）。 */
+  const tradable = !lockedUI && mark != null && isLoaded(sym);
+  const dir = cur ? cur.side : null;
+  refs.longBtn.disabled = !(tradable && !cur);
+  refs.shortBtn.disabled = !(tradable && !cur);
   refs.closeBtn.disabled = !cur || lockedUI;
+  refs.buyBtn.disabled = !(tradable && dir !== 'long');
+  refs.sellBtn.disabled = !(tradable && dir !== 'short');
 
   /* 通道切换键**三级状态**（P2-B 修订 · GDD §15.3）：
        ① 权益 ≤ $500 万 ⇒ `hidden` —— 一个 $3,000 开局的玩家不该看见自己用不了的东西
@@ -596,8 +634,8 @@ function syncChart(refs, s, view, sym, cur, mark) {
     mark,
     entry: cur ? cur.entry : null,
     side: cur ? cur.side : null,
-    /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。现货没有强平价 ⇒ 传 null。 */
-    liq: cur && !isSpot(cur) ? liquidationPrice(cur) : null,
+    /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。现货 1x 没有强平价 ⇒ 传 null。 */
+    liq: cur && canLiquidate(cur) ? liquidationPrice(cur) : null,
     cssW: view.chartW,
     cssH: view.chartH,
     yPx: win.yPx,
@@ -637,7 +675,8 @@ function posListSignature(s) {
  * 按**现货 / 合约**分组列出全部持仓（§6.2 ④）—— 用途是**跨币复盘**：
  * 一行一个币，「方向 ＋ 杠杆」在左、未实现盈亏在右。
  * ⚠️ 与交易页那条持仓条不是重复（§14.7）：那条只看当前币、承担「风险仪表」的职责。
- * ⚠️ 现货恒为「1x 做多」（U1），所以组内不再重复写方向，只写 `1x`。
+ * ⚠️ 组内写「方向 ＋ 倍数」：合约写 `多 20x` / `空 5x`，现货写 `买入 3.3x` / `卖出 2x`
+ *    （v9 · §15.6 N4 —— 现货从 §15.6 起也带杠杆、也能做空，不再恒为「1x 做多」）。
  */
 function buildPosList(box, s) {
   box.textContent = '';
@@ -660,7 +699,9 @@ function buildPosList(box, s) {
       const row = el('div', 'prow');
       row.append(
         el('b', null, sym),
-        el('span', 'mut', isSpot(p) ? '1x' : `${p.side === 'long' ? '多' : '空'} ${p.lev}x`),
+        el('span', 'mut', isSpot(p)
+          ? `${p.side === 'long' ? '买入' : '卖出'} ${p.lev}x`
+          : `${p.side === 'long' ? '多' : '空'} ${p.lev}x`),
         el('b', 'num ' + (pnl >= 0 ? 'up' : 'down'), fmtMoney(pnl, { sign: true })),
       );
       card.append(row);

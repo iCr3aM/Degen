@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf } from './config.js';
+import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, hasLeverageKindAt, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
@@ -20,7 +20,7 @@ import { SHOCK, addFlow, residualOfSide } from './god.js';
 import { fmtMoney, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, openPosition, pnlOf,
-  FUNDING, fundingOf, fundingRateOf,
+  FUNDING, fundingOf, fundingRateOf, canLiquidate, paysFunding,
 } from './positions.js';
 import { cashOf, capturedOf, heldSyms, posOf, pushLog } from './state.js';
 import { pathOf } from './simulate.js';
@@ -224,17 +224,22 @@ const showPrice = v => Number(v.toPrecision(8));
 /* ───────────────────────────── 交易动作 ───────────────────────────── */
 
 /**
- * 这笔开仓是不是**现货**（U1 · ROADMAP §21.4）—— 开仓那一刻算一次，写进仓位后**固定不变**。
+ * 这笔开仓是不是**现货**（U1 · ROADMAP §21.4；v9 · §15.6 N2/N4 改判）——
+ * 开仓那一刻算一次，写进仓位后**固定不变**。
  *
- * 规则（三件事，缺一不可）：
+ * 规则（两件事，与 `side` / `lev` 无关）：
  *   - **OTC 通道恒为现货**（§15.3：私下一口价买现货，与模式无关）；
- *   - 否则看 `s.mode`：只有 `'spot'` **且**「1x 做多」才是现货 ⇒ `'fut'` 下的 1x 做多也是合约（付资金费、有强平价）；
- *   - **做空与任何 ≥2x 恒为合约** —— 它们本来就需要维持保证金，与本开关无关。
+ *   - 否则**只看模式**：`'spot'` ⇒ 现货、`'fut'` ⇒ 合约。
  *
- * ⚠️ 改动前这里是 `side === 'long' && lev === 1`（纯规则）。默认 `s.mode = 'spot'` 时，
- *    本式子与旧式**逐值等价** ⇒ 不点那枚「模式」键的玩家，开局观感与旧版一字不变。
+ * ⚠️ 改动前它还要附加「1x 做多」这两个条件（`s.mode === 'spot' && side === 'long' && lev === 1`），
+ *    §15.6 N2 起**现货也带杠杆与做空** ⇒ 那两条整条作废 ——
+ *    Bitfinex 2013 年开的 3.3x 空单从此是**现货融资**（不付资金费、但照样有强平线），不是合约。
  */
-const spotOf = (s, side, lev, otc) => !!otc || (s.mode === 'spot' && side === 'long' && lev === 1);
+const spotOf = (s, otc) => !!otc || s.mode !== 'fut';
+
+/** 本单走哪张杠杆表（§15.1 的两张表）：合约走 `'fut'`，其余一律走 `'spot'`（现货融资）。
+ *  ⚠️ 导出给 `main.js` 那枚杠杆键用（§15.6）—— 两处各写一遍迟早会不一致。 */
+export const levKind = s => (s.mode === 'fut' ? 'fut' : 'spot');
 
 /**
  * 按比例下单。`frac` 是「用掉多少可用保证金」，对应操作区的 1/4 · 1/2 · 全部。
@@ -260,7 +265,7 @@ export function openTrade(s, side, frac = 1) {
   if (!(price > 0)) return { ok: false, why: '当前没有可成交的价格' };
 
   // 杠杆上限与费率都取**玩家当前所在的交易所**（GDD §7.1）。OTC 一律 1x（= 现货）
-  const lev = otc ? 1 : Math.max(1, Math.min(s.lev, maxLeverageAt(timeOf(s), s.ex)));
+  const lev = otc ? 1 : Math.max(1, Math.min(s.lev, maxLeverageAt(timeOf(s), s.ex, levKind(s))));
   const feeRate = feeRateOf(s.ex);
   const cash = cashOf(s);
 
@@ -300,7 +305,8 @@ export function openTrade(s, side, frac = 1) {
   s.realized -= fee;
   s.lev = lev;
 
-  const pos = openPosition(s.sym, side, fill, margin, lev, feeRate, spotOf(s, side, lev, otc));
+  const spot = spotOf(s, otc);
+  const pos = openPosition(s.sym, side, fill, margin, lev, feeRate, spot);
   pos.i = s.i;
   pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
   pos.openFee = fee;
@@ -314,7 +320,10 @@ export function openTrade(s, side, frac = 1) {
   /* 笔数（C8-B1）：同一份代价，报出它相当于拆成了几笔。OTC 是私下一口价、不吃滑点 ⇒ 不报。 */
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(s.sym, s.i), cost);
   const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
-  pushLog(s, `${side === 'long' ? '做多' : '做空'} ${s.sym} ${lev}x ｜ 保证金 ${fmtMoney(margin)} @ ${showPrice(fill)}${tag}`, side === 'long' ? 'long' : 'short');
+  /* 字面跟着模式走（v9 · §15.6 N4「没有的选项不显示」的同一条口径）：现货模式的操作键是
+     **买入 / 卖出**，日志若还写「做多 / 做空」，就与玩家刚按下的那枚键对不上了。 */
+  const verb = spot ? (side === 'long' ? '买入' : '卖出') : (side === 'long' ? '做多' : '做空');
+  pushLog(s, `${verb} ${s.sym} ${lev}x ｜ 保证金 ${fmtMoney(margin)} @ ${showPrice(fill)}${tag}`, side === 'long' ? 'long' : 'short');
 
   /* 订单冲击（方案 §2.6）：把这次成交代价的**永久部分**（Almgren–Chriss 的 γQ，实证 35%）
      沉淀成行情位移 —— 从此处起价格上/下一个台阶，再按 Bouchaud 幂律慢慢回爬。
@@ -734,7 +743,7 @@ function settleFunding(s) {
   let gross = 0;            // 参与结算的名义价值之和（用来把净额折算回一个综合费率）
   for (const sym of syms) {
     const pos = s.positions[sym];
-    if (isSpot(pos)) continue;                       // 现货不参与资金费率
+    if (!paysFunding(pos)) continue;                 // 现货不参与资金费率（§15.3 N5）
 
     const mark = markPrice(s, sym);
     if (!(mark > 0)) continue;
@@ -768,13 +777,15 @@ function settleFunding(s) {
 
 /**
  * 逐仓强平：每个仓位各自用**当根 K 线的高低点**判定（见文件头注释）。
- * 现货仓位（1x 做多）跳过 —— 它只有币价归零才归零本金，不因 0.5% 维持线被强平（GDD §9.1）。
+ * 现货仓位跳过 —— 只有币价归零才归零本金，不因 0.5% 维持线被强平（GDD §9.1）。
+ * ⚠️ v9（§15.3 N5）：判据从「是不是现货」换成 `canLiquidate` —— 现货从 §15.6 起**也带杠杆**，
+ *    而「借来的钱要还」⇒ **现货杠杆仓照样强平**，只有现货 1x 才是那个无强平的特例。
  * @returns {boolean} 是否因此结束了本局
  */
 function liquidateAll(s) {
   for (const sym of heldSyms(s)) {
     const pos = s.positions[sym];
-    if (isSpot(pos)) continue;
+    if (!canLiquidate(pos)) continue;
 
     const c = candleAt(sym, s.i);
     if (!c) continue;
@@ -870,12 +881,26 @@ export function createClock(s, cb) {
 
 /* ───────────────────────────── 便捷查询 ───────────────────────────── */
 
-/** 当前可用杠杆档位随「时间 + 所选交易所」变化，切换币种 / 换所 / 走时间后都要夹取一次 */
+/**
+ * 当前可用杠杆档位随「时间 ＋ 所选交易所 ＋ 模式」变化，
+ * 切换币种 / 换所 / 走时间 / 切模式后都要夹取一次。
+ *
+ * ⚠️ v9（§15.6 N3）：**该所此刻没有合约时，模式强制退回现货** —— 否则玩家会带着 `'fut'`
+ *    停在一家根本不提供合约的交易所上：模式键已经藏起来了，单子却还在按合约口径下。
+ * ⚠️ 夹取必须用**当前模式那一张表**（§15.1）：从 125x 的合约切回现货，杠杆必须掉到现货上限。
+ */
 export function normalizeLeverage(s) {
-  const max = maxLeverageAt(timeOf(s), s.ex);
+  if (!futuresAvailable(s)) s.mode = 'spot';
+  const max = maxLeverageAt(timeOf(s), s.ex, levKind(s));
   if (s.lev > max) s.lev = max;
   if (s.lev < 1) s.lev = 1;
 }
+
+/**
+ * 当前所**此刻**有没有合约（v9 · §15.3 N3）—— UI 用它决定那枚「现货 / 合约」模式键出不出现。
+ * 判据 = 该所 `futSteps` 非 `null` **且**首档已生效（`config.hasLeverageKindAt`）。
+ */
+export const futuresAvailable = s => hasLeverageKindAt(timeOf(s), s.ex, 'fut');
 
 /** 某个币此刻能不能交易（已解锁 + 数据已加载） */
 export function tradable(s, sym) {

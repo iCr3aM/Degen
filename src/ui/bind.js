@@ -24,8 +24,9 @@ export const ACTION_KEYS = [
      ⚠️ 原来的 `godmult` `godscale` `godreset` 三枚已随上帝模式瘦身整体删除（2026-09-29）。 */
   'god', 'impact', 'godcash', 'goddate', 'godoff',
   /* U1（ROADMAP §21.4）：`mode2`（操作区「金额」行末尾那枚「现货 / 合约」模式键）。
-     ⚠️ 用 `mode2` 而不是 `mode` —— `mode` 已被 K 线左上角那枚**粒度**小字占用（`main.js` 的 `d.mode`）。 */
-  'mode2',
+     ⚠️ 用 `mode2` 而不是 `mode` —— `mode` 已被 K 线左上角那枚**粒度**小字占用（`main.js` 的 `d.mode`）。
+     v9（§15.3 N4）：`buy` / `sell` ＝ 现货模式那两枚动作键（借 U 买入 / 借币卖出）。 */
+  'mode2', 'buy', 'sell',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');
