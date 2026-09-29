@@ -92,3 +92,36 @@ export function impactOf(q, sigma) {
 export function fillPrice(price, dir, impact) {
   return dir > 0 ? price * (1 + impact) : price * (1 - impact);
 }
+
+/* ──────────────────── 合成盘口（C8-B1 · ROADMAP §二十六） ──────────────────── */
+
+/**
+ * 子单切分的两个常数（C8-B1 · 2026-09-29 拍板「按名义份额摊」）。
+ *
+ * 真 L2 深度数据已被判死（`ROADMAP.MD` §24.10）⇒ 盘口**只能在内存里现算**
+ * （红线 B：不改数据包、不加后端、不进存档）。
+ *
+ * ⚠️ **红线 A · 不双重计价**：这两个常数**只决定「报几笔」**，绝不参与任何价格计算 ——
+ *    成交价仍然只由 `impactOf` ＋ `fillPrice` 一处算出，拆解结果不回头再改一次价。
+ */
+export const BOOK = {
+  sliceShare: 0.03,   // 一张子单不超过「当时流动性」的 3%
+  maxTranches: 8,     // 一张市价单最多报成几笔
+};
+
+/**
+ * 这张市价单**相当于**被拆成了几笔。
+ *
+ * 为什么不用「代价 ÷ 一个 tick」来数：滑点的自变量是 `q = 名义 ÷ 当时流动性`，而 q 的可用区间
+ * 被 `SLIP.threshold`（10%）与 `SLIP.cap`（25%）夹成一条窄带 ⇒ 按代价数出来的笔数
+ * **恒等于上限**（实测最小冲击 1.27% ÷ 1bp = 127 档，永远顶格），那只是噪声而不是颗粒度。
+ * 按名义份额数才有区分度：q = 0.10 ⇒ 4 笔、0.15 ⇒ 5 笔、0.24 ⇒ 8 笔。
+ *
+ * @param {number} q    本次成交名义 ÷ 当时流动性（分母与 `impactFor` 同一处，见 `hourShareK`）
+ * @param {number} cost 本次成交的代价（`impactOf` 的结果）—— 为 0 时没有笔数可报
+ * @returns {number} 1 ~ `BOOK.maxTranches`
+ */
+export function bookFills(q, cost) {
+  if (!(cost > 0) || !(q > 0)) return 1;
+  return Math.min(BOOK.maxTranches, Math.ceil(q / BOOK.sliceShare));
+}

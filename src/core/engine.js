@@ -15,7 +15,7 @@
 import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
-import { SLIP, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
+import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow } from './god.js';
 import { fmtMoney, fmtRate } from './format.js';
 import {
@@ -150,19 +150,32 @@ function dailySigma(sym, i) {
 }
 
 /**
- * 一次成交的冲击（0 = 不触发）。
- * ⚠️ **取不到当日流动性就不触发** —— 数据还没加载完 / 该币那天还没上线时，不凭空造一个冲击出来。
+ * 该小时的流动性分母 ＝ `liqOf(当天) × hourShareK(该小时份额, 当天份额和, 当天小时数)`。
  *
- * 分母（C2，2026-09-29 拍板）：`liqOf(当天) × hourShareK(该小时份额, 当天份额和, 当天小时数)`。
- * 完整交易日里系数 = 24 × share，其**当日均值恰为 1** ⇒ 一天下来的平均行为与「只用日流动性」
- * **完全一致**（`A` / `threshold` / `cap` 无需重校），只是薄盘时段更痛、活跃时段更轻。
+ * 分母口径（C2，2026-09-29 拍板）：完整交易日里系数 = 24 × share，其**当日均值恰为 1**
+ * ⇒ 一天下来的平均行为与「只用日流动性」**完全一致**（`A` / `threshold` / `cap` 无需重校），
+ * 只是薄盘时段更痛、活跃时段更轻。
+ *
+ * ⚠️ 抽成独立函数是因为 **C8-B1 数子单笔数也要用它**（`q = 名义 ÷ 本值`）——
+ *    笔数与滑点必须共用同一处口径，否则两者会各说各话。
+ * @returns {number} 分母；取不到当日流动性时返回 0
  */
-function impactFor(sym, i, notional) {
+function hourLiqOf(sym, i) {
   const day = dayIndexOf(i);
   const liq = liqOf(sym, day);
-  if (!(liq > 0) || !(notional > 0)) return 0;
+  if (!(liq > 0)) return 0;
   const { sum, n } = dayVolShare(sym, day);
-  return impactOf(notional / (liq * hourShareK(volumeAt(sym, i), sum, n)), dailySigma(sym, i));
+  return liq * hourShareK(volumeAt(sym, i), sum, n);
+}
+
+/**
+ * 一次成交的冲击（0 = 不触发）。
+ * ⚠️ **取不到当日流动性就不触发** —— 数据还没加载完 / 该币那天还没上线时，不凭空造一个冲击出来。
+ */
+function impactFor(sym, i, notional) {
+  const liq = hourLiqOf(sym, i);
+  if (!(liq > 0) || !(notional > 0)) return 0;
+  return impactOf(notional / liq, dailySigma(sym, i));
 }
 
 /* 日内份额的缓存：键 = `sym|day`，值 = { sum, n }（当天**已上线**小时的份额和与小时数）。
@@ -186,8 +199,13 @@ function dayVolShare(sym, day) {
   return out;
 }
 
-/** 日志尾巴：触发了才追加，没触发的一个字符都不加 */
-const slipTag = impact => (impact > 0 ? ` ｜ 滑点 ${fmtRate(impact, 2)}` : '');
+/**
+ * 日志尾巴：触发了才追加，没触发的一个字符都不加。
+ * C8-B1（2026-09-29）：触发时再带上「这笔单相当于拆成几笔」——
+ * 它只改这一行字，**成交价一个字节都没动**（红线 A · 不双重计价）。
+ */
+const slipTag = (impact, count = 1) =>
+  impact > 0 ? ` ｜ 滑点 ${fmtRate(impact, 2)}${count > 1 ? ` · ${count} 笔` : ''}` : '';
 
 /**
  * 一次 OTC 成交的溢价（P2-B 修订 · §15.3）。
@@ -248,7 +266,8 @@ export function openTrade(s, side, frac = 1) {
      代价有两种，同一时刻只有一种成立：盘口是平方根冲击、OTC 是「基准点差 × 市况倍数」（不吃滑点）。
      ⚠️ 保证金与开仓费都不受它影响（那两项按名义价值算，与成交价无关），
         受影响的是 `size`：买贵了就拿到的币少一点，这才是代价的真实形态。 */
-  const cost = otc ? otcPremiumFor(s, s.sym) : impactFor(s.sym, s.i, margin * lev);
+  const notional = margin * lev;
+  const cost = otc ? otcPremiumFor(s, s.sym) : impactFor(s.sym, s.i, notional);
   const fill = fillPrice(price, side === 'long' ? 1 : -1, cost);
 
   /* 供应量上限（P2-B2 · §15.1 / §15.4）：买入会从市场里锁走一部分币，锁走的枚数不得越界。
@@ -275,7 +294,9 @@ export function openTrade(s, side, frac = 1) {
   if (otc) pos.otc = true;          // 只给 OTC 仓位打标（`capturedOf` 见到它就跳过）
   s.positions[s.sym] = pos;
 
-  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost);
+  /* 笔数（C8-B1）：同一份代价，报出它相当于拆成了几笔。OTC 是私下一口价、不吃滑点 ⇒ 不报。 */
+  const fills = otc ? 1 : bookFills(notional / hourLiqOf(s.sym, s.i), cost);
+  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
   pushLog(s, `${side === 'long' ? '做多' : '做空'} ${s.sym} ${lev}x ｜ 保证金 ${fmtMoney(margin)} @ ${showPrice(fill)}${tag}`, side === 'long' ? 'long' : 'short');
 
   /* 订单冲击（方案 §2.6）：把这次成交代价的**永久部分**（Almgren–Chriss 的 γQ，实证 35%）
@@ -310,13 +331,15 @@ export function closeTrade(s, why = '手动') {
 
   /* 成交价（P2-B1 / P2-B3）：**平多是卖、平空是买**，所以方向与开仓时相反 ——
      代价永远对玩家不利：卖掉打点折、买回抬点价。本次成交名义 = 整条仓位（一次性平完）。 */
-  const cost = otc ? otcPremiumFor(s, sym) : impactFor(sym, s.i, pos.size * price);
+  const notional = pos.size * price;
+  const cost = otc ? otcPremiumFor(s, sym) : impactFor(sym, s.i, notional);
   const fill = fillPrice(price, pos.side === 'long' ? -1 : 1, cost);
 
   const r = closePosition(pos, fill, feeRateOf(pos.ex));
   s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
   s.realized += r.pnl - r.fee;
-  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost);
+  const fills = otc ? 1 : bookFills(notional / hourLiqOf(sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
+  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
   pushLog(s, `平仓 ${sym} ${pos.lev}x ｜ ${r.pnl >= 0 ? '盈利' : '亏损'} ${fmtMoney(r.pnl)}（${why}）${tag}`,
     r.pnl >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
