@@ -205,9 +205,9 @@ vol[k] = hourQuote · w[k] / Σw             # 归一 ⇒ 小时总成交额守�
 
 | 模块 | 现状（1h 回放） | 细粒度后 | 改动量 |
 |---|---|---|---|
-| [config.js](file:///f:/Cr3aM/Desktop/Degen/src/core/config.js) | `HOUR_MS` / `HOURS_PER_DAY` / `GAME.candles` / `SPEEDS` | 新增 `TICK.perHour`（默认 120 ＝ 30 秒）＋ `TICK.session`（1s/30s/1m/5m/30m）；**`SPEEDS` 不动** | 小 |
-| **新增 `src/core/rng.js`** | — | `splitmix64` / `mulberry32` / `rand` / 种子派生 | **新文件** |
-| **新增 `src/core/simulate.js`** | — | 布朗桥 ＋ 钉极值 ＋ U 型量分配；`pathAt(s, sym, hour)` 懒生成 ＋ LRU 缓存 | **新文件（核心）** |
+| [config.js](file:///f:/Cr3aM/Desktop/Degen/src/core/config.js) | `HOUR_MS` / `HOURS_PER_DAY` / `GAME.candles` / `SPEEDS` | ✅ **已加** `TICK.perHour`（120 ＝ 30 秒）；**`SPEEDS` 不动** | 小 |
+| **新增 `src/core/rng.js`** | — | ✅ **已落地（S0）**：`splitmix64` / `mulberry32` / `hashStr` / `rand`＋ `s.seed` | **新文件** |
+| **新增 `src/core/simulate.js`** | — | ✅ **已落地（S1）**：`pathOf`（布朗桥 ＋ 两侧归一）／ `weightsOf`（U 型量）／ `ticksPerHour` / `clearSimCache`；**懒生成 ＋ LRU** | **新文件（核心）** |
 | [market.js](file:///f:/Cr3aM/Desktop/Degen/src/core/market.js) | `candleAt` 直接读数据包 | 保持为「**锚点读取器**」不变；新增 `tickAt(sym, hour, k)` 走 `simulate` | 小（**旧函数一字不改**） |
 | [engine.js](file:///f:/Cr3aM/Desktop/Degen/src/core/engine.js) | `timeOf` / `markPrice` 取 `closeAt(s.i)` | `markPrice` 在「细粒度观察模式」下取当前 tick；`advanceOneHour` 不变 | 中 |
 | [positions.js](file:///f:/Cr3aM/Desktop/Degen/src/core/positions.js) | 强平用**整根 K 线高低点** | 改用 **tick 级高低点** ⇒ 「用针爆仓」；`FUNDING.hours = 8` 可细化到 tick 结算 | **中（收益最大）** |
@@ -277,7 +277,7 @@ vol[k] = hourQuote · w[k] / Σw             # 归一 ⇒ 小时总成交额守�
 | 批 | 内容 | 前置 | 状态 / 备注 |
 |---|---|---|---|
 | **S0** | **RNG 种子系统**（新增 `rng.js` ＋ `s.seed` ＋ 断言：同种子同结果、换种子不同结果） | 无 | ✅ **已落地**（2026-09-29）—— 见下方「S0 落地结果」 |
-| **S1** | **细粒度模拟层**（新增 `simulate.js`：布朗桥 ＋ 钉极值 ＋ U 型量；断言：O/C 逐位命中、H/L 精确、量守恒） | S0 | 纯 core、零 UI |
+| **S1** | **细粒度模拟层**（新增 `simulate.js`：布朗桥 ＋ 钉极值 ＋ U 型量；断言：O/C 逐位命中、H/L 精确、量守恒） | S0 | ✅ **已落地**（2026-09-29）—— 见下方「S1 落地结果」 |
 | **S2** | **渲染 LOD**（`view.js` ＋ `chart.js`：远聚合/近逐根 ＋ max/min 金字塔） | S1 | UI 风险最高，需实机；**新 UI 接入时应一并取消上帝模式的科学计数法**（见下） |
 | **S3** | **玩法接入**：tick 级强平（用针爆仓）／ `FUNDING` 细周期 ／ C6 冲击回弹复活 | S1 | **手感改动最大** |
 | **S4** | **肉鸽化**：种子局 / 每日挑战 / 种子码 / 随机事件流 | S0–S3 | ⏸ **暂缓**（2026-09-29 用户拍板：先不做） |
@@ -288,6 +288,24 @@ vol[k] = hourQuote · w[k] / Σw             # 归一 ⇒ 小时总成交额守�
 - `config.GAME.seed = 1` ＋ `state.createState().seed = GAME.seed`（入存档）；
 - **`STATE_VERSION` 8 → 9**；`save.js` 的 `migrate()` 整链**已删除**（本轮不做存档兼容，`v !== STATE_VERSION ⇒ 丢弃`）；
 - 离线断言 **32/32**（可复现 / 五元敏感性 / 分布 / 相邻刻度不相关 / 版本闸门），`npm run build` 通过。
+
+**S1 落地结果（2026-09-29）**
+- `config.js` 新增 **`TICK.perHour = 120`**（30 秒；唯一真源）；
+- 新增 `src/core/simulate.js`（纯 core、零 DOM）：
+  `pathOf(seed, sym, hour, ohlc)` → 长度 `N+1` 的细价格路径；`weightsOf(seed, sym, hour)` → 长度 `N` 的成交量权重（`Σw = 1`）；
+  `ticksPerHour()` / `clearSimCache()`；LRU 两级缓存（512 条）。
+- **实现口径与原方案的一处改进**（已回写，非偏离）：
+  ① **端点不用事后修补** —— 把路径写成「开→收直线 `a[i]` ＋ 布朗桥偏离 `d[i]`」，`d` 在两端**结构性为 0**
+     ⇒ `O` / `C` 天然逐位命中；
+  ② **极值用「两侧各自归一」而不是「前缀放大」** —— `sU = min{(H−a)/d : d>0}`、`sD = min{(L−a)/d : d<0}`，
+     一次 O(N) 就同时保证「**精确命中**」与「**不越界**」；顺带一个巧合的好处：**σ_h 在归一中被约掉**，
+     不需要再估「该小时的真实波动量」（幅度由真实 H/L 直接决定）；
+  ③ 浮点收尾「夹进 `[L,H]` ＋ 显式赋值四锚点」⇒ 断言可要求**逐位相等**；桥未产生某侧偏离时用 `'extreme'` 通道兜底钉针。
+- 离线断言 **24/24**（五币各抽样 2 万根：四锚点逐位命中 / 无越界 / 相邻刻度跳跃 ≤ 整根振幅 / 可复现 / 敏感性 / 量守恒与 U 型 / 性能），
+  `npm run build` 通过。⚠️ 含 **XRP 2,334 根平坦根**（Poloniex 无成交小时的重复 K 线）这一退化情形。
+- 性能实测（本机 Node）：200 根小时**冷生成 8.9 ms**、命中缓存 **0.17 ms**、200 根量权重 4.6 ms ⇒ 在 16 ms 预算内。
+- ⚠️ **S1 尚未接线**：`simulate.js` 目前**没有任何消费者**（`market.js` / `engine.js` / `view.js` / `chart.js` 一行未改）——
+  接线属 **S2（渲染 LOD）与 S3（玩法接入）**。
 
 **待办（记录，不排期）**
 - **上帝模式科学计数法**：`format.fmtMoneyCompact` 在 `|n| ≥ 1e6` 时切成 `$1.23e8` 写法（因为旧 HUD 格子只有 179px）。

@@ -2,7 +2,7 @@
 
 > 生成时间：2026-09-29　｜　工作目录：`f:\Cr3aM\Desktop\Degen`
 > 用途：暂停开发、切换工作流时的交接说明。回答三件事：**现在站在哪 / 什么没做 / 接下来怎么做**。
-> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v26，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
+> 配套文档：`GDD.MD`（设计，v1.0）、`ROADMAP.MD`（路线图，v27，**方案唯一载体**）。本文件只做索引与交接，不替代它们。
 
 ---
 
@@ -86,6 +86,16 @@ C3/C4 保持；C6/C7 不做；C5 改判；C8 只做 B 层且不急），裁决�
 > 口径**只写进代码注释**（§19.5 第 6 条已改写）。
 > ③ **口径修正 B（科学计数法）**：上帝模式的 `fmtMoneyCompact` 目前 `|n| ≥ 1e6` 会切 `$1.23e8`（旧 HUD 格子 179px 的权宜）；
 > 用户指出「接入了新的 ui 修改后应该可以不需要科学计数法」⇒ **S2 新 UI 落地时改回 `fmtMoney`**，之前保持现状。
+> **（v28，2026-09-29）S1「细粒度模拟层」已落地（代码与断言完成，⚠️ 尚未接线）** ——
+> ① `config.js` 新增 **`TICK.perHour = 120`**（每根真实小时 K = 120 根 30 秒细刻度，**唯一真源**；`SPEEDS` 不动）。
+> ② 新建 **`src/core/simulate.js`**（纯 core、零 DOM、**目前无消费者**）：`pathOf(seed, sym, hour, ohlc)`（长度 `N+1` 细价格路径）/
+> `weightsOf(seed, sym, hour)`（长度 `N` U 型量权重，`Σw = 1`）/ `ticksPerHour()` / `clearSimCache()`；两级 LRU（512 条）。
+> ③ **两处实现改进**（相对方案 §5 伪码，已回写方案 §10）：端点**结构性地**命中（路径 ＝ 开→收直线 ＋ 布朗桥偏离，偏离两端为 0）＋
+> 极值用**两侧各自归一**（一次 O(N) 同时保证「H/L 精确命中」与「不越界」，并**约掉 σ_h**）。
+> ④ 离线断言 **24/24**（五币各抽样 2 万根，四锚点**逐位命中**，含 XRP 2,334 根平坦根；性能 200 根冷生成 8.9 ms / 命中缓存 0.17 ms）
+> ＋ `npm run build` 通过。见 `ROADMAP.MD` **§19.4**。
+> ⑤ ⚠️ **接线属 S2（渲染 LOD）/ S3（玩法接入）**：`market.js` / `engine.js` / `view.js` / `chart.js` / `positions.js` **一行未改**，
+> 所以**现在跑游戏的行为与 S0 完全一致**（`simulate.js` 尚无消费者，build 时被 tree-shake）。
 
 ---
 
@@ -131,9 +141,10 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/core/config.js` | `GAME` / **`COINS`（含 `unlock` 与 `otc`：该币首次能走场外大宗）** / `EXCHANGES` / **`SPEEDS`（1/5/10/50，唯一真源）** / **`LOAN` ＋ `loanAmountAt`** / **`SUPPLY_CAP`（§15.1 上限，枚）** / **`OTC`（unlock / min / base 年代点差 / sigmaRef / p / multCap / max）＋ `otcBaseAt` / `otcSigmaRefAt` / `otcPremiumOf`** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
+| `src/core/config.js` | `GAME` / **`COINS`（含 `unlock` 与 `otc`：该币首次能走场外大宗）** / `EXCHANGES` / **`SPEEDS`（1/5/10/50，唯一真源）** / **`TICK.perHour`（S1：每根真实小时 K 展开成 120 根 30 秒细刻度，唯一真源）** / **`LOAN` ＋ `loanAmountAt`** / **`SUPPLY_CAP`（§15.1 上限，枚）** / **`OTC`（unlock / min / base 年代点差 / sigmaRef / p / multCap / max）＋ `otcBaseAt` / `otcSigmaRefAt` / `otcPremiumOf`** / `HOUR_MS` / `DATA_DIR` —— **运行时与抓数脚本共用的唯一真相源** |
 | `src/core/state.js` | `STATE_VERSION`（**9**）、`createState()`、`cashOf` / `posOf` / `heldSyms` / `anyHeld` / **`capturedOf`（已锁枚数，派生量）** / `pushLog`；**`seed`（S0 全局随机种子，入存档）**；**`impactOn`（订单冲击开关，默认 `true`）/ `flow`（逐根衰减冲击池）/ `godRuined`（上帝模式归零标记）/ `god`（上帝模式 `mult` / `scale` / `lastFill`）** |
 | `src/core/rng.js` | **确定性随机数（S0 新建）**：`splitmix64` / `mulberry32`（取一次）/ `hashStr`（字符串→uint32，**全项目唯一口径**）/ `rand(seed, symHash, hour, tick, chanHash)` —— **无状态哈希式**纯函数，零依赖零 DOM；细粒度模拟的地基 |
+| `src/core/simulate.js` | **细粒度模拟层（S1 新建，⚠️ 尚无消费者 / 未接线）**：`pathOf(seed, sym, hour, ohlc)` → 长度 `N+1` 的细价格路径（**四锚点逐位命中**：布朗桥两端结构性为 0 ＋ 极值两侧各自归一）/ `weightsOf(seed, sym, hour)` → 长度 `N` 的 U 型量权重（`Σw = 1`）/ `ticksPerHour()` / `clearSimCache()`；两级 LRU（512 条），**懒生成、不落盘、不进存档** |
 | `src/core/god.js` | **价格位移层（v23 新建）**：`SHOCK`（`share` 0.35 / `beta` 0.3 / `listMax` 8）/ `decay` / `residualAt` / `addFlow` / `factorFor(s, sym, j)` / `enableGod` / `setScale` / `clearScale` —— 纯逻辑零 DOM，唯一消费者是 `market.candleAt` |
 | `src/core/impact.js` | **滑点纯函数（P2-B1）**：`SLIP` 常量 / `sigmaOf(closes)` / `impactOf(q, sigma)` / `fillPrice(price, dir, impact)` —— 零依赖 |
 | `src/core/engine.js` | 主循环：`equip` / `switchExchange` / `advanceOneHour` / `collapseExchange` / `createClock` / `equity`；**破产唯一出口 `checkRuin` ＋ 场外配资 `takeLoan` / `giveUp` / `settleLoan`**（Batch 5 · B30）；**通道 `chanOf` / `otcUnlocked` / `otcOpenFor`（P2-B3 ＋ 修订）＋ 开平仓成交价层（P2-B1）**；**v23 开 / 平仓各写一次冲击池并紧跟 `invalidateSigma()`（逐根位移会真的改变 σ），`checkRuin` 在 `s.god` 下短路** |
@@ -150,7 +161,7 @@ tools/*       离线数据管线（Node 跑，不在游戏运行时里）
 | `src/ui/sound.js` | **音效**（Batch 4）：Web Audio 合成，零音频文件；开关存 `degen_settings`，**不进存档** |
 | `src/ui/style.css` | 全部样式；**纵向间距只有 8 一档**（8 ＝ 块内，也 ＝ 主页面所有块间；12 只剩弹层内部） |
 | `tools/fetch-data.mjs` | 行情数据管线，产出 `public/data/` |
-| `ROADMAP.MD` | 路线图 **v26**，**方案全部写在这里**（**§十七 ＝ 订单冲击 ＋ 上帝模式**；**§十八 ＝ C1–C8 裁决**；**§十九 ＝ 细粒度模拟 ＋ RNG 种子（S0–S5）**） |
+| `ROADMAP.MD` | 路线图 **v27**，**方案全部写在这里**（**§十七 ＝ 订单冲击 ＋ 上帝模式**；**§十八 ＝ C1–C8 裁决**；**§十九 ＝ 细粒度模拟 ＋ RNG 种子（S0–S5，S0/S1 已落地）**） |
 | `GDD.MD` | 设计文档 v1.0 |
 
 ### 常用命令
@@ -518,7 +529,9 @@ W = 进块等待（分钟，由拥堵指数决定）　C = 目标所确认数
    三选项：**A 只改 GDD 声明** / ✅ **B 按年代分工具（`leverageKindAt` → `'margin'`/`'perp'`）—— 2026-09-29 已拍板选此案** / C 连交割合约也区分（不做）。
    ⚠️ 若走 B：Bitfinex 真实 15% 维持线**比现在的 0.5% 严得多**（3.33x 现在要逆向 29.5% 才爆、按史实只需 15%），手感会变。
    **代码未动**（待实现），与 **B19 / C5(b)** 是同一件事的三个面，**一并落地**。出处见方案 §9。
-3. 确认 ROADMAP 头部已是 **v26**（P2-A / P2-B / P2-C 均已落地；P4-A / P4-B 暂缓；速度档已收窄为 `1/5/10/50`；**§十六 生活系统评审 = 暂缓**；**§十七 订单冲击 ＋ 上帝模式 = 已落地**；**§十八 交易模型 C1–C8 拍板 = 已定，L1（C1＋C2）已落地、见 §18.8**；**§十九 细粒度模拟 ＋ RNG 种子 = 方案已定，S0 已落地（`STATE_VERSION` 9）、S4 肉鸽 ⏸ 暂缓、S1 未开工**）；§15.1 一律按真实数值实现（2026-09-29 已定）
+3. 确认 ROADMAP 头部已是 **v27**（P2-A / P2-B / P2-C 均已落地；P4-A / P4-B 暂缓；速度档已收窄为 `1/5/10/50`；**§十六 生活系统评审 = 暂缓**；**§十七 订单冲击 ＋ 上帝模式 = 已落地**；**§十八 交易模型 C1–C8 拍板 = 已定，L1（C1＋C2）已落地、见 §18.8**；**§十九 细粒度模拟 ＋ RNG 种子 = 方案已定，S0 / S1 已落地（`rng.js` / `simulate.js`，`STATE_VERSION` 9）、S4 肉鸽 ⏸ 暂缓、S2 / S3 未开工**）；§15.1 一律按真实数值实现（2026-09-29 已定）
+   ⚠️ **S1 已落地的含义**：`simulate.js` 是**纯 core、尚无消费者** —— **游戏行为与 S0 完全一致**，
+   想看到细粒度效果必须先做 **S2（渲染 LOD）** 或 **S3（玩法接入）**；**不要在没做 S2/S3 的情况下宣称「细粒度已上线」**。
    ⚠️ **口径（v26 起）**：本项目**本身就是模拟器** ⇒ **UI 与文档一律不做「这是模拟」的声明**，口径只写**代码注释**（`ROADMAP.MD` §19.5 第 6 条）。
    ⚠️ **上帝模式科学计数法**是**待办**（等 S2 新 UI 接入后取消 `fmtMoneyCompact` 的 e 写法），**现在不要动 `format.js`**。
 4. P2-B 注意：数据包只有 OHLC ＋ 每根 1 字节当日份额、没有订单簿 ⇒
