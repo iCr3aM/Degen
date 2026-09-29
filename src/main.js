@@ -295,6 +295,10 @@ function draw(force = false) {
     tab,
     /* 音效偏好归 `sound.js` 管，不进主状态 —— 设置页那个开关的文案由渲染层每帧从这里取 */
     muted: snd.isMuted(),
+    /* 新手分步引导正在走（本轮 ①/F）—— 引导期间 `s.paused` 恒为真，但**界面不该装成「暂停」**：
+       它正高亮着「买入」按钮教玩家怎么用，把那一枚画成禁用灰会自相矛盾 ⇒ 渲染层靠这个豁免。
+       （与 `tab` 同一类：纯界面状态，不进 `s`。） */
+    guide: guideStep != null,
   };
 
   try {
@@ -710,7 +714,7 @@ function cancelMenuArm() {
 function enterReview() {
   closePicker();
   clock.stop();                                  // 双保险：主菜单期间它本来就没启动
-  rv = { i: 0, sym: 'BTC', speed: 100, paused: false, seen: new Set(), log: [] };
+  rv = { i: 0, sym: 'BTC', speed: 100, paused: false, seen: new Set(), log: [], auto: false };
   rvAcc = 0;
   resetView('BTC');                              // 视野回默认（上次回顾留下的姿势不带到这一次）
   pushRv('开盘 · 2013 年 1 月，门头沟', 'info', 0);
@@ -721,16 +725,28 @@ function enterReview() {
 }
 
 /**
+ * 回顾里「哪些节点算已经过」—— **开关打开时全部算过**（纯巡航：不弹卡、也不减速）。
+ *
+ * ⚠️ 为什么是「换一份集合」而不是像原来那样把 `rv.seen` 一次性填满（本轮 ②）：
+ *    旧的「跳过全部」按钮**不可逆** —— 点过之后 `rv.seen` 被永久污染，想回头看不到了。
+ *    用户要的是**开关**，开关就必须能关回去，所以 `rv.seen` 一个字都不动，
+ *    只让读它的三处（`speedAt` / `nextNodeAt` / 命中判据）改用这个函数取。
+ */
+const RV_ALL = new Set(RV_NODES.map(n => n.at));
+const rvSeen = () => (rv && rv.auto ? RV_ALL : rv.seen);
+
+/**
  * 回顾的粒度**自动跟随巡航速度**（本轮 ⑧ · 用户拍板 —— 比「事件前手动切 1h」少一次操作）：
  *   - 巡航段（离下一个节点 > 1 游戏日 ⇒ `100x`）⇒ **1 日线**（12 年才看得完，一根一天）；
  *   - 进入节点前的减速区（`≤ 1 日` ⇒ `10x` / `1x`）⇒ **自动切回 1 小时线** ——
  *     等史实卡弹出来时，玩家看到的已经是一根根小时 K，针就在眼前。
  * ⚠️ `setMode` 幂等（档位没变直接 return），所以每一拍都调一次是**零成本**的；
  *    也正因为这样，「卡一关掉、速度回到 100x」会自动切回日线，不必另写一支。
+ * ⚠️ 判据走 `rvSeen()`（本轮 ②）：开关打开时全部算「已过」⇒ 全程 100x ＋ 日线。
  */
 function syncRvMode() {
   if (!rv) return;
-  setMode(rv.sym, speedAt(rv.i, rv.seen) > 24 ? '1d' : '1h', rv.i, chartW());
+  setMode(rv.sym, speedAt(rv.i, rvSeen()) > 24 ? '1d' : '1h', rv.i, chartW());
 }
 
 /**
@@ -796,12 +812,12 @@ function rvStep() {
   rvLast = now;
   if (rv.paused) return;
 
-  rvAcc += dt * Math.min(rv.speed, speedAt(rv.i, rv.seen));
+  rvAcc += dt * Math.min(rv.speed, speedAt(rv.i, rvSeen()));
   let moved = false;
   let guard = 0;
   while (rvAcc >= 1 && guard++ < 400) {
     rvAcc -= 1;
-    const next = nextNodeAt(rv.i, rv.seen);
+    const next = nextNodeAt(rv.i, rvSeen());
     const prevI = rv.i;
     rv.i = next ? Math.min(rv.i + 1, next.at) : rv.i + 1;
     moved = true;
@@ -815,9 +831,11 @@ function rvStep() {
       pushRv('回顾结束 · 2024 年 12 月', 'ok', rv.i);
       break;
     }
-    /* 命中一个**没跳过**的节点：暂停 ＋ 弹史实卡（方案 §3.5） */
+    /* 命中一个**没跳过的**节点：暂停 ＋ 弹史实卡（方案 §3.5）
+       ⚠️ 判据走 `rvSeen()`（本轮 ②）：顶部开关打开时它恒为「已过」⇒ 不弹卡、不减速，
+          节点标题因此也不进日志 —— 这正是「纯巡航」该有的样子。 */
     const node = nodeAt(rv.i);
-    if (node && !rv.seen.has(node.at)) {
+    if (node && !rvSeen().has(node.at)) {
       rv.paused = true;
       rvAcc = 0;
       reviewFocus(node);        // ⑨：事件讲的是别的币就先切过去 —— 针在它自己的图上
@@ -838,9 +856,8 @@ function onReview(kind) {
     if (rv.paused && rv.i >= GAME.candles - 1) return;
     rv.paused = !rv.paused; rvAcc = 0; draw(true); return;
   }
-  /* 节点卡三枚：继续 / 跳过这一个 / 跳过全部（方案 §3.5）
-     ⚠️ 三枚都要在放行前 `syncRvMode()`（⑧）：卡是在减速区里弹出来的（小时线），
-        一关掉速度就回到 100x ⇒ 粒度也该当场跟着回到日线，不然会多闪一帧小时线。 */
+  /* 节点卡两枚：继续 / 跳过这一个（方案 §3.5；**「跳过全部」本轮 ② 已撤**，
+     改成顶部那枚可反复开合的开关 —— 一次性跳过是不可逆的，玩家想回头看不到） */
   if (kind === 'go') { closePicker(); rv.paused = false; syncRvMode(); draw(true); return; }
   if (kind === 'skip') {
     const n = nodeAt(rv.i);
@@ -851,11 +868,14 @@ function onReview(kind) {
     draw(true);
     return;
   }
-  if (kind === 'skipall') {
-    for (const n of RV_NODES) rv.seen.add(n.at);   // 一键压到纯巡航（≈17.5 min）
-    closePicker();
-    rv.paused = false;
-    syncRvMode();
+  /* 「自动跳过」开关（本轮 ② · 用户拍板）：开 ⇒ 之后所有节点的史实卡都不弹（纯巡航）；
+     关 ⇒ 立刻恢复逐条弹。**可逆**，因为它不动 `rv.seen`（见 `rvSeen`）。
+     ⚠️ 卡片开着时顶栏被 `#overlay` 吃掉点击，所以这里只可能在「没有卡」的时候被按到 ——
+        也因此不需要顺手放行任何东西。 */
+  if (kind === 'all') {
+    rv.auto = !rv.auto;
+    rvAcc = 0;
+    syncRvMode();                                  // 开 ⇒ 全程日线；关 ⇒ 回到按节点减速
     draw(true);
     return;
   }
@@ -865,13 +885,22 @@ function onReview(kind) {
   if (kind.startsWith('sym:')) return switchRvSym(kind.slice(4));
 }
 
-/** 跳到某一年的 1 月 1 日 00:00；路上错过的节点不补弹（回顾是「看」，不是「打卡」） */
+/**
+ * 跳到某一年的 1 月 1 日 00:00；路上错过的节点不补弹（回顾是「看」，不是「打卡」）。
+ *
+ * ⚠️ **跳转即清空日志**（本轮 ③ · 用户拍板）。为什么是「跳转」而不是「每一拍」：
+ *    自动推进的日志是**时间线的连续记录**，清它等于把故事擦掉；而跳转是**非线性**的 ——
+ *    2013 年那几行留在面板里，会让人把旧线索读成当下的线索。所以规则是
+ *    「**玩家显式换时间 ⇒ 清空并重新起一行**」，自动推进、暂停、切币、改速度一律不动日志。
+ *    （同一条口径也适用于 `enterReview`：它本来就 `log: []` 起手。）
+ */
 function jumpYear(y) {
   closePicker();
   const at = Math.round((Date.UTC(y, 0, 1) - GAME.start) / HOUR_MS);
   rv.i = Math.max(0, Math.min(at, GAME.candles - 1));
   rvAcc = 0;
   resetView(rv.sym);                               // 跳完视野跟到新的「当前」
+  rv.log.length = 0;                               // ③ 清空（就地清，别换数组 —— 渲染层持有的就是它）
   pushRv(`跳到 ${y} 年`, 'info', rv.i);
   syncRvMode();                                    // ⑧：跳回巡航段 ⇒ 粒度跟着回日线
   draw(true);

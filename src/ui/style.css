@@ -116,6 +116,9 @@ html, body {
   line-height: 1.25;
 }
 .top .who b { font-size: 15px; font-weight: 600; color: var(--accent); }
+/* 上帝模式**常驻标识**（本轮 ④）：改过资金 / 跳过日期之后，标题转金 ——
+   ⚠️ 必须写成 `.top .who b.gold`（0,3,1）这一级：上面那条 (0,2,1) 压过全局 `.gold`（0,1,0）。 */
+.top .who b.gold { color: var(--gold); }
 .top .who span { font-size: 12px; color: var(--mut); }
 /* 按钮间隙 6 → **4px**（Batch 5 · B26）：只影响横向，给「交易所双行按钮」多留 4px，
    防止窄机型上 `费率 0.04%` 那行被压到折行。 */
@@ -168,6 +171,10 @@ html, body {
 }
 .top .ic.exbtn b { font-size: 12px; font-weight: 600; }
 .top .ic.exbtn u { text-decoration: none; font-size: 12px; color: var(--mut); }
+/* 费率着色（本轮 ④）：四家所差 5 倍（Mt.Gox 0.20% ↔ Binance 0.04%），这一行是全屏唯一显示它的地方。
+   ⚠️ 同样要写到 `.top .ic.exbtn u`（0,3,1）这一级 —— 全局 `.gold` / `.down`（0,1,0）够不着。 */
+.top .ic.exbtn u.gold { color: var(--gold); }
+.top .ic.exbtn u.down { color: var(--down); }
 
 /* ══════════════ 账户指标（两列：权益 / 可用） ══════════════
    交易所切换器**已搬去顶栏**（2026-09-28，见 `.top .exbtn`），这里退回两列 ——
@@ -455,6 +462,11 @@ html, body {
   font-size: 12px;
   cursor: pointer;
 }
+/* ≥50x 的风险色（本轮 ④）：杠杆是全屏唯一「一眼看不出代价」的旋钮 —— 50x 与 3x 长得一模一样，
+   而强平距离差十几倍。红字只是提示，不改变行为。
+   ⚠️ 必须写在 `.opt.on` **之前**：两者都是 (0,2,0)，同优先级下由源码顺序取胜 ——
+      选中那一档仍要显示主色，不能被红色顶掉。 */
+.opt.risk { color: var(--down); }
 .opt.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .opt:active { background: var(--line); }
 .opt:disabled { opacity: .45; }
@@ -809,11 +821,45 @@ html, body {
 }
 .boot .err { color: var(--down); white-space: pre-wrap; word-break: break-all; font-size: 12px; text-align: left; max-width: 100%; }
 
+/* ══════════════ 开机画面（主菜单 · 本轮 ①） ══════════════
+   用户拍板：进游戏前这一屏必须**整屏** —— 暗底铺满 ＋ 居中一列（图标 / 标题 / 副标题 / 三入口）。
+   为什么不复用 `.pick-back`（.55 的暗底）：那层是给「点外面能关掉的小弹层」用的，透出底下的游戏界面；
+   开机画面要把底下**整个盖住**，所以底色更实（.94，压到近乎纯黑）。
+   ⚠️ 它**不带 `pointerdown` 回调** —— 与 `.pick-back` 长得像，但点了不会关（没什么可关的）。 */
+.menu-back { position: absolute; inset: 0; background: rgba(6, 9, 15, .94); }
+.menu-box {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+}
+/* 游戏图标：与 favicon 同一副图案（深底 ＋ 一根绿烛）。72px 是这个盒子里最大的元素 ——
+   开机画面只需要一个视觉中心。 */
+.menu-logo { width: 72px; height: 72px; display: block; }
+.menu-logo .bg { fill: var(--panel); }
+.menu-logo .c { fill: var(--up); }
+.menu-box h3 { margin: 0; font-size: 15px; font-weight: 600; }
+/* 副标题：与 `.intro p` 同一副字（12px / 1.9 行高 / mut），只是这里居中 —— 两块讲的是一件事。 */
+.menu-box p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--mut);
+  white-space: pre-line;
+  text-align: center;
+}
+
 /* ══════════════ 主菜单 ＋ 历史回顾（需求 4 · 方案 §2 / §3） ══════════════ */
 
 /* 主菜单三入口**纵向**排（开始 / 继续 / 历史回顾）——
    `.confirm-btns` 是横排（那是「二选一」），这里是「选一条路」，竖排读起来更像菜单。 */
-.menu-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+/* ⚠️ 宽度**必须收窄**（本轮 ①）：`.act` 在横排时靠 `flex:1` 等分，竖排下会**撑满整屏宽** ——
+   开机画面上一条 366px 的实心长条读起来像「横幅」，不像一枚按钮。280px 与整屏形成一个边框感。 */
+.menu-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; width: 100%; max-width: 280px; }
 /* ⚠️ `.act` 自带 `flex: 1`（横排时等分宽度），纵向 flex 下会变成等分高度、把卡片拉满屏 */
 .menu-btns .act { flex: none; }
 
@@ -842,6 +888,14 @@ html, body {
 /* 速度档：三枚小方键，与操作区那套 `.opt` 同一副样子，只是不被 flex 等分 */
 .rv-spd { display: flex; gap: 4px; }
 .rv-spd .opt { flex: none; width: 46px; }
+
+/* 「自动跳过」开关那一行（本轮 ②）—— 放顶栏**下面**单开一行，不塞进 `rvTools`：
+   rvTop 实测 336px（日期 90 ＋ 间隙 8 ＋ rvTools 238），容器 366px 只剩 30px，第四枚放不下。
+   高度即 `.ic` 的 32px ＋ 8px 上间距 = 40px，全部从 K 线区扣（回顾页 K 线约 600px，扣得起）。
+   ⚠️ 宽度放开：`.top .ic` 那条 42px 定宽只给回顾顶栏那三枚（见上），这里在 `.top` 之外，不受它管，
+      但 `.ic` 自己的 `min-width:42px` 仍会生效 —— 「自动跳过」5 个汉字约 60px，撑得开。 */
+.rv-bar { flex: none; display: flex; align-items: center; padding: 8px 0 0; }
+.rv-bar .ic { width: auto; padding: 0 10px; }
 
 /* 回顾页的日志栏 —— **加长**（方案 §3.6）：没有操作区 / HUD / 持仓条，省下的高度全给它。
    固定 6 行（6 × 16 + 8 = 104px），放不下就在面板内滚；内容走与日志浮层同一套 `.log-row`。 */

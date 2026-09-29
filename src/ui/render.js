@@ -31,6 +31,33 @@ const el = (tag, cls, text) => {
   return n;
 };
 
+/**
+ * 游戏图标（本轮 ①）—— 与 `index.html` 的 favicon **同一副图案**：深底 ＋ 一根绿烛。
+ *
+ * 为什么内联 SVG 而不是一张 png：进游戏前那一屏必须是一个「完整的开机画面」，
+ * 多一个外部资产就多一条会走丢的路径（favicon 本来就是 `data:` URI 一把梭）。
+ * ⚠️ 颜色**不写死**：底色 / 烛色交给 `style.css` 的 `.menu-logo .bg` / `.menu-logo .c`
+ *    （与 `chart.js` 从 CSS 变量取色同一条口径 —— 主题改一处，图标跟着变）。
+ */
+function logoEl() {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 64 64');
+  svg.setAttribute('class', 'menu-logo');
+  const rect = (x, y, w, h, c) => {
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', x);
+    r.setAttribute('y', y);
+    r.setAttribute('width', w);
+    r.setAttribute('height', h);
+    r.setAttribute('class', c);
+    return r;
+  };
+  // 深底 ＋ 影线（30,12,4,40）＋ 实体（24,20,16,24）—— 与 favicon 逐字相同
+  svg.append(rect(0, 0, 64, 64, 'bg'), rect(30, 12, 4, 40, 'c'), rect(24, 20, 16, 24, 'c'));
+  return svg;
+}
+
 /* ── 金额后缀的**迟滞**（⑥ · 方案 §20.3.3）──────────────────────────────
    活值每帧重算，纯门槛会在 `1e5 / 1e6 / 1e9` 边界上逐帧闪（`$999,999.9` ↔ `$1.0M`）——
    所以**升档立刻**、**降档要跌破上一档下沿的 90%** 才回落（判据在 `format.moneyTierHeld`，纯函数）。
@@ -328,6 +355,18 @@ export function mount(root) {
   const rvTop = el('div', 'top rv-top');
   rvTop.append(rvDate, rvTools);
 
+  /* 「自动跳过」开关（本轮 ②）—— 它取代了原来节点卡上那枚**不可逆**的「跳过全部」按钮。
+     两条设计取舍：
+       ① **放常驻顶栏下面单独一行**，不塞进 `rvTools`：rvTop 实测 336px（日期 90 ＋ 间隙 8
+          ＋ rvTools 238），容器 366px 只剩 30px，第四枚塞不下 —— 硬塞会把日期挤到截尾。
+          单开一行约 40px，从 K 线区扣（回顾页 K 线约 600px，扣得起）。
+       ② **是一枚开关，不是一次动作**（`.ic` ＋ `.on` 那副样子，与「暂停」同一档）：
+          开着 = 全程纯巡航（不弹卡也不减速），关掉立刻回到按节点减速 —— 随时可逆。 */
+  const rvAuto = el('button', 'ic rv-auto', '自动跳过');
+  rvAuto.dataset.review = 'all';
+  const rvBar = el('div', 'rv-bar');
+  rvBar.append(rvAuto);
+
   const rvSymbols = el('div', 'symbols');
   const rvSymBtns = new Map();
   for (const c of COINS) {
@@ -354,7 +393,7 @@ export function mount(root) {
   const rvLogs = el('div', 'rv-logs');
 
   const reviewPage = el('div', 'page review-page');
-  reviewPage.append(rvTop, rvSymbols, rvWrap, rvLogs);
+  reviewPage.append(rvTop, rvBar, rvSymbols, rvWrap, rvLogs);
 
   /* ── 底部 Tab（44px · §6.1）──
      ⚠️ 这 44px **全部从 K 线区扣**：固定块合计 431 → 475px，K 线区 405 → 361px（390×844）。
@@ -376,7 +415,7 @@ export function mount(root) {
   root.append(top, tradePage, assetsPage, settingsPage, reviewPage, tabs);
 
   return {
-    root, dateEl, pauseBtn,
+    root, dateEl, titleEl, pauseBtn,
     exBtn, exName, exRate,
     eqVal, eqSub, cashVal, cashSub,
     symbols, symBtns,
@@ -388,7 +427,7 @@ export function mount(root) {
     pages, tabBtns, asTotal, asNote, asList,
     sndBtn, impBtn, hintBtn,
     /* 回顾页（需求 4 · 方案 §3） */
-    rvTop, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
+    rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
     rvWrap, rvCanvas, rvHead, rvSym, rvMcap, rvSupp, rvChg, rvModeBtn, rvLogs,
     _levSignature: '',
     _posListSig: null,
@@ -495,12 +534,27 @@ export function update(refs, s, view) {
   }
 
   refs.exName.textContent = exchangeOf(s.ex)?.name ?? '--';
+  /* 上帝模式的**常驻标识**（本轮 ④）：改过资金 / 跳过日期之后，玩家得随时看得出「这一局不干净」。
+     一个金色的「Degen」比任何一次性提示都持久，而且不额外占地（它本来就是顶栏标题）。
+     ⚠️ 写 `className` 而不是 `classList.toggle`：标题只有这一种着色，没有第二种状态要叠。 */
+  refs.titleEl.className = s.god ? 'gold' : '';
   /* 第二行平时是费率；**有在途转账时临时换成倒计时**（P2-A）——
      顶栏只有 46px 余量（375px 屏），「拥堵 严重」这类词根本放不下，
-     所以拥堵状态词只出现在选所弹层里，顶栏这一行只承担倒计时。 */
-  refs.exRate.textContent = s.transfer
-    ? `→ 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`
-    : `费率 ${fmtRate(feeRateOf(s.ex), 2)}`;
+     所以拥堵状态词只出现在选所弹层里，顶栏这一行只承担倒计时。
+     ⚠️ 费率**着色**（本轮 ④）：四家所差 5 倍（Mt.Gox 0.20% ↔ Binance 0.04%），
+        而这一行是全屏唯一显示它的地方 —— 不区分就等于把成本藏起来了。
+        两档门槛直接落在真实数据上（≥0.20% 红 / ≥0.10% 金 / 其余留 mut 灰），
+        与 `.pick-head` 的拥堵状态词同一套「两档门槛」写法，不引入新体系。
+        ⚠️ 必须写成 `.top .ic.exbtn u.<色>` 这一级：`.top .ic.exbtn u`（0,3,1）压过全局
+           `.gold`（0,1,0），直接挂类名会被 mut 灰吃掉（详见 `style.css` 那两条）。 */
+  if (s.transfer) {
+    refs.exRate.textContent = `→ 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`;
+    refs.exRate.className = '';
+  } else {
+    const fr = feeRateOf(s.ex);
+    refs.exRate.textContent = `费率 ${fmtRate(fr, 2)}`;
+    refs.exRate.className = fr >= 0.002 ? 'down' : fr >= 0.001 ? 'gold' : '';
+  }
 
   /* 币种条：未解锁的币用**边框环**显示解锁进度（Batch 5 · B25）。
      进度由 `--pf` 这个 CSS 变量驱动（`style.css` 的 `.sym.locked` 拿它画锥形渐变环），
@@ -655,6 +709,11 @@ export function update(refs, s, view) {
         b.setAttribute('aria-disabled', 'true');
       } else {
         b.classList.toggle('on', v === s.lev);
+        /* ≥50x 打一道风险色（本轮 ④）：杠杆是这一屏唯一「一眼看不出代价」的旋钮 ——
+           50x 与 3x 的表面长得一模一样，而强平距离差了十几倍。
+           一个红字只是提示，不改变任何行为；选中态仍走 accent
+           （`.opt.risk` 写在 `.opt.on` **之前**，同优先级靠源码顺序让 `.on` 胜出）。 */
+        b.classList.toggle('risk', v >= 50);
       }
       refs.levRow.append(b);
       refs.levBtns.set(v, b);
@@ -668,12 +727,21 @@ export function update(refs, s, view) {
      ⚠️ `lockedUI`（结束 / 待借贷决策）下一律不可用 —— 待决态只留遮罩上那两枚按钮。
      · 合约模式：做多 / 做空看「当前币还没仓位」，平仓看「当前币有仓位」（现状不变）
      · 现货模式（v9）：买入 / 卖出 **手上有仓位时也照样可用** —— 反向那一枚就是平仓；
-       同向那一枚禁掉（同一个币只许一条仓位，让它点出「已有持仓」的错误日志没有意义）。 */
-  const tradable = !lockedUI && mark != null && isLoaded(sym);
+       同向那一枚禁掉（同一个币只许一条仓位，让它点出「已有持仓」的错误日志没有意义）。
+
+     ⚠️ **暂停闸门**（本轮 ④）：暂停时**所有会动钱的操作**都画成禁用（`.act:disabled` 的 .45）——
+       原来暂停只由 `main.js` 的分派层拦下并回一条日志 ⇒ 按钮**看起来仍然是能按的**，
+       玩家的第一反应是「点了没反应」，而不是「现在是暂停」。画灰才是诚实的状态。
+       ⚠️ 只禁**下单 / 平仓 / 换所 / 切通道**这四类（用户拍板）；杠杆档 / 金额档 / 切模式 /
+          切币 / 切页 / 日志浮层 / 设置 / 上帝面板**照常可用**，所以这里一个字都不碰它们。
+       ⚠️ `view.guide` 豁免：新手引导期间 `s.paused` 恒为真，而第 4 步正高亮着「买入」教玩家怎么用 ——
+          把那一枚画成灰与引导自相矛盾（详见 `main.js` 里 `view.guide` 那段注释）。 */
+  const frozen = s.paused && !view.guide;
+  const tradable = !lockedUI && !frozen && mark != null && isLoaded(sym);
   const dir = cur ? cur.side : null;
   refs.longBtn.disabled = !(tradable && !cur);
   refs.shortBtn.disabled = !(tradable && !cur);
-  refs.closeBtn.disabled = !cur || lockedUI;
+  refs.closeBtn.disabled = !cur || lockedUI || frozen;
   refs.buyBtn.disabled = !(tradable && dir !== 'long');
   /* 「卖出」＝开现货空单（要借币，v10）：该所没有融资时**空仓不许开空**。
      但手上若已经压着一张空单（只可能是旧档），「卖出」仍是它唯一的出口 ⇒ 必须能点，
@@ -685,6 +753,10 @@ export function update(refs, s, view) {
   if (sellOff) refs.sellBtn.setAttribute('aria-disabled', 'true');
   else refs.sellBtn.removeAttribute('aria-disabled');
 
+  /* 换所键（顶栏那枚双行按钮）**同样吃暂停闸门**（本轮 ④）：换所是一笔要等好几根 K 线的
+     链上转账，属于「会动钱」四类之一 —— 暂停时它必须也点不动，否则玩家会以为只有下单被拦。 */
+  refs.exBtn.disabled = frozen;
+
   /* 通道切换键**三级状态**（P2-B 修订 · GDD §15.3）：
        ① 权益 ≤ $500 万 ⇒ `hidden` —— 一个 $3,000 开局的玩家不该看见自己用不了的东西
        ② 权益够、但**当前币**还没开通 OTC ⇒ 可见但禁用（灰框）——
@@ -695,7 +767,7 @@ export function update(refs, s, view) {
   const chan = chanOf(s);
   const unlocked = otcUnlocked(s);
   refs.chanBtn.hidden = !unlocked;
-  refs.chanBtn.disabled = !(unlocked && otcOpenFor(s));
+  refs.chanBtn.disabled = !(unlocked && otcOpenFor(s)) || frozen;
   refs.chanBtn.textContent = chan === 'otc' ? 'OTC' : '盘口';
   refs.chanBtn.classList.toggle('on', chan === 'otc');
 
@@ -1170,6 +1242,9 @@ export function openIntro() {
   const ov = document.getElementById('overlay');
   if (!ov) return;
 
+  /* 整屏暗底（本轮 ①）—— 与主菜单同一块 `.menu-back`：开场白与主菜单是**连着的两屏**，
+     中间不该出现「一屏有暗底、下一屏没有」的跳变。盒子本身仍是居中的 `.confirm`。 */
+  const back = el('div', 'menu-back');
   const box = el('div', 'confirm intro');
   box.append(el('h3', null, 'Degen · 加密交易员'));
   box.append(el('p', null,
@@ -1187,7 +1262,7 @@ export function openIntro() {
   btns.append(nw, vet);
   box.append(btns);
 
-  ov.append(box);
+  ov.append(back, box);
   ov.hidden = false;
   picker = ov;
 }
@@ -1196,8 +1271,11 @@ export function openIntro() {
  * 主菜单（需求 4 ·《主菜单与历史回顾模式方案》§2，2026-09-29）。`boot()` 走完**一律先弹它**，
  * 三个入口决定后续：开始游戏 / 继续游戏（仅在有档时出现）/ 历史回顾。
  *
- * ⚠️ 与 `openIntro` 同一范式：**无暗底、全屏、必须在按钮里选一个才走**（它不是「点外面能关掉的菜单」）；
- *    弹窗期间时钟不启动（`main.js` 的 `clock.start()` 排在 `onMenu` 之后）。
+ * ⚠️ **整屏**（本轮 ① · 用户拍板）：铺满全屏的暗底 ＋ 居中一列（图标 / 标题 / 副标题 / 三入口）。
+ *    之前它沿用 `.confirm`（`left/right:12px` 的一张小卡、且不铺暗底）—— 那副样子读起来像
+ *    「页面中间弹了个提示」，不像**开机画面**。现在背后那层 `.menu-back` 把这个游戏彻底盖住。
+ *    但它**仍然不是「点外面能关掉的菜单」**：`.menu-back` 不带 `pointerdown` 回调，点了不会关。
+ * ⚠️ 弹窗期间时钟不启动（`main.js` 的 `clock.start()` 排在 `onMenu` 之后）。
  * ⚠️ 「继续游戏」在**没有存档**时整枚不出现（LESS IS MORE：没有的选项不显示）；
  *    「开始游戏」在有档时会先变「确认重开」（双重确认的状态机在 `main.js`，理由同 `onReset`）。
  */
@@ -1206,7 +1284,10 @@ export function openMenu({ canContinue = false } = {}) {
   const ov = document.getElementById('overlay');
   if (!ov) return;
 
-  const box = el('div', 'confirm intro');
+  const back = el('div', 'menu-back');
+  const box = el('div', 'menu-box');
+  /* 图标在最上面（本轮 ①）：与 favicon 同一副图案，内联 SVG（见 `logoEl`）。 */
+  box.append(logoEl());
   box.append(el('h3', null, 'Degen · 加密交易员'));
   box.append(el('p', null,
     '2013 年 1 月 → 2024 年 12 月。\n'
@@ -1226,7 +1307,7 @@ export function openMenu({ canContinue = false } = {}) {
   btns.append(review);
   box.append(btns);
 
-  ov.append(box);
+  ov.append(back, box);
   ov.hidden = false;
   picker = ov;
 }
@@ -1290,6 +1371,9 @@ export function renderReview(refs, rv, view) {
   refs.rvDate.textContent = fmtDate(now, false);
   refs.rvPauseBtn.textContent = rv.paused ? '继续' : '暂停';
   refs.rvPauseBtn.classList.toggle('on', rv.paused);
+  /* 「自动跳过」开关态（本轮 ②）—— 文案不变，只靠 `.on` 那一圈主色表达开 / 关
+     （与「暂停」同一套写法：那枚也是文案在变、高亮表示「生效中」）。 */
+  refs.rvAuto.classList.toggle('on', rv.auto);
   for (const [v, b] of refs.rvSpdBtns) b.classList.toggle('on', rv.speed === v);
 
   /* 币种条：**可切**（拍板 2）—— 但那个币此刻还没上线就点不动（与交易页同一条口径）。
@@ -1323,8 +1407,11 @@ export function renderReview(refs, rv, view) {
      倒序铺 —— 最新在上，与交易页日志条同向。
      ⚠️ 时间前缀只写**日期**（本轮 ⑧ · 用户拍板）：回顾跨度是 12 年，时分没有任何信息量；
         交易页那条日志写时分是因为它讲的是「今天几小时前」，两者口径本来就不同。 */
+  /* ⚠️ 签名里必须带上**条数**（本轮 ③）：跳年份会先把日志清空再补一条「跳到 X 年」，
+     若只认「末条的 `at|text`」，玩家从某年跳回**同一年**时末条文案完全一样、签名不变 ⇒
+     面板不重建，清空这一步就被静默吞掉了。带上长度，清空本身就是一个新签名。 */
   const top = rv.log[rv.log.length - 1];
-  const sig = top ? `${top.at}|${top.text}` : '';
+  const sig = `${rv.log.length}|${top ? top.at : ''}|${top ? top.text : ''}`;
   if (sig !== refs._rvLogSig) {
     refs._rvLogSig = sig;
     refs.rvLogs.textContent = '';
@@ -1341,9 +1428,12 @@ export function renderReview(refs, rv, view) {
 /**
  * 节点卡（方案 §3.5）—— 命中关键节点时暂停 ＋ 弹出的一张史实卡。
  * 复用 `.confirm` 那副弹层骨架；**不给暗底**（无 `.pick-back`）：它不是「点外面能关掉的菜单」，
- * 必须在三枚按钮里选一个才走 —— 与主菜单 / 开场叙事同一条。
+ * 必须在两枚按钮里选一个才走 —— 与主菜单 / 开场叙事同一条。
  *
- * 三枚：**继续**（恢复巡航）/ **跳过这个节点**（本节点不再弹）/ **跳过全部**（一键压到纯巡航）。
+ * 两枚：**继续**（恢复巡航）/ **跳过**（本节点不再弹）。
+ * ⚠️ 原来还有第三枚「跳过全部」（一键压到纯巡航）—— 本轮 ② 把它**挪去顶栏做成常驻开关**
+ *    （`rv-bar` 的「自动跳过」）：那枚按钮一旦点过就`rv.seen` 永久填满、**不可逆**，
+ *    玩家想回头重看这个节点已经不可能了；开关则可以随时关回去。
  */
 export function openNodeCard(node) {
   closePicker();
@@ -1361,10 +1451,8 @@ export function openNodeCard(node) {
   go.dataset.review = 'go';
   const skip = el('button', 'act flat', '跳过');
   skip.dataset.review = 'skip';
-  const all = el('button', 'act flat', '跳过全部');
-  all.dataset.review = 'skipall';
   const btns = el('div', 'confirm-btns');
-  btns.append(go, skip, all);
+  btns.append(go, skip);
   box.append(btns);
 
   ov.append(box);
