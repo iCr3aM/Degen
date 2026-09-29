@@ -356,10 +356,7 @@ const LOCK_PREV = (() => {
 export function update(refs, s, view) {
   const onTrade = view.tab === 'trade';
 
-  /* 顶栏时间**跟随粒度**（v11 · ④）：日线档只到日期，精细两档到小时。
-     ⚠️ 不能更细到分/秒 —— 游戏时钟本身是**整点量化**的（`s.i` 是小时序号，`timeOf` 恒为整点），
-        要显示到 tick 就得让引擎也记 tick 序号（那是口径 B 的代价，已拍板不做）。 */
-  refs.dateEl.textContent = fmtDate(timeOf(s), view.mode !== '1d');
+  refs.dateEl.textContent = fmtDate(timeOf(s));
 
   /* 顶栏按钮。⚠️ B30 的**待决态**（`s.pending`）下也要锁死：时钟已经停了，这时候
      「继续 / 暂停」和切页都不该可用 —— 玩家只有一个选择要回答（借，还是收摊）。
