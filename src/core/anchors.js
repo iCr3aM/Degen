@@ -18,6 +18,17 @@ import { GAME, HOUR_MS } from './config.js';
 export const NEWS_HOURS = 24;
 
 /**
+ * 新闻的**播报延迟**（游戏小时 · 口径 D，2026-09-29 拍板）。
+ *
+ * ⚠️ 为什么必须有它：新闻条的涨跌幅报的是**事件当天的极端值**，而这个数要等当天 24 根走完才算得出来。
+ *    把新闻挂在 `at` 那一刻，等于在事件当天早上就把「当天最深跌 39%」提前告诉玩家 —— 那是**前视**。
+ *    **事情发生了才会报道**：窗口整体后移一天。
+ * ⚠️ 只有**新闻**后移。K 线标记（`anchorsInRange`）与链上拥堵（`congestionAnchors`）仍锚在 `at`：
+ *    那两处要的是「事情发生在哪里」（标记画在事件那天、链就是那天堵的），不是「什么时候被报道」。
+ */
+export const NEWS_DELAY = 24;
+
+/**
  * 锚点表。字段：
  *   `t`           UTC 时间戳（**日**粒度：时分秒一律为 0）
  *   `title`       新闻文案 —— 日志条只有一行且会 `text-overflow`，**越短越好**
@@ -64,11 +75,15 @@ export const allAnchors = () => ENTRIES;
 
 /**
  * 第 `i` 根 K 线是否落在某条锚点的**新闻窗口**内（新闻用）。
- * 窗口 = `[at, at + NEWS_HOURS)`；锚点稀疏 ⇒ 至多命中一条，线性扫绰绰有余。
+ * 窗口 = `[at + NEWS_DELAY, at + NEWS_DELAY + NEWS_HOURS)` —— 后移一天，见 `NEWS_DELAY`。
+ * 锚点稀疏 ⇒ 至多命中一条，线性扫绰绰有余。
  * @returns {object|null} 命中的锚点（含 `at`），没命中返回 null
  */
 export function anchorAt(i) {
-  for (const a of ENTRIES) if (i >= a.at && i < a.at + NEWS_HOURS) return a;
+  for (const a of ENTRIES) {
+    const from = a.at + NEWS_DELAY;
+    if (i >= from && i < from + NEWS_HOURS) return a;
+  }
   return null;
 }
 

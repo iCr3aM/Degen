@@ -13,7 +13,7 @@ import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource } from './core/market.js';
 import { createClock, chanOf, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
-import { clearScale, enableGod, factorFor, setScale } from './core/god.js';
+import { enableGod, factorFor } from './core/god.js';
 import { fmtMoney } from './core/format.js';
 import { marginRateOf, isSpot } from './core/positions.js';
 import {
@@ -259,19 +259,15 @@ function dispatch(node) {
   if (d.sclose !== undefined) return onCloseSettings();
 
   /* ── 上帝模式 ＋ 订单冲击（隐藏入口 · 方案 §2）──
-     `god` 是标题上的连点入口，其余六枚都在上帝面板里（`data-god*`）。
-     档位类动作（倍率 / 砸盘 / 复位）改完状态后**重开一次面板**：面板是静态 DOM，
-     不重开的话 `.on` 那枚高亮不会跟着走、日期框也会停在旧值。 */
+     `god` 是标题上的连点入口，「订单冲击」开关在设置面板里，其余三枚在上帝面板里（`data-god*`）。
+     ⚠️ 上帝模式**只有「跳日期 / 填资金 / 关掉」三件事**（2026-09-29 瘦身）：原来那两套价格能力
+        （倍率 `godmult`、手动砸盘 `godscale` / 复位 `godreset`）已整体删除。 */
   if (d.god !== undefined) return onGodTap();
   if (d.impact !== undefined) return onImpactToggle(node);
-  if (d.godmult !== undefined || d.godscale !== undefined || d.godreset !== undefined
-      || d.godcash !== undefined || d.goddate !== undefined || d.godoff !== undefined) {
+  if (d.godcash !== undefined || d.goddate !== undefined || d.godoff !== undefined) {
     /* 这几枚只可能出现在上帝面板里，而面板只在 `s.god` 非空时打开。这一行是**状态机不靠 DOM 兜底**：
        万一面板被别的路径留下来（比如读到一份 `god: null` 的档），这里不能抛异常。 */
     if (!s.god) return;
-    if (d.godmult !== undefined) { s.god.mult = Number(d.godmult); openGod(s); after(); return; }
-    if (d.godscale !== undefined) { setScale(s, s.sym, Number(d.godscale)); openGod(s); after(); return; }
-    if (d.godreset !== undefined) { clearScale(s); openGod(s); after(); return; }
     if (d.godcash !== undefined) return onGodCash(node);
     if (d.goddate !== undefined) return onGodDate(node);
     return onGodOff();
@@ -403,9 +399,8 @@ function onGodTap() {
 
 /**
  * 订单冲击开关（方案 §2.7）—— **玩法开关**，落在主状态 `s.impactOn`（不是 `degen_settings`）。
- * ⚠️ 关掉只是「不再产生新的冲击」，**已落地的行情位移不还原**（那是已发生的历史）——
- *    想还原行情要用上帝面板里的「复位」。按钮文案得**手改**：面板不参与每帧重绘
- *    （与 `onSoundToggle` 同一个理由）。
+ * ⚠️ 关掉只是「不再产生新的冲击」，**已落地的行情位移不还原**（那是已发生的历史）。
+ *    按钮文案得**手改**：面板不参与每帧重绘（与 `onSoundToggle` 同一个理由）。
  */
 function onImpactToggle(node) {
   s.impactOn = !s.impactOn;
@@ -468,13 +463,13 @@ function onGodDate(node) {
 }
 
 /**
- * 「关闭上帝模式」：退出 `s.god`（⇒ 停止归零保护、HUD 回到常规金额格式）。
- * ⚠️ **行情位移不还原**：订单冲击池 `s.flow` 留着（那是已发生的历史）；
- *    手动设价 `s.god.scale` 随 `s.god` 一起消失 —— 这条写进日志，不做静默行为。
+ * 「关闭上帝模式」：退出 `s.god`（⇒ 停止归零保护）。
+ * ⚠️ **行情位移不还原**：订单冲击池 `s.flow` 留着（那是已发生的历史）。
+ *    上帝模式本来也不再持有任何价格状态（2026-09-29 瘦身），所以关掉只是关掉保护。
  */
 function onGodOff() {
   s.god = null;
-  pushLog(s, '上帝模式已关闭 ｜ 手动设价已复位，订单冲击保留', 'info');
+  pushLog(s, '上帝模式已关闭 ｜ 订单冲击保留', 'info');
   closePicker();
   after();
 }

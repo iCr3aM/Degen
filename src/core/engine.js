@@ -320,10 +320,12 @@ export function openTrade(s, side, frac = 1) {
      沉淀成行情位移 —— 从此处起价格上/下一个台阶，再按 Bouchaud 幂律慢慢回爬。
      ⚠️ 这不是重复收惩罚：`cost` 是本次成交付出的**全部**代价，这里只把其中一部分留在地上，
         剩下的就是 AC 里的「暂时冲击」（随成交结束而消失，已由成交价本身承担）。
-     ⚠️ OTC 不写：私下一口价的大宗交易不落公开盘口（与它不消耗供应量同一口径）。 */
+     ⚠️ OTC 不写：私下一口价的大宗交易不落公开盘口（与它不消耗供应量同一口径）。
+     ⚠️ 与上帝模式**无关**（2026-09-29 瘦身）：原来这里乘过一个「冲击倍率」`s.god.mult`，
+        已删除 —— 上帝模式不再有任何价格能力。 */
   if (!otc && s.impactOn) {
     const dir = side === 'long' ? 1 : -1;
-    if (addFlow(s, s.sym, dir * SHOCK.share * cost * (s.god?.mult ?? 1))) invalidateSigma();
+    if (addFlow(s, s.sym, dir * SHOCK.share * cost)) invalidateSigma();
   }
   return { ok: true };
 }
@@ -364,7 +366,7 @@ export function closeTrade(s, why = '手动') {
   /* 订单冲击（方案 §2.6）：**平多 = 卖、平空 = 买**，方向与开仓时相反 —— 与成交价的代价同一口径 */
   if (!otc && s.impactOn) {
     const dir = pos.side === 'long' ? -1 : 1;
-    if (addFlow(s, sym, dir * SHOCK.share * cost * (s.god?.mult ?? 1))) invalidateSigma();
+    if (addFlow(s, sym, dir * SHOCK.share * cost)) invalidateSigma();
   }
 
   if (checkRuin(s)) return { ok: false, why: s.over.reason };
