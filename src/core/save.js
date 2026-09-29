@@ -55,6 +55,10 @@ export function load() {
  * ⚠️ 这是**玩法口径变更**（老档升级后，玩家下单会开始推动行情），不是纯补字段 ——
  *    但它与「新开一局」的行为一致，且 `flow` 从空开始，所以仍然**不作废旧档**。
  *
+ * v7 → v8（C1 · 冲击池多笔叠加）：`flow[sym]` 由单池 `{v, at}` 改成**逐笔列表** `[{v, at}, …]`。
+ * 旧档每个币最多只有一笔，**包成单元素列表**即可 —— 语义与「它一直就是列表里唯一那项」完全一致
+ * （`residualAt` 求和时那一项就是全部），所以同样**不作废旧档**。
+ *
  * ⚠️ **不改版本号也要校正的字段**：`speed`。2026-09-29 速度档收窄为 `1/5/10/50`，
  * 旧档若停在已删掉的 `2x` / `20x` 上，`render.js` 会「一排按钮全不亮，时钟却在飞跑」。
  * 这属于取值域收窄，不是结构变更，所以**不升版本**，直接在末尾夹一次。
@@ -81,6 +85,15 @@ function migrate(s) {
     s.godRuined = false;
     s.god = null;
     s.v = 7;
+  }
+  if (s.v === 7) {
+    const flow = s.flow && typeof s.flow === 'object' ? s.flow : {};
+    for (const sym of Object.keys(flow)) {
+      const p = flow[sym];
+      flow[sym] = Array.isArray(p) ? p : (p ? [p] : []);
+    }
+    s.flow = flow;
+    s.v = 8;
   }
   if (s.v !== STATE_VERSION) return null;
   /* 取值域校正：不在档位表里的速度一律回落到 1x */

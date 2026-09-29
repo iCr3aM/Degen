@@ -4,7 +4,7 @@
  * 纯函数集合：**不碰状态、不碰 DOM、不读时钟**（与 `positions.js` 同一分层）。
  *
  * 口径（2026-09-29 拍板，勿擅改）：
- *   q      = 本次成交名义价值 ÷ 该币**当日**流动性（`market.liqOf`，与 K 线量柱同源）
+ *   q      = 本次成交名义价值 ÷ 该币**当时**的流动性（`market.liqOf` 的日值 × 日内份额系数）
  *   q ≤ 阈值 ⇒ 不触发（小额单子按盘口价成交，冲击记为零）
  *   impact = clamp( A × σ_30日 × sqrt(min(q, cap)), 0, hard )
  *   买（开多 / 平空）⇒ 成交价 = 盘口价 × (1 + impact)
@@ -24,7 +24,32 @@ export const SLIP = {
   hard: 0.30,          // impact 的硬上限
   window: 30,          // σ 的窗口：近 30 天的日收盘收益率
   sigmaDefault: 0.03,  // 样本不足时的兜底 σ：3% / 天
+  shareFloor: 1 / 255, // 日内份额的下限 ＝ 数据包能表达的最小非零份额（见 `hourShareK`）
 };
+
+/**
+ * **日内流动性的份额系数**（C2，2026-09-29 拍板）—— 把「日流动性」摊到**小时**。
+ *
+ * 分母 ＝ `liqOf(sym, 当天) × hourShareK(share, sum, n)`：
+ *   - `share` 该小时占当日成交额的份额（1 字节/根，数据现成）
+ *   - `sum`   当天**已上线**各小时的份额之和（一个完整交易日 ≈ 1）
+ *   - `n`     当天**已上线**的小时数（一个完整交易日 = 24）
+ *
+ * 为什么是 `share ÷ sum × n` 而不是直接用 `share`：
+ *   一个完整交易日里 `n = 24`、`sum ≈ 1` ⇒ 系数 = **24 × share**，其**当日均值恰为 1**
+ *   ⇒ 一天下来的平均行为与「只用日流动性」**完全一致**，`A` / `threshold` / `cap` 全都无需重校；
+ *   而 `÷ sum × n` 让**币种上线当天**（不足 24 小时，`sum` 仍是 1）不会被误放大 24/n 倍。
+ *
+ * 效果：**凌晨薄盘时段同样的单冲击更大、正午活跃时段更小** —— 这才是 C2 要的真实度。
+ * 该小时无成交（`share = 0`）时回落到 `shareFloor`，最多把 `q` 放大 ~10 倍，**再被 `cap` 夹住**。
+ *
+ * @returns {number} ≥ `shareFloor ÷ sum × n` 的正系数；`sum` / `n` 不可用时退回 1（= 只用日流动性）
+ */
+export function hourShareK(share, sum, n) {
+  if (!(sum > 0) || !(n > 0)) return 1;
+  const s = Number.isFinite(share) && share > SLIP.shareFloor ? share : SLIP.shareFloor;
+  return (s / sum) * n;
+}
 
 /**
  * 日收盘收益率的**总体标准差**（不是样本标准差，与 `engine.hourlySigma` 同口径）。

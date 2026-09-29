@@ -5,7 +5,8 @@
  * （markPrice / 权益 / 强平价 / 资金费 / K 线图 / HUD 涨跌幅全部经由它 ⇒ 下游一行都不用改。）
  *
  *   ① 手动设价 `s.god.scale[sym]` —— **全局永久**乘数，上帝面板的「砸盘」档位写它
- *   ② 订单冲击 `s.flow[sym]`       —— **逐根**衰减（Bouchaud 幂律），开/平仓时按成交代价的永久占比写入
+ *   ② 订单冲击 `s.flow[sym]`       —— **逐根**衰减（Bouchaud 幂律），开/平仓时按成交代价的永久占比写入。
+ *      C1（2026-09-29）起是**逐笔列表**（`[{v, at}, …]`，≤ `SHOCK.listMax` 笔），残存值按笔叠加
  *
  * ⚠️ 为什么②必须是**逐根**系数、不能写成「当前时刻的全局常数」：
  *    一笔单只影响它**之后**的行情（`j < at` ⇒ 系数 1），这才对得上「价格从那一根开始下台阶、
@@ -27,6 +28,12 @@ export const SHOCK = {
   share: 0.35,
   /** Bouchaud propagator 的幂律指数 β ≈ 0.3（衰减极慢：100 小时后仍有 25%） */
   beta: 0.3,
+  /**
+   * 冲击池的**笔数上限**（C1，2026-09-29 拍板）。超出时把**最旧的那几笔**按「此刻的残存值」
+   * 归并成一项 —— 它们的衰减最狠、残存最小，归并误差可忽略，而列表长度由此有了硬上界。
+   * 8 笔足够覆盖「一次分 1/4 · 1/2 · 全平」这类连续操作，不至于把更早的痕迹抹掉。
+   */
+  listMax: 8,
 };
 
 /** 衰减因子：`e` = 距写入时刻经过的**游戏小时数**。前 1 小时不衰减，之后按 e^(−β) 慢慢回爬 */
@@ -35,27 +42,52 @@ export function decay(e) {
   return Math.pow(e, -SHOCK.beta);
 }
 
-/** 某个币在**第 j 根**上残存的订单冲击量（0 = 没有冲击、j 早于写入时刻） */
+/**
+ * 某个币在**第 j 根**上残存的订单冲击量（0 = 没有冲击、j 早于写入时刻）。
+ *
+ * C1（2026-09-29）：池子由「单池」改成**逐笔的 propagator 列表** ——
+ *   `residual(j) = Σ v_k × decay(j − at_k)`，这才是 Bouchaud 的叠加式。
+ *   单池模型的毛病：分 10 笔买进去，第 2 笔会把第 1 笔的衰减进度**吃掉**
+ *   （一笔 1 小时前的单和一笔 100 小时前的单被合并成「刚刚发生的一笔」）。
+ */
 export function residualAt(s, sym, j) {
-  const p = s.flow && s.flow[sym];
-  if (!p || !p.v || j < p.at) return 0;
-  return p.v * decay(j - p.at);
+  const list = s.flow && s.flow[sym];
+  if (!list || !list.length) return 0;
+  let v = 0;
+  for (const p of list) {
+    if (!p.v || j < p.at) continue;
+    v += p.v * decay(j - p.at);
+  }
+  return v;
 }
 
 /**
- * 把一笔成交的永久冲击写进池子。
+ * 把一笔成交的永久冲击**追加**进池子（不再与旧值归并 —— 见 `residualAt`）。
  *
- * ⚠️ **先把旧冲击按当前时刻归并，再累加**（`v = 残存 + delta`）——
- *    这样「重置衰减计时」是无害的：池里存的已经是它此刻的真实值，衰减曲线连续。
- *    注意这仍是**单池模型**：多笔单会合并成一条曲线，做不到逐单 propagator 叠加
- *    （那要存全部历史成交，与「存档不膨胀」冲突）。首版接受，实机后复校。
+ * 超过 `SHOCK.listMax` 笔时，把最旧的那些按「此刻的残存值」压成一项（`collapse`）：
+ * 它们在 `j = s.i` 处的值**精确守恒**，之后按「从此刻起算」的曲线衰减（略慢于真值，
+ * 但都是残存最小的那几笔，误差可忽略），换来列表长度的硬上界。
  * @returns {boolean} 是否真的写进去了（Δ 为 0 时不写，避免无意义地刷存档）
  */
 export function addFlow(s, sym, delta) {
   if (!Number.isFinite(delta) || delta === 0) return false;
-  const v = residualAt(s, sym, s.i) + delta;
-  s.flow[sym] = { v, at: s.i };
+  if (!s.flow) s.flow = {};
+  const list = s.flow[sym] || (s.flow[sym] = []);
+  list.push({ v: delta, at: s.i });
+  if (list.length > SHOCK.listMax) collapse(list, s.i);
   return true;
+}
+
+/** 把最旧的若干笔压成一项（只在超出上限时调用；`now` = 当前的 `s.i`） */
+function collapse(list, now) {
+  const cut = list.length - (SHOCK.listMax - 1);
+  let v = 0;
+  for (let k = 0; k < cut; k++) {
+    const p = list[k];
+    if (now >= p.at) v += p.v * decay(now - p.at);
+  }
+  if (v === 0) list.splice(0, cut);
+  else list.splice(0, cut, { v, at: now });
 }
 
 /**

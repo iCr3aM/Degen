@@ -13,9 +13,9 @@
  */
 
 import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf } from './config.js';
-import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, HOURS_PER_DAY } from './market.js';
+import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
-import { SLIP, fillPrice, impactOf, sigmaOf } from './impact.js';
+import { SLIP, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow } from './god.js';
 import { fmtMoney, fmtRate } from './format.js';
 import {
@@ -151,11 +151,38 @@ function dailySigma(sym, i) {
 /**
  * 一次成交的冲击（0 = 不触发）。
  * ⚠️ **取不到当日流动性就不触发** —— 数据还没加载完 / 该币那天还没上线时，不凭空造一个冲击出来。
+ *
+ * 分母（C2，2026-09-29 拍板）：`liqOf(当天) × hourShareK(该小时份额, 当天份额和, 当天小时数)`。
+ * 完整交易日里系数 = 24 × share，其**当日均值恰为 1** ⇒ 一天下来的平均行为与「只用日流动性」
+ * **完全一致**（`A` / `threshold` / `cap` 无需重校），只是薄盘时段更痛、活跃时段更轻。
  */
 function impactFor(sym, i, notional) {
-  const liq = liqOf(sym, dayIndexOf(i));
+  const day = dayIndexOf(i);
+  const liq = liqOf(sym, day);
   if (!(liq > 0) || !(notional > 0)) return 0;
-  return impactOf(notional / liq, dailySigma(sym, i));
+  const { sum, n } = dayVolShare(sym, day);
+  return impactOf(notional / (liq * hourShareK(volumeAt(sym, i), sum, n)), dailySigma(sym, i));
+}
+
+/* 日内份额的缓存：键 = `sym|day`，值 = { sum, n }（当天**已上线**小时的份额和与小时数）。
+   ⚠️ 与两个 σ 缓存不同，它**只依赖原始成交额**、不受价格位移影响，所以 `invalidateSigma()`
+      不清它；但**只在 `sum > 0` 时入缓存** —— 数据尚未加载完时会全读成 0，那不能留下。 */
+const dayVolCache = new Map();
+
+function dayVolShare(sym, day) {
+  const key = `${sym}|${day}`;
+  const hit = dayVolCache.get(key);
+  if (hit) return hit;
+  let sum = 0, n = 0;
+  const from = day * HOURS_PER_DAY;
+  for (let k = from; k < from + HOURS_PER_DAY; k++) {
+    if (!hasCandle(sym, k)) continue;      // 该币当天还没上线的小时不参与
+    sum += volumeAt(sym, k);
+    n++;
+  }
+  const out = { sum, n };
+  if (sum > 0) dayVolCache.set(key, out);
+  return out;
 }
 
 /** 日志尾巴：触发了才追加，没触发的一个字符都不加 */

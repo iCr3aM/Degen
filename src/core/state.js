@@ -9,7 +9,7 @@
 
 import { GAME } from './config.js';
 
-export const STATE_VERSION = 7;
+export const STATE_VERSION = 8;
 
 export function createState() {
   return {
@@ -58,8 +58,11 @@ export function createState() {
     impactOn: true,
 
     /**
-     * 订单冲击池 —— `sym -> { v, at }`：`v` = 累计冲击量（正 = 买上去、负 = 砸下来），
-     * `at` = 写入它的那个 `s.i`。行情位移 = `v × decay(s.i − at)`，**逐根**衰减（Bouchaud 幂律）。
+     * 订单冲击池 —— `sym -> [{ v, at }, …]`：`v` = 该笔成交留下的冲击量（正 = 买上去、负 = 砸下来），
+     * `at` = 写入它的那个 `s.i`。行情位移 = `Σ v_k × decay(s.i − at_k)`，**逐根**衰减（Bouchaud 幂律）。
+     *
+     * ⚠️ C1（2026-09-29）：由「单池 `{v, at}`」改成**逐笔列表**（≤ `SHOCK.listMax` 笔）——
+     *    单池下第二次加仓会吃掉第一次的衰减进度。上限溢出时最旧的几笔按残存值归并成一项。
      *
      * ⚠️ 与 `pulse` 是两套东西，别混：
      *    `pulse`  = 「链上转账造成的拥堵」→ 只影响**转账延迟**，不动价格
