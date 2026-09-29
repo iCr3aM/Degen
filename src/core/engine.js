@@ -18,7 +18,7 @@ import { warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow, residualOfSide } from './god.js';
-import { fmtMoney, fmtRate } from './format.js';
+import { fmtMoney, fmtMoneyShort, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, openPosition, pnlOf,
   FUNDING, fundingOf, fundingRateOf, canLiquidate, paysFunding,
@@ -206,7 +206,7 @@ function dayVolShare(sym, day) {
  * 它只改这一行字，**成交价一个字节都没动**（红线 A · 不双重计价）。
  */
 const slipTag = (impact, count = 1) =>
-  impact > 0 ? ` ｜ 滑点 ${fmtRate(impact, 2)}${count > 1 ? ` · ${count} 笔` : ''}` : '';
+  impact > 0 ? `｜滑点 ${fmtRate(impact, 2)}${count > 1 ? ` · ${count} 笔` : ''}` : '';
 
 /**
  * 一次 OTC 成交的溢价（P2-B 修订 · §15.3）。
@@ -329,11 +329,11 @@ export function openTrade(s, side, frac = 1) {
 
   /* 笔数（C8-B1）：同一份代价，报出它相当于拆成了几笔。OTC 是私下一口价、不吃滑点 ⇒ 不报。 */
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(s.sym, s.i), cost);
-  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
+  const tag = otc ? `｜OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
   /* 字面跟着模式走（v9 · §15.6 N4「没有的选项不显示」的同一条口径）：现货模式的操作键是
      **买入 / 卖出**，日志若还写「做多 / 做空」，就与玩家刚按下的那枚键对不上了。 */
   const verb = spot ? (side === 'long' ? '买入' : '卖出') : (side === 'long' ? '做多' : '做空');
-  pushLog(s, `${verb} ${s.sym} ${lev}x ｜ 保证金 ${fmtMoney(margin)} @ ${showPrice(fill)}${tag}`, side === 'long' ? 'long' : 'short');
+  pushLog(s, `${verb} ${s.sym} ${lev}x｜保证金 ${fmtMoneyShort(margin)} @ ${showPrice(fill)}${tag}`, side === 'long' ? 'long' : 'short');
 
   /* 订单冲击（方案 §2.6）：把这次成交代价的**永久部分**（Almgren–Chriss 的 γQ，实证 35%）
      沉淀成行情位移 —— 从此处起价格上/下一个台阶，再按 Bouchaud 幂律慢慢回爬。
@@ -377,8 +377,8 @@ export function closeTrade(s, why = '手动') {
   s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
   s.realized += r.pnl - r.fee;
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
-  const tag = otc ? ` ｜ OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
-  pushLog(s, `平仓 ${sym} ${pos.lev}x ｜ ${r.pnl >= 0 ? '盈利' : '亏损'} ${fmtMoney(r.pnl)}（${why}）${tag}`,
+  const tag = otc ? `｜OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
+  pushLog(s, `平仓 ${sym} ${pos.lev}x｜${r.pnl >= 0 ? '盈利' : '亏损'} ${fmtMoneyShort(r.pnl)} · ${why}${tag}`,
     r.pnl >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
 
@@ -503,7 +503,7 @@ export function switchExchange(s, id) {
   normalizeLeverage(s);                                // 新所的上限可能更低，夹取一次
 
   const add = bumpPulse(s, amount);                    // > 当日 BTC 流动性的 10% 才算大额
-  pushLog(s, `转账 → ${ex.name} ｜ ${fmtMoney(amount)} ｜ 拥堵${congestionLabel(congestion)} · ${n} 小时后到账`
+  pushLog(s, `转账 → ${ex.name} ｜ ${fmtMoneyShort(amount)} ｜ ${congestionLabel(congestion)} · ${n} 小时后到账`
     + (add ? ` ｜ 推高拥堵 +${add.toFixed(1)}` : ''), 'info');
   return { ok: true };
 }

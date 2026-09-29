@@ -18,7 +18,7 @@ import { fmtMoney } from './core/format.js';
 import { canLiquidate, marginRateOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
-  pickExchange, confirmExchange, closePicker, openIntro, openGod, showPage,
+  pickExchange, confirmExchange, closePicker, openIntro, openGod, showPage, openLog,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -282,6 +282,9 @@ function dispatch(node) {
      `s.pending` 的判真值只用来「锁 UI」，绝不用来选遮罩。 */
   if (d.warn !== undefined) return onWarn();
   if (d.hint !== undefined) return onHintToggle();
+  /* 日志浮层（v11 · ⑤ · 方案 §20.2.1）：点日志条**整条**打开，回看最近 30 条（含被截尾的全句）。
+     与选所弹层同一手法 —— **不暂停**：它是「回看」，不改变任何要玩家回答的东西。 */
+  if (d.log !== undefined) return onLogOpen();
   /* A6：底部 Tab 切页（`data-tab="trade|assets|settings"`）。
      ⚠️ 原来的 `data-settings`（顶栏那枚「设置」）已随 A6 撤掉 —— 设置整体成了一个页。 */
   if (d.tab !== undefined) return onTab(d.tab);
@@ -589,6 +592,15 @@ function onWarn() {
   s.paused = true;
   s.speed = 1;
   after();
+}
+
+/**
+ * 打开日志浮层（⑤ · 方案 §20.2.1）。
+ * ⚠️ 结束 / 待决时不弹（同 `onEx`）：那一刻遮罩已经替掉了界面，回看日志没有意义。
+ */
+function onLogOpen() {
+  if (s.over || s.pending) return;
+  openLog(s);
 }
 
 /* ── 底部 Tab · 设置页（A6 · 方案 §6.3）─────────────────────────────

@@ -12,7 +12,7 @@
  */
 
 import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
-import { fmtDate, fmtHour, fmtMoney, fmtPct, fmtRate } from '../core/format.js';
+import { fmtDate, fmtHour, fmtMoney, fmtMoneyShort, fmtPct, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
 import { isLoaded, rangeOf, candleAt, rawCloseAt, HOURS_PER_DAY } from '../core/market.js';
@@ -29,6 +29,21 @@ const el = (tag, cls, text) => {
   if (text != null) n.textContent = text;
   return n;
 };
+
+/* ── 金额后缀的**迟滞**（⑥ · 方案 §20.3.3）──────────────────────────────
+   活值每帧重算，纯门槛会在 `1e5 / 1e6 / 1e9` 边界上逐帧闪（`$999,999.9` ↔ `$1.0M`）——
+   所以**升档立刻**、**降档要跌破上一档下沿的 90%** 才回落（判据在 `format.moneyTierHeld`，纯函数）。
+   ⚠️ 记忆挂在模块级 `Map`（键 = 槽位），**不进存档** —— 与 `picker` / `tab` 是同一类 UI 态。
+   ⚠️ 日志串**不走这里**：`pushLog` 之后文本已冻结，结构上不可能抖（方案 §20.3.3）。
+   ⚠️ 死区内的固有代价：同一个数两种显示取决于「之前到过哪」—— 这是消抖的必付成本。 */
+const slotTier = new Map();
+
+function moneySlot(key, n, { sign = false } = {}) {
+  if (!Number.isFinite(n)) return '--';
+  const t = moneyTierHeld(slotTier.get(key), Math.abs(n));
+  slotTier.set(key, t);
+  return fmtMoneyShort(n, { sign, minTier: t });
+}
 
 /**
  * 新闻条尾部的**真实涨跌幅**（P2-C ①·补 ＋ 口径 D，2026-09-29 拍板）：**事件当天**的极端值，
@@ -157,11 +172,14 @@ export function mount(root) {
 
   /* ── 日志条 ──
      拆成「标签 ＋ 正文」两个节点（P2-C）：锚点时刻在正文前挂一枚 `新闻` 小标签切到**新闻态**，
-     不带标签时就是原来那一条普通日志。槽位仍是 24px，固定块合计不变 —— 见 ⑤ 的裁决 ③。 */
+     不带标签时就是原来那一条普通日志。槽位仍是 24px，固定块合计不变 —— 见 ⑤ 的裁决 ③。
+     ⚠️ **整条可点**（⑤ · 方案 §20.2.1）：点开日志浮层看全 30 条 ——
+        这一行只放得下一句被截尾的话，回看在浮层里做（`openLog`）。 */
   const newsTag = el('i', 'news-tag', '新闻');
   newsTag.hidden = true;
   const logText = el('span');
   const logline = el('div', 'logline');
+  logline.dataset.log = '';
   logline.append(newsTag, logText);
 
   /* ── 操作区 ── */
@@ -377,23 +395,23 @@ export function update(refs, s, view) {
 
   /* 账户三格 */
   const eq = equity(s);
-  refs.eqVal.textContent = fmtMoney(eq);
+  refs.eqVal.textContent = moneySlot('eq', eq);
   refs.eqVal.className = 'num ' + (eq >= GAME.cash ? 'up' : 'down');
   /* 副行两个数**都带符号**（Batch 4 · B17）：正绿负红，与持仓盈亏同一口径。
      颜色写在这里而不是 CSS 默认值 —— 见 `style.css` 里 `.hud .cell u.up` 那段注释。 */
-  refs.eqSub.textContent = `已实现 ${fmtMoney(s.realized, { sign: true })}`;
+  refs.eqSub.textContent = `已实现 ${moneySlot('realized', s.realized, { sign: true })}`;
   refs.eqSub.className = 'num ' + (s.realized >= 0 ? 'up' : 'down');
 
-  refs.cashVal.textContent = fmtMoney(available(s));
+  refs.cashVal.textContent = moneySlot('cash', available(s));
   /* 副行优先级：**有贷款时负债永远最该出现**（B30）—— 它是必须还的一笔钱，
      而「初始 $3,000」是个死常量、零信息量。剩几天按小时差向下取整。 */
   if (s.loan) {
     const left = Math.max(0, Math.ceil((s.loan.dueAt - s.i) / 24));
-    refs.cashSub.textContent = `欠 ${fmtMoney(s.loan.owe)} · ${left}d`;
+    refs.cashSub.textContent = `欠 ${moneySlot('owe', s.loan.owe)} · ${left}d`;
     refs.cashSub.className = 'num down';
   } else if (anyHeld(s)) {
     const u = totalUnrealized(s);
-    refs.cashSub.textContent = `未实现 ${fmtMoney(u, { sign: true })}`;
+    refs.cashSub.textContent = `未实现 ${moneySlot('unreal', u, { sign: true })}`;
     refs.cashSub.className = 'num ' + (u >= 0 ? 'up' : 'down');
   } else {
     refs.cashSub.textContent = `初始 ${fmtMoney(GAME.cash)}`;
@@ -452,7 +470,7 @@ export function update(refs, s, view) {
       : `${p.sym} ${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
     refs.posSide.className = 'num ' + (p.side === 'long' ? 'side-long' : 'side-short');
     const pnl = unrealizedOf(s, p.sym);
-    refs.posPnl.textContent = fmtMoney(pnl, { sign: true });
+    refs.posPnl.textContent = moneySlot('pospnl', pnl, { sign: true });
     refs.posPnl.className = 'num ' + (pnl >= 0 ? 'up' : 'down');
     /* 第三格**只剩保证金率**（Batch 2 · B9，2026-09-29）：原来这里是「保证金率 / 强平价」，
        格宽只有 1/3 屏，两个数一串必然被 `text-overflow` 截掉尾巴（用户实机发现）。
@@ -595,9 +613,9 @@ export function update(refs, s, view) {
   /* 资产页（§6.2 ①②④ 的 v0）：总资产 ＋ 持仓列表。切到别的页就不写 —— 那是隐藏 DOM，
      而且这个列表是**重建**出来的，白建一遍不如不建。 */
   if (view.tab === 'assets') {
-    refs.asTotal.textContent = fmtMoney(eq);
+    refs.asTotal.textContent = moneySlot('eq', eq);
     refs.asTotal.className = 'num ' + (eq >= GAME.cash ? 'up' : 'down');
-    refs.asNote.textContent = `已实现 ${fmtMoney(s.realized, { sign: true })}`;
+    refs.asNote.textContent = `已实现 ${moneySlot('realized', s.realized, { sign: true })}`;
     refs.asNote.className = 'num ' + (s.realized >= 0 ? 'up' : 'down');
     const listSig = posListSignature(s);
     if (listSig !== refs._posListSig) {
@@ -958,6 +976,42 @@ export function closePicker() {
   picker.textContent = '';
   picker.hidden = true;
   picker = null;
+}
+
+/**
+ * 日志浮层（⑤ · 方案 §20.2.1，2026-09-29）：把日志条那一行**撑开**成 30 条。
+ *
+ * 为什么不常驻：日志条那 24px 是固定块的账（§20.1.2），撑开就得从 K 线区扣；
+ * 而「回看历史」是**偶尔**的动作 ⇒ 复用 `#overlay` 那一套（与选所 / 二次确认同一个容器）。
+ *
+ * 三条拍板（§20.4）：
+ *   ① 列 **30 条**（`LOG_MAX` 是 60，取一半足够回看一局的重要节点）；
+ *   ② **点暗底关闭**，不给关闭按钮（多一枚按钮 = 多一处要读的字）；
+ *   ③ 正文**允许折行** —— 这正是它存在的理由（日志条那句被截尾的话在这里要读全）。
+ * ⚠️ 只读 `s.log`，不写任何状态 ⇒ 与时间推进、存档都无关。
+ */
+export function openLog(s) {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const back = el('div', 'pick-back');
+  const box = el('div', 'logs');
+  box.append(el('h3', null, '日志'));
+
+  const list = el('div', 'log-list');
+  for (const e of s.log.slice(0, 30)) {
+    const row = el('div', 'log-row ' + (e.kind === 'bad' ? 'down' : e.kind === 'ok' ? 'up' : 'mut'));
+    row.append(el('u', null, fmtHour(GAME.start + (e.at ?? s.i) * HOUR_MS)), el('span', null, e.text));
+    list.append(row);
+  }
+  if (!list.childElementCount) list.append(el('div', 'log-row mut', '—'));
+  box.append(list);
+
+  back.addEventListener('pointerdown', closePicker);
+  ov.append(back, box);
+  ov.hidden = false;
+  picker = ov;
 }
 
 /* ═════════════════════════ 开场叙事（Batch 4 · B19） ═════════════════════════ */

@@ -51,6 +51,75 @@ export function fmtMoney(n, { sign = false } = {}) {
 }
 
 /**
+ * 金额的**后缀档**（⑤⑥ 批 · 方案 §20.3.3，2026-09-29）：`k / M / B` 三档，**纯函数**。
+ * 档位 `0` = 无后缀、`1` = k、`2` = M、`3` = B；上沿是 `1e5 / 1e6 / 1e9`。
+ *
+ * 为什么单开一档、而不是往 `fmtMoney` 里加分支：
+ *   ① `fmtMoney` 上面那段注释是**承诺**（「永不换单位」）—— 它有固定列宽的职责，不掺这个；
+ *   ② 后缀是**显示取舍**，什么时候用由**调用方**决定：
+ *        · 日志串（`engine.js`）—— 文本一旦 `pushLog` 就冻结，直接按门槛用；
+ *        · 活值（`render.js`）—— 每帧重算，必须走**迟滞**，不能在这里判断。
+ *
+ * ⚠️ `|n| < 1e5` 时**逐位走 `fmtMoney`**（`$3,000.0` 原样）—— 早期玩家在万级，`k` 反而陌生。
+ * ⚠️ 导出档位是为了让 `render.js` 的迟滞与这里**共用同一组下沿**（升档立刻、降档滞后 10%）。
+ */
+export function moneyTier(a) {
+  return a < 1e5 ? 0 : a < 1e6 ? 1 : a < 1e9 ? 2 : 3;
+}
+
+/** 各档下沿 —— 迟滞与 `moneyTier` 共用同一组数，不许各写一份 */
+const TIER_LOW = [1e5, 1e6, 1e9];
+/** 降档迟滞比例：跌破上一档下沿的 90% 才回落（升档不设死区 —— 显示不下的那一刻就该换） */
+const TIER_HOLD = 0.9;
+
+/**
+ * **带迟滞的**档位选择（⑥ · 方案 §20.3.3）：活值每帧重算，纯门槛会在 `1e5 / 1e6 / 1e9`
+ * 边界上逐帧闪（`$999,999.9` ↔ `$1.0M`）。所以这里要上一个「上一帧是哪一档」：
+ *   - **升档立刻**（`nat >= prev`）；
+ *   - **降档要跌破上一档下沿的 90%** 才回落，否则保持原档。
+ *
+ * ⚠️ 死区内的固有代价：同一个数两种显示取决于「之前到过哪」—— 这是消抖的必付成本。
+ * ⚠️ **纯函数**，记忆由调用方持有（`render.js` 的模块级 `Map`）—— 这里不许存状态。
+ * @param {number|null|undefined} prev 上一帧的档位（无记忆时传 `null`）
+ * @param {number} a 金额的绝对值
+ */
+export function moneyTierHeld(prev, a) {
+  const nat = moneyTier(a);
+  if (prev == null || nat >= prev) return nat;
+  return a >= TIER_LOW[prev - 1] * TIER_HOLD ? prev : nat;
+}
+
+/** 档位 → `[基数, 后缀, 小数位]`（第 0 档为空，表示「交给 fmtMoney」） */
+const TIER_UNIT = [[], [1e3, 'K', 1], [1e6, 'M', 1], [1e9, 'B', 2]];
+
+function shortBody(a, tier) {
+  if (tier === 0) return null;                    // 交给 fmtMoney
+  const [base, suf, d] = TIER_UNIT[tier];
+  const s = (a / base).toFixed(d);
+  if (Number(s) >= 1000) {                        // 进位兜底：`999,999` → `1000.0K` ⇒ 抬到 `$1.0M`
+    if (tier === 1) return '$' + (a / 1e6).toFixed(1) + 'M';
+    if (tier === 2) return '$' + (a / 1e9).toFixed(2) + 'B';
+  }
+  return '$' + s + suf;
+}
+
+/**
+ * 带 `k / M / B` 后缀的金额。**纯门槛**（1e5 / 1e6 / 1e9），无任何记忆。
+ *
+ * ⚠️ 与已删除的 `fmtMoneyCompact` 无关：那个是 `1e15~1e21` 的**科学计数法**（上帝模式的溢出保护，
+ *    已随 v33 整块删除）；这个是**商业后缀**，服务列宽与日志串长（方案 §20.3.3）。
+ *
+ * `minTier` 是给 `render.js` 的**迟滞**用的：降档时把上一档钉住，直到跌破下沿的 90%。
+ */
+export function fmtMoneyShort(n, { sign = false, minTier = 0 } = {}) {
+  if (!Number.isFinite(n)) return '--';
+  const a = Math.abs(n);
+  const body = shortBody(a, Math.max(minTier, moneyTier(a)));
+  if (body == null) return fmtMoney(n, { sign });    // < 1e5：与 fmtMoney 逐位相同
+  return (n < 0 ? '-' : sign ? '+' : '') + body;
+}
+
+/**
  * 百分比：涨跌幅 / 保证金率。`+1.2%` / `-4.6%`
  *
  * ⚠️ 默认两位 → **一位**（Batch 2 · B7）。要更高精度就显式传 `digits`（资金费率传 4）。
