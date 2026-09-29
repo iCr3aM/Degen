@@ -34,6 +34,7 @@ export const NEWS_DELAY = 24;
  *   `title`       新闻文案 —— 日志条只有一行且会 `text-overflow`，**越短越好**
  *   `chain`       `'btc' | 'eth' | null`；`null` ＝ 全市场事件（Luna / FTX）
  *   `congestion`  非空 ⇒ 该窗口给**链上转账**的抬升值；取值落在 GDD §6.4 的「+30 至 +60，3–10 天」内
+ *   `warn`        真 ⇒ 该事件会**直接弄死人 / 重创杠杆仓**，提前 7 天弹遮罩 ＋ 暂停（v11 · ③）
  *
  * ⚠️ **只有 `chain === 'btc'` 且 `congestion` 非空的项会进拥堵**（见 `congestionAnchors`）：
  *    P2-A 的链上转账口径定死为 **BTC 链**（脉冲分母 = `liqOf('BTC', …)`，单一真相源），
@@ -42,21 +43,21 @@ export const NEWS_DELAY = 24;
 export const ANCHORS = [
   { t: Date.UTC(2013, 2, 16),  title: '塞浦路斯银行危机，BTC 冲上 $260',      chain: 'btc',  congestion: null },
   { t: Date.UTC(2013, 10, 18), title: '美国听证会放行，BTC 单日翻倍',         chain: 'btc',  congestion: null },
-  { t: Date.UTC(2014, 1, 25),  title: 'Mt.Gox 被盗 85 万枚 BTC，停摆',        chain: 'btc',  congestion: null },
+  { t: Date.UTC(2014, 1, 25),  title: 'Mt.Gox 被盗 85 万枚 BTC，停摆',        chain: 'btc',  congestion: null, warn: true },
   { t: Date.UTC(2015, 6, 7),   title: 'BTC 链被灌垃圾交易，转账排队数小时',    chain: 'btc',  congestion: { add: 40, days: 10, ramp: 2,   fall: 4 } },
-  { t: Date.UTC(2016, 5, 17),  title: 'The DAO 被盗，以太坊分叉出 ETC',        chain: 'eth',  congestion: null },
+  { t: Date.UTC(2016, 5, 17),  title: 'The DAO 被盗，以太坊分叉出 ETC',        chain: 'eth',  congestion: null, warn: true },
   { t: Date.UTC(2016, 6, 9),   title: '比特币减半：区块奖励 25 → 12.5',        chain: 'btc',  congestion: null },
   { t: Date.UTC(2016, 8, 22),  title: '以太坊遭 DoS 攻击，区块处理变慢',        chain: 'eth',  congestion: null },
   { t: Date.UTC(2017, 4, 1),   title: 'BTC 破 $2,000，链上首次大拥堵',         chain: 'btc',  congestion: { add: 40, days: 10, ramp: 2,   fall: 4 } },
   { t: Date.UTC(2017, 7, 1),   title: '扩容硬分叉，1:1 空投 BCH',              chain: 'btc',  congestion: null },
   { t: Date.UTC(2017, 11, 1), title: 'ICO 狂潮 ＋ 加密猫把链堵死',            chain: 'btc',  congestion: { add: 70, days: 10, ramp: 2,   fall: 4 } },
-  { t: Date.UTC(2018, 11, 15), title: '泡沫破裂：BTC 跌到 $3,129',            chain: 'btc',  congestion: null },
-  { t: Date.UTC(2020, 2, 12),  title: '新冠崩盘，BTC 单日腰斩',                chain: 'btc',  congestion: null },
+  { t: Date.UTC(2018, 11, 15), title: '泡沫破裂：BTC 跌到 $3,129',            chain: 'btc',  congestion: null, warn: true },
+  { t: Date.UTC(2020, 2, 12),  title: '新冠崩盘，BTC 单日腰斩',                chain: 'btc',  congestion: null, warn: true },
   { t: Date.UTC(2020, 4, 11),  title: '比特币减半：区块奖励 12.5 → 6.25',      chain: 'btc',  congestion: null },
   { t: Date.UTC(2021, 3, 1),   title: '牛市高峰，BTC 破 $64,000',              chain: 'btc',  congestion: { add: 45, days: 7,  ramp: 1.5, fall: 2.5 } },
   { t: Date.UTC(2021, 10, 10), title: '双顶：BTC 创 $69,000 新高',             chain: 'btc',  congestion: null },
-  { t: Date.UTC(2022, 4, 9),   title: 'Luna 崩盘，$80 一路归零',               chain: null,   congestion: null },
-  { t: Date.UTC(2022, 10, 11), title: 'FTX 破产，BTC 跌到 $15,500',            chain: null,   congestion: null },
+  { t: Date.UTC(2022, 4, 9),   title: 'Luna 崩盘，$80 一路归零',               chain: null,   congestion: null, warn: true },
+  { t: Date.UTC(2022, 10, 11), title: 'FTX 破产，BTC 跌到 $15,500',            chain: null,   congestion: null, warn: true },
   { t: Date.UTC(2023, 4, 7),   title: 'Ordinals 铭文潮，手续费暴涨',           chain: 'btc',  congestion: { add: 40, days: 14, ramp: 2,   fall: 4 } },
   { t: Date.UTC(2024, 0, 10),  title: '现货 ETF 获批，BTC 重回 $45,000',      chain: 'btc',  congestion: null },
   { t: Date.UTC(2024, 3, 20),  title: '减半 ＋ Runes 上线，手续费暴涨',         chain: 'btc',  congestion: { add: 45, days: 7,  ramp: 2,   fall: 4 } },
@@ -97,3 +98,31 @@ export function anchorsInRange(lo, hi) {
 
 /** 进拥堵的那几条 —— `congestion.js` 唯一消费的子集（BTC 链 ＋ 有抬升值） */
 export const congestionAnchors = () => ENTRIES.filter(a => a.congestion && a.chain === 'btc');
+
+/* ═══════════════════════ 破产预警（v11 · ③） ═══════════════════════ */
+
+/**
+ * 预警锚点 —— `warn: true` 的那 6 条：会**直接弄死人**（交易所归零，目前只有 Mt.Gox）
+ * 或**重创杠杆仓**（大级别崩盘）的事件。新手提示开着时，各自在 `at − 7 天` 弹一次遮罩 ＋ 暂停。
+ *
+ * ⚠️ 这是**范围**（哪些事值得打断玩家），不是**幅度** —— 与 P2-C 那条红线一致：
+ *    锚点从不产生人工涨跌幅，崩盘本身就在真实小时线里。
+ */
+const WARN_ENTRIES = ENTRIES.filter(a => a.warn);
+
+/** 预警提前量（**小时**）—— 与 `engine.js` 的 `WARN_LEAD`（毫秒）同为 7 天，这里换算成 `s.i` 的刻度 */
+export const WARN_LEAD_HOURS = 7 * 24;
+
+/**
+ * 第 `i` 根 K 线是不是某条预警锚点的**预告时刻**（= `at − 7 天`）。
+ * ⚠️ 用 `===` 判等 ⇒ 天然**只命中一次**，不需要额外的「已提醒过」状态位。
+ * 锚点稀疏，线性扫绰绰有余。
+ * @returns {object|null} 命中的锚点（含 `at`），没命中返回 null
+ */
+export function warnAnchorAt(i) {
+  for (const a of WARN_ENTRIES) if (i === a.at - WARN_LEAD_HOURS) return a;
+  return null;
+}
+
+/** 按 `at` 反查锚点 —— 渲染层拿 `s.warnAt` 取文案用（O(20)，每帧一次也无所谓） */
+export const anchorOfAt = at => ENTRIES.find(a => a.at === at) || null;

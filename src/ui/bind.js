@@ -27,6 +27,8 @@ export const ACTION_KEYS = [
      ⚠️ 用 `mode2` 而不是 `mode` —— `mode` 已被 K 线左上角那枚**粒度**小字占用（`main.js` 的 `d.mode`）。
      v9（§15.3 N4）：`buy` / `sell` ＝ 现货模式那两枚动作键（借 U 买入 / 借币卖出）。 */
   'mode2', 'buy', 'sell',
+  /* v11（③）：`warn`（破产预警遮罩的那枚「知道了」）/ `hint`（设置页「新手提示」开关）。 */
+  'warn', 'hint',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');

@@ -9,7 +9,7 @@
 
 import { GAME } from './config.js';
 
-export const STATE_VERSION = 10;
+export const STATE_VERSION = 11;
 
 export function createState() {
   return {
@@ -126,11 +126,29 @@ export function createState() {
      * 场外配资（Batch 5 · B30）—— 只在**资产归零**时触发一次。
      *   `loaned`：本局是否已经借过（只给一次机会，第二次归零就是真结束）
      *   `loan`  ：在贷：`null` 或 `{ amount, owe, dueAt }`
-     *   `pending`：待玩家决策：`null` 或 `'loan'`（归零后的借贷遮罩；**此期间时钟暂停**）
+     *   `pending`：待玩家决策：`null` / `'loan'`（归零后的借贷遮罩）/ `'warn'`（破产预警遮罩）。
+     *     **两种待决态下时钟都暂停**（`s.paused` 同真），遮罩替掉正常界面（见 `main.js` 的 `draw`）。
+     *     ⚠️ `'warn'` 与 `'loan'` 是**两回事**：前者只是提醒（点「知道了」即可），后者是要命的二选一。
+     *     所有 `s.pending` 的消费点都必须按**值**分派，不能只判真值。
      */
     loaned: false,
     loan: null,
     pending: null,
+
+    /**
+     * 破产预警遮罩记的**是哪个事件**（`anchors.warnAnchorAt` 命中锚点的 `at`）。
+     * 只在 `pending === 'warn'` 期间有效；渲染层拿它反查文案（`anchorOfAt`）。
+     */
+    warnAt: null,
+
+    /**
+     * 新手提示开关（v11 · ③）—— 开局叙事弹窗上「我是新手 / 我是老手」二选一写入。
+     * 管的是**引导类**内容：破产预警遮罩、以及将来的开仓提示 / 教学。
+     * ⚠️ **开场叙事不受它管**（老手新首都该看一遍）—— 那是 `openIntro` 无条件弹的。
+     * ❗ 它落在**主状态**里（与 `impactOn` 同一个理由）：预警遮罩会暂停游戏、改变时间推进的节奏，
+     *    不是纯 UI 偏好，放进 `degen_settings` 会让同一份档在不同机器上跑出不同结果。
+     */
+    hintOn: true,
 
     /** 上帝模式下「已归零」的一次性提示标志 —— 避免每根 K 线刷一条日志；填入资金后清掉 */
     godRuined: false,

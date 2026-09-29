@@ -17,7 +17,7 @@ import { enableGod, factorFor } from './core/god.js';
 import { fmtMoney } from './core/format.js';
 import { canLiquidate, marginRateOf } from './core/positions.js';
 import {
-  mount, update, renderOver, renderLoan, clearOver, renderBoot, hideBoot,
+  mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openGod, showPage,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
@@ -162,9 +162,10 @@ const chartW = () => Math.max(1, Math.round(refs.chartWrap.getBoundingClientRect
 let lastDraw = -Infinity;
 /* ⚠️ 起手取 `!!s.over`：读档读到一个**已经结束**的档时，不该在开屏第一帧补响一声爆仓 / 结算。 */
 let overDrawn = !!s.over;
-/* 借贷遮罩（B30）画过没 —— 与 `overDrawn` 同一个理由：`checkRuin` 把 `s.paused` 置真之后
-   不会再有任何 `onFrame`，那一帧若被 80ms 节流吞掉，遮罩就永远出不来。 */
-let loanDrawn = !!s.pending;
+/* **待决遮罩**（借贷 `'loan'` / 破产预警 `'warn'`）画过没 —— 与 `overDrawn` 同一个理由：置真
+   `s.paused` 的那一拍之后不会再有 `onFrame`，那一帧若被 80ms 节流吞掉，遮罩就永远出不来。
+   ⚠️ 变量按**真值**记（两种遮罩共用），具体画哪一个仍按 `s.pending` 的**值**分派。 */
+let pendingDrawn = !!s.pending;
 
 /**
  * 把「刚刚发生的事」翻译成声音（Batch 4 · B20）。
@@ -212,7 +213,7 @@ function soundFromTick(s) {
 }
 
 function draw(force = false) {
-  if ((s.over && !overDrawn) || (s.pending && !loanDrawn)) force = true;
+  if ((s.over && !overDrawn) || (s.pending && !pendingDrawn)) force = true;
   const now = performance.now();
   if (!force && now - lastDraw < 80) return;
   lastDraw = now;
@@ -246,12 +247,17 @@ function draw(force = false) {
          不给它配音效 —— 「账户归零」那条日志已经响过 warn 了（`soundFromTick`）。 */
       closePicker();
       renderLoan(root, s);
+    } else if (s.pending === 'warn') {
+      /* 破产预警（v11 · ③）：同上，遮罩替掉界面、时钟已停。也不配音效（它不写日志，
+         而「打断」这件事由暂停本身完成，够显眼了）。 */
+      closePicker();
+      renderWarn(root, s);
     } else {
       clearOver(root);
       soundFromTick(s);
     }
     overDrawn = !!s.over;
-    loanDrawn = !!s.pending;
+    pendingDrawn = !!s.pending;
   } catch (err) {
     renderBoot('渲染失败', err);
   }
@@ -265,10 +271,17 @@ function dispatch(node) {
   /* 通用轻点反馈（Batch 4 · B20）—— 除了**成交 / 重开**这两类有专属音的动作，其余键都响这一声。
      逻辑：一次点击最多响一次，任何时刻都不会叠。 */
   if (d.act !== 'long' && d.act !== 'short' && d.act !== 'close'
-    && d.buy === undefined && d.sell === undefined && d.reset === undefined) snd.tap();
+    && d.buy === undefined && d.sell === undefined && d.reset === undefined
+    && d.intro === undefined) snd.tap();   // 开场两枚键已有专属的起手音（`snd.begin`），不叠轻点声
 
-  if (d.intro !== undefined) return onIntro();
+  /* 开场的两枚入口（v11 · ③）：`d.intro` 是 `'new'`（我是新手）或 `'old'`（我是老手）——
+     它只决定 `s.hintOn`，叙事文案两者一样。 */
+  if (d.intro !== undefined) return onIntro(d.intro);
   if (d.loan !== undefined) return onLoan(d.loan);
+  /* 破产预警遮罩（v11 · ③）：只有一枚「知道了」。它与 `loan` 是**两回事** —— 所以按值分派，
+     `s.pending` 的判真值只用来「锁 UI」，绝不用来选遮罩。 */
+  if (d.warn !== undefined) return onWarn();
+  if (d.hint !== undefined) return onHintToggle();
   /* A6：底部 Tab 切页（`data-tab="trade|assets|settings"`）。
      ⚠️ 原来的 `data-settings`（顶栏那枚「设置」）已随 A6 撤掉 —— 设置整体成了一个页。 */
   if (d.tab !== undefined) return onTab(d.tab);
@@ -538,9 +551,11 @@ function onGodOff() {
 const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.value ?? null;
 
 /* ── 开场叙事（Batch 4 · B19）─────────────────────────────────────
-   弹窗期间时钟是停的（见 `boot`），点「开始交易」才真正开盘并放一声起手音。 */
-function onIntro() {
+   弹窗期间时钟是停的（见 `boot`），点了「我是新手 / 我是老手」才真正开盘并放一声起手音。
+   `kind`（v11 · ③）只决定 `s.hintOn`：新手 ⇒ 开提示，老手 ⇒ 关提示；叙事文案两者一致。 */
+function onIntro(kind) {
   closePicker();
+  s.hintOn = kind !== 'old';
   /* 开局写一条**真实发生的事**（Batch 5 · B24）：日志条原来是写死的「等待开盘…」兜底，
      可此刻行情其实已经在跑 —— 文案与实况自相矛盾。这条日志把空态填掉，
      时间戳取 `s.i = 0`（`pushLog` 自己取），语义正确。读档续玩不补（与开场弹窗同一判据）。 */
@@ -558,6 +573,21 @@ function onLoan(what) {
   } else {
     giveUp(s);
   }
+  after();
+}
+
+/**
+ * 破产预警遮罩上的唯一一枚「知道了」（v11 · ③）。
+ *
+ * ⚠️ 点完**时钟仍然停着**（`s.paused` 保持真），并把速度压回 1x —— 预警的全部意义就是
+ *    「让玩家有准备」；若在这里自动接着跑，尤其玩家原本开着 50x（7 个游戏日 ≈ 3 真实秒），
+ *    等于白提醒一场。恢复由玩家自己点顶栏那枚「继续」—— 与「切页即暂停 ＋ 速度归 1x」同一口径。
+ */
+function onWarn() {
+  s.pending = null;
+  s.warnAt = null;
+  s.paused = true;
+  s.speed = 1;
   after();
 }
 
@@ -595,6 +625,15 @@ function onSoundToggle() {
   const muted = !snd.isMuted();
   snd.setMuted(muted);
   if (!muted) snd.tap();
+  after();
+}
+
+/**
+ * 新手提示开关（v11 · ③）—— 与音效开关同一个写法：只翻状态，按钮外观由 `update()` 每帧同步。
+ * 它管**引导类**内容（破产预警遮罩等），**不管**开场叙事 —— 那个新老手都要看一遍。
+ */
+function onHintToggle() {
+  s.hintOn = !s.hintOn;
   after();
 }
 

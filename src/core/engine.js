@@ -14,6 +14,7 @@
 
 import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
+import { warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow, residualOfSide } from './god.js';
@@ -544,7 +545,9 @@ function collapseExchange(s, ex) {
  * 只允许在**待决态**里调用一次：`s.loaned` 一旦置真，本局再没有第二次机会。
  */
 export function takeLoan(s) {
-  if (!s.pending || s.loan) return { ok: false, why: '现在没有可借的额度' };
+  /* ⚠️ 判**值**不判真值（v11 · ③）：`'warn'`（破产预警遮罩）也是个非空的 `pending`，
+     只判 `!s.pending` 的话，一个「预警遮罩」能被借成一笔救命钱。 */
+  if (s.pending !== 'loan' || s.loan) return { ok: false, why: '现在没有可借的额度' };
 
   const amount = loanAmountAt(timeOf(s));
   const owe = amount * (1 + LOAN.ratePerDay * LOAN.days);
@@ -557,8 +560,10 @@ export function takeLoan(s) {
   return { ok: true };
 }
 
-/** 「就此收摊」—— 归零遮罩上的灰键（`data-loan="give"`）。真的结束本局。 */
+/** 「就此收摊」—— 归零遮罩上的灰键（`data-loan="give"`）。真的结束本局。
+ *  ⚠️ 只认 `'loan'`（v11 · ③）：预警遮罩不该有任何一条能结束本局的路。 */
 export function giveUp(s) {
+  if (s.pending !== 'loan') return { ok: false, why: '现在没有要放弃的东西' };
   s.pending = null;
   endGame(s, OVER.LIQUIDATED);
   return { ok: false, why: OVER.LIQUIDATED };
@@ -671,7 +676,23 @@ export function advanceOneHour(s) {
     if (t === ex.close && collapseExchange(s, ex)) return;
   }
 
-  // ⚠️ 上一步可能已经进了「待借贷」的待决态（B30）：时钟停了，后续的资金费 / 强平都不该再跑。
+  /* 破产预警（v11 · ③）：会**直接弄死人**（交易所归零）或**重创杠杆仓**（大级别崩盘）的历史事件，
+     提前 7 天（`anchors.WARN_LEAD_HOURS`）弹遮罩 ＋ 暂停，给玩家挪仓 / 降杠杆的准备时间。
+     ⚠️ **只有新手提示开着才打断**（`s.hintOn`）—— 老手在开场选了「我是老手」，自己扛。
+        但 Mt.Gox 那条**交易所级**预警日志不受它管（就在上面那个循环里，只在「你此刻就待在那家所」
+        时才出现）—— 所以老手不是完全没有提示，只是没有那记强制暂停。
+     ⚠️ **不写日志**：遮罩本身就是那条提醒；再 push 一条，Mt.Gox 那一格就会同时出现两条同义警告，
+        违反「同一事件描述一局内最多一次」。`warnAnchorAt` 用 `===` 判等，天然只命中一次。 */
+  if (s.hintOn) {
+    const a = warnAnchorAt(s.i);
+    if (a) {
+      s.warnAt = a.at;
+      s.pending = 'warn';
+      s.paused = true;
+    }
+  }
+
+  // ⚠️ 上一步可能已经进了「待借贷」或「破产预警」的待决态：时钟停了，后续的资金费 / 强平都不该再跑。
   if (s.pending) return;
 
   // 借款到期结算（B30）：排在交易所归零**之后**、资金费**之前** ——

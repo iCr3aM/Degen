@@ -17,7 +17,7 @@ import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otc
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf } from '../core/positions.js';
 import { isLoaded, rangeOf, candleAt, rawCloseAt, HOURS_PER_DAY } from '../core/market.js';
 import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
-import { anchorAt, anchorsInRange } from '../core/anchors.js';
+import { anchorAt, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { anyHeld, heldSyms, posOf } from '../core/state.js';
 import { ticksPerHour } from '../core/simulate.js';
 import { drawChart } from './chart.js';
@@ -254,12 +254,17 @@ export function mount(root) {
   sndBtn.dataset.snd = 'toggle';
   const impBtn = el('button', 'set-btn on', '开');
   impBtn.dataset.impact = 'toggle';
+  const hintBtn = el('button', 'set-btn on', '开');
+  hintBtn.dataset.hint = 'toggle';
   const setCard = el('div', 'set-card');
   const sndRow = el('div', 'set-row');
   sndRow.append(el('i', null, '音效'), sndBtn);
   const impRow = el('div', 'set-row');
   impRow.append(el('i', null, '订单冲击'), impBtn);
-  setCard.append(sndRow, impRow);
+  /* 新手提示（v11 · ③）：管破产预警遮罩这类**引导**内容（开局叙事不受它管）。 */
+  const hintRow = el('div', 'set-row');
+  hintRow.append(el('i', null, '新手提示'), hintBtn);
+  setCard.append(sndRow, impRow, hintRow);
   const resetBtn = el('button', 'act flat', '重开本局');
   resetBtn.dataset.reset = '';
   /* 按钮必须包在 `.row` 里：`.act` 自己带 `flex: 1`，直接放进纵向 flex 的 `.page` 会被拉满整屏 */
@@ -294,7 +299,7 @@ export function mount(root) {
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asTotal, asNote, asList,
-    sndBtn, impBtn,
+    sndBtn, impBtn, hintBtn,
     _levSignature: '',
     _posListSig: null,
   };
@@ -361,12 +366,14 @@ export function update(refs, s, view) {
   refs.pauseBtn.classList.toggle('on', s.paused);
   refs.pauseBtn.disabled = lockedUI;
 
-  /* 设置页那两个开关（静态 DOM，不重建）：文案与高亮**只从这里写**。
+  /* 设置页那三个开关（静态 DOM，不重建）：文案与高亮**只从这里写**。
      `view.muted` 由 `main.js` 注入（音效偏好归 `sound.js` 管，不是主状态）。 */
   refs.sndBtn.textContent = view.muted ? '关' : '开';
   refs.sndBtn.classList.toggle('on', !view.muted);
   refs.impBtn.textContent = s.impactOn ? '开' : '关';
   refs.impBtn.classList.toggle('on', s.impactOn);
+  refs.hintBtn.textContent = s.hintOn ? '开' : '关';
+  refs.hintBtn.classList.toggle('on', s.hintOn);
 
   /* 账户三格 */
   const eq = equity(s);
@@ -795,6 +802,33 @@ export function renderLoan(root, s) {
   root.append(box);
 }
 
+/**
+ * 破产预警遮罩（v11 · ③）—— 会直接弄死人 / 重创杠杆仓的历史事件，提前 7 天出现，**时钟已停**。
+ * 复用 `.over` 外壳（与借贷遮罩同一种语气：必须回答，不能点外面关掉）。
+ *
+ * ⚠️ **只陈述事实，不给行动建议**（拍板）：怎么应对是玩家的决策 —— 面板只说「7 天后有这么件事」。
+ *    所以这里只有一条 `title`（来自锚点表，不额外写文案）＋ 一枚「知道了」。
+ * ⚠️ 文案取自 `s.warnAt` 反查的锚点：`anchors.js` **不存 note**，所以能说的就是事件标题本身。
+ * ⚠️ 这一帧只画一次（`s.paused` 期间不再有 `onFrame`），不需要去重重建。
+ */
+export function renderWarn(root, s) {
+  root.querySelector('.over')?.remove();
+  const box = el('div', 'over');
+  const a = anchorOfAt(s.warnAt);
+  const title = a ? a.title : '历史事件';
+
+  box.append(
+    el('b', 'down', '破产预警'),
+    el('p', null, `${title}\n将在 7 天后发生`),
+  );
+  const ok = el('button', null, '知道了');
+  ok.dataset.warn = '';
+  const btns = el('div', 'over-btns');
+  btns.append(ok);
+  box.append(btns);
+  root.append(box);
+}
+
 export function clearOver(root) {
   root.querySelector('.over')?.remove();
 }
@@ -934,7 +968,7 @@ export function closePicker() {
  *
  * 两条刻意的选择：
  *   ① **没有暗底**（不像选所 / 设置那样铺 `.pick-back`）—— 它不是「可以点外面关掉的菜单」，
- *      是这一局的入口，必须点「开始交易」才走；
+ *      是这一局的入口，必须在两枚按钮里选一个才走；
  *   ② 弹窗期间**时钟不启动**（`main.js` 里 `clock.start()` 排在 `onIntro()` 之后），
  *      玩家读完再开盘，不浪费开局那几根 K 线。
  */
@@ -949,10 +983,15 @@ export function openIntro() {
     '2013 年 1 月，你带着 $3,000 走进门头沟。\n'
     + '这里没有救世主：行情 24 小时不睡，交易所会说没就没。\n'
     + '从门头沟活到币安，撑到 2024 年底 —— 那就叫赢。'));
-  const go = el('button', 'act long', '开始交易');
-  go.dataset.intro = '';
+  /* 两枚入口（v11 · ③）：**叙事对两者完全一致** —— 世界观不分新手老手，差别只在 `s.hintOn`。
+     「新手」开提示（破产预警遮罩这类引导），「老手」关它。按钮**不写**「跳过 / 已了解」那种字眼，
+     因为老手关掉的只是提示，不是叙事本身。 */
+  const nw = el('button', 'act long', '我是新手');
+  nw.dataset.intro = 'new';
+  const vet = el('button', 'act flat', '我是老手');
+  vet.dataset.intro = 'old';
   const btns = el('div', 'confirm-btns');
-  btns.append(go);
+  btns.append(nw, vet);
   box.append(btns);
 
   ov.append(box);
