@@ -906,11 +906,11 @@ function cancelMenuArm() {
 function enterReview() {
   closePicker();
   clock.stop();                                  // 双保险：主菜单期间它本来就没启动
-  rv = { i: 0, sym: 'BTC', speed: 100, paused: false, seen: new Set(), log: [], auto: false };
+  rv = { i: 0, sym: 'BTC', speed: 100, paused: false, seen: new Set(), log: [], auto: false, autoMode: null };
   rvAcc = 0;
   resetView('BTC');                              // 视野回默认（上次回顾留下的姿势不带到这一次）
   pushRv('开盘 · 2013 年 1 月，门头沟', 'info', 0);
-  syncRvMode();                                  // ⑧：起手就是 1 日线（巡航段看日线才看得完 12 年）
+  syncRvMode(true);                              // ⑧：起手就是 1 日线（巡航段看日线才看得完 12 年）
   rvStart();
   draw(true);
   if (!isLoaded('BTC')) ensureCoin('BTC').then(() => draw(true));
@@ -932,13 +932,22 @@ const rvSeen = () => (rv && rv.auto ? RV_ALL : rv.seen);
  *   - 巡航段（离下一个节点 > 1 游戏日 ⇒ `100x`）⇒ **1 日线**（12 年才看得完，一根一天）；
  *   - 进入节点前的减速区（`≤ 1 日` ⇒ `10x` / `1x`）⇒ **自动切回 1 小时线** ——
  *     等史实卡弹出来时，玩家看到的已经是一根根小时 K，针就在眼前。
- * ⚠️ `setMode` 幂等（档位没变直接 return），所以每一拍都调一次是**零成本**的；
- *    也正因为这样，「卡一关掉、速度回到 100x」会自动切回日线，不必另写一支。
  * ⚠️ 判据走 `rvSeen()`（本轮 ②）：开关打开时全部算「已过」⇒ 全程 100x ＋ 日线。
+ *
+ * ⚠️ **`force` 与「区间记账」**（2026-10-01 修）：`rvStep` 每一拍（50ms）都会调到这里，
+ *    原来无条件 `setMode` ⇒ 玩家在回顾里点那枚粒度小字（`30秒` / `1日` / `1h`），
+ *    下一拍就被按回自动档 ⇒ 表现为「点小时线/30 秒线立刻被打回日线」。
+ *    现在按 `rv.autoMode` 记住**上一次自动落下的档**：
+ *      - `force`（进回顾 / 切币 / 跳年 / 开关自动）⇒ 一定落一次；
+ *      - 非 `force`（`rvStep` 那条自动路径）⇒ **只在自动档自己变了**（巡航区 ⇄ 减速区）时落，
+ *        同一区间内玩家的手选档因此能留住（含捏合进 `30秒`）。
  */
-function syncRvMode() {
+function syncRvMode(force = false) {
   if (!rv) return;
-  setMode(rv.sym, speedAt(rv.i, rvSeen()) > 24 ? '1d' : '1h', rv.i, chartW());
+  const want = speedAt(rv.i, rvSeen()) > 24 ? '1d' : '1h';
+  if (!force && rv.autoMode === want) return;
+  rv.autoMode = want;
+  setMode(rv.sym, want, rv.i, chartW());
 }
 
 /**
@@ -957,7 +966,7 @@ function reviewFocus(node) {
       if (!isLoaded(sym)) ensureCoin(sym).then(() => draw(true));
     }
   }
-  syncRvMode();
+  syncRvMode(true);                              // 换币 ⇒ 新币的视野是新开的，按新币重新落一次档
 }
 
 /** 退出回顾：停掉那支专属时钟，回主菜单（方案 §2：退出后回到主菜单） */
@@ -1067,7 +1076,7 @@ function onReview(kind) {
   if (kind === 'all') {
     rv.auto = !rv.auto;
     rvAcc = 0;
-    syncRvMode();                                  // 开 ⇒ 全程日线；关 ⇒ 回到按节点减速
+    syncRvMode(true);                              // 开 ⇒ 全程日线；关 ⇒ 回到按节点减速
     draw(true);
     return;
   }
@@ -1094,7 +1103,7 @@ function jumpYear(y) {
   resetView(rv.sym);                               // 跳完视野跟到新的「当前」
   rv.log.length = 0;                               // ③ 清空（就地清，别换数组 —— 渲染层持有的就是它）
   pushRv(`跳到 ${y} 年`, 'info', rv.i);
-  syncRvMode();                                    // ⑧：跳回巡航段 ⇒ 粒度跟着回日线
+  syncRvMode(true);                                // ⑧：跳回巡航段 ⇒ 粒度跟着回日线
   draw(true);
 }
 
@@ -1105,7 +1114,7 @@ function switchRvSym(sym) {
   if (c && GAME.start + rv.i * HOUR_MS < c.unlock) return;
   rv.sym = sym;
   resetView(sym);
-  syncRvMode();                                    // ⑧：切币不改变速度，但档位要按新币的边界重新夹一次
+  syncRvMode(true);                                // ⑧：切币不改变速度，但档位要按新币的边界重新夹一次
   draw(true);
   if (!isLoaded(sym)) ensureCoin(sym).then(() => draw(true));
 }

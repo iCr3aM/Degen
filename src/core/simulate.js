@@ -143,8 +143,14 @@ function spikeAt(seed, symH, hour, slot) {
  * 一根小时的**细刻度成交量权重**：长度 N，`Σw = 1`（乘上该小时的真实成交额即为各刻度的量）。
  *
  * 口径（方案 §5.3）：**U 型日内曲线 × 种子噪声，再归一**——
- *   `w[i] ∝ U((i+0.5)/N) · (1 + η·z[i])`，`U(x) = 0.5 + 1.5·(2x−1)²`（两端 2、中间 0.5）。
- * U 型量曲线有理论与实证基础（Jain & Joh 1988 / Admati & Pfleiderer 1988）。
+ *   `w[i] ∝ U(x) · (1 + η·z[i])`，`x` ＝ **日内位置**，`U(x) = 0.5 + 1.5·(2x−1)²`（两端 2、中间 0.5）。
+ *
+ * ⚠️ **相位是「日内」不是「小时内」**（2026-10-01 修）：Jain & Joh 1988 / Admati & Pfleiderer 1988
+ *    讲的 U 型是**日内**尺度（每天开盘/收盘活跃、午间清淡）。原来把它按在小时内部
+ *    （`x = (i+0.5)/N`）—— 每根小时各自归一化后，相邻两根 tick 同时落在两端（u ≈ 2）
+ *    ⇒ 细刻度档在每个**整点**都长出一座尖峰，一天 24 座、天天等高。
+ *    改成日内相位后曲线跨小时连续，整点不再有角；小时内部近乎平坦（噪声说了算），
+ *    而「这一小时到底有多少量」交给 `view.js` 乘的**真实份额**（那才是真数据）。
  *
  * @returns {Float64Array} 长度 N，全部 > 0、和 ≈ 1（误差 1e-12 量级）
  */
@@ -154,10 +160,13 @@ export function weightsOf(seed, sym, hour) {
   if (hit) { volCache.delete(key); volCache.set(key, hit); return hit; }
 
   const symH = hashStr(sym);
+  /* 日内相位：`hour` 是自 `GAME.start`（2013-01-01T00:00Z）起的小时序号 ⇒ `hour % 24` 就是 UTC 时钟 */
+  const hd = ((hour % 24) + 24) % 24;
   const w = new Float64Array(N);
   let sum = 0;
   for (let i = 0; i < N; i++) {
-    const e = 2 * ((i + 0.5) / N) - 1;                       // −1 … 1
+    const x = (hd + (i + 0.5) / N) / 24;                     // 0 … 1 —— 日内位置（跨小时连续）
+    const e = 2 * x - 1;                                     // −1 … 1
     const u = 0.5 + 1.5 * e * e;                             // U 型：两端 2、中间 0.5
     const z = rand(seed, symH, hour, i, CH_VOLUME) * 2 - 1;   // [−1, 1)
     const v = u * (1 + VOL_ETA * z);

@@ -194,7 +194,7 @@ function fineWindow(sym, v, cssW, from, right, seed, liqTick) {
   let liqK = -1;               // 「致命那一针」所在的桶（= 它在 `candles` 里的下标）
   let t = from;
   /* 相邻 tick 绝大多数落在同一小时里 ⇒ 只在该小时变化时取一次路径与量权重（LRU 命中，几乎零成本） */
-  let lastHour = -1, path = null, w = null, dayLiq = 0;
+  let lastHour = -1, path = null, w = null, hourUsd = 0;
 
   while (t <= right) {
     const hh = Math.floor(t / N);
@@ -209,7 +209,10 @@ function fineWindow(sym, v, cssW, from, right, seed, liqTick) {
       const cc = candleAt(sym, hh);
       path = cc ? pathOf(seed, sym, hh, cc) : null;
       w = cc ? weightsOf(seed, sym, hh) : null;
-      dayLiq = liqOf(sym, dayIndexOf(hh)) || 0;
+      /* ⚠️ 取的是该小时的**真实**成交额 ＝ 真实份额 × 当日流动性 —— 与粗档同一口径。
+         2026-10-01 修：原来乘的是 `dayLiq`，而 `Σw ≡ 1` ⇒ 每小时总量**恒等** ⇒
+         细档量柱「每小时一样高」，真行情的量差被整段丢掉（注释早写对了，代码没跟上）。 */
+      hourUsd = (cc ? volumeAt(sym, hh) : 0) * (liqOf(sym, dayIndexOf(hh)) || 0);
     }
 
     let o = 0, h = -Infinity, l = Infinity, c = 0, vol = 0, any = false;
@@ -223,7 +226,7 @@ function fineWindow(sym, v, cssW, from, right, seed, liqTick) {
       if (z > h) h = z;
       if (z < l) l = z;
       c = z;
-      vol += w[j] * dayLiq;
+      vol += w[j] * hourUsd;
     }
     if (!any) continue;                        // `t` 已被内层循环推到 `tEnd + 1`，不会卡住
     if (liqTick != null && liqTick >= t0 && liqTick <= tEnd) liqK = candles.length;
