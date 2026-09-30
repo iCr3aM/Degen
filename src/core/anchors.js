@@ -13,22 +13,23 @@
  */
 
 import { GAME, HOUR_MS } from './config.js';
-import { rawCloseAt, HOURS_PER_DAY } from './market.js';
-import { fmtPct } from './format.js';
 
 /** 新闻在日志条上停留的游戏小时数。1 游戏日 —— 再长就会盖掉玩家自己的操作反馈。 */
 export const NEWS_HOURS = 24;
 
 /**
- * 新闻的**播报延迟**（游戏小时 · 口径 D，2026-09-29 拍板）。
+ * 新闻的**播报延迟**（游戏小时）—— **1**，「事情发生之后 1 小时就播报」（用户 2026-09-30 拍板）。
  *
- * ⚠️ 为什么必须有它：新闻条的涨跌幅报的是**事件当天的极端值**，而这个数要等当天 24 根走完才算得出来。
- *    把新闻挂在 `at` 那一刻，等于在事件当天早上就把「当天最深跌 39%」提前告诉玩家 —— 那是**前视**。
- *    **事情发生了才会报道**：窗口整体后移一天。
+ * ⚠️ 它与「新闻不再带涨跌幅后缀」是**同一枚硬币的两面**：后缀那个数（如「｜ BTC −39%」）要等当天
+ *    24 根 K 线走完才算得出来，而「互联网时代新闻都很快」 ⇒ 二者不可兼得。拍板结果 =
+ *    **只报标题、不要数字**（`newsTextOf` / `newsMove` 随之整块删除）。
  * ⚠️ 只有**新闻**后移。K 线标记（`anchorsInRange`）与链上拥堵（`congestionAnchors`）仍锚在 `at`：
  *    那两处要的是「事情发生在哪里」（标记画在事件那天、链就是那天堵的），不是「什么时候被报道」。
+ * ⚠️ 锚点是**日粒度**（`t` 一律 UTC 零点）⇒ 实际播报时刻是**事件当天 01:00 UTC**。标题里那些
+ *    「当天结论」（如「单日腰斩」「破 $2,000」）因此会略微早于行情本身出现 —— 这是拍板时接受的
+ *    取舍：换来的是**数字前视从根上消失**，玩家仍得自己看盘判断。
  */
-export const NEWS_DELAY = 24;
+export const NEWS_DELAY = 1;
 
 /**
  * 锚点表。字段：
@@ -43,25 +44,25 @@ export const NEWS_DELAY = 24;
  *    把 2016-09 的 ETH DoS 算进 BTC 的到账时间在因果上是错的 —— 如实留白比编一个数好。
  */
 export const ANCHORS = [
-  { t: Date.UTC(2013, 2, 16),  title: '塞浦路斯银行危机，BTC 冲上 $260',      chain: 'btc',  congestion: null },
-  { t: Date.UTC(2013, 10, 18), title: '美国听证会放行，BTC 单日翻倍',         chain: 'btc',  congestion: null },
+  { t: Date.UTC(2013, 3, 10),  title: '塞浦路斯银行危机，BTC 冲上 $260',      chain: 'btc',  congestion: null },
+  { t: Date.UTC(2013, 10, 18), title: '美国听证会放行，BTC 冲上 $900',        chain: 'btc',  congestion: null },
   { t: Date.UTC(2014, 1, 25),  title: 'Mt.Gox 被盗 85 万枚 BTC，停摆',        chain: 'btc',  congestion: null, warn: true },
   { t: Date.UTC(2015, 6, 7),   title: 'BTC 链被灌垃圾交易，转账排队数小时',    chain: 'btc',  congestion: { add: 40, days: 10, ramp: 2,   fall: 4 } },
-  { t: Date.UTC(2016, 5, 17),  title: 'The DAO 被盗，以太坊分叉出 ETC',        chain: 'eth',  congestion: null, warn: true },
+  { t: Date.UTC(2016, 5, 17),  title: 'The DAO 被盗，360 万枚 ETH 被转走',      chain: 'eth',  congestion: null, warn: true },
   { t: Date.UTC(2016, 6, 9),   title: '比特币减半：区块奖励 25 → 12.5',        chain: 'btc',  congestion: null },
-  { t: Date.UTC(2016, 8, 22),  title: '以太坊遭 DoS 攻击，区块处理变慢',        chain: 'eth',  congestion: null },
-  { t: Date.UTC(2017, 4, 1),   title: 'BTC 破 $2,000，链上首次大拥堵',         chain: 'btc',  congestion: { add: 40, days: 10, ramp: 2,   fall: 4 } },
+  { t: Date.UTC(2016, 8, 18),  title: '以太坊遭 DoS 攻击，区块处理变慢',        chain: 'eth',  congestion: null },
+  { t: Date.UTC(2017, 4, 20),  title: 'BTC 破 $2,000，链上首次大拥堵',         chain: 'btc',  congestion: { add: 40, days: 10, ramp: 2,   fall: 4 } },
   { t: Date.UTC(2017, 7, 1),   title: '扩容硬分叉，1:1 空投 BCH',              chain: 'btc',  congestion: null },
   { t: Date.UTC(2017, 11, 1), title: 'ICO 狂潮 ＋ 加密猫把链堵死',            chain: 'btc',  congestion: { add: 70, days: 10, ramp: 2,   fall: 4 } },
-  { t: Date.UTC(2018, 11, 15), title: '泡沫破裂：BTC 跌到 $3,129',            chain: 'btc',  congestion: null, warn: true },
+  { t: Date.UTC(2018, 11, 15), title: '泡沫破裂：BTC 跌到 $3,122',            chain: 'btc',  congestion: null, warn: true },
   { t: Date.UTC(2020, 2, 12),  title: '新冠崩盘，BTC 单日腰斩',                chain: 'btc',  congestion: null, warn: true },
   { t: Date.UTC(2020, 4, 11),  title: '比特币减半：区块奖励 12.5 → 6.25',      chain: 'btc',  congestion: null },
-  { t: Date.UTC(2021, 3, 1),   title: '牛市高峰，BTC 破 $64,000',              chain: 'btc',  congestion: { add: 45, days: 7,  ramp: 1.5, fall: 2.5 } },
+  { t: Date.UTC(2021, 3, 14),  title: '牛市高峰，BTC 破 $64,000',              chain: 'btc',  congestion: { add: 45, days: 7,  ramp: 1.5, fall: 2.5 } },
   { t: Date.UTC(2021, 10, 10), title: '双顶：BTC 创 $69,000 新高',             chain: 'btc',  congestion: null },
   { t: Date.UTC(2022, 4, 9),   title: 'Luna 崩盘，$80 一路归零',               chain: null,   congestion: null, warn: true },
-  { t: Date.UTC(2022, 10, 11), title: 'FTX 破产，BTC 跌到 $15,500',            chain: null,   congestion: null, warn: true },
+  { t: Date.UTC(2022, 10, 11), title: 'FTX 破产，第二大交易所倒下',            chain: null,   congestion: null, warn: true },
   { t: Date.UTC(2023, 4, 7),   title: 'Ordinals 铭文潮，手续费暴涨',           chain: 'btc',  congestion: { add: 40, days: 14, ramp: 2,   fall: 4 } },
-  { t: Date.UTC(2024, 0, 10),  title: '现货 ETF 获批，BTC 重回 $45,000',      chain: 'btc',  congestion: null },
+  { t: Date.UTC(2024, 0, 10),  title: '现货 ETF 获批，BTC 重回 $46,000',      chain: 'btc',  congestion: null },
   { t: Date.UTC(2024, 3, 20),  title: '减半 ＋ Runes 上线，手续费暴涨',         chain: 'btc',  congestion: { add: 45, days: 7,  ramp: 2,   fall: 4 } },
 ];
 
@@ -78,7 +79,7 @@ export const allAnchors = () => ENTRIES;
 
 /**
  * 第 `i` 根 K 线是否落在某条锚点的**新闻窗口**内（新闻用）。
- * 窗口 = `[at + NEWS_DELAY, at + NEWS_DELAY + NEWS_HOURS)` —— 后移一天，见 `NEWS_DELAY`。
+ * 窗口 = `[at + NEWS_DELAY, at + NEWS_DELAY + NEWS_HOURS)` —— 事件后 1 小时开始，见 `NEWS_DELAY`。
  * 锚点稀疏 ⇒ 至多命中一条，线性扫绰绰有余。
  * @returns {object|null} 命中的锚点（含 `at`），没命中返回 null
  */
@@ -100,39 +101,6 @@ export function newsStartAt(i) {
   for (const a of ENTRIES) if (i === a.at + NEWS_DELAY) return a;
   return null;
 }
-
-/**
- * 新闻条的「当天涨跌幅」后缀（P2-C）。
- *
- * **方向随收盘走** —— 当天收红就报最高涨（「单日翻倍」是 +40%，而不是「最深 −0.2%」），
- * 收绿就报最深跌（Mt.Gox / 新冠崩盘那几条才显示得出 −19% / −39%）。
- * 只报「最深跌」会把上涨类锚点全报成近乎零的噪声（实测 20 条里近一半与标题相反）。
- *
- * ⚠️ **无前视**：这个数要等当天 24 根全部走完才存在，所以新闻整段后移一天（`NEWS_DELAY`）。
- * ⚠️ 走 `rawCloseAt`（不含价格位移）：那是玩家自己的单，与「历史上发生了什么」无关。
- * 取不到（该币此刻还没上线 / 行情未加载）时整段省略 —— 不报一个半截的数。
- */
-export function newsMove(news) {
-  const sym = news.chain === 'eth' ? 'ETH' : 'BTC';
-  const base = rawCloseAt(sym, news.at - 1);
-  if (!(base > 0)) return '';
-
-  let hi = -Infinity;
-  let lo = Infinity;
-  let last = 0;
-  for (let k = 0; k < HOURS_PER_DAY; k++) {
-    const c = rawCloseAt(sym, news.at + k);
-    if (!(c > 0)) return '';
-    const r = c / base - 1;
-    if (r > hi) hi = r;
-    if (r < lo) lo = r;
-    last = r;
-  }
-  return ` ｜ ${sym} ${fmtPct(last >= 0 ? hi : lo, 1)}`;
-}
-
-/** 新闻的完整正文 —— **写入 `s.log` 的那一句就是日志条上显示的那一句**（同一份真源，两处共用） */
-export const newsTextOf = news => `${news.title}${newsMove(news)}`;
 
 /**
  * 小时序号落在 `[lo, hi]` 内的锚点（K 线标记用）。

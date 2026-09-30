@@ -14,7 +14,7 @@
 
 import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, OTC, SUPPLY_CAP, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
-import { newsStartAt, newsTextOf, warnAnchorAt } from './anchors.js';
+import { newsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, depthOf, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow, residualOfSide } from './god.js';
@@ -1151,7 +1151,7 @@ export function advanceOneHour(s) {
         日志条上显示的那句。新闻放在最前 —— 它是个 24 小时的「填充态」，该让位给同一小时里
         更具体的事件（与 P2-C「新闻让位于更新的日志」同一条口径）。 */
   const news = newsStartAt(s.i);
-  if (news) pushLog(s, newsTextOf(news), 'news');
+  if (news) pushLog(s, news.title, 'news');
 
   for (const ex of EXCHANGES) {
     /* 开张：只报「开局之后才开」的所 —— Mt.Gox / Bitfinex 在 2013-01-01 就在，
@@ -1186,11 +1186,14 @@ export function advanceOneHour(s) {
 
   /* 通道自动回退（§15.3）：玩家选了 OTC，但权益跌破门槛 / 换到了还没开通 OTC 的币时，
      `chanOf` 会**悄悄**退回盘口。它是个**持久状态**（不是某一根的时刻），没有 `===` 可判，
-     所以拿「日志里已经有这句话」当闩锁 —— 零状态改动、不动 `STATE_VERSION`。
-     ⚠️ 已知代价：这句话一旦被 60 条新日志顶出 `s.log`，条件仍成立时会**再报一次**。
-        权益都掉回 $500 万门槛下了，这是小概率末期场景，先不为它加状态位。 */
-  if (s.chan === 'otc' && chanOf(s) === 'book' && !s.log.some(e => e.text === OTC_OFF)) {
-    pushLog(s, OTC_OFF, 'bad');
+     所以用 `s.otcOff` 闩锁 —— **一次跌落只报一条**（用户 2026-09-30 明确「重复的都要消除」）。
+     ⚠️ 为什么不是「日志里已经有这句话」那种闩锁：那句话会被 60 条新日志顶出 `s.log`，
+        条件仍成立时会再报一次 —— 正是用户要求消除的那种重复。
+     ⚠️ 回到「OTC 可用」或「玩家自己切回盘口」时**解除闩锁**，这样下一次真的跌落还能再报一次。 */
+  if (s.chan === 'otc' && chanOf(s) === 'book') {
+    if (!s.otcOff) { s.otcOff = true; pushLog(s, OTC_OFF, 'bad'); }
+  } else if (s.otcOff) {
+    s.otcOff = false;
   }
 
   /* 破产预警（v11 · ③）：会**直接弄死人**（交易所归零）或**重创杠杆仓**（大级别崩盘）的历史事件，

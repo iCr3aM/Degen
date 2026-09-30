@@ -130,6 +130,14 @@ export function createState() {
      */
     chan: 'book',
 
+    /**
+     * OTC 通道**自动回退**的闩锁（§15.3）—— 真 ⇒ 本局已经为「当前这次跌落」报过一条
+     * `场外通道关闭 ｜ 已自动切回盘口`，不再重复报。回到 OTC 可用 / 玩家自己切回盘口时由引擎清零。
+     * ⚠️ 旧存档没有这个键 ⇒ `undefined`（假），语义正好是「还没报过」，所以**不用升 `STATE_VERSION`**
+     *    （`save.js` 的 `shaped()` 只检查列出的键，不拒绝多余键）。
+     */
+    otcOff: false,
+
     /** 玩家选择的杠杆（会在档位表里夹取，见 `config.leverageOptionsAt`） */
     lev: 1,
 
