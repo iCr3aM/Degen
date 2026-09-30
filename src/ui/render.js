@@ -568,7 +568,8 @@ export function update(refs, s, view) {
   /* 副行两个数**都带符号**（Batch 4 · B17）：正绿负红，与持仓盈亏同一口径。
      颜色写在这里而不是 CSS 默认值 —— 见 `style.css` 里 `.hud .cell u.up` 那段注释。 */
   refs.eqSub.textContent = `已实现 ${moneySlot('realized', s.realized, { sign: true })}`;
-  refs.eqSub.className = 'num ' + (s.realized >= 0 ? 'up' : 'down');
+  /* `sign` ＝ 色盲第二通道（B6-c · §7.6）：在 `.up` / `.down` 的颜色之外再挂一枚 ▲/▼ */
+  refs.eqSub.className = 'num sign ' + (s.realized >= 0 ? 'up' : 'down');
 
   refs.cashVal.textContent = moneySlot('cash', available(s));
   /* 副行优先级：**有贷款时负债永远最该出现**（B30）—— 它是必须还的一笔钱，
@@ -580,7 +581,7 @@ export function update(refs, s, view) {
   } else if (anyHeld(s)) {
     const u = totalUnrealized(s);
     refs.cashSub.textContent = `未实现 ${moneySlot('unreal', u, { sign: true })}`;
-    refs.cashSub.className = 'num ' + (u >= 0 ? 'up' : 'down');
+    refs.cashSub.className = 'num sign ' + (u >= 0 ? 'up' : 'down');
   } else {
     refs.cashSub.textContent = `初始 ${fmtMoney(GAME.cash)}`;
     refs.cashSub.className = 'num mut';
@@ -658,7 +659,7 @@ export function update(refs, s, view) {
     refs.posSide.className = 'num ' + (p.side === 'long' ? 'side-long' : 'side-short');
     const pnl = unrealizedOf(s, p.sym);
     refs.posPnl.textContent = moneySlot('pospnl', pnl, { sign: true });
-    refs.posPnl.className = 'num ' + (pnl >= 0 ? 'up' : 'down');
+    refs.posPnl.className = 'num sign ' + (pnl >= 0 ? 'up' : 'down');
     /* 第三格**只剩保证金率**（Batch 2 · B9，2026-09-29）：原来这里是「保证金率 / 强平价」，
        格宽只有 1/3 屏，两个数一串必然被 `text-overflow` 截掉尾巴（用户实机发现）。
        强平价已搬到 K 线的开仓线左端标签，这一格终于能完整放下一个数。
@@ -858,10 +859,25 @@ export function update(refs, s, view) {
     refs.asUsdSub.textContent = share(usd);
     refs.asUsdtSub.textContent = share(usdt);
 
-    refs.asTotal.textContent = moneySlot('eq', eq);
-    refs.asTotal.className = 'num ' + (eq >= GAME.cash ? 'up' : 'down');
+    /* 总资产（B6-c · §7.12 ④⑤）：全屏**唯一的主数值**（18px）＋ 换值闪一下。
+       ⚠️ 这里改用 `classList.toggle` 而不是整体重写 `className` —— 整体重写会把下面刚挂上的
+          `.flash` 一起擦掉（每帧擦一次 ⇒ 150ms 的动画只能播一帧）。 */
+    refs.asTotal.classList.toggle('up', eq >= GAME.cash);
+    refs.asTotal.classList.toggle('down', eq < GAME.cash);
+    const totalText = moneySlot('eq', eq);
+    if (totalText !== refs._totalText) {
+      refs._totalText = totalText;
+      refs.asTotal.textContent = totalText;
+      /* 重挂 `.flash` 才会重播动画：`remove` 之后必须**强制一次样式重算**，否则同一帧内
+         `add` 回去浏览器会认为「没变过」。这一下同步 reflow 只发生在**显示值真的变了**的帧上
+         （`moneySlot` 自带门槛迟滞，数字抖动不会一直触发）。 */
+      refs.asTotal.classList.remove('flash');
+      void refs.asTotal.offsetWidth;
+      refs.asTotal.classList.add('flash');
+    }
     refs.asNote.textContent = `已实现 ${moneySlot('realized', s.realized, { sign: true })}`;
-    refs.asNote.className = 'num ' + (s.realized >= 0 ? 'up' : 'down');
+    /* 资产页这一格是 HUD「已实现」的**同款读数**，所以一并走色盲第二通道（§7.6 连带）。 */
+    refs.asNote.className = 'num sign ' + (s.realized >= 0 ? 'up' : 'down');
 
     /* ② 资金曲线（方案 §4）：与 K 线同一个坑 —— 它是 canvas，容器一隐藏就量成 0，
        所以只在资产页（此刻必然可见）画。基准线恒取**开局资金**（$3,000）：
@@ -1063,7 +1079,7 @@ function buildPosList(box, s) {
       row.append(
         el('b', null, sym),
         el('span', 'mut', `${dirText} · 开仓 ${fmtLogPrice(p.entry)}`),
-        el('b', 'num ' + (pnl >= 0 ? 'up' : 'down'), fmtMoney(pnl, { sign: true })),
+        el('b', 'num sign ' + (pnl >= 0 ? 'up' : 'down'), fmtMoney(pnl, { sign: true })),
       );
       card.append(row);
     }

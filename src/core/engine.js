@@ -467,7 +467,10 @@ export function closeTrade(s, why = '手动') {
         账目一个字没动。 */
   const fees = (pos.openFee ?? 0) + r.fee;
   const net = r.pnl - fees;
-  pushLog(s, `平仓 ${sym} ${pos.lev}x｜${net >= 0 ? '盈利' : '亏损'} ${fmtMoneyShort(net)} · ${why}｜手续费 ${fmtMoneyShort(fees)}${tag}`,
+  /* 盈亏串前那枚 ▲/▼ 是**色盲第二通道**（B6-c · §7.6 的第四处）：日志正文本来就整段按
+     `ok` / `bad` 上色，红绿色盲读不出「盈利」与「亏损」的色差 —— 符号是同一件事的形状版。
+     它是纯文本（core 不认识 UI，不挂 `.sign` 伪元素），与「盈利 / 亏损」两个字面并存。 */
+  pushLog(s, `平仓 ${sym} ${pos.lev}x｜${net >= 0 ? '盈利 ▲' : '亏损 ▼'} ${fmtMoneyShort(net)} · ${why}｜手续费 ${fmtMoneyShort(fees)}${tag}`,
     net >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
 

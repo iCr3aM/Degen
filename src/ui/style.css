@@ -113,15 +113,31 @@ b, strong { font-weight: 600; }
 
 /* 44px **全部从 K 线区扣**（§6.1）：固定块合计 431 → 475px，K 线区 405 → 361px（390×844）。
    实机若觉得挤先降到 40px，**不动 HUD / 持仓条**。
-   按钮各自带上边框那道 1px 分隔线（选中态用 `inset` 阴影加粗到 2px，不占布局、不跳）。 */
-.tabs { flex: none; display: flex; height: 44px; }
+   按钮各自带上边框那道 1px 分隔线（选中态用 `inset` 阴影加粗到 2px，不占布局、不跳）。
+   ⚠️ B6-c 起那道分隔线改由 `.tabs::before` 画（见下），不再挂在 `.tab` 的 `border-top` 上。 */
+.tabs { flex: none; display: flex; height: 44px; position: relative; }
+/* B6-c（§7.8 · 1px 线试点）：DPR ≥ 2 时 1px 会被描成 2 个物理像素，看起来比别处粗。
+   **只在这一道试点**（它最长、最显眼、只有一条）—— 伪元素画满宽 1px 再 `scaleY(.5)` 压成半像素；
+   卡片外框面太广、收益低、回归成本高，**不动**。
+   ⚠️ 原来这道线是 `.tab` 各自的 `border-top`（三枚拼成一条），改用 `.tabs::before` 后
+      要把它从 `.tab` 上撤掉（见下），否则会叠成 1.5px。 */
+.tabs::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--line);
+  transform: scaleY(.5);
+  transform-origin: top;
+}
 .tab {
   flex: 1;
   min-width: 0;
   height: 44px;
   background: none;
   border: 0;
-  border-top: 1px solid var(--line);
   color: var(--mut);
   font: inherit;
   font-size: 12px;
@@ -521,6 +537,11 @@ b, strong { font-weight: 600; }
   font-size: 16px;
   font-weight: 600;
   cursor: pointer;
+  /* B6-c 动效层（§7.5 落点 2）：按压时补一记轻微缩小 —— 只动 `transform` / `filter`，
+     两者都不触发布局（不动 width / height / top，50x 下才不掉帧）。
+     ⚠️ `.act` 由 `mount()` 一次建好、**不参与每帧重建**，所以 transition 挂在这里是安全的
+        （速度档 / 杠杆档那种每帧按签名重建的节点只能挂在 `.on` 上，见文件末尾那段）。 */
+  transition: transform var(--dur-fast) var(--ease), filter var(--dur-fast) var(--ease);
 }
 .act.long { background: var(--up); color: #04140f; }
 .act.short { background: var(--down); color: #1a0508; }
@@ -536,8 +557,8 @@ b, strong { font-weight: 600; }
   font-size: 14px;
 }
 .act.chan.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-/* 主按钮是实心块，按压态不能用 `background` 顶掉语义色 ⇒ 压暗一档 */
-.act:active { filter: brightness(.88); }
+/* 主按钮是实心块，按压态不能用 `background` 顶掉语义色 ⇒ 压暗一档 ＋ 轻微缩小（B6-c） */
+.act:active { filter: brightness(.88); transform: scale(.985); }
 .act:disabled { opacity: .45; }
 /* 同上（v10 · ②）：「有、但此刻点不动」的主操作键（现货空单借不到币时的「卖出」）。
    实心色块没有边框可虚，改用**压暗 ＋ 去色**——把红/绿压成灰，一眼看出它不是一枚能按的键。
@@ -573,6 +594,12 @@ b, strong { font-weight: 600; }
 /* 总资产卡：复用交易页 HUD 那副格子（同样的 `.cell` 三行结构，字色 / 行高全部一致）。
    单列 —— 「合计」只有一格，拆两列没有意义（分列那件事已由上面 `asSlots` 那两格承担）。 */
 .hud.one { grid-template-columns: 1fr; }
+/* B6-c（§7.12 ④ · 主数值提到 18px）：**全屏唯一的主数值**，只给这一格。
+   ⚠️ 格子高度必须跟着长：数值行 20 → 24px，内容 48 → 52 ⇒ 66 → **70px**。
+      资产页整页可滚（`.page` 那条），这 4px 只占页面滚动、不占 K 线高度 —— 与交易页的账无关。
+      18px 下 `$1,234,567.89` 约 130px，格子可用宽 340px（390 屏），不会截尾。 */
+.hud.one .cell { height: 70px; }
+.hud.one .cell b { font-size: 18px; line-height: 24px; }
 
 /* 资金曲线（v13 · 方案 §4）：canvas 固定高 **110px**，它是**复盘图**，不参与纵向节奏、
    也不做任何手势（不像 K 线区那样是全屏唯一弹性块 —— 资产页整页可滚，见 `.page` 那条）。
@@ -1025,3 +1052,53 @@ button { user-select: none; -webkit-user-select: none; }
   html, body { font-size: 12px; }
   .hud .cell b { font-size: 11px; }
 }
+
+/* ══════════════ B6-c：动效层（§7.5） ══════════════
+   本项目原本**一处 transition 都没有**（全静止），这里按 §7.5 的五个落点逐条补上。
+
+   三条纪律（写在这里，改之前先读）：
+     ① **只动 `opacity` / `transform` / 颜色**，不动 `width / height / top`（后者每帧触发布局，
+        50x 倍速下会掉帧）；
+     ② **只在 `.on` 类切换处挂 transition** —— `update()` 里按签名重建的节点（速度档、杠杆档、
+        持仓列表、K 线左上角）**插入那一帧就会播一次**，那就是「界面一直在闪」；
+     ③ `prefers-reduced-motion: reduce` 下整批压到 0.01ms（见上面那个 media 块）。 */
+
+/* 落点 1：`.tab` / `.sym` / `.opt` / `.ic` / `.set-btn` 的**选中态**。
+   ⚠️ 挂在 `.on` 上而不是基类上 —— 正是纪律 ②：`.opt` 里的速度档 / 杠杆档每帧重建，
+      挂基类会让它们每次重建都闪一下。代价是**取消选中那一下是瞬时的**（没有 `.on` 就没有
+      这条 transition），观感上「选中是渐亮的、取消是干脆的」，可以接受。 */
+.tab.on, .sym.on, .opt.on, .ic.on, .set-btn.on {
+  transition: color var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease),
+              background-color var(--dur-fast) var(--ease);
+}
+
+/* 落点 3：切页只**淡入**（不位移 —— 位移会让 K 线区在动画期间尺寸不稳）。
+   用 `animation` 而不是 `transition`：`.page` 是靠 `display:none ⇄ flex` 切的，
+   display 不参与过渡，只有插入式动画能在「刚显示出来」那一帧跑起来。 */
+.page.on { animation: pageIn .12s var(--ease); }
+@keyframes pageIn { from { opacity: 0; } }
+
+/* 落点 4：弹层的暗底与面板一起淡入。
+   ⚠️ 这些节点都是**每次打开新建、关闭即 `remove()`**（见 `render.js` 的 pickExchange /
+      confirmExchange / openLog / renderOver / openMenu），所以「插入时播一次」正好等于
+      「每次打开都淡入」，不存在纪律 ② 的每帧重建问题。
+   ⚠️ 不挂 `#overlay` 本身 —— 它是 `index.html` 里常驻的空容器，只在开机那一帧插进去，
+      挂它等于永不播放。 */
+.pick-back, .logs, .confirm, .over, .menu-back { animation: fadeIn var(--dur) var(--ease); }
+@keyframes fadeIn { from { opacity: 0; } }
+
+/* 落点 5：资产页「总资产」换值 —— **只这一格**（§7.12 ⑤）。
+   主色淡底一闪即退；由 render.js 在检测到数值变化的那些帧上重挂 `.flash` 触发。
+   用主色而不是涨/跌色：它表达的是「数变了」，不是「涨了」（涨跌已由文字颜色表达）。 */
+.hud.one .cell b.flash { animation: totalFlash .15s var(--ease); }
+@keyframes totalFlash { from { background: var(--accent-soft); } }
+
+/* 色盲第二通道（B6-c · §7.6）：给**有符号语义**的盈亏数字挂一枚 ▲/▼ ——
+   颜色之外多一条**形状**线索，红绿色盲同样读得出来。
+   形式 = `::before` ＋ `.85em`（不占额外节点、跟着文字颜色走，颜色由 `.up` / `.down` 给）。
+   ⚠️ 只给点名的四处挂 `.sign`（持仓条未实现盈亏 / 资产页持仓行 / HUD 副行两个数 / 日志串）；
+      **不挂**占比、市值、流通量、涨跌幅与「权益 vs 开局」那两格 —— 它们没有盈亏语义。
+   ⚠️ 日志串是纯文本（`pushLog` 在 core 里拼的），那里直接写字面量符号，不走这条规则。 */
+.sign.up::before { content: '▲ '; font-size: .85em; }
+.sign.down::before { content: '▼ '; font-size: .85em; }
