@@ -942,7 +942,11 @@ function collapseExchange(s, ex) {
  * @returns {boolean} 是否因此结束了本局
  */
 function applyHackCut(s, ex) {
-  const book = bookOf(s, ex.id);
+  /* ⚠️ 必须是 `ensureBook`：`bookOf` 在「这所还没去过」时返回**冻结的** `ZERO_BOOK`，
+     下面那两行 ×= 会直接抛 `TypeError: Cannot assign to read only property`。
+     只要玩家在 2016-08-02 之前没去过 Bitfinex（例如 Mt.Gox 归零后直接搬去 BitMEX），
+     到点整个游戏就崩 —— 2026-10-01 平衡性模拟里实测复现。 */
+  const book = ensureBook(s, ex.id);
   const lost = (book.usd + book.usdt) * ex.hack.cut;
   book.usd *= 1 - ex.hack.cut;
   book.usdt *= 1 - ex.hack.cut;
