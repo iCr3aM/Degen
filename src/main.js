@@ -130,6 +130,7 @@ async function boot() {
   await ensureCoin(s.sym);
   for (const sym of heldSyms(s)) await ensureCoin(sym);   // 多仓：手上每个币的行情都要在
   await ensureLiq();
+  preloadUpcoming();     // 读档若正好停在某币解锁前不久，先把它的数据拉下来（不 await，别挡首帧）
 
   /* 价格位移层（方案 §2.6）：**唯一收口**在 `market.candleAt`。
      注入一个**逐根**系数，markPrice / 权益 / 强平价 / 资金费 / K 线图 / HUD 涨跌幅全部自动跟上。
@@ -154,7 +155,7 @@ async function boot() {
   /* 新闻窗口内**强制一帧**（P2-C）：一次 `step()` 在 50x 下最多能推进 50 个游戏小时，
      而渲染被节流到 80ms —— 不强制就会「窗口整个落在两帧之间」，玩家一次都看不到。
      新闻是 `s.i` 的纯函数，所以这里只做一件事：窗口里别让节流把这一帧吞掉。 */
-  clock = createClock(s, { onFrame: () => { dirty = true; draw(!!anchorAt(s.i)); } });
+  clock = createClock(s, { onFrame: () => { dirty = true; preloadUpcoming(); draw(!!anchorAt(s.i)); } });
   draw();
 
   bindActions(document.body, dispatch);
@@ -209,6 +210,25 @@ async function ensureLiq() {
     await loadLiq();
   } catch (err) {
     pushLog(s, `日流动性加载失败：${err.message}`, 'bad');
+  }
+}
+
+/**
+ * 新币行情**提前预载**（2026-10-01 用户拍板）。
+ *
+ * 币种解锁是 `s.i` 的纯函数（见 `engine.advanceOneHour`），但行情是**懒加载**的
+ * （`market.loadCoin` 只在「当前币 / 持仓币 / 玩家手动切过去」时才下载）。两件事一错开，
+ * 就会出现「Tab 已经亮了、点进去 K 线却是空白」—— 要等一次网络往返才出图。
+ *
+ * 这里在**距解锁还剩 `PRELOAD_HOURS` 游戏小时**时就把数据拉下来（`ensureCoin` 自带
+ * 「已加载就跳过」与并发去重，重复调用无害）。首屏仍只下当前币 —— 只有走到临界点才动手。
+ */
+const PRELOAD_HOURS = 720;                 // 30 游戏日：1x 下提前 30 小时，50x 下约 14 秒
+
+function preloadUpcoming() {
+  for (const c of COINS) {
+    const at = Math.round((c.unlock - GAME.start) / HOUR_MS);
+    if (at > s.i && at - s.i <= PRELOAD_HOURS) ensureCoin(c.sym);
   }
 }
 

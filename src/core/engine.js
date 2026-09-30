@@ -15,7 +15,7 @@
 import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, warnAnchorAt } from './anchors.js';
-import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
+import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow } from './god.js';
 import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
@@ -568,11 +568,18 @@ export function closeTrade(s, why = '手动') {
     net >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
 
-  /* 订单冲击：**平仓不再写反向冲击**（用户 2026-10-01 拍板「永久保留」）。
-     原来按 A2 口径回填「同向残存值的一半」（`−giveBack·R`），于是玩家一卖就看到价格被自己推回去，
-     与「订单造成的台阶应当留在 K 线上」直接冲突 ⇒ 整段删除（`SHOCK.giveBack` / `residualOfSide`
-     一并移除，不留死代码）。台阶此后只由**时间衰减**消退，而衰减有 `SHOCK.floor`（30%）兜底。
-     ⚠️ 平仓因此不再改动任何一根 K 线 ⇒ 连 `invalidateSigma()` 都不必调。 */
+  /* 订单冲击：**平仓写一笔与开仓对称的反向台阶**（用户 2026-10-01 拍板）。
+     公式与 `openTrade` 同一个：位移量 = `SHOCK.share × 本笔成交代价`，方向取**持仓方向的反面**
+     —— 平多 = 卖出 ⇒ 打压（−1），平空 = 买回 ⇒ 推高（+1）。
+     ⚠️ 它**不是**早先那个 A2「回填」（`giveBack`：平仓时反向写回开仓残存值的一半，已删除）——
+        那个会把开仓留下的台阶主动推回去，与「台阶永久保留」冲突；这里写的是**平仓这一笔自己**
+        该有的冲击，两者叠加的净值 = 开仓台阶（还挂在场上，按幂律衰到 `SHOCK.floor`）＋ 平仓台阶（反向）。
+     ⚠️ 与开仓同口径：OTC 不写（私下一口价不落公开盘口，与它不计量柱同一个先例）；
+        写完必须 `invalidateSigma()` —— 平仓从此**会**改动它之后的 K 线。 */
+  if (!otc) {
+    const dir = pos.side === 'long' ? -1 : 1;
+    if (addFlow(s, sym, dir * SHOCK.share * cost)) invalidateSigma();
+  }
 
   if (checkRuin(s)) return { ok: false, why: s.over.reason };
   return { ok: true };
@@ -594,9 +601,17 @@ export function closeTrade(s, why = '手动') {
 function forceLiquidate(s, pos, atPrice) {
   const remain = maintRateOf(pos) * pos.notional;     // 触发时的残余权益（＝维持保证金那一格）
   const back = Math.max(0, remain - pos.notional * LIQ.fee);
+  const notional = pos.size * atPrice;                // 实际成交名义（强平价上的那笔量）
   /* 玩家自己的成交量（v17 · 2026-10-01）：强平也是一笔真实成交 ⇒ 记进当根 K 线的量柱。
-     取 `size × atPrice`（实际成交名义），与 `closeTrade` 同口径。 */
-  addPlayerVol(s, pos.size * atPrice);
+     取 `size × atPrice`，与 `closeTrade` 同口径。 */
+  addPlayerVol(s, notional);
+  /* 订单冲击（2026-10-01 拍板）：强平同样是**卖出 / 买回**，写一笔与开仓对称的反向台阶 ——
+     与 `closeTrade` 完全同一公式与方向（平多打压 −1、平空推高 +1）。
+     ⚠️ 强平多发生在**急跌那根**，这笔反向冲击会让兵败如山倒的 K 线更陡一档，是刻意的。 */
+  {
+    const dir = pos.side === 'long' ? -1 : 1;
+    if (addFlow(s, pos.sym, dir * SHOCK.share * impactFor(pos.sym, s.i, notional))) invalidateSigma();
+  }
 
   /* 串形与开仓 / 平仓对齐（2026-09-29）：`｜` 两侧不留白、金额走 `fmtMoneyShort`、
      价格走 `fmtLogPrice`（本轮 ② —— 原来这里是 `showPrice`，现在统一 ≥$1 一位小数）。
@@ -708,13 +723,20 @@ export function transferPlan(s, toId) {
   const rail = railAt(timeOf(s));
   const fee = railFeeOf(rail, timeOf(s));
   const from = s.ex;
+  /* 金额 = **该格的全部余额**（本作不给玩家填金额）—— 链上到账时间按它分档加确认数
+     （`extraConfirmations`），所以这里必须与实际搬走的那一笔同口径：弹层预估与实际到账
+     才会是同一组数（`switchExchange` 搬走的正是 `bookOf(s, from)[cur]`）。 */
+  const amount = bookOf(s, from)[cashCurAt(timeOf(s))] ?? 0;
   /* `wire` 走**银行电汇**：到账时间由 `hours` 这个固定区间给（不吃拥堵）——
-     链堵不堵与银行慢不慢是两件事（方案 §11.6），所以既不调 `arrivalCandles` 也不 `bumpPulse`。
-     具体小时数用 `rand` 抽（可复现）：同一份档、同一时刻、同一对交易所，永远同一个数。 */
+     链堵不堵与银行慢不慢是两件事（方案 §11.6），所以既不调 `arrivalCandles` 也不 `bumpPulse`，
+     更不看金额。具体小时数用 `rand` 抽（可复现）：同一份档、同一时刻、同一对交易所，永远同一个数。 */
   const n = rail.hours
     ? rail.hours[0] + Math.floor(rand(s.seed, hashStr(from), s.i, 0, hashStr(toId)) * (rail.hours[1] - rail.hours[0] + 1))
-    : arrivalCandles(congestionOf(s), toId);
-  return { rail, fee, n };
+    : arrivalCandles(congestionOf(s), toId, amount);
+  /* `extra` = 这笔金额额外加的确认数（`arrivalCandles` 已把它计入 `n`）—— 单独返回给弹层，
+     好在「预估到账」那一行下面**只在大额时**补一行说明（小额不加行，不动既有排版）。 */
+  const extra = rail.hours ? 0 : extraConfirmations(amount);
+  return { rail, fee, n, extra };
 }
 
 /**

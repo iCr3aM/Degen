@@ -174,11 +174,31 @@ const CONFIRMATIONS = { mtgox: 2, bitfinex: 3, bitmex: 1, binance: 2 };
 export const confirmationsOf = exId => CONFIRMATIONS[exId] ?? 2;
 
 /**
+ * **大额转账的额外确认数**（2026-10-01 用户拍板）—— 金额越大，到账越慢。
+ * 现实里交易所对大额入金会加确认门槛 / 走人工风控，小额则很快认账；这里用一个金额阶梯近似它。
+ *
+ * ⚠️ 阈值与档位都是**合成值**（无一手出处，同 `LIQ.fee` 的待遇）：史实检索拿不到「多少钱要几个
+ *    确认」这种表，本作只要**方向**对即可。单位 = 美元名义。
+ * ⚠️ 只作用于**链上**通道（`arrivalCandles`）；`wire` 的到账天数是固定区间，与金额无关。
+ */
+const LARGE_STEPS = [
+  { from: 1e5, extra: 6 },     // ≥ $100,000 ⇒ +6 个确认（+1 小时）
+  { from: 1e4, extra: 2 },     // ≥ $10,000  ⇒ +2 个确认（+20 分钟）
+];
+
+/** 这笔金额要多加几个确认（0 = 不加） */
+export function extraConfirmations(amount) {
+  for (const s of LARGE_STEPS) if (amount >= s.from) return s.extra;
+  return 0;
+}
+
+/**
  * 到账需要几根 K 线（1 根 K 线 = 1 游戏小时）：`ceil((W + C×10) / 60)`，下限 1 根。
  * @param {number} congestion 拥堵指数
  * @param {string} exId       目标交易所
+ * @param {number} amount     本笔金额（美元名义）—— 大额加确认数，见 `extraConfirmations`
  */
-export function arrivalCandles(congestion, exId) {
-  const minutes = blockWaitMinutes(congestion) + confirmationsOf(exId) * 10;
+export function arrivalCandles(congestion, exId, amount = 0) {
+  const minutes = blockWaitMinutes(congestion) + (confirmationsOf(exId) + extraConfirmations(amount)) * 10;
   return Math.max(1, Math.ceil(minutes / 60));
 }

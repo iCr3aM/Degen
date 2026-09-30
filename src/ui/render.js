@@ -1309,11 +1309,13 @@ export function confirmExchange(s, id) {
      **交易**费率，与「这一搬要花多少」根本不是一回事 ——「手续费」那一行（电汇 $20 / Omni $0.3 /
      ERC-20 $30）才是玩家按下确认后立刻会少掉的钱，必须让它站在这里。
      ⚠️ 「拥堵」只在**链上通道**出现：电汇不吃拥堵（§11.6），对那次搬家一个字节都不影响。 */
-  const { rail, fee, n } = transferPlan(s, id);
+  const { rail, fee, n, extra } = transferPlan(s, id);
   const rows = el('div', 'confirm-rows');
   rows.append(
     line('通道', rail.label),
     ...(rail.hours ? [] : [line('拥堵', congestionLabel(congestion))]),
+    /* 「额外确认」只在大额时出现（`extra > 0`）：小额不加行、不动既有排版，大额给一个「为什么更慢」的解释。 */
+    ...(extra ? [line('额外确认', `+${extra} 个`)] : []),
     line('预估到账', rail.hours ? `${Math.round(n / 24)} 天` : `${n} 小时`),
     line('手续费', fmtMoneyShort(fee)),
   );
