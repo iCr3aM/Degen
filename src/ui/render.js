@@ -1722,17 +1722,20 @@ export function openYearPick(curYear) {
  *    原来那两套价格能力（「冲击倍率」`s.god.mult`、「手动砸盘 / 复位」`s.god.scale`）
  *    已整体删除：普通模式里看不到的暴涨暴跌全都出自它们，与「上帝模式只负责选时间、填资金」这条口径相悖。
  *
- * ⚠️ **日期控件不再是原生 `<input type="date">`**（2026-09-30 裁决）—— 原生框在手机上
- *    「点不准、也看不出哪些日期已经过去」，可视化太差。改成**年份档排 ＋ 月份微调**，
- *    与杠杆 / 速度那套档位按钮同一设计语言：已过的年份直接 `disabled` 画灰，
- *    「能跳到哪里」是用看的而不是用试的。
- *    但「跳到」不是改个数字：`main.js` 会拿 `advanceOneHour` **逐小时重放**过去，
- *    否则 Mt.Gox 归零、币解锁、借款到期这些事件会被整段跳过（等于白送一条命）。
+ * ⚠️ **日期控件是「年 / 月 / 日 三段档排」**（2026-09-30 裁决）—— 原生 `<input type="date">`
+ *    已否决（手机上「点不准、也看不出要跳到哪天」）。三排按钮 ＋ 一行「当前 / 目标」读数 ＋
+ *    一枚「跳到」，与杠杆 / 速度那套档位按钮同一设计语言。
+ *    ⚠️ **点年 / 月 / 日只改「目标」，真正动状态的是「跳到」** —— 否则在 2 月与 3 月之间来回点时，
+ *       每一下都会触发一次「回到过去」的状态重置（见 `main.js` 的 `godJump`）。
+ *    ⚠️ 选中态由 `sel` 传入（`main.js` 的 `godSel` 暂存），本函数**自己无状态**。
  * ⚠️ **资金框不能挂 `data-*`**：`bind.js` 拦的是 `[data-*]` 的 `pointerdown` 并会 `preventDefault`，
  *    挂上去就打不了字了。所以值由动作处理函数从同一个面板里按类名读（`god-cash`）。
- *    ⚠️ 档排上那 14 枚是**按钮**、不是输入框，照旧挂 `data-*`（`godyear` / `godmon`）。
+ *    ⚠️ 档排上那些是**按钮**、不是输入框，照旧挂 `data-*`（`godyear` / `godmon` / `godday`）。
+ *
+ * @param {object} s
+ * @param {{y:number,m:number,d:number}|null} sel 日期选择器的**暂存目标**；`null` = 跟随当前游戏日期
  */
-export function openGod(s) {
+export function openGod(s, sel = null) {
   closePicker();
   const ov = document.getElementById('overlay');
   if (!ov) return;
@@ -1756,33 +1759,45 @@ export function openGod(s) {
   cRow.append(el('i', null, '资金'), cashIn, cBtn);
   rows.append(cRow);
 
-  /* ② 跳到日期 —— **只许向前**（向后跳会让「未来开的仓」凭空出现在历史里）。
-     形状 = 一行日期读数 ＋ 年份档排 ＋ 月份微调；「已经过去」直接画灰，不靠点了才报错。 */
+  /* ② 跳到日期 —— 向前 = 时间自然流过（持仓保留）；向后 = 回到过去（保留资金、清空仓位）。
+       形状 = 两行读数（当前 / 目标 ＋ 跳到）＋ 年 / 月 / 日 三排按钮。 */
   const now = timeOf(s);
+  const today = new Date(now);
+  const pick = sel ?? { y: today.getUTCFullYear(), m: today.getUTCMonth() + 1, d: today.getUTCDate() };
+  /* 一枚档位按钮 —— 挂 `data-*`（这类是按钮，不受 `preventDefault` 影响），选中态走 `.on` */
+  const pickBtn = (on, key, v) => {
+    const b = el('button', on ? 'set-btn on' : 'set-btn', String(v));
+    b.dataset[key] = String(v);
+    return b;
+  };
+
   const dRow = el('div', 'set-row');
   dRow.append(el('i', null, '当前'), el('b', 'num', fmtDate(now, false)));
   rows.append(dRow);
 
+  const tRow = el('div', 'set-row');
+  const tBox = el('div', 'god-target');
+  tBox.append(el('i', null, '目标'), el('b', 'num', fmtDate(Date.UTC(pick.y, pick.m - 1, pick.d), false)));
+  const gBtn = el('button', 'set-btn on', '跳到');
+  gBtn.dataset.godgo = '';
+  tRow.append(tBox, gBtn);
+  rows.append(tRow);
+
   const y0 = new Date(GAME.start).getUTCFullYear();
   const y1 = new Date(GAME.start + (GAME.candles - 1) * HOUR_MS).getUTCFullYear();
-  const yRow = el('div', 'god-years');
-  for (let y = y0; y <= y1; y++) {
-    const b = el('button', 'set-btn', String(y));
-    b.dataset.godyear = String(y);
-    /* 那年的 1 月 1 日已经过去 ⇒ 跳过去只会得到「只能向前跳」，索性在这里就置灰 */
-    b.disabled = Date.UTC(y, 0, 1) <= now;
-    yRow.append(b);
-  }
+  const yRow = el('div', 'god-pick god-years');
+  for (let y = y0; y <= y1; y++) yRow.append(pickBtn(y === pick.y, 'godyear', y));
   rows.append(yRow);
 
-  const mRow = el('div', 'set-row wrap');
-  mRow.append(el('i', null, '微调'));
-  for (const n of [1, 3]) {
-    const b = el('button', 'set-btn', `+${n} 月`);
-    b.dataset.godmon = String(n);
-    mRow.append(b);
-  }
+  const mRow = el('div', 'god-pick god-months');
+  for (let m = 1; m <= 12; m++) mRow.append(pickBtn(m === pick.m, 'godmon', m));
   rows.append(mRow);
+
+  /* 日的枚数跟着选中的年月走 —— `new Date(Date.UTC(y, m, 0))` 就是该月的最后一天 */
+  const days = new Date(Date.UTC(pick.y, pick.m, 0)).getUTCDate();
+  const ddRow = el('div', 'god-pick god-days');
+  for (let dd = 1; dd <= days; dd++) ddRow.append(pickBtn(dd === pick.d, 'godday', dd));
+  rows.append(ddRow);
 
   box.append(rows);
 

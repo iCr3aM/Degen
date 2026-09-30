@@ -11,11 +11,11 @@ import { GAME, COINS, HOUR_MS, cashCurAt, hasFinancingAt, maxLeverageAt } from '
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource } from './core/market.js';
-import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook, buyUsdt, sampleEquity, placeOrder, cancelOrder } from './core/engine.js';
+import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook, buyUsdt, sampleEquity, placeOrder, cancelOrder, rewindTo } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { enableGod, factorFor } from './core/god.js';
-import { fmtMoney } from './core/format.js';
+import { fmtDate, fmtMoney } from './core/format.js';
 import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
@@ -68,6 +68,12 @@ const GOD_TAPS = 5;
 const GOD_TAP_MS = 1500;
 let godTaps = 0;
 let godTapAt = 0;
+
+/* 上帝面板日期选择器的**暂存目标**（2026-09-30）—— `{y,m,d}` 或 `null`（= 跟随当前游戏日期）。
+   ⚠️ 点「年 / 月 / 日」只改它、**不碰 `s`**；只有点「跳到」才真正动状态（`godJump`）。
+      少了这层暂存，在 2 月与 3 月之间来回点就会每一下都触发一次「回到过去」的状态重置。
+   ⚠️ 与 `godTaps` 同一个口径：纯界面状态，**不进 `s`**。 */
+let godSel = null;
 
 /* 「致命那一针」的一句短记忆（S3-附 · ROADMAP §19.6.3）：`{ sym, hour, k }`，**只记最近一次、覆盖式**。
    ⚠️ **不进存档**（拍板口径）：`save()` 是整对象序列化，写进 `s` 就等于落盘；它只活在渲染进程里，
@@ -410,13 +416,16 @@ function dispatch(node) {
         （倍率 `godmult`、手动砸盘 `godscale` / 复位 `godreset`）已整体删除。 */
   if (d.god !== undefined) return onGodTap();
   if (d.impact !== undefined) return onImpactToggle();
-  if (d.godcash !== undefined || d.godyear !== undefined || d.godmon !== undefined || d.godoff !== undefined) {
+  if (d.godcash !== undefined || d.godyear !== undefined || d.godmon !== undefined
+    || d.godday !== undefined || d.godgo !== undefined || d.godoff !== undefined) {
     /* 这几枚只可能出现在上帝面板里，而面板只在 `s.god` 非空时打开。这一行是**状态机不靠 DOM 兜底**：
        万一面板被别的路径留下来（比如读到一份 `god: null` 的档），这里不能抛异常。 */
     if (!s.god) return;
     if (d.godcash !== undefined) return onGodCash(node);
-    if (d.godyear !== undefined) return onGodYear(Number(d.godyear));
-    if (d.godmon !== undefined) return onGodMon(Number(d.godmon));
+    if (d.godyear !== undefined) return onGodPick('y', Number(d.godyear));
+    if (d.godmon !== undefined) return onGodPick('m', Number(d.godmon));
+    if (d.godday !== undefined) return onGodPick('d', Number(d.godday));
+    if (d.godgo !== undefined) return onGodGo();
     return onGodOff();
   }
 
@@ -622,7 +631,7 @@ function onOrder(v) {
    一个隐藏入口（连点标题）、一个玩法开关（设置面板）、一张面板（资金 / 跳日期 / 关闭）。
    ⚠️ 面板是**静态 DOM**，所以「填入」要从它内部读输入框的值 —— 输入框不能挂 `data-*`
       （`bind.js` 会 `preventDefault` 掉 `pointerdown`，挂上去就打不了字）。
-      ⚠️ 跳日期那 14 枚是**按钮**、不是输入框，照旧走 `data-godyear` / `data-godmon`。 */
+      ⚠️ 跳日期那三排档位是**按钮**、不是输入框，照旧走 `data-godyear` / `godmon` / `godday`。 */
 
 /** 连点计数：**1.5 秒内 5 次**才触发；间隔超时就重新从 1 数起 */
 function onGodTap() {
@@ -635,9 +644,13 @@ function onGodTap() {
      动作本来就被别处挡掉了，这里先拦一次更干净）。 */
   if (s.over || s.pending) return;
   enableGod(s);
-  openGod(s);
+  godSel = null;                        // 重新打开 ⇒ 选择器回到「当前日期」起手
+  showGod();
   after();
 }
+
+/** 面板的统一出口 —— 每次都把暂存的选择器带上，点年 / 月 / 日之后才不会跳回「当前日期」 */
+const showGod = () => openGod(s, godSel);
 
 /**
  * 订单冲击开关（方案 §2.7）—— **玩法开关**，落在主状态 `s.impactOn`（不是 `degen_settings`）。
@@ -676,45 +689,56 @@ function onGodCash(node) {
   s.god.lastFill = num;
   s.godRuined = false;                 // 补上钱之后，下一次归零要能再提示一遍
   pushLog(s, `上帝模式 ｜ 资金已填入 ${fmtMoney(num)}`, 'ok');
-  openGod(s);                          // 重开面板：输入框预填值跟着 `lastFill` 走
+  showGod();                           // 重开面板：输入框预填值跟着 `lastFill` 走
   after();
 }
 
 /**
- * 面板里那排年份：把时间推到**那年 1 月 1 日**（方案 §2.4）。
- * ⚠️ 已过的年份在面板里就是 `disabled`，这里再兜一次底（防误触 / 防旧 DOM 残留）。
+ * 日期选择器：改**一个**分量，其余不动（`k` = `'y'` / `'m'` / `'d'`）。
+ * ⚠️ 日要夹到该月实际天数：选中 1/31 再点 2 月 ⇒ 落到 2/28（闰年 2/29），不往 3 月进位。
+ * ⚠️ 这里**只改暂存值 ＋ 重开面板**，一帧 `s` 都不碰 —— 真正跳转在 `onGodGo`。
  */
-function onGodYear(y) {
-  godReplay(Math.round((Date.UTC(y, 0, 1) - GAME.start) / HOUR_MS), `${y} 年 1 月`);
+function onGodPick(k, v) {
+  const now = new Date(timeOf(s));
+  const b = godSel ?? { y: now.getUTCFullYear(), m: now.getUTCMonth() + 1, d: now.getUTCDate() };
+  const next = { ...b, [k]: v };
+  /* `Date.UTC(y, m, 0)` = 该月最后一天的 00:00 —— 拿它取「这个月有几天」 */
+  const dim = new Date(Date.UTC(next.y, next.m, 0)).getUTCDate();
+  godSel = { y: next.y, m: next.m, d: Math.min(next.d, dim) };
+  showGod();
+}
+
+/** 「跳到」：把暂存的年月日折成小时序号，交给 `godJump`。 */
+function onGodGo() {
+  const now = new Date(timeOf(s));
+  const sel = godSel ?? { y: now.getUTCFullYear(), m: now.getUTCMonth() + 1, d: now.getUTCDate() };
+  godSel = null;
+  const at = Date.UTC(sel.y, sel.m - 1, sel.d);
+  godJump(Math.round((at - GAME.start) / HOUR_MS), fmtDate(at, false));
 }
 
 /**
- * 面板里那两枚月份微调（`+1 月` / `+3 月`）—— 从**当前游戏日期**按自然月往后推。
- * 用 `Date.UTC` 的月份进位（1-31 加一个月会落到 3-02/3-03，与日历一致），不用「30 天」近似。
- */
-function onGodMon(n) {
-  const d = new Date(timeOf(s));
-  const t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, d.getUTCDate());
-  godReplay(Math.round((t - GAME.start) / HOUR_MS), `+${n} 个月`);
-}
-
-/**
- * 跳日期的公共尾巴（年份档与月份微调共用）：夹取 → 重放 → 重开面板。
+ * 跳日期 —— **向前 = 时间自然流过；向后 = 回到过去**（2026-09-30 裁决）。
  *
- * ⚠️ **逐小时重放，不能只改 `s.i`**：那等于把跳过这段时间里的所有事件白送 ——
- *    Mt.Gox 2014-02-25 归零、币解锁、杠杆阶梯升级、借款到期、强平、资金费、转账到账。
- *    复用现成的 `advanceOneHour` 就零新增事件逻辑。
- * ⚠️ **只许向前**：向后跳会让「未来开的仓」凭空出现在历史里。
+ * 向前 ⇒ 逐小时重放（`advanceOneHour`）：不能只改 `s.i`，那等于把这段时间里的事件白送
+ *        （Mt.Gox 归零、币解锁、杠杆阶梯、借款到期、强平、资金费、转账到账），
+ *        而且玩家的持仓必须**真的走过**这段时间。
+ * 向后 ⇒ 倒放没有定义（行情与事件都是单向累积的），改走 `godRewind`：
+ *        保留资金、清空持仓与挂单，直接把时钟落到那一刻。
+ *
  * @param {number} target 目标小时序号（未夹取）
- * @param {string} label  失败日志里那句「跳到 X」
+ * @param {string} label  日志里的日期文案（`fmtDate` 的结果）
  */
-function godReplay(target, label) {
-  const to = Math.min(Math.max(target, s.i), GAME.candles - 1);
-  if (to <= s.i) {
-    pushLog(s, `跳到 ${label}：只能向前跳`, 'bad');
+function godJump(target, label) {
+  const to = Math.min(Math.max(target, 0), GAME.candles - 1);
+  if (to === s.i) {
+    pushLog(s, `已经在这一刻：${label}`, 'info');
+    showGod();
     after();
     return;
   }
+  if (to < s.i) return godRewind(to, label);
+
   /* 同步循环 ⇒ `createClock` 的 `setInterval` 不可能插进来。三种情况都要停：
        ① 到目标日期  ② 到 2024-12-31 收盘（`s.over`）
        ③ **中途账户归零、弹出借贷遮罩**（`s.pending`）—— 少了第三个判据这里会**死循环**：
@@ -724,8 +748,23 @@ function godReplay(target, label) {
         所以这里不需要分片或进度提示。 */
   while (s.i < to && !s.over && !s.pending) advanceOneHour(s);
   /* 停在借贷遮罩上时**不要**再开上帝面板 —— `draw()` 刚把遮罩铺上，压一张面板上去只会打架 */
-  if (!s.over && !s.pending) openGod(s);
+  if (!s.over && !s.pending) showGod();
   after();
+}
+
+/**
+ * **回到过去**（2026-09-30 裁决）—— 保留资金、清空持仓与挂单。
+ *
+ * 状态变换整块在 `engine.rewindTo`（core 侧，可离线断言）；这里只做 UI 该做的三件事：
+ * 记一条日志、重开面板、必要时把回落到的币的行情拉进来。
+ */
+function godRewind(to, label) {
+  const cash = rewindTo(s, to);
+  pushLog(s, `回到 ${label} ｜ 资金已保留（${fmtMoney(cash)}），持仓与挂单已清空`, 'ok');
+  showGod();
+  after();
+  /* 回落到的币可能还没加载过 —— 与 `onSym` 同一手法：先重画，拉到之后再刷新 */
+  if (!isLoaded(s.sym)) ensureCoin(s.sym).then(() => draw(true));
 }
 
 /**
@@ -735,6 +774,7 @@ function godReplay(target, label) {
  */
 function onGodOff() {
   s.god = null;
+  godSel = null;                       // 关掉 => 选择器的暂存目标一并丢掉
   pushLog(s, '上帝模式已关闭 ｜ 订单冲击保留', 'info');
   closePicker();
   after();

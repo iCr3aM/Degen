@@ -1269,6 +1269,77 @@ export function advanceOneHour(s) {
   sampleEquity(s);
 }
 
+/**
+ * **回到过去**（2026-09-30 裁决）—— 保留资金、清空持仓与挂单，把时钟落到第 `to` 根小时 K。
+ *
+ * 是 `advanceOneHour` 的**反向操作**，但两者口径**故意不同**：
+ *   向前 = 逐小时重放（持仓必须真的走过那段时间）
+ *   向后 = 直接落点（时间倒流）
+ *
+ * ⚠️ **为什么向后不重放**：目标时刻的行情、杠杆阶梯、费率、流动性、币是否已上线**全是 `s.i` 的纯函数**
+ *    （`config.*At(t)` 一族），而所有**累积型**状态（持仓 / 挂单 / 在途转账 / 借贷 / 资金曲线 /
+ *    日志 / 冲击池 / 待决遮罩）在这里已经全部清空 ⇒ 重放没有任何东西可产出。
+ *    反过来，重放**有害**：Mt.Gox 归零（2014-02-25）、Bitfinex 被盗削减（2016-08-02）这些事件会在
+ *    重放途中把「保留的资金」吃掉 —— 那笔钱本来是在**跳转之后**才放的。
+ *
+ * **资金口径**：跳转前**所有交易所两格之和**（各所原样相加，**不做任何折算**），全部落到跳转后的
+ * 「当前所」。负格**逐所逐格**归零（与「填入资金」`main.js:onGodCash` 同一口径；不能先加后夹，
+ * 否则一所的负账会吃掉别所的正余额）。USDT 在 2014-11 之前
+ * 并不存在，但这里**不折叠**成美元 —— 少一条规则，且与「权益里两格面值 1:1」一致。
+ *
+ * ⚠️ 当前所 / 当前币在目标时刻还不存在时，回落到当时可用的那一家 / 第一个已上线的币 ——
+ *    否则会出现「2013 年在 Binance 交易 SOL」这种穿越。
+ *
+ * @param {number} to 目标小时序号（调用方负责夹到 `[0, GAME.candles - 1]`）
+ * @returns {number} 跳转后账上的现金总额（给调用方记日志用）
+ */
+export function rewindTo(s, to) {
+  const t = GAME.start + to * HOUR_MS;
+
+  /* ① 保留资金：各所两格合计 —— ⚠️ 负格**逐所逐格**归零之后再相加。
+        不能先加后夹：某一所的一格负账（平仓亏损超额，见 `credit`）会吃掉**别的所**的正余额，
+        而那笔负账本来就已经被抹掉了 —— 等于顺手罚了玩家一笔他没欠的钱。 */
+  let usd = 0, usdt = 0;
+  for (const b of Object.values(s.books)) {
+    usd += Math.max(0, b.usd);
+    usdt += Math.max(0, b.usdt);
+  }
+
+  /* ② 清空**进度**，只留 UI 偏好（币 / 页 / 速度 / 模式 / 杠杆 / 通道 / 音效 / 新手提示 / `god`） */
+  s.positions = {};
+  s.orders = {};
+  s.transfer = null;
+  s.pulse = [];
+  s.flow = {};
+  s.realized = 0;
+  s.eq = [];
+  s.loaned = false;
+  s.loan = null;
+  s.pending = null;
+  s.warnAt = null;
+  s.otcOff = false;
+  s.godRuined = false;
+  s.over = null;
+  s.paused = false;
+  s.log = [];
+
+  /* ③ 时钟落到那一刻 —— **不重放**，见函数头 */
+  s.i = to;
+
+  /* ④ 当前所 / 当前币在那一刻还不存在 ⇒ 回落到当时可用的（判据与 `EXCHANGES[].open / close` 同源） */
+  const exs = EXCHANGES.filter(x => t >= x.open && (x.close == null || t < x.close));
+  if (exs.length && !exs.some(x => x.id === s.ex)) s.ex = exs[0].id;
+  const syms = COINS.filter(c => c.unlock <= t);
+  if (syms.length && !syms.some(c => c.sym === s.sym)) s.sym = syms[0].sym;
+  normalizeLeverage(s);
+
+  /* ⑤ 资金落到当前所（两格原样）＋ 给资金曲线补一个起点，免得资产页那张图空着 */
+  s.books = { [s.ex]: { usd, usdt } };
+  sampleEquity(s);
+
+  return usd + usdt;
+}
+
 /* ───────────────────────── 资金费率与强平 ───────────────────────── */
 
 /* σ 的缓存：键 = 币，值 = { day, v }。结算每 8 游戏小时来一次，50x 下每秒 6 次 ——
