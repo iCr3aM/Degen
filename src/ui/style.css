@@ -630,6 +630,25 @@ b, strong { font-weight: 600; }
 .hud.one .cell { height: 70px; }
 .hud.one .cell b { font-size: 18px; line-height: 24px; }
 
+/* 明细拆解（用户 2026-10-01 拍板 · 选项 A）：总资产卡下面那三行 ——
+   已占用保证金 / 挂单冻结 / 在途转账。复用设置页那副「标签 —— 读数」的样子（同字号、同次要色），
+   面板壳与 `.set-card` 同一档（同样的底色与描边）。 */
+.eq-break {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  font-size: 12px;
+}
+.eq-break-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.eq-break-row + .eq-break-row { margin-top: 6px; }
+.eq-break-row i { font-style: normal; color: var(--mut); }
+
 /* 资金曲线（v13 · 方案 §4）：canvas 固定高 **110px**，它是**复盘图**，不参与纵向节奏、
    也不做任何手势（不像 K 线区那样是全屏唯一弹性块 —— 资产页整页可滚，见 `.page` 那条）。
    ⚠️ canvas 的 CSS 尺寸与 `width` / `height` 属性必须由 render.js 按 DPR 对齐（同 K 线那一套），

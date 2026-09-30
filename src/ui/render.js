@@ -72,6 +72,27 @@ function moneySlot(key, n, { sign = false } = {}) {
   return fmtMoneyShort(n, { sign, minTier: t });
 }
 
+/** **只在值真变了才写**（用户 2026-10-01 拍板的热路径减写）—— 逐帧无条件给
+ *  `textContent` / `className` 赋值会让浏览器白白做一次样式失效与比对；日志条 / 持仓条 /
+ *  顶栏这几处虽然每帧重算，但绝大多数帧的值是同一个。读 `textContent` / `className` 不触发布局。 */
+const setText = (n, v) => { if (n.textContent !== v) n.textContent = v; };
+const setCls = (n, v) => { if (n.className !== v) n.className = v; };
+
+/** 左上角遮罩（`.chart-head`）的**实测高度**缓存（用户 2026-10-01 拍板）—— 它只随容器宽度
+ *  （换行）与文案总长变，逐帧 `getBoundingClientRect` 会白白强制一次布局。
+ *  ⚠️ 键用「宽度 ＋ 文案总长」而不是数组引用：`sym` / 市值那几段每帧重建字符串，但**长度**
+ *     几乎恒定（金额走 K/M/B 档位，宽度有界），所以命中率极高。 */
+let headInsetKey = '';
+let headInsetH = 0;
+function headInset(head, chartW) {
+  const key = `${chartW}|${head.textContent.length}`;
+  if (key !== headInsetKey) {
+    headInsetKey = key;
+    headInsetH = head.getBoundingClientRect().height;
+  }
+  return headInsetH;
+}
+
 /**
  * 建骨架。返回一个 refs 对象，`update()` 只认这个对象里的字段。
  * @param {HTMLElement} root
@@ -295,11 +316,38 @@ export function mount(root) {
   const asNote = el('u', 'num');
   const asBox = el('div', 'hud one');
   asBox.append(cell('总资产', asTotal, asNote));
-  /* ② 资金曲线（方案 §4）：`<canvas>` 高度固定 110px，**不做缩放交互**（它是复盘图，不是 K 线）。
+  /* 明细拆解（用户 2026-10-01 拍板 · 选项 A）：**不改任何口径**，只把「钱去哪了」摊开 ——
+     总资产 = 现金 ＋ 持仓保证金 ＋ 未实现盈亏 ＋ 挂单冻结 ＋ 在途。这里给后三项（现金与浮盈
+     已在上面两格与持仓条里）：已占用保证金 / 挂单冻结 / 在途转账。
+     三行都常驻（$0.00 也写出来）—— 条件显隐会让资产页随开平仓上下跳。 */
+  const asBusy = el('b', 'num');
+  const asFreeze = el('b', 'num');
+  const asOnway = el('b', 'num');
+  const breakRow = (label, valEl) => {
+    const r = el('div', 'eq-break-row');
+    r.append(el('i', null, label), valEl);
+    return r;
+  };
+  const asBreak = el('div', 'eq-break');
+  asBreak.append(
+    breakRow('已占用保证金', asBusy),
+    breakRow('挂单冻结', asFreeze),
+    breakRow('在途转账', asOnway),
+  );
+  /* ② 资金曲线（方案 §4；区间切换 ＋ 高低点 = 用户 2026-10-01 拍板）：`<canvas>` 高 110px。
+     上方一排区间档（`eqrange`，`main.js` 分派），值 = 最近多少个游戏日、`0` = 全部。
      ⚠️ 与 K 线同一个坑：它是 canvas，容器一隐藏就量成 0 ⇒ 只在资产页可见时画。 */
+  const eqRangeBtns = new Map();
+  const eqRangeRow = el('div', 'row');
+  for (const [v, label] of [['7', '1周'], ['30', '1月'], ['90', '3月'], ['365', '1年'], ['0', '全部']]) {
+    const b = el('button', 'opt', label);
+    b.dataset.eqrange = v;
+    eqRangeRow.append(b);
+    eqRangeBtns.set(v, b);
+  }
   const asCurve = el('canvas', 'curve');
   const asCurveBox = el('div', 'curve-box');
-  asCurveBox.append(asCurve);
+  asCurveBox.append(eqRangeRow, asCurve);
   /* ③ 买 U（方案 §3.1）：价格 ＋ 金额档 ＋ 一枚「买入」。2014-11-20 之前整块不存在
      （那年头没有 U）—— 与「没有的选项不显示」同一条口径。 */
   const uPrice = el('i');
@@ -321,7 +369,7 @@ export function mount(root) {
   uCard.append(uHead, uFracRow);
   const asList = el('div', 'plist');
   const assetsPage = el('div', 'page assets-page');
-  assetsPage.append(asHead, asSlots, asBox, asCurveBox, uCard, asList);
+  assetsPage.append(asHead, asSlots, asBox, asBreak, asCurveBox, uCard, asList);
 
   /* ── 设置页（原设置弹层那三件，原封不动搬成页 · §6.2）──
      ⚠️ 两个开关的文案 / 高亮**每帧由 `update()` 从状态与偏好同步**，不在这里手改节点：
@@ -459,7 +507,7 @@ export function mount(root) {
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
     chanBtn, orderBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asList,
-    asCurve, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
+    asCurve, eqRangeBtns, asBusy, asFreeze, asOnway, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
     sndBtn, mktBtn, impBtn, hintBtn, colBtn,
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
@@ -524,7 +572,7 @@ const LOCK_PREV = (() => {
 export function update(refs, s, view) {
   const onTrade = view.tab === 'trade';
 
-  refs.dateEl.textContent = fmtDate(timeOf(s));
+  setText(refs.dateEl, fmtDate(timeOf(s)));
 
   /* 顶栏按钮。⚠️ B30 的**待决态**（`s.pending`）下也要锁死：时钟已经停了，这时候
      「继续 / 暂停」和切页都不该可用 —— 玩家只有一个选择要回答（借，还是收摊）。
@@ -573,7 +621,7 @@ export function update(refs, s, view) {
     refs.cashSub.className = 'num mut';
   }
 
-  refs.exName.textContent = exchangeOf(s.ex)?.name ?? '--';
+  setText(refs.exName, exchangeOf(s.ex)?.name ?? '--');
   /* 上帝模式的**常驻标识**（本轮 ④）：改过资金 / 跳过日期之后，玩家得随时看得出「这一局不干净」。
      一个金色的「Degen」比任何一次性提示都持久，而且不额外占地（它本来就是顶栏标题）。
      ⚠️ 写 `className` 而不是 `classList.toggle`：标题只有这一种着色，没有第二种状态要叠。 */
@@ -589,21 +637,21 @@ export function update(refs, s, view) {
            `.gold`（0,1,0），直接挂类名会被 mut 灰吃掉（详见 `style.css` 那两条）。 */
   const now = timeOf(s);
   if (s.transfer) {
-    refs.exRate.textContent = `→ 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`;
-    refs.exRate.className = '';
+    setText(refs.exRate, `→ 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`);
+    setCls(refs.exRate, '');
   } else if (haltedAt(now, s.ex)) {
     /* 停机维护（B24）：第二行**顶掉费率**显示状态词 —— 这段时间开仓会被拒，
        不显式说一句，玩家只会觉得「按钮坏了」。（与转账倒计时同一优先级：先报状态、再报费率。） */
-    refs.exRate.textContent = '维护中';
-    refs.exRate.className = 'down';
+    setText(refs.exRate, '维护中');
+    setCls(refs.exRate, 'down');
   } else {
     /* 费率随**下单模式**切换（v12 · 方案 §11.3）：现货与合约是两张表，顶栏必须显示玩家
        接下来真正会被收的那一档 —— OTC 恒为现货，所以也要算进去。
        （着色那三档是按**现货**费率定的门槛：Mt.Gox 0.60% 红 / Bitfinex 0.20% 红 /
         BitMEX 0.05% 灰 / Binance 0.10% 金，合约费率普遍更低 ⇒ 落到灰档，不误导。） */
     const fr = feeRateOf(s.ex, now, chanOf(s) !== 'otc' && s.mode === 'fut' ? 'fut' : 'spot');
-    refs.exRate.textContent = `费率 ${fmtRate(fr, 2)}`;
-    refs.exRate.className = fr >= 0.002 ? 'down' : fr >= 0.001 ? 'gold' : '';
+    setText(refs.exRate, `费率 ${fmtRate(fr, 2)}`);
+    setCls(refs.exRate, fr >= 0.002 ? 'down' : fr >= 0.001 ? 'gold' : '');
   }
 
   /* 币种条：未解锁的币用**边框环**显示解锁进度（Batch 5 · B25）。
@@ -641,27 +689,27 @@ export function update(refs, s, view) {
   if (cur) {
     const p = cur;
     const posMark = markPrice(s, p.sym);
-    refs.posSide.textContent = isSpot(p)
+    setText(refs.posSide, isSpot(p)
       /* 字面（v9 · §15.6 N4）：现货写「买入 / 卖出 Nx」—— 与操作区那两枚键一一对应。
          原来这里笼统写「现货」两个字，是因为现货恒为 1x 做多；§15.6 N2 起现货**也带杠杆、
          也能做空**，光写「现货」就说不清方向与倍数了。 */
       ? `${p.sym} ${p.side === 'long' ? '买入' : '卖出'} ${p.lev}x`
-      : `${p.sym} ${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
-    refs.posSide.className = 'num ' + (p.side === 'long' ? 'side-long' : 'side-short');
+      : `${p.sym} ${p.side === 'long' ? '多' : '空'} ${p.lev}x`);
+    setCls(refs.posSide, 'num ' + (p.side === 'long' ? 'side-long' : 'side-short'));
     const pnl = unrealizedOf(s, p.sym);
-    refs.posPnl.textContent = moneySlot('pospnl', pnl, { sign: true });
-    refs.posPnl.className = 'num sign ' + (pnl >= 0 ? 'up' : 'down');
+    setText(refs.posPnl, moneySlot('pospnl', pnl, { sign: true }));
+    setCls(refs.posPnl, 'num sign ' + (pnl >= 0 ? 'up' : 'down'));
     /* 第三格**只剩保证金率**（Batch 2 · B9，2026-09-29）：原来这里是「保证金率 / 强平价」，
        格宽只有 1/3 屏，两个数一串必然被 `text-overflow` 截掉尾巴（用户实机发现）。
        强平价已搬到 K 线的开仓线左端标签，这一格终于能完整放下一个数。
        现货 **1x** 没有维持保证金率这一说 —— 只有币价归零才归零本金（GDD §9.1），填 `--`。
        ⚠️ v9（§15.3 N5）：判据从「是不是现货」换成 `canLiquidate` —— 现货**杠杆**仓照样有强平线。 */
     if (!canLiquidate(p)) {
-      refs.posRate.textContent = '--';
-      refs.posRate.className = 'num mut';
+      setText(refs.posRate, '--');
+      setCls(refs.posRate, 'num mut');
     } else {
       const rate = posMark == null ? 0 : marginRateOf(p, posMark);
-      refs.posRate.textContent = fmtRate(rate);
+      setText(refs.posRate, fmtRate(rate));
       /* **三档颜色**（本轮 ⑥ · 用户拍板「像 OKX 一样」）—— 判据不是 `rate` 的绝对值，
          而是**按本仓自己的杠杆归一化的安全垫** `safetyOf`：
            开仓那一刻 = 1（满垫）、触及维持保证金率 = 0（该强平了）。
@@ -670,12 +718,12 @@ export function update(refs, s, view) {
          分档（与 `main.js` 那声预警同一个判据，不各写一份）：
            `> 0.5` 绿 · 安全 ｜ `0.2 ~ 0.5` 金 · 注意 ｜ `≤ 0.2` 红 · 危险 */
       const safe = safetyOf(p, posMark ?? 0);
-      refs.posRate.className = 'num ' + (safe <= 0.2 ? 'down' : safe <= 0.5 ? 'gold' : 'up');
+      setCls(refs.posRate, 'num ' + (safe <= 0.2 ? 'down' : safe <= 0.5 ? 'gold' : 'up'));
     }
   } else {
     for (const n of [refs.posSide, refs.posPnl, refs.posRate]) {
-      n.textContent = '--';
-      n.className = 'num mut';
+      setText(n, '--');
+      setCls(n, 'num mut');
     }
   }
 
@@ -698,14 +746,14 @@ export function update(refs, s, view) {
   /* ⚠️ 颜色只上在**正文**那一格（`refs.logText`）：时间恒为 `--mut`（颜色落点是 CSS 的
      `.logline > u`）。改这里就要连 CSS 一起看，两处是一件事。 */
   refs.logTime.hidden = !last;
-  refs.logTime.textContent = last ? fmtHour(GAME.start + (last.at ?? s.i) * HOUR_MS) : '';
-  refs.logText.textContent = last ? last.text : '—';
+  setText(refs.logTime, last ? fmtHour(GAME.start + (last.at ?? s.i) * HOUR_MS) : '');
+  setText(refs.logText, last ? last.text : '—');
   if (newsOn) {
-    refs.logText.className = '';
-    refs.logline.className = 'logline news';
+    setCls(refs.logText, '');
+    setCls(refs.logline, 'logline news');
   } else {
-    refs.logText.className = last ? (last.kind === 'bad' ? 'down' : last.kind === 'ok' ? 'up' : 'mut') : 'mut';
-    refs.logline.className = 'logline';
+    setCls(refs.logText, last ? (last.kind === 'bad' ? 'down' : last.kind === 'ok' ? 'up' : 'mut') : 'mut');
+    setCls(refs.logline, 'logline');
   }
 
   /* 金额档 */
@@ -884,11 +932,24 @@ export function update(refs, s, view) {
     /* 资产页这一格是 HUD「已实现」的**同款读数**，所以一并走色盲第二通道（§7.6 连带）。 */
     refs.asNote.className = 'num sign ' + (s.realized >= 0 ? 'up' : 'down');
 
+    /* 明细拆解（用户 2026-10-01 拍板 · 选项 A）：三行常驻、$0.00 也写，口径见 `engine.equity`。
+       ⚠️ 换所要求先全平（§7.2）⇒ 同一时刻钱要么在当前所、要么在途，这三行与上面两格不会重叠计。 */
+    let busy = 0;
+    for (const sym of heldSyms(s)) busy += s.positions[sym].margin;
+    let freeze = 0;
+    for (const sym in s.orders) freeze += s.orders[sym].margin;
+    refs.asBusy.textContent = moneySlot('busy', busy);
+    refs.asFreeze.textContent = moneySlot('freeze', freeze);
+    refs.asOnway.textContent = moneySlot('onway', s.transfer ? s.transfer.amount : 0);
+
     /* ② 资金曲线（方案 §4）：与 K 线同一个坑 —— 它是 canvas，容器一隐藏就量成 0，
        所以只在资产页（此刻必然可见）画。基准线恒取**开局资金**（$3,000）：
-       它不是「成本」，是「到此为止赚了还是亏了」那条分界。 */
+       它不是「成本」，是「到此为止赚了还是亏了」那条分界。
+       `range` = 玩家那排区间键选的天数（`view.eqRange`，`0` = 全部）—— 高低点也随之只看该区间。 */
+    for (const [k, b] of refs.eqRangeBtns) b.classList.toggle('on', Number(k) === view.eqRange);
     drawEquityCurve(refs.asCurve, {
       eq: s.eq,
+      range: view.eqRange,
       base: GAME.cash,
       cssW: refs.asCurve.clientWidth,
       cssH: refs.asCurve.clientHeight,
@@ -945,9 +1006,13 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur, order = null }) {
     /* 历史锚点刻度（P2-C）—— 与最右那根一起交给图上换算槽位 */
     anchors: anchorMarks,
     right: win.right,
+    /* 量柱 P90 的缓存键（用户 2026-10-01 拍板）：`windowFor` 每帧重建 `vols`，所以不能用引用当键 ——
+       用「这份视野是谁」的字符串。同一视野（未换币 / 未换粒度 / 未拖动）下 P90 恒定。 */
+    cacheKey: `${sym}|${win.mode}|${win.right}|${win.count}`,
     /* 顶部留白 = 左上角遮罩的**实测**高度（Batch 5 · B27）：量不到时由 `chart.js` 退回自己的兜底常量。
-       `getBoundingClientRect` 与 `main.js` 那次取尺寸落在同一帧，不额外多一次强制布局。 */
-    topInset: head.getBoundingClientRect().height,
+       ⚠️ 量一次就缓存（用户 2026-10-01 拍板）：它只随**容器宽度**（换行）与**文案长度**变，
+          每帧 `getBoundingClientRect` 会白白强制一次布局。键 = 宽度 ＋ 那几段文案的总长。 */
+    topInset: headInset(head, view.chartW),
     mark,
     entry: cur ? cur.entry : null,
     side: cur ? cur.side : null,

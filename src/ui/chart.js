@@ -17,8 +17,10 @@
  * ⚠️ **量柱是叠在 K 线上的展示层**（Batch 4 · B15）：价格区**吃满** `plotH`，量柱贴底、
  *    **半透明盖在 K 线之上**（图层二）。量柱与自己那根 K 线**同宽同色**，所以只会把背景压出一段
  *    「暗一档的柱身」，不会把相邻的 K 线染花；最大柱高另有上限（`VOL_MAX`），
- *    保证它不侵入 K 线的躯干密集区。柱高只服务观感，不参与任何玩法。
+ * 保证它不侵入 K 线的躯干密集区。柱高只服务观感，不参与任何玩法。
  */
+
+import { fmtMoneyShort } from '../core/format.js';
 
 /** 右侧价格标签宽（`view.js` 算单根 K 线宽度时要用同一份，故导出） */
 export const PAD_R = 52;
@@ -52,6 +54,11 @@ const THEME_VARS = {
 };
 
 let themeCache = null;
+
+/** 量柱 P90 的缓存（用户 2026-10-01 拍板）—— `windowFor` 每帧重建 `vols` 数组，
+ *  所以不能用数组引用当键，改由调用方给一个「这份视野是谁」的字符串（`o.cacheKey`）。
+ *  量柱是**原始成交额**、与价格位移无关，所以同一个键下 P90 恒定。 */
+let p90Cache = { key: '', v: 0 };
 
 /**
  * 把 `:root` 的变量读成计算值并缓存。
@@ -101,6 +108,7 @@ function axisLabel(p) {
  *   anchors  Array<{d:number}>  历史锚点刻度（P2-C）：`d` = **显示单位**下的序号，
  *                              `1h` 模式是小时序号、`1d` 模式是天序号。
  *   right    number            视野**最右那根**的显示单位序号 —— 把 `d` 换算成槽位要用它。
+ *   cacheKey string            量柱 P90 的缓存键（`sym|mode|right|count`，见 `p90Cache`）。不给就不缓存。
  *   topInset number            顶部留白 = 左上角遮罩的实测高度（B27）。不传则退回 `PAD_TOP`。
  *   cssW/cssH number           容器尺寸（CSS 像素）
  *   yPx      number            价格轴的垂直平移（像素，向下为正；`view.js` 持有）
@@ -246,8 +254,16 @@ export function drawChart(canvas, o) {
   for (const v of V) if (v > 0) { nz.push(v); if (v > vmax) vmax = v; }
   let vscale = vmax;
   if (nz.length >= 10) {
-    nz.sort((a, b) => a - b);
-    vscale = nz[Math.min(nz.length - 1, Math.ceil(0.9 * nz.length) - 1)];   // 最近秩法 P90
+    /* ⚠️ P90 缓存（用户 2026-10-01 拍板）：同视野下每帧重排一次纯属浪费 ——
+       键由调用方给（`cacheKey`），命中就直接复用。 */
+    const key = o.cacheKey;
+    if (key && p90Cache.key === key) {
+      vscale = p90Cache.v;
+    } else {
+      nz.sort((a, b) => a - b);
+      vscale = nz[Math.min(nz.length - 1, Math.ceil(0.9 * nz.length) - 1)];   // 最近秩法 P90
+      if (key) p90Cache = { key, v: vscale };
+    }
   }
   if (vscale > 0) {
     ctx.save();
@@ -396,7 +412,7 @@ const SIDE_RESERVE = 56;
 /** 避让的位移 = 一个标签高 16 ＋ 一个块内间距 6，恰好整行让开 */
 const SIDE_SHIFT = 22;
 
-/* ═════════════════════ 资金曲线（v13 · 方案 §4） ═════════════════════
+/* ═════════════════════ 资金曲线（v13 · 方案 §4；区间＋高低点 2026-10-01） ═════════════════════
  * 把 `s.eq`（每个游戏日一个权益点）画成一条折线 ＋ 一条 $3,000 基准虚线。
  *
  * ⚠️ 它**住在本文件**的原因只有一个：K 线那套「读 `:root` 变量（`theme()`）＋ dpr 缩放」
@@ -404,6 +420,9 @@ const SIDE_SHIFT = 22;
  * ⚠️ **对数纵轴**：$3,000 → $1,000 万跨三个半数量级，线性轴会把前两年压成贴着底边的一条线，
  *    而那正是玩家最需要看清「有没有在慢慢往上爬」的一段。
  * ⚠️ 它是**复盘图**：不画轴、不画网格、不做任何手势 —— 资产页上点它什么也不会发生。
+ *    「区间切换」由上方那排 `.opt` 键（`main.js` 分派 `eqrange`）驱动，图上依旧没有手势。
+ * ⚠️ **区间高低点**（用户 2026-10-01 拍板，对齐 OKX）：只在**当前所选区间**内取 min/max
+ *    并各画一枚点 ＋ 一行小字读数，值走 `fmtMoneyShort`（与 HUD 同一套 K/M/B 后缀）。
  */
 
 /** 纵轴下限（对数值）：权益归零后取 $1e-6 会让 `log10` 变成 −6，白白吃掉半屏纵轴 —— 兜在 $1 上 */
@@ -415,6 +434,7 @@ const CURVE_PAD_RATIO = 0.06;
  * @param {HTMLCanvasElement} canvas
  * @param {object} o
  *   `eq`   Array<number>  每游戏日收盘的权益（升序，最后一个 = 今天）
+ *   `range` number        只看最近多少个游戏日（`0` / 缺省 = 全部）
  *   `base` number         基准线（开局资金 $3,000）—— 也是「赚了还是亏了」那条分界
  *   `cssW` / `cssH`       画布尺寸（CSS 像素）
  */
@@ -431,14 +451,20 @@ export function drawEquityCurve(canvas, o) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
 
-  const eq = o.eq || [];
-  if (!eq.length) {
+  const all = o.eq || [];
+  if (!all.length) {
     ctx.fillStyle = T.MUT;
     ctx.font = '12px ui-monospace, monospace';
     ctx.textAlign = 'center';
     ctx.fillText('暂无记录', W / 2, H / 2);
     return;
   }
+
+  /* 区间切片（用户 2026-10-01 拍板）：`range` > 0 只看尾部 N 个游戏日；点数不够就显示全部。
+     ⚠️ 全程一个点（开局当天）也要画出来，所以切片后仍可能只有 1 个点 —— 下面单点分支照旧。 */
+  const range = Number(o.range) || 0;
+  const from = range > 0 ? Math.max(0, all.length - range) : 0;
+  const eq = from > 0 ? all.slice(from) : all;
 
   const padX = 4;
   const padY = 12;
@@ -490,4 +516,37 @@ export function drawEquityCurve(canvas, o) {
   // ── 今天那一点 ──
   ctx.fillStyle = ctx.strokeStyle;
   ctx.fillRect(Math.round(xOf(eq.length - 1)) - 1.5, Math.round(yOf(last)) - 1.5, 3, 3);
+
+  /* ── 区间高低点（用户 2026-10-01 拍板，对齐 OKX）──
+     只在**当前所选区间**内取 min/max，各画一枚小圆点 ＋ 一行小字读数。
+     ⚠️ 全程一条平线（`iMax === iMin`）时不画 —— 两枚点叠在一起、两个标签压成一团，
+        反而比不标更乱；那种情况下「高低点」本来也没有信息量。 */
+  if (eq.length >= 2) {
+    let iMax = 0, iMin = 0;
+    for (let k = 1; k < eq.length; k++) {
+      if (eq[k] > eq[iMax]) iMax = k;
+      if (eq[k] < eq[iMin]) iMin = k;
+    }
+    if (iMax !== iMin) {
+      const col = ctx.strokeStyle;
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const dot = (k, label, above) => {
+        const x = xOf(k), y = yOf(eq[k]);
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.arc(Math.round(x), Math.round(y), 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        const text = `${label} ${fmtMoneyShort(eq[k])}`;
+        const half = ctx.measureText(text).width / 2;
+        const tx = clamp(x, padX + half, W - padX - half);
+        const ty = clamp(above ? y - 11 : y + 11, 8, H - 7);
+        ctx.fillStyle = T.MUT;
+        ctx.fillText(text, tx, ty);
+      };
+      dot(iMax, '高', true);
+      dot(iMin, '低', false);
+    }
+  }
 }

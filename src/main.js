@@ -81,6 +81,14 @@ let godSel = null;
       与 `view.js` 的「看哪一段」同一口径 —— 进存档只会污染状态位，重开一局还得记得清。 */
 let tab = 'trade';
 
+/* 资产页资金曲线的**区间**（用户 2026-10-01 拍板）—— 值是「最近多少个游戏日」，`0` = 全部。
+   ⚠️ 与 `tab` 同一个口径：纯界面状态，**不进 `s`、不进存档**（重开一局由 `location.reload()` 归零）。 */
+let eqRange = 0;
+
+/* 存档脏标记（用户 2026-10-01 拍板）：`after()`（每次玩家动作）已经即时落盘，那个 10 秒定时器
+   只是给「时间自己走」兜底 —— 没有推进过就没什么可存，跳过那一次全量 `JSON.stringify` ＋ 写盘。 */
+let dirty = false;
+
 /* 「打开日志浮层之前是不是暂停态」（本轮 ①）—— 日志浮层**结束即暂停**，关掉时若不记住原状态，
    就会把玩家的手动暂停静默解除。与上面那些同一个口径：纯界面状态，**不进 `s`**。 */
 let logWasPaused = false;
@@ -142,7 +150,7 @@ async function boot() {
   /* 新闻窗口内**强制一帧**（P2-C）：一次 `step()` 在 50x 下最多能推进 50 个游戏小时，
      而渲染被节流到 80ms —— 不强制就会「窗口整个落在两帧之间」，玩家一次都看不到。
      新闻是 `s.i` 的纯函数，所以这里只做一件事：窗口里别让节流把这一帧吞掉。 */
-  clock = createClock(s, { onFrame: () => draw(!!anchorAt(s.i)) });
+  clock = createClock(s, { onFrame: () => { dirty = true; draw(!!anchorAt(s.i)); } });
   draw();
 
   bindActions(document.body, dispatch);
@@ -162,7 +170,9 @@ async function boot() {
     zoom: f => { if (!rv) return; zoomBy(rv.sym, f, rv.i, chartW()); draw(true); },
     reset: () => { if (!rv) return; snd.tap(); resetView(rv.sym); draw(true); },
   });
-  setInterval(() => save(s), 10000);
+  /* 存档：玩家每次动作走 `after()` 即时落盘；这个定时器只给「时间自己走」兜底 ——
+     `dirty` 由 `onFrame`（推进过才回调）置真，没动过就跳过这次全量序列化与写盘。 */
+  setInterval(() => { if (dirty) { save(s); dirty = false; } }, 10000);
   window.addEventListener('beforeunload', () => save(s));
 
   /* 主菜单（需求 4 · 方案 §2）：**一律先弹它**，三个入口决定后续走向 ——
@@ -362,6 +372,8 @@ function draw(force = false) {
     chartH: Math.max(1, Math.round(rect.height - 2)),
     /* 当前页：K 线只在交易页画（另两页没有 K 线） */
     tab,
+    /* 资产页资金曲线的区间（`0` = 全部）—— 纯界面状态，与 `redUp` 同一类 */
+    eqRange,
     /* 音效偏好归 `sound.js` 管，不进主状态 —— 设置页那两个开关的文案由渲染层每帧从这里取 */
     muted: snd.isMuted(),
     marketSound: snd.isMarketOn(),
@@ -460,6 +472,10 @@ function dispatch(node) {
   /* A6：底部 Tab 切页（`data-tab="trade|assets|settings"`）。
      ⚠️ 原来的 `data-settings`（顶栏那枚「设置」）已随 A6 撤掉 —— 设置整体成了一个页。 */
   if (d.tab !== undefined) return onTab(d.tab);
+  /* 资产页资金曲线的区间档（用户 2026-10-01 拍板）：只改一个纯 UI 变量 ＋ 重画一帧。
+     ⚠️ 走 `after()` 是**沿用 `onColorToggle` 的先例**（同为纯显示偏好）—— 它顺手落一次盘，
+        代价可忽略，换来的是「所有分派出口长得一样」。 */
+  if (d.eqrange !== undefined) { eqRange = Number(d.eqrange); after(); return; }
   if (d.snd !== undefined) return onSoundToggle();
   if (d.market !== undefined) return onMarketToggle();
   if (d.colors !== undefined) return onColorToggle();
@@ -1368,6 +1384,7 @@ function onWipe() {
 
 function after() {
   save(s);
+  dirty = false;      // 刚落过盘，10 秒定时器这一轮不必再存
   draw(true);
 }
 
