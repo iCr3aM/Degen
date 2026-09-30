@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, OTC, SUPPLY_SHARE, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, OTC, SUPPLY_SHARE, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
@@ -417,6 +417,11 @@ export function openTrade(s, side, frac = 1) {
   if (!(margin > 0) || margin + fee > cash + 1e-9) {
     return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用保证金不足' };
   }
+  /* 单笔最小名义（2026-09-30）：余额只剩浮点残值时上面那条**拦不住**（`margin > 0` 恒真），
+     会建出一张点不掉的幽灵持仓 —— 见 `config.MIN_NOTIONAL`。 */
+  if (!(margin * lev >= MIN_NOTIONAL)) {
+    return { ok: false, why: `下单金额太小 ｜ 单笔名义需 ≥ ${fmtMoneyShort(MIN_NOTIONAL)}` };
+  }
 
   /* OTC 的门槛（§15.3）：单笔名义 ≥ $100 万。锁定 1x ⇒ 名义 = 保证金。
      ⚠️ 门槛只卡**买入**，不卡平仓 —— 卡平仓会把玩家困在一条「币价跌下来、名义已不足 $100 万」的仓位上。 */
@@ -613,6 +618,11 @@ export function placeOrder(s, side, dev) {
     return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用保证金不足' };
   }
   const notional = margin * lev;
+  /* 单笔最小名义（2026-09-30）：与市价单同一条口径 —— 余额只剩浮点残值时
+     `margin > 0` 恒真，会挂出一张永远点不掉的幽灵单（见 `config.MIN_NOTIONAL`）。 */
+  if (!(notional >= MIN_NOTIONAL)) {
+    return { ok: false, why: `挂单金额太小 ｜ 单笔名义需 ≥ ${fmtMoneyShort(MIN_NOTIONAL)}` };
+  }
   const size = notional / limit;
   if (!(size > 0)) return { ok: false, why: '可用保证金不足' };
 
@@ -699,10 +709,19 @@ function matchOrders(s) {
     const mix = { usd: o.mix.usd * share, usdt: o.mix.usdt * share };
 
     /* 手续费**成交那一刻**才收（§33.4）—— 按实际成交量收，所以撤单只退保证金。
-       兜底（理论不可达：挂单时已保证 `保证金 ＋ 费 ≤ 可用`）：与 `settleLoan` 同口径记账。 */
+       ⚠️ **付不出这笔费 ⇒ 这一笔不成交，整张挂单撤掉**（2026-09-30 裁决）。
+         旧写法是 `else { ensureBook(s).usd -= fee; }`（「与 `settleLoan` 同口径」），
+         注释写着「理论不可达」，其实**可达**：挂单之后玩家在别处把钱花光，成交时就付不出费，
+         而那行直接把 `usd` 减成负数、绕过所有闸门（长局抽检实测负数与那笔 `openFee` 逐位相等）。
+         撤单是唯一不留下坏账的选择：钱都花在别处了，再挂着只会每小时重试一次、永远付不出。
+         ⚠️ 先撤单再记日志 —— `pushLog` 把最新的插在队首，这样「为什么失败」才在日志条上显示。 */
     const feeMix = debit(s, fee, !o.spot);
-    if (feeMix) { mix.usd += feeMix.usd; mix.usdt += feeMix.usdt; }
-    else { ensureBook(s).usd -= fee; mix.usd -= fee; }
+    if (!feeMix) {
+      cancelOrder(s, sym);
+      pushLog(s, `限价成交失败 ${sym} ｜ 余额不足以支付手续费 ${fmtMoneyShort(fee)} ｜ 挂单已撤销`, 'bad');
+      continue;
+    }
+    mix.usd += feeMix.usd; mix.usdt += feeMix.usdt;
     s.realized -= fee;
 
     applyFill(s, {

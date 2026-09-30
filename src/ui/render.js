@@ -1722,13 +1722,15 @@ export function openYearPick(curYear) {
  *    原来那两套价格能力（「冲击倍率」`s.god.mult`、「手动砸盘 / 复位」`s.god.scale`）
  *    已整体删除：普通模式里看不到的暴涨暴跌全都出自它们，与「上帝模式只负责选时间、填资金」这条口径相悖。
  *
- * ⚠️ **日期框用原生 `<input type="date">`** —— 引第三方控件不值当，原生在手机上直接弹系统日期轮。
+ * ⚠️ **日期控件不再是原生 `<input type="date">`**（2026-09-30 裁决）—— 原生框在手机上
+ *    「点不准、也看不出哪些日期已经过去」，可视化太差。改成**年份档排 ＋ 月份微调**，
+ *    与杠杆 / 速度那套档位按钮同一设计语言：已过的年份直接 `disabled` 画灰，
+ *    「能跳到哪里」是用看的而不是用试的。
  *    但「跳到」不是改个数字：`main.js` 会拿 `advanceOneHour` **逐小时重放**过去，
  *    否则 Mt.Gox 归零、币解锁、借款到期这些事件会被整段跳过（等于白送一条命）。
- * ⚠️ **输入框不能挂 `data-*`**：`bind.js` 拦的是 `[data-*]` 的 `pointerdown` 并会 `preventDefault`，
- *    挂上去就打不了字了。所以值由动作处理函数从同一个面板里按类名读
- *    （`god-cash` / `god-date` —— 两个框都带 `god-in` 做样式，但**各有一个唯一类**，
- *     否则 `querySelector('.god-in')` 永远只能拿到排在前面的那个资金框）。
+ * ⚠️ **资金框不能挂 `data-*`**：`bind.js` 拦的是 `[data-*]` 的 `pointerdown` 并会 `preventDefault`，
+ *    挂上去就打不了字了。所以值由动作处理函数从同一个面板里按类名读（`god-cash`）。
+ *    ⚠️ 档排上那 14 枚是**按钮**、不是输入框，照旧挂 `data-*`（`godyear` / `godmon`）。
  */
 export function openGod(s) {
   closePicker();
@@ -1754,17 +1756,33 @@ export function openGod(s) {
   cRow.append(el('i', null, '资金'), cashIn, cBtn);
   rows.append(cRow);
 
-  /* ② 跳到日期 —— **只许向前**（向后跳会让「未来开的仓」凭空出现在历史里） */
+  /* ② 跳到日期 —— **只许向前**（向后跳会让「未来开的仓」凭空出现在历史里）。
+     形状 = 一行日期读数 ＋ 年份档排 ＋ 月份微调；「已经过去」直接画灰，不靠点了才报错。 */
+  const now = timeOf(s);
   const dRow = el('div', 'set-row');
-  const dateIn = el('input', 'god-in god-date');
-  dateIn.type = 'date';
-  dateIn.min = '2013-01-01';
-  dateIn.max = '2024-12-31';
-  dateIn.value = fmtDate(timeOf(s), false);
-  const dBtn = el('button', 'set-btn on', '跳到');
-  dBtn.dataset.goddate = '';
-  dRow.append(el('i', null, '日期'), dateIn, dBtn);
+  dRow.append(el('i', null, '当前'), el('b', 'num', fmtDate(now, false)));
   rows.append(dRow);
+
+  const y0 = new Date(GAME.start).getUTCFullYear();
+  const y1 = new Date(GAME.start + (GAME.candles - 1) * HOUR_MS).getUTCFullYear();
+  const yRow = el('div', 'god-years');
+  for (let y = y0; y <= y1; y++) {
+    const b = el('button', 'set-btn', String(y));
+    b.dataset.godyear = String(y);
+    /* 那年的 1 月 1 日已经过去 ⇒ 跳过去只会得到「只能向前跳」，索性在这里就置灰 */
+    b.disabled = Date.UTC(y, 0, 1) <= now;
+    yRow.append(b);
+  }
+  rows.append(yRow);
+
+  const mRow = el('div', 'set-row wrap');
+  mRow.append(el('i', null, '微调'));
+  for (const n of [1, 3]) {
+    const b = el('button', 'set-btn', `+${n} 月`);
+    b.dataset.godmon = String(n);
+    mRow.append(b);
+  }
+  rows.append(mRow);
 
   box.append(rows);
 

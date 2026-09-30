@@ -96,10 +96,16 @@ export function fillPrice(price, dir, impact) {
 /**
  * **限价挂单的深度上限**（C8-B2 · ROADMAP §33.3）—— 按偏离度反推「这个价位最多能吃下多少名义」。
  *
- * 把 `impactOf` **反解**：想让成交代价恰为 `d`，需要 `q = (d / (A·σ))²`（仍被 `SLIP.cap` 夹住）。
+ * 把 `impactOf` **反解**：想让成交代价恰为 `d`，需要 `q = (d / (A·σ))²`。
  * 于是本价位当根能成交的名义上限：
  *
- *     Q = hourLiq × min( (d / (A·σ))² , SLIP.cap )
+ *     Q = hourLiq × clamp( (d / (A·σ))² , SLIP.threshold , SLIP.cap )
+ *
+ * ⚠️ **下限取 `SLIP.threshold`（2026-09-30 裁决，原为纯 `min`）**：`impactOf` 自带 0.10 的死区
+ *    （`q ≤ threshold ⇒ 冲击恒为 0`），于是 `d < 0.632σ` 的**近档**反解出的 `q` 会落进死区、
+ *    深度偏保守。但模型那句「q ≤ 0.10 ⇒ 零冲击」本身就在说**市场能免费吃下当根流动量的 10%**
+ *    ⇒ 任何档位的深度都不该低于 `threshold × hourLiq`。下限与幂式在 `d = 0.632σ` 处**连续**
+ *    （无跳变），也不破红线 A（深度只用来截断成交量，成交价恒 = L）。
  *
  * 为什么是「上限」而不是「概率队列」（弃 §26.5 那个方案）：
  *   真 L2 深度数据已被判死（§24.10），编一套挂单排队的概率模型＝凭空造数据；
@@ -118,7 +124,7 @@ export function depthOf(d, sigma, hourLiq) {
   if (!(hourLiq > 0)) return 0;
   if (!(d > 0)) return 0;
   const s = Number.isFinite(sigma) && sigma > 0 ? sigma : SLIP.sigmaDefault;
-  const q = Math.min((d / (SLIP.A * s)) ** 2, SLIP.cap);
+  const q = Math.min(Math.max((d / (SLIP.A * s)) ** 2, SLIP.threshold), SLIP.cap);
   return q * hourLiq;
 }
 

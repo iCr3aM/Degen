@@ -410,12 +410,13 @@ function dispatch(node) {
         （倍率 `godmult`、手动砸盘 `godscale` / 复位 `godreset`）已整体删除。 */
   if (d.god !== undefined) return onGodTap();
   if (d.impact !== undefined) return onImpactToggle();
-  if (d.godcash !== undefined || d.goddate !== undefined || d.godoff !== undefined) {
+  if (d.godcash !== undefined || d.godyear !== undefined || d.godmon !== undefined || d.godoff !== undefined) {
     /* 这几枚只可能出现在上帝面板里，而面板只在 `s.god` 非空时打开。这一行是**状态机不靠 DOM 兜底**：
        万一面板被别的路径留下来（比如读到一份 `god: null` 的档），这里不能抛异常。 */
     if (!s.god) return;
     if (d.godcash !== undefined) return onGodCash(node);
-    if (d.goddate !== undefined) return onGodDate(node);
+    if (d.godyear !== undefined) return onGodYear(Number(d.godyear));
+    if (d.godmon !== undefined) return onGodMon(Number(d.godmon));
     return onGodOff();
   }
 
@@ -618,9 +619,10 @@ function onOrder(v) {
 }
 
 /* ── 上帝模式 ＋ 订单冲击（隐藏入口 · 方案 §2）─────────────────────
-   一个隐藏入口（连点标题）、一个玩法开关（设置面板）、一张面板（倍率 / 资金 / 日期 / 砸盘）。
-   ⚠️ 面板是**静态 DOM**，所以「填入 / 跳到」要从它内部读输入框的值 —— 输入框不能挂 `data-*`
-      （`bind.js` 会 `preventDefault` 掉 `pointerdown`，挂上去就打不了字）。 */
+   一个隐藏入口（连点标题）、一个玩法开关（设置面板）、一张面板（资金 / 跳日期 / 关闭）。
+   ⚠️ 面板是**静态 DOM**，所以「填入」要从它内部读输入框的值 —— 输入框不能挂 `data-*`
+      （`bind.js` 会 `preventDefault` 掉 `pointerdown`，挂上去就打不了字）。
+      ⚠️ 跳日期那 14 枚是**按钮**、不是输入框，照旧走 `data-godyear` / `data-godmon`。 */
 
 /** 连点计数：**1.5 秒内 5 次**才触发；间隔超时就重新从 1 数起 */
 function onGodTap() {
@@ -662,6 +664,14 @@ function onGodCash(node) {
     after();
     return;
   }
+  /* 归零后的**负账本一并清零**（2026-09-30 裁决）：逐仓的浮亏与「1x 现货空单」的亏损是
+     **无上限**写进账本的（`credit` 允许负额，见 `engine.closeTrade`），普通玩法由 `isBankrupt`
+     终局接住，而上帝模式「归零不退出」会把它原样留在资产页（长局抽检实测最坏 −$74 万一格）。
+     不清的话，玩家补完钱会发现净值仍是负的，且那一格**永远还不清**。 */
+  for (const b of Object.values(s.books)) {
+    if (b.usd < 0) b.usd = 0;
+    if (b.usdt < 0) b.usdt = 0;
+  }
   ensureBook(s)[cashCurAt(timeOf(s))] = num;
   s.god.lastFill = num;
   s.godRuined = false;                 // 补上钱之后，下一次归零要能再提示一遍
@@ -671,27 +681,37 @@ function onGodCash(node) {
 }
 
 /**
- * 面板里那枚「跳到」：把时间推到某个日期（方案 §2.4）。
+ * 面板里那排年份：把时间推到**那年 1 月 1 日**（方案 §2.4）。
+ * ⚠️ 已过的年份在面板里就是 `disabled`，这里再兜一次底（防误触 / 防旧 DOM 残留）。
+ */
+function onGodYear(y) {
+  godReplay(Math.round((Date.UTC(y, 0, 1) - GAME.start) / HOUR_MS), `${y} 年 1 月`);
+}
+
+/**
+ * 面板里那两枚月份微调（`+1 月` / `+3 月`）—— 从**当前游戏日期**按自然月往后推。
+ * 用 `Date.UTC` 的月份进位（1-31 加一个月会落到 3-02/3-03，与日历一致），不用「30 天」近似。
+ */
+function onGodMon(n) {
+  const d = new Date(timeOf(s));
+  const t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, d.getUTCDate());
+  godReplay(Math.round((t - GAME.start) / HOUR_MS), `+${n} 个月`);
+}
+
+/**
+ * 跳日期的公共尾巴（年份档与月份微调共用）：夹取 → 重放 → 重开面板。
  *
  * ⚠️ **逐小时重放，不能只改 `s.i`**：那等于把跳过这段时间里的所有事件白送 ——
  *    Mt.Gox 2014-02-25 归零、币解锁、杠杆阶梯升级、借款到期、强平、资金费、转账到账。
  *    复用现成的 `advanceOneHour` 就零新增事件逻辑。
  * ⚠️ **只许向前**：向后跳会让「未来开的仓」凭空出现在历史里。
+ * @param {number} target 目标小时序号（未夹取）
+ * @param {string} label  失败日志里那句「跳到 X」
  */
-function onGodDate(node) {
-  const v = readGodInput(node, '.god-date');
-  const m = v && /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
-  if (!m) {
-    pushLog(s, '跳到日期：请选择一个日期', 'bad');
-    after();
-    return;
-  }
-  const target = Math.min(
-    Math.max((Date.UTC(+m[1], +m[2] - 1, +m[3]) - GAME.start) / HOUR_MS, s.i),
-    GAME.candles - 1,
-  );
-  if (target <= s.i) {
-    pushLog(s, '跳到日期：只能向前跳', 'bad');
+function godReplay(target, label) {
+  const to = Math.min(Math.max(target, s.i), GAME.candles - 1);
+  if (to <= s.i) {
+    pushLog(s, `跳到 ${label}：只能向前跳`, 'bad');
     after();
     return;
   }
@@ -699,8 +719,10 @@ function onGodDate(node) {
        ① 到目标日期  ② 到 2024-12-31 收盘（`s.over`）
        ③ **中途账户归零、弹出借贷遮罩**（`s.pending`）—— 少了第三个判据这里会**死循环**：
           `advanceOneHour` 在 `pending` 下会立刻 return（`s.i` 永远不前进），
-          而 `!s.over` 一直为真，浏览器就卡死了（2026-09-29 离线断言逮到）。 */
-  while (s.i < target && !s.over && !s.pending) advanceOneHour(s);
+          而 `!s.over` 一直为真，浏览器就卡死了（2026-09-29 离线断言逮到）。
+     ⚠️ 时长实测：2013-01 → 2024-12 全程 10.5 万小时 ≈ 0.4 秒（长局抽检 2026-09-30），
+        所以这里不需要分片或进度提示。 */
+  while (s.i < to && !s.over && !s.pending) advanceOneHour(s);
   /* 停在借贷遮罩上时**不要**再开上帝面板 —— `draw()` 刚把遮罩铺上，压一张面板上去只会打架 */
   if (!s.over && !s.pending) openGod(s);
   after();

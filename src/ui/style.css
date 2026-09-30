@@ -899,10 +899,13 @@ canvas.curve {
 .act.warn { background: var(--down); color: #1a0508; }
 
 /* ══════════════ 上帝模式面板（隐藏入口 · 方案 §2） ══════════════
-   复用 `.confirm` 那副居中盒，比设置面板多一行「输入框 ＋ 按钮」和一行会换行的档位。
+   复用 `.confirm` 那副居中盒：一行「资金输入框 ＋ 填入」、一行日期读数、一片年份档排、一行月份微调。
    ⚠️ 输入框**不能挂 `data-*`**（`bind.js` 会 `preventDefault` 掉 `pointerdown`，打不了字），
-      所以它没有动作键，值由 `main.js` 从同一个面板里 `querySelector('.god-in')` 读 —— 见 `bind.js` 的注释。 */
+      所以它没有动作键，值由 `main.js` 从同一个面板里 `querySelector('.god-cash')` 读。 */
 .set-row.wrap { flex-wrap: wrap; justify-content: flex-start; }
+/* 上帝面板的行与行要留 8px —— `.confirm-rows` 自身不带行距（它是给「三行标签」那种
+   连排盒用的）；换成档排后这里是四块（资金 / 当前 / 年份 / 微调），不隔开会糊成一片。 */
+.godp .confirm-rows { display: grid; gap: 8px; }
 .god-in {
   flex: 1;
   min-width: 0;
@@ -921,6 +924,18 @@ canvas.curve {
 .god-in[type="number"] { appearance: textfield; -moz-appearance: textfield; }
 .god-in[type="number"]::-webkit-outer-spin-button,
 .god-in[type="number"]::-webkit-inner-spin-button { appearance: none; margin: 0; }
+
+/* 年份档排（2026-09-30 取代原生 `<input type="date">`）—— 4 列 × 3 行。
+   ⚠️ 原生日期框在手机上「点不准、也看不出哪些日期已经过去」，直接换成档位按钮：
+      至多 12 枚、一行 4 枚刚好不出滚动条，「能跳到哪里」是用看的而不是用试的。
+   ⚠️ 置灰用的是与 `.act:disabled` **同一档** 0.45 —— 全站禁用态只此一种写法。 */
+.god-years {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.god-years .set-btn { width: 100%; }
+.set-btn:disabled { opacity: .45; }
 
 /* ══════════════ 开场叙事（Batch 4 · B19） ══════════════
    复用 `.confirm` 的盒子，**不铺暗底**（不是「点外面就能关掉」的菜单，是这一局的入口）。
