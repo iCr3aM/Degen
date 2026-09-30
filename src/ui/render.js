@@ -773,9 +773,9 @@ export function update(refs, s, view) {
 
   /* 主按钮可用性。
      ⚠️ `lockedUI`（结束 / 待借贷决策）下一律不可用 —— 待决态只留遮罩上那两枚按钮。
-     · 合约模式：做多 / 做空看「当前币还没仓位」，平仓看「当前币有仓位」（现状不变）
-     · 现货模式（v9）：买入 / 卖出 **手上有仓位时也照样可用** —— 反向那一枚就是平仓；
-       同向那一枚禁掉（同一个币只许一条仓位，让它点出「已有持仓」的错误日志没有意义）。
+     · 合约模式：做多 / 做空 —— 空仓可开、**同向可加仓**；反向那一枚禁用（先用平仓键平掉再反手）
+     · 现货模式（v9）：买入 / 卖出 **手上有仓位时也照样可用** —— 反向那一枚就是平仓、
+       同向那一枚是**加仓**（v13 · B4，并进同一条仓位；同一个币仍然只许一条）。
 
      ⚠️ **暂停闸门**（本轮 ④）：暂停时**所有会动钱的操作**都画成禁用（`.act:disabled` 的 .45）——
        原来暂停只由 `main.js` 的分派层拦下并回一条日志 ⇒ 按钮**看起来仍然是能按的**，
@@ -787,16 +787,21 @@ export function update(refs, s, view) {
   const frozen = s.paused && !view.guide;
   const tradable = !lockedUI && !frozen && mark != null && isLoaded(sym);
   const dir = cur ? cur.side : null;
-  refs.longBtn.disabled = !(tradable && !cur);
-  refs.shortBtn.disabled = !(tradable && !cur);
+  /* 同向那一枚 = **加仓**（v13 · B4 / 方案 §5）：手上那条仓位与本键同向时不再禁掉 ——
+     点下去会并进同一条仓位（改杠杆 / 换性质 / 反手这些冲突由 `engine.openTrade` 给一句明确文案，
+     都属于「有、但这次不行」，不是「没有」）。反向那一枚在合约模式仍是禁用（那里有独立的平仓键）。 */
+  refs.longBtn.disabled = !(tradable && (!cur || dir === 'long'));
+  refs.shortBtn.disabled = !(tradable && (!cur || dir === 'short'));
   refs.closeBtn.disabled = !cur || lockedUI || frozen;
-  refs.buyBtn.disabled = !(tradable && dir !== 'long');
+  /* 现货模式这两枚**四件事共用**：空仓开仓 / 同向加仓 / 反向平仓 —— 所以只要 `tradable` 就能点。
+     「卖出」唯一的例外见下（空仓且该所没有融资 ⇒ 开不出空单，那时才禁）。 */
+  refs.buyBtn.disabled = !tradable;
   /* 「卖出」＝开现货空单（要借币，v10）：该所没有融资时**空仓不许开空**。
-     但手上若已经压着一张空单（只可能是旧档），「卖出」仍是它唯一的出口 ⇒ 必须能点，
-     所以只挡「开空」这一种：`dir === null && !canLev`。
+     ⚠️ 判据只看 `dir === null`：手上压着一张空单时「卖出」是**加仓**（B4）、
+        压着一张多单时它是**平多**，两件事都不需要借币 ⇒ 必须能点。
      ⚠️ 这种「点不动」同样走 `aria-disabled` ＋ `.off`（理由同杠杆行），点一下给一条解释。 */
   const sellOff = !dir && !canLev;
-  refs.sellBtn.disabled = !(tradable && dir !== 'short' && !sellOff);
+  refs.sellBtn.disabled = !(tradable && !sellOff);
   refs.sellBtn.classList.toggle('off', sellOff);
   if (sellOff) refs.sellBtn.setAttribute('aria-disabled', 'true');
   else refs.sellBtn.removeAttribute('aria-disabled');

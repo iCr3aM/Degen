@@ -266,11 +266,14 @@ export const levKind = s => (s.mode === 'fut' ? 'fut' : 'spot');
  *
  * 多仓（2026-09-28）：**同一个币只许一条仓位**，不同币可以同时持有（BTC 多 + ETH 空）。
  * 保证金一律从**当前所**的余额里出，各仓位互不担保（逐仓）。
+ *
+ * **同币加仓（v13 · B4 / 方案 §5）**：同一枚币已有仓位时，同向的这一单**并进那条仓位**
+ * （不新开第二条、不引入仓位槽 —— 「每币一条」这条不变量撑着 `posOf` / 持仓条 / 强平线 / 存档）。
+ * 兼容性判据集中在下面 `prev` 那一段，反手一律拒绝、由玩家自己决定先平哪一边。
  * @returns {{ok:boolean, why?:string}}
  */
 export function openTrade(s, side, frac = 1) {
   if (s.over) return { ok: false, why: '本局已结束' };
-  if (posOf(s, s.sym)) return { ok: false, why: `${s.sym} 已有持仓，先平仓` };
 
   /* 通道（P2-B3 · §15.3）：OTC 是**现货大宗**，没有做空这一说（空头要借币、要维持保证金，
      都不是「私下一口价买现货」能承接的）。 */
@@ -304,6 +307,21 @@ export function openTrade(s, side, frac = 1) {
      所以 2013 年那 $3,000 美元可以买现货，但要玩合约得先在资产页「买 U」。 */
   const mustUsdt = !isSpotOrder;
   const cash = spendableOf(s, mustUsdt);
+
+  /* ── 同币加仓的兼容性闸门（v13 · B4 / 方案 §5.2）──
+     这一单若与已有仓位冲突，**必须在动账之前**拒绝（下面一旦 `debit`，钱就已经扣了）。
+     四项各给一句明确文案，不静默失败：
+       · 反方向 ⇒ 引导玩家自己「先平仓」（不替他反手：反手是一笔新仓，该由他决定）
+       · 性质不同（现货 / 合约）⇒ 两张杠杆表、两种费率，混在一条仓里算不出强平价
+       · 通道不同（盘口 / OTC）⇒ 成交价口径不同，且 OTC 恒 1x
+       · 杠杆不同 ⇒ 加权均价对两种杠杆没有意义（D4 已拍板） */
+  const prev = posOf(s, s.sym);
+  if (prev) {
+    if (prev.side !== side) return { ok: false, why: `${s.sym} 已有${prev.side === 'long' ? '多' : '空'}单 ｜ 反手请先平仓` };
+    if (isSpot(prev) !== isSpotOrder) return { ok: false, why: `${s.sym} 已有${isSpot(prev) ? '现货' : '合约'}仓 ｜ 加仓请先切回同一模式` };
+    if (!!prev.otc !== otc) return { ok: false, why: `${s.sym} 已有${prev.otc ? 'OTC' : '盘口'}仓 ｜ 加仓请先切回同一通道` };
+    if (prev.lev !== lev) return { ok: false, why: `${s.sym} 已持 ${prev.lev}x ｜ 加仓必须同杠杆 ｜ 先平仓再重开` };
+  }
 
   // 保证金 = 可用余额 × frac；开仓费按名义价值另收，所以要让「保证金 + 费 ≤ 余额」
   let margin = cash * Math.max(0.0001, Math.min(1, frac));
@@ -348,13 +366,31 @@ export function openTrade(s, side, frac = 1) {
   s.lev = lev;
 
   const spot = isSpotOrder;
-  const pos = openPosition(s.sym, side, fill, margin, lev, feeRate, spot);
-  pos.i = s.i;
-  pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
-  pos.openFee = fee;
-  pos.mix = mix;                    // 保证金的两格构成（v13）—— 平仓原路退回
-  if (otc) pos.otc = true;          // 只给 OTC 仓位打标（`capturedOf` 见到它就跳过）
-  s.positions[s.sym] = pos;
+  /* ── 落账：新开 or 并进已有仓位（v13 · B4 / 方案 §5.1）──
+     合并式只动 5 个字段，`entry` 走 **`size` 加权平均**：
+         entry = (entry×size + fill×addSize) / (size + addSize)
+     ⇒ 强平价、未实现盈亏、资金费全都自动落在「一条加权后的仓位」上，不需要任何额外分支。
+     ⚠️ `openFee` **累加**（各收各的，不重算）：平仓时要报「本回合两笔之和」（见 `closeTrade`）。
+     ⚠️ `mix` **两格各自累加**：平仓按合计比例退回，等价于两笔各按原比例退。
+     ⚠️ `pos.i` 不更新：它是「这条仓位什么时候开的」，加仓不改出生时刻。 */
+  let pos = prev;
+  if (pos) {
+    const addSize = notional / fill;
+    pos.entry = (pos.entry * pos.size + fill * addSize) / (pos.size + addSize);
+    pos.size += addSize;
+    pos.notional += notional;
+    pos.margin += margin;
+    pos.openFee += fee;
+    pos.mix = { usd: pos.mix.usd + mix.usd, usdt: pos.mix.usdt + mix.usdt };
+  } else {
+    pos = openPosition(s.sym, side, fill, margin, lev, feeRate, spot);
+    pos.i = s.i;
+    pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
+    pos.openFee = fee;
+    pos.mix = mix;                    // 保证金的两格构成（v13）—— 平仓原路退回
+    if (otc) pos.otc = true;          // 只给 OTC 仓位打标（`capturedOf` 见到它就跳过）
+    s.positions[s.sym] = pos;
+  }
 
   /* 累计消耗（U2 · ROADMAP §21.4）：这笔买入从市场里拿走了多少枚，**只增不减**、平仓不退还。
      ⚠️ 与 `capturedOf`（瞬时口径，进 `SUPPLY_CAP` 校验）**并存互不影响**；OTC 不算（不消耗流通量）。 */
@@ -367,8 +403,13 @@ export function openTrade(s, side, frac = 1) {
      **买入 / 卖出**，日志若还写「做多 / 做空」，就与玩家刚按下的那枚键对不上了。 */
   const verb = spot ? (side === 'long' ? '买入' : '卖出') : (side === 'long' ? '做多' : '做空');
   /* 手续费必须**写进日志**（本轮 ② · 用户拍板）：它已经真的从余额里扣掉了（上面那两行），
-     玩家却只看到「保证金 $3,000.0」——账对不上。`fee` 就是本笔按名义价值收的那一次。 */
-  pushLog(s, `${verb} ${s.sym} ${lev}x｜保证金 ${fmtMoneyShort(margin)} @ ${fmtLogPrice(fill)}｜手续费 ${fmtMoneyShort(fee)}${tag}`,
+     玩家却只看到「保证金 $3,000.0」——账对不上。`fee` 就是本笔按名义价值收的那一次。
+     ★ 加仓（B4）：字面换成「加仓 ＋ 追加保证金」，并补一个**加权后的均价** ——
+       否则玩家只能看到「这笔按 $13.5 成的」，看不到自己整条仓位现在的成本在哪。 */
+  const head = prev ? `加仓 ${s.sym} ${lev}x` : `${verb} ${s.sym} ${lev}x`;
+  const line = prev ? `追加保证金 ${fmtMoneyShort(margin)}` : `保证金 ${fmtMoneyShort(margin)}`;
+  const avg = prev ? `｜均价 ${fmtLogPrice(pos.entry)}` : '';
+  pushLog(s, `${head}｜${line} @ ${fmtLogPrice(fill)}${avg}｜手续费 ${fmtMoneyShort(fee)}${tag}`,
     side === 'long' ? 'long' : 'short');
 
   /* 订单冲击（方案 §2.6）：把这次成交代价的**永久部分**（Almgren–Chriss 的 γQ，实证 35%）

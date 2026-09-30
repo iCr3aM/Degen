@@ -488,8 +488,8 @@ function dispatch(node) {
 
   /* 现货模式那两枚动作键（v9 · §15.3 N4）：**买入＝借 U 做多、卖出＝借币做空**。
      ⚠️ 反向那一枚**自己承担平仓**（现货模式没有独立的「平仓」键）：
-          空仓 ⇒ 开仓；持有反向仓 ⇒ 平掉它；持有同向仓 ⇒ 什么都不做。
-        同向那一格在渲染层本来就是禁用的，这里再挡一次是「状态机不靠 DOM 兜底」（同 `onChan`）。
+          空仓 ⇒ 开仓；**同向 ⇒ 加仓**（v13 · B4，`openTrade` 内部并进那条仓位）；
+          反向 ⇒ 平掉它。
      ⚠️ 合约模式下这两枚不显示，同样挡一次 —— 否则会从一个不该存在的入口开出一张合约单。 */
   if (d.buy !== undefined || d.sell !== undefined) {
     if (s.mode === 'fut' && futuresAvailable(s)) return;
@@ -506,11 +506,11 @@ function dispatch(node) {
       after();
       return;
     }
-    if (!pos) {
+    if (!pos || pos.side === side) {
       const r = openTrade(s, side, s.sizeFrac);
       if (!r.ok) pushLog(s, r.why, 'bad');
       else snd.open();
-    } else if (pos.side !== side) {
+    } else {
       /* `why` 写玩家按下的那枚键：平多＝卖出（卖出手上的币）、平空＝买回（买回借出的币） */
       const r = closeTrade(s, side === 'long' ? '买回' : '卖出');
       if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
