@@ -17,7 +17,7 @@ import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, su
 import { newsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
-import { SHOCK, addFlow, residualOfSide } from './god.js';
+import { SHOCK, addFlow } from './god.js';
 import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, maintRateOf, openPosition, pnlOf,
@@ -547,15 +547,11 @@ export function closeTrade(s, why = '手动') {
     net >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
 
-  /* 订单冲击（方案 §2.6 ＋ **A2**，2026-09-29 拍板）：**平多 = 卖、平空 = 买**，方向与开仓时相反。
-     A2 口径 = 「返还款打对折」：基数是**开仓方向此刻的残存值** `R`（不是开仓时的原值），写回 `−giveBack·R`。
-     ⇒ 砸出的坑只回填一半；且新写的反向笔幅度 ≤ 同向残存值 ⇒ **过冲在数学上不可能发生**
-        （原来那种「弹得比原价还高」正是「先写的衰减多、后写的衰减少」这条不对称造成的）。 */
-  if (!otc) {
-    const dir = pos.side === 'long' ? 1 : -1;
-    const back = SHOCK.giveBack * residualOfSide(s, sym, s.i, dir);
-    if (addFlow(s, sym, -dir * back)) invalidateSigma();
-  }
+  /* 订单冲击：**平仓不再写反向冲击**（用户 2026-10-01 拍板「永久保留」）。
+     原来按 A2 口径回填「同向残存值的一半」（`−giveBack·R`），于是玩家一卖就看到价格被自己推回去，
+     与「订单造成的台阶应当留在 K 线上」直接冲突 ⇒ 整段删除（`SHOCK.giveBack` / `residualOfSide`
+     一并移除，不留死代码）。台阶此后只由**时间衰减**消退，而衰减有 `SHOCK.floor`（30%）兜底。
+     ⚠️ 平仓因此不再改动任何一根 K 线 ⇒ 连 `invalidateSigma()` 都不必调。 */
 
   if (checkRuin(s)) return { ok: false, why: s.over.reason };
   return { ok: true };
