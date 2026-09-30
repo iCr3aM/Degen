@@ -329,6 +329,10 @@ export function mount(root) {
      ⚠️ 「重开本局」的双重确认状态机仍在 `main.js`（`onReset` / `cancelReset`），理由同前。 */
   const sndBtn = el('button', 'set-btn on', '开');
   sndBtn.dataset.snd = 'toggle';
+  /* 行情音（T-1 · P9）：与「音效」**分开**的第二个音频开关 —— 它只管涨 / 跌 / 放量 / 插针
+     那四声环境音（50x 下吵了可以只关它），事件音照响。默认开。 */
+  const mktBtn = el('button', 'set-btn on', '开');
+  mktBtn.dataset.market = 'toggle';
   const impBtn = el('button', 'set-btn on', '开');
   impBtn.dataset.impact = 'toggle';
   const hintBtn = el('button', 'set-btn on', '开');
@@ -336,6 +340,8 @@ export function mount(root) {
   const setCard = el('div', 'set-card');
   const sndRow = el('div', 'set-row');
   sndRow.append(el('i', null, '音效'), sndBtn);
+  const mktRow = el('div', 'set-row');
+  mktRow.append(el('i', null, '行情音'), mktBtn);
   const impRow = el('div', 'set-row');
   impRow.append(el('i', null, '订单冲击'), impBtn);
   /* 新手提示（v11 · ③）：管破产预警遮罩这类**引导**内容（开局叙事不受它管）。 */
@@ -348,7 +354,7 @@ export function mount(root) {
   colBtn.dataset.colors = 'toggle';
   const colRow = el('div', 'set-row');
   colRow.append(el('i', null, '涨跌色'), colBtn);
-  setCard.append(sndRow, impRow, hintRow, colRow);
+  setCard.append(sndRow, mktRow, impRow, hintRow, colRow);
   const resetBtn = el('button', 'act flat', '重开本局');
   resetBtn.dataset.reset = '';
   /* 按钮必须包在 `.row` 里：`.act` 自己带 `flex: 1`，直接放进纵向 flex 的 `.page` 会被拉满整屏 */
@@ -454,7 +460,7 @@ export function mount(root) {
     chanBtn, orderBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asList,
     asCurve, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
-    sndBtn, impBtn, hintBtn, colBtn,
+    sndBtn, mktBtn, impBtn, hintBtn, colBtn,
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
     rvWrap, rvCanvas, rvHead, rvSym, rvMcap, rvSupp, rvChg, rvModeBtn, rvLogs,
@@ -532,6 +538,8 @@ export function update(refs, s, view) {
      `view.muted` / `view.redUp` 由 `main.js` 注入（这两个纯显示偏好归浏览器存档管，不是主状态）。 */
   refs.sndBtn.textContent = view.muted ? '关' : '开';
   refs.sndBtn.classList.toggle('on', !view.muted);
+  refs.mktBtn.textContent = view.marketSound ? '开' : '关';
+  refs.mktBtn.classList.toggle('on', view.marketSound);
   refs.impBtn.textContent = s.impactOn ? '开' : '关';
   refs.impBtn.classList.toggle('on', s.impactOn);
   refs.hintBtn.textContent = s.hintOn ? '开' : '关';

@@ -14,7 +14,7 @@ export const ACTION_KEYS = [
   /* Batch 4：`settings`（顶栏第三枚）/ `snd`（音效开关）/ `reset`（面板内重开）/ `sclose`（关面板）
      / `intro`（开场弹窗的「开始交易」）
      Batch 5（B30）：`loan`（归零遮罩上的「借续命」/「就此收摊」） */
-  'settings', 'snd', 'reset', 'sclose', 'intro', 'loan',
+  'settings', 'snd', 'market', 'reset', 'sclose', 'intro', 'loan',
   /* A6（方案 §6.4）：`tab` ＝ 底部 Tab 三条（交易 / 资产 / 设置）。
      ⚠️ `settings` **保留**（§9 B8）：顶栏那枚「设置」按钮已随 A6 撤掉，但设置页里
         将来仍可能复用它做一个「关」的出口 —— 现在页的出口就是底部 Tab，所以没有任何 DOM 挂它。 */

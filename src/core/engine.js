@@ -183,8 +183,11 @@ const daySigmaCache = new Map();
  *    `GAME.start`），开局前 30 天因此吃的是**真实日波动**而不是兜底 3%；`day` 为负时
  *    `closeAt` 给的仍是回溯段里的真值（数据区间的左端是 −2304）。其余币的数据晚于 0，
  *    取到的是越界 `null`，`sigmaOf` 按「洞」跳过 ⇒ 行为与夹取时**逐位相同**。
+ *
+ * ⚠️ T-1 起**导出**给 UI 层：行情音的阈值 θ = `k × 本值 / √24`（用波动率归一化，
+ *    否则 2013 的 BTC 会疯狂触发、2023 几乎不触发）。逻辑层不变，只是接线层要读它。
  */
-function dailySigma(sym, i) {
+export function dailySigma(sym, i) {
   const day = dayIndexOf(i);
   const hit = daySigmaCache.get(sym);
   if (hit && hit.day === day) return hit.v;

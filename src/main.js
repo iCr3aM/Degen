@@ -10,8 +10,8 @@
 import { GAME, COINS, HOUR_MS, cashCurAt, hasFinancingAt, maxLeverageAt } from './core/config.js';
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
-import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource } from './core/market.js';
-import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook, buyUsdt, sampleEquity, placeOrder, cancelOrder, rewindTo } from './core/engine.js';
+import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, closeAt, candleAt, volumeAt } from './core/market.js';
+import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook, buyUsdt, sampleEquity, placeOrder, cancelOrder, rewindTo, dailySigma } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { enableGod, factorFor } from './core/god.js';
@@ -252,9 +252,73 @@ let pendingDrawn = !!s.pending;
  */
 let lastLogKey = null;
 const warnedSyms = new Set();
-/* ⚠️ B26 起有**两个**成本标签：永续走「资金费率」、现货保证金走「借贷利息」——
-   两者是同一次结算的两条日志，音效都该响（判据从 `startsWith(单个)` 换成逐个匹配）。 */
-const FUNDING_TAGS = ['资金费率', '借贷利息'];
+
+/* 行情音的两条阈值参数（T-1 · §2.2 ②）—— 都按**波动率归一化**，否则 2013 的 BTC
+   （日波动 5–8%）会疯狂触发、2023（~2%）几乎不触发。`k` 是**起点值**，
+   按 §5 的实测触发频率回调（目标：1x ≤ 每分钟 1 声、50x ≤ 每 2 秒 1 声）。 */
+const K_SIGMA = 3;      // 收盘涨跌幅：θ = k × σ_30日 / √24（约 P95 量级）
+const K_AMP = 6;        // 长插针振幅：θ₂ = k₂ × σ_30日 / √24（约 3 倍常态小时振幅）
+/** 上一根判定过的 K 线序号 —— 只判**当前那一根**，不补算被跳过的小时 */
+let lastMarketI = null;
+
+/**
+ * 事件音：按日志头一条的**文案**认（§2.3）—— 每一类都已经写进日志了，零结构改动。
+ *
+ * ⚠️ 判据的坑（§2.3 点名的那个）：`text.includes('归零')` 会**同时命中「账户归零 ｜ 可借 …」**
+ *    （`engine.js` 破产待决），那是玩家破产、不是交易所灾难。所以必须匹配 `${ex.name} 归零`
+ *    这个形态（**前面有一个空格**）—— 交易所塌方的日志正是这么写的。
+ * ⚠️ `限价成交失败 …` 也带「限价成交」四个字，`fill` 必须排掉它。
+ * ⚠️ 「上线」用的是 `'上线 ｜'`（带上分隔符）—— 裸「上线」会命中「XRP 还没上线」那条失败日志。
+ *
+ * **资金费 / 借贷利息不再出声**（T-1 删除项）：它每 8 小时结算一次，50x 下一局上千次，
+ * 而玩家的决策早就在下单时做完了 —— 结算照旧写日志，只是沉默。
+ */
+function eventSound(last) {
+  const text = last.text;
+  if (text.includes('推高拥堵')) return snd.pulse();
+  if (last.kind === 'news') return snd.news();
+  if (text.includes('被盗削减') || / 归零/.test(text)) return snd.crash();
+  if (text.includes('限价成交') && !text.includes('失败')) return snd.fill();
+  if (text.includes('上线 ｜') || text.includes('恢复交易') || text.startsWith('到账')) return snd.notice();
+  if (text.includes('停机维护') || text.includes('借款还剩') || text.includes('借款明天到期')) return snd.warn();
+}
+
+/**
+ * 行情音（T-1 · §2.2 ②）—— **不入日志**，直接读 K 线，每帧一次。
+ * 为什么不能写日志：50x 下一局会灌出几万条，把日志条和浮层一起冲垮。
+ *
+ * 三道闸（§2.5）：① 优先级 `spike` > `surge` > `tick`（同一帧同币只发一声）
+ * ② 同种音节流窗（在 `sound.js` 里，墙钟 120ms）③ 范围 ＝ **当前币 ＋ 持仓币**。
+ *
+ * ⚠️ 只判**当前那一根**，不补算被跳过的小时：标签页被挂起再切回来时 `s.i` 可能一次跳几百根，
+ *    逐根补算会瞬间炸出一串音。首帧只记锚点（同 `lastLogKey` 那套）。
+ * ⚠️ **取不到价就闭嘴**：`candleAt` / `closeAt` 在该币**首根真小时线之前**返回 `null`
+ *    （只有 BTC 有 2012 回溯段）。拿不齐「当根 ＋ 前一根」就直接跳过 ——
+ *    不许用兜底价算涨跌幅，那会凭空造出一个行情音。
+ */
+function marketSounds(s) {
+  if (lastMarketI === null) { lastMarketI = s.i; return; }   // 首帧只记锚点
+  if (s.i === lastMarketI || s.i <= 0) return;
+  lastMarketI = s.i;
+
+  for (const sym of new Set([s.sym, ...heldSyms(s)])) {
+    const cur = candleAt(sym, s.i);
+    const prev = closeAt(sym, s.i - 1);
+    if (!cur || !(prev > 0) || !(cur.c > 0)) continue;
+    const sigma = dailySigma(sym, s.i);
+    if (!(sigma > 0)) continue;
+    const unit = sigma / Math.sqrt(24);
+
+    /* ① **插针优先**（§2.2）：一根大阴线既跌又插针，不该叠两声 ——
+       插针更紧急，因为强平看的是**最低价**（`l`），不是收盘价。 */
+    if ((cur.h - cur.l) / cur.c >= K_AMP * unit) { snd.spike(); continue; }
+    /* 成交量那一项不用 θ：直接比**当日均值**（份额 ≥ 3/24），与量柱标尺的既有口径一致 */
+    if (volumeAt(sym, s.i) >= 3 / 24) { snd.surge(); continue; }
+    const d = cur.c / prev - 1;
+    if (d >= K_SIGMA * unit) snd.tickUp();
+    else if (d <= -K_SIGMA * unit) snd.tickDown();
+  }
+}
 
 function soundFromTick(s) {
   const last = s.log[0];
@@ -263,8 +327,7 @@ function soundFromTick(s) {
     if (lastLogKey === null) lastLogKey = key;      // 首帧只记锚点，不补响历史事件
     else if (key !== lastLogKey) {
       lastLogKey = key;
-      if (FUNDING_TAGS.some(tag => last.text.startsWith(tag))) (last.kind === 'ok' ? snd.fundUp : snd.fundDown)();
-      else if (last.text.includes('推高拥堵')) snd.pulse();
+      eventSound(last);
     }
   }
 
@@ -284,6 +347,8 @@ function soundFromTick(s) {
       warnedSyms.delete(sym);
     }
   }
+
+  marketSounds(s);
 }
 
 function draw(force = false) {
@@ -308,8 +373,9 @@ function draw(force = false) {
     liq: rv ? null : liqMark,
     /* 当前页：K 线只在交易页画（另两页没有 K 线） */
     tab,
-    /* 音效偏好归 `sound.js` 管，不进主状态 —— 设置页那个开关的文案由渲染层每帧从这里取 */
+    /* 音效偏好归 `sound.js` 管，不进主状态 —— 设置页那两个开关的文案由渲染层每帧从这里取 */
     muted: snd.isMuted(),
+    marketSound: snd.isMarketOn(),
     /* 涨跌色偏好（B5）：同上，归那个独立 localStorage 键管 */
     redUp,
     /* 新手分步引导正在走（本轮 ①/F）—— 引导期间 `s.paused` 恒为真，但**界面不该装成「暂停」**：
@@ -406,6 +472,7 @@ function dispatch(node) {
      ⚠️ 原来的 `data-settings`（顶栏那枚「设置」）已随 A6 撤掉 —— 设置整体成了一个页。 */
   if (d.tab !== undefined) return onTab(d.tab);
   if (d.snd !== undefined) return onSoundToggle();
+  if (d.market !== undefined) return onMarketToggle();
   if (d.colors !== undefined) return onColorToggle();
   if (d.reset !== undefined) return onReset(node);
   if (d.sclose !== undefined) return onClosePanel();
@@ -452,7 +519,9 @@ function dispatch(node) {
     const r = buyUsdt(s, s.sizeFrac);
     /* 成功时 `buyUsdt` 内部已经写了日志（含成交价与花费），这里**只补失败原因**，
        否则会多出一条空串日志。 */
-    if (!r.ok) { pushLog(s, r.why, 'bad'); snd.tap(); } else snd.fundUp();
+    /* 买 U 是一次**真实的主动操作**，值得一声反馈 —— 原来借用 `fundUp`，
+       那个音在 T-1 随「资金费不再出声」一起删了，改接 `notice`（中性短上行）。 */
+    if (!r.ok) { pushLog(s, r.why, 'bad'); snd.tap(); } else snd.notice();
     after();
     return;
   }
@@ -1186,6 +1255,18 @@ function onSoundToggle() {
   const muted = !snd.isMuted();
   snd.setMuted(muted);
   if (!muted) snd.tap();
+  after();
+}
+
+/**
+ * 行情音开关（T-1 · P9）—— 与音效开关同一个写法。
+ * 它**只管行情音**（涨 / 跌 / 放量 / 插针）：那是环境音，50x 下吵了可以只关它，
+ * 事件音（爆仓 / 新闻 / 灾难 / 到账）照响 —— 那些被吞掉是不可接受的。
+ */
+function onMarketToggle() {
+  const on = !snd.isMarketOn();
+  snd.setMarketOn(on);
+  if (on) snd.tap();
   after();
 }
 

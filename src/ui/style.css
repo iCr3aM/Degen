@@ -34,6 +34,14 @@
   --accent: #4da3ff;
   --accent-soft: rgba(77, 163, 255, .16);   /* 选中态淡底：`.on` 一律走这个变量，不再各写各的 rgba */
   --gold: #ffc44d;
+  /* ── T-1 新增 token（2026-10-01）：**彩色填充上的文字色** ──────────────
+     全项目原本只有这 4 个魔数没有名字（各出现 1–2 次）。只做同名值替换 ⇒
+     视觉**逐位不变**，只是把「金底 / 绿底 / 红底 / 蓝底上写什么颜色的字」收进一处。
+     ⚠️ 它们一律是**深色**（压在亮填充上才读得清），不要拿去当普通文字色。 */
+  --on-gold: #1a1405;
+  --on-up: #04140f;
+  --on-down: #1a0508;
+  --on-accent: #04121f;
   /* ── B6-a 新增 token（§7.2）──────────────────────────────
      只做**命名化**，只服务本轮新写 / 正在改的规则：老规则一个字不动（全量替换是 30+ 处
      零观感收益的 diff）。`--mut-2` 的定值以 §7.3 对比度脚本的结果为准。 */
@@ -442,7 +450,7 @@ b, strong { font-weight: 600; }
   font-size: 11px;
   line-height: 16px;
   padding: 0 4px;
-  color: #1a1405;
+  color: var(--on-gold);
   background: var(--gold);
 }
 .pos-badge[hidden] { display: none; }
@@ -476,7 +484,7 @@ b, strong { font-weight: 600; }
   font-size: 11px;
   line-height: 14px;
   padding: 0 3px;
-  color: #1a1405;
+  color: var(--on-gold);
   background: var(--gold);
 }
 .logline .news-tag { margin-right: 4px; }
@@ -561,8 +569,8 @@ b, strong { font-weight: 600; }
         （速度档 / 杠杆档那种每帧按签名重建的节点只能挂在 `.on` 上，见文件末尾那段）。 */
   transition: transform var(--dur-fast) var(--ease), filter var(--dur-fast) var(--ease);
 }
-.act.long { background: var(--up); color: #04140f; }
-.act.short { background: var(--down); color: #1a0508; }
+.act.long { background: var(--up); color: var(--on-up); }
+.act.short { background: var(--down); color: var(--on-down); }
 .act.flat { background: var(--line); color: var(--fg); }
 /* 通道切换键（P2-B3 · GDD §15.3）：四枚里唯一**空心**的一枚 ——
    它不是「一次成交」，是「换一条成交路径」，所以用方框而不是实心块。
@@ -693,7 +701,7 @@ canvas.curve {
   height: 44px;
   padding: 0 20px;
   background: var(--accent);
-  color: #04121f;
+  color: var(--on-accent);
   border: 0;
   font: inherit;
   font-weight: 600;
@@ -896,7 +904,7 @@ canvas.curve {
 .set-btn:active { background: var(--line); }
 /* 「确认重开」的武装态：整块转红。`.act flat` 是中性格，`.act` 家族本来没有警示色 ——
    破坏性操作与非破坏性操作必须一眼分得开，这一步的颜色变化本身就是确认反馈。 */
-.act.warn { background: var(--down); color: #1a0508; }
+.act.warn { background: var(--down); color: var(--on-down); }
 
 /* ══════════════ 上帝模式面板（隐藏入口 · 方案 §2） ══════════════
    复用 `.confirm` 那副居中盒：一行「资金输入框 ＋ 填入」、两行「当前 / 目标」读数、
@@ -1153,3 +1161,49 @@ button { user-select: none; -webkit-user-select: none; }
    ⚠️ 日志串是纯文本（`pushLog` 在 core 里拼的），那里直接写字面量符号，不走这条规则。 */
 .sign.up::before { content: '▲ '; font-size: .85em; }
 .sign.down::before { content: '▼ '; font-size: .85em; }
+
+/* ══════════════ 桌面端三档（T-1 · 2026-10-01） ══════════════
+   断点以下**一条规则都不写** —— 手机端（<620px）逐位不变，这是本批唯一的回归红线。
+
+   档 1（<620px）：完全现状。
+   档 2（620–899px）：只放宽容器上限到 760px，排法不动（窄窗 / 平板竖屏单列更舒服）。
+   档 3（≥900px）：交易页改**双栏** —— 左列行情（HUD / 币种 / K 线 / 持仓 / 日志），
+       右列操作区（P2 只放操作区，左列与手机**完全同构**，回归面最小）。
+
+   ⚠️ 选择器必须写到 `.page.trade-page.on`（0,3,0）：隐藏机制是 `.page { display:none }`，
+      只写 `.page.trade-page` 会让交易页在**非活动状态下照样显示**（切到资产页也看得到）。
+   ⚠️ `row-gap` 保持 0：左列各块的纵向间距本来就由它们自己的 `padding / margin`（一律 8px）给，
+      再叠一层 grid gap 会变成 16px。只加横向的 `column-gap`。
+   ⚠️ 右列宽 380px 是**算出来的**：它要跟手机的操作区一样宽，杠杆 9 档才不挤。
+      380 − 边框 2 − 内边距 16 = **362px 内容宽**，与手机（390px 视口 = 366px）基本齐平
+      ⇒ 不会凭空多出一处「档位文字撑爆格子」（那本就是已记录的溢出项，不该在桌面上更糟）。
+   ⚠️ 右列做成**两级层次**（§3.2）：K 线是 `--panel-2`（深），右列是 `--panel`（浅）＋ `--line` 描边。
+      手机端 `.trade` 是无底的，这里才加 —— 断点以下不写规则，所以手机端逐位不变。
+   ⚠️ `.trade` 的 `padding-top:8px` 是给「日志条 ↔ 操作区」那道缝用的；它在右列顶部，
+      上面没东西，这里改成四边一律 8px（卡片内边距）。 */
+@media (min-width: 620px) and (max-width: 899px) {
+  #app { max-width: 760px; }
+}
+
+@media (min-width: 900px) {
+  #app { max-width: 1440px; }
+
+  .page.trade-page.on {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 380px;
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+    column-gap: 8px;
+  }
+  .page.trade-page.on > .hud        { grid-area: 1 / 1; }
+  .page.trade-page.on > .symbols    { grid-area: 2 / 1; }
+  .page.trade-page.on > .chart-wrap { grid-area: 3 / 1; }
+  .page.trade-page.on > .posbar     { grid-area: 4 / 1; }
+  .page.trade-page.on > .logline    { grid-area: 5 / 1; }
+  .page.trade-page.on > .trade {
+    grid-area: 1 / 2 / 6 / 3;
+    align-self: start;
+    padding: 8px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+  }
+}
