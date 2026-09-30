@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt } from './config.js';
+import { GAME, HOUR_MS, EXCHANGES, LIQ, OTC, SUPPLY_CAP, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
 import { warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
@@ -20,8 +20,8 @@ import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './imp
 import { SHOCK, addFlow, residualOfSide } from './god.js';
 import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtRate } from './format.js';
 import {
-  closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, openPosition, pnlOf,
-  FUNDING, fundingOf, fundingRateOf, canLiquidate, paysFunding,
+  closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, maintRateOf, openPosition, pnlOf,
+  FUNDING, fundingOf, fundingRateOf, canLiquidate, paysFunding, paysInterest,
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
@@ -499,16 +499,33 @@ export function bindLiquidateHook(fn) { onLiquidate = fn || null; }
 
 /**
  * 强平单个仓位。触发条件是**当根 K 线的高/低**打穿强平价。
- * 结算按 GDD §10「爆仓 = 破产」：整笔保证金归零，账户其余部分原样保留。
- * ⚠️ 多仓下它**不再直接等于破产** —— 是否收摊由调用方在清点完全部仓位后看总权益决定。
+ *
+ * **结算口径（B20 · 2026-09-30 拍板「甲案」）**：不再是「保证金全部损失」，而是
+ *   残余权益 = `维持保证金率 × 名义`（＝触发那一刻账上还剩的那一点）
+ *   清算费   = `名义 × LIQ.fee`（0.5%，**合成值**，无一手出处 ⇒ GDD 声明）
+ *   **返还** = `max(0, 残余权益 − 清算费)`，按 `pos.mix` 比例打回该所账本
+ * ⇒ 默认档（0.5% 维持线）下两者相等、返还为 0，**与 v13 逐位相同**；
+ *   只有 B18 的高名义档（1% / 2.5%）与 margin 的 15% 档才会真的退还一点。
+ * 账户其余部分原样保留 —— 多仓下它**不再直接等于破产**，是否收摊由调用方看总权益决定。
+ * ⚠️ 返还**不产生负债**：清算费最多把残余权益吃到 0，绝不会向玩家追缴。
  * @param {number} atPrice 成交价（S3 起 ＝ **第一次穿越强平价那一 tick 的价**，不再是强平价本身）
  * @param {number} k       那一 tick 在该小时细路径里的**段号**（`0 … N−1`）—— 只给「图上标致命针」用
  */
 function forceLiquidate(s, pos, atPrice, k) {
+  const remain = maintRateOf(pos) * pos.notional;     // 触发时的残余权益（＝维持保证金那一格）
+  const back = Math.max(0, remain - pos.notional * LIQ.fee);
+
   /* 串形与开仓 / 平仓对齐（2026-09-29）：`｜` 两侧不留白、金额走 `fmtMoneyShort`、
-     价格走 `fmtLogPrice`（本轮 ② —— 原来这里是 `showPrice`，现在统一 ≥$1 一位小数）。 */
-  pushLog(s, `爆仓 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)} 全部损失 @ ${fmtLogPrice(atPrice)}`, 'bad');
-  s.realized -= pos.margin;
+     价格走 `fmtLogPrice`（本轮 ② —— 原来这里是 `showPrice`，现在统一 ≥$1 一位小数）。
+     ⚠️ 返还 > 0 时不能再说「全部损失」（B20）：那一格日志条是一行 nowrap，字数要省，
+        所以只在真的有退款时才多带一段。 */
+  pushLog(s, back > 1e-9
+    ? `爆仓 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)} ｜退回 ${fmtMoneyShort(back)} @ ${fmtLogPrice(atPrice)}`
+    : `爆仓 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)} 全部损失 @ ${fmtLogPrice(atPrice)}`,
+    'bad');
+
+  if (back > 1e-9) credit(s, pos.ex, back, pos.mix);   // 退回**当初开仓那家所**（原路：按 mix 比例分两格）
+  s.realized -= pos.margin - back;                     // 真实现金变动 = 丢掉保证金、收回退款
   delete s.positions[pos.sym];
   if (onLiquidate) onLiquidate(pos.sym, s.i, k);
 }
@@ -881,7 +898,7 @@ export function advanceOneHour(s) {
   // 归零已经把该作废的仓位作废了，而到期清仓必须先于资金费（否则会为已经要平的仓位再扣一次）。
   if (settleLoan(s)) return;
 
-  // 资金费率每 8 游戏小时结算一次，只结算合约仓位（现货没有这一项）
+  // 持仓成本每 8 游戏小时结算一次（B26：永续扣资金费、现货保证金扣借贷利息，现货 1x 不扣）
   if (s.i % FUNDING.hours === 0 && settleFunding(s)) return;
 
   liquidateAll(s);
@@ -940,28 +957,45 @@ function hourlySigma(sym, i) {
 }
 
 /**
- * 资金费率结算（GDD §9.5）。每隔 `FUNDING.hours` 游戏小时，把**每一个合约仓位**
- * 该期应付的名义价值 × 费率从它的保证金里扣掉（应收则加回去）。
+ * 每 8 游戏小时一次的**持仓成本结算**（GDD §9.5）—— B26 起分成**两条互斥的路**：
  *
- * 溢价指数是**合成的** —— 口径与理由见 `positions.js` 的 `FUNDING` 注释：
- * 数据包里每个币只有一条真小时线，拿不到「合约价 vs 现货价」两条线，
- * 故以「近 8 根真实涨跌幅 ÷ 近 30 天的典型波动」当溢价（Batch 4 · B18），
- * 上限按年代走（2013–2018 → 0.5%、2019–2021 → 0.3%、2022 起 → 0.1%）。
+ *   - **永续（perp）**：资金费率 —— 应付的名义价值 × 费率从保证金里扣（应收则加回去）。
+ *     溢价指数是**合成的**，口径与理由见 `positions.js` 的 `FUNDING` 注释（数据包里每个币只有
+ *     一条真小时线，拿不到「合约价 vs 现货价」两条线），上限按年代走
+ *     （2013–2018 → 0.5%、2019–2021 → 0.3%、2022 起 → 0.1%）。
+ *   - **现货保证金（margin）**：借贷利息 —— `名义 × 日息 × (8/24)`。史实里 Bitfinex 的
+ *     「杠杆」是用户间 P2P 借美元/借 BTC（出借方叫 Margin Funding Provider），按市场利率计息；
+ *     日息**按年代取值**（`config.MARGIN.daily`）且**数字是合成值** ⇒ GDD 声明。
+ *     2016-05-13 之前世界上没有永续，那时的杠杆仓全落进这一支。
  *
+ * ⚠️ **两条路各写一条日志**（标签不同、不能合并成一条）：`paysInterest` 与 `paysFunding` 互斥，
+ *    同时持有两种仓位时玩家需要分别看到两笔成本的费率。现货 1x 两样都不付。
  * @returns {boolean} 是否因结算后总权益归零而结束本局
  */
 function settleFunding(s) {
   const syms = heldSyms(s);
   if (!syms.length) return false;
 
-  const cap = fundingPremiumCapAt(timeOf(s));      // 溢价上限按年代，同一时刻所有币一样
+  const t = timeOf(s);
+  const cap = fundingPremiumCapAt(t);              // 溢价上限按年代，同一时刻所有币一样
+  const daily = marginDailyRateAt(t);              // 借贷日息按年代，同一时刻所有所一样
 
-  let net = 0;              // > 0 = 玩家整体支出
-  let gross = 0;            // 参与结算的名义价值之和（用来把净额折算回一个综合费率）
+  let fed = 0, grossP = 0;   // 永续：净支出（> 0 = 玩家付出）/ 参与结算的名义和
+  let ied = 0, grossM = 0;   // 现货保证金：应付利息 / 借来的名义和
   for (const sym of syms) {
     const pos = s.positions[sym];
-    if (!paysFunding(pos)) continue;                 // 现货不参与资金费率（§15.3 N5）
 
+    /* ── 现货保证金：借贷利息（B26）── */
+    if (paysInterest(pos)) {
+      const fee = pos.notional * daily * (FUNDING.hours / 24);
+      pos.margin -= fee;
+      s.realized -= fee;
+      ied += fee;
+      grossM += pos.notional;
+      continue;
+    }
+
+    if (!paysFunding(pos)) continue;                 // 现货 1x：两样都不付
     const mark = markPrice(s, sym);
     if (!(mark > 0)) continue;
 
@@ -974,19 +1008,24 @@ function settleFunding(s) {
     /* ⚠️ 同一笔钱也要记进「已实现」（Batch 5 · B23）：原来只从保证金里扣，
        于是 HUD 副行那个数漏掉了资金费这一项支出（或收入）。 */
     s.realized -= fee;
-    net += fee;
-    gross += pos.size * mark;
+    fed += fee;
+    grossP += pos.size * mark;
   }
 
-  if (net !== 0 && gross > 0) {
-    // 各币各看各的动量，费率并不相同 —— 日志只报一个**按名义价值加权的综合费率**，
-    // 它恰好能自洽地解释那个净额，不会出现「费率写 +0.01% 却收钱」这种读不通的情况。
-    const rate = net / gross;
-    /* 文案（Batch 4 · B18，2026-09-29 拍板）：金额一律是**玩家视角的总收益**，
-       「收益 +$0.03」= 拿到 U、「收益 −$0.05」= 付出 U ——
-       正负号本身就是方向，不再写「支出 / 收入」四个字（日志条一行 nowrap，多两个汉字就挤爆）。 */
-    pushLog(s, `资金费率 ${fmtRate(Math.abs(rate), 4)} ｜ 收益 ${fmtMoney(-net, { sign: true })}`,
-      net > 0 ? 'bad' : 'ok');
+  /* 各币各看各的动量，费率并不相同 —— 日志只报一个**按名义价值加权的综合费率**，
+     它恰好能自洽地解释那个净额，不会出现「费率写 +0.01% 却收钱」这种读不通的情况。
+     文案（Batch 4 · B18，2026-09-29 拍板）：金额一律是**玩家视角的总收益**，
+     「收益 +$0.03」= 拿到 U、「收益 −$0.05」= 付出 U ——
+     正负号本身就是方向，不再写「支出 / 收入」四个字（日志条一行 nowrap，多两个汉字就挤爆）。 */
+  if (grossP > 0 && fed !== 0) {
+    const rate = fed / grossP;
+    pushLog(s, `资金费率 ${fmtRate(Math.abs(rate), 4)} ｜ 收益 ${fmtMoney(-fed, { sign: true })}`,
+      fed > 0 ? 'bad' : 'ok');
+  }
+  if (grossM > 0 && ied !== 0) {
+    const rate = ied / grossM;
+    pushLog(s, `借贷利息 ${fmtRate(Math.abs(rate), 4)} ｜ 收益 ${fmtMoney(-ied, { sign: true })}`,
+      'bad');
   }
 
   return checkRuin(s);
@@ -994,9 +1033,11 @@ function settleFunding(s) {
 
 /**
  * 逐仓强平：每个仓位各自用**当根 K 线的高低点**判定（见文件头注释）。
- * 现货仓位跳过 —— 只有币价归零才归零本金，不因 0.5% 维持线被强平（GDD §9.1）。
+ * 现货仓位跳过 —— 只有币价归零才归零本金，不因维持保证金率被强平（GDD §9.1）。
  * ⚠️ v9（§15.3 N5）：判据从「是不是现货」换成 `canLiquidate` —— 现货从 §15.6 起**也带杠杆**，
  *    而「借来的钱要还」⇒ **现货杠杆仓照样强平**，只有现货 1x 才是那个无强平的特例。
+ * ⚠️ B18/B26：维持线本身也不再是常数 —— `maintRateOf(pos)` 按「所 × 工具 × 名义档」取
+ *    （Binance 永续四档、现货保证金恒 15%），所以早期 3.3x 杠杆仓会明显比现在更容易爆。
  * @returns {boolean} 是否因此结束了本局
  */
 function liquidateAll(s) {

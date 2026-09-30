@@ -246,7 +246,9 @@ let pendingDrawn = !!s.pending;
  */
 let lastLogKey = null;
 const warnedSyms = new Set();
-const FUNDING_TAG = '资金费率';
+/* ⚠️ B26 起有**两个**成本标签：永续走「资金费率」、现货保证金走「借贷利息」——
+   两者是同一次结算的两条日志，音效都该响（判据从 `startsWith(单个)` 换成逐个匹配）。 */
+const FUNDING_TAGS = ['资金费率', '借贷利息'];
 
 function soundFromTick(s) {
   const last = s.log[0];
@@ -255,7 +257,7 @@ function soundFromTick(s) {
     if (lastLogKey === null) lastLogKey = key;      // 首帧只记锚点，不补响历史事件
     else if (key !== lastLogKey) {
       lastLogKey = key;
-      if (last.text.startsWith(FUNDING_TAG)) (last.kind === 'ok' ? snd.fundUp : snd.fundDown)();
+      if (FUNDING_TAGS.some(tag => last.text.startsWith(tag))) (last.kind === 'ok' ? snd.fundUp : snd.fundDown)();
       else if (last.text.includes('推高拥堵')) snd.pulse();
     }
   }

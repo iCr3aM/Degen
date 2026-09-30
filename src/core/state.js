@@ -9,7 +9,10 @@
 
 import { GAME } from './config.js';
 
-export const STATE_VERSION = 13;
+/* ⚠️ v14（Batch A · 2026-09-30）：维持保证金率按「所 × 工具 × 名义档」取值（B18）＋
+   现货保证金仓改付借贷利息（B26）＋ 爆仓结算计入清算费与返还（B20）——
+   旧档里的现货杠杆仓会突然换一套维持线与成本口径，**语义已变 ⇒ 弃档重开**（既有规范）。 */
+export const STATE_VERSION = 14;
 
 export function createState() {
   return {

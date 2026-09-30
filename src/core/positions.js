@@ -11,12 +11,14 @@
  *   仓位数量 size     = notional / 开仓价
  *   未实现盈亏 uPnL   = (现价 − 开仓价) × size        （做空取反）
  *   仓位权益 equity   = margin + uPnL               （归零即损失全部保证金）
- *   保证金率 = equity / notional                     （≤ 维持保证金率 0.5% 时强平）
+ *   保证金率 = equity / notional                     （≤ 维持保证金率时强平）
  *
- * ⇒ 爆仓所需逆向波动 = 1/杠杆 − 0.5%，与 GDD §10 的表逐行一致（5x→19.5%、100x→0.5%）。
+ * ⇒ 爆仓所需逆向波动 = 1/杠杆 − 维持保证金率，与 GDD §10 的表逐行一致（5x→19.5%、100x→0.5%）。
+ * ⚠️ **维持保证金率不再是全局常数**（B18 · 2026-09-30）：按「所 × 工具 × 名义档」取，
+ *    见 `maintRateOf()`；GDD §10 那张表描述的是 BitMEX / Bitfinex 永续那一档（0.5%）。
  */
 
-import { GAME } from './config.js';
+import { maintRateAt } from './config.js';
 
 /**
  * 开仓。
@@ -63,7 +65,7 @@ export function marginRateOf(pos, price) {
 
 /** 该仓位当前是否已触发强平 */
 export function isLiquidatable(pos, price) {
-  return marginRateOf(pos, price) <= GAME.maintRate;
+  return marginRateOf(pos, price) <= maintRateOf(pos);
 }
 
 /**
@@ -81,20 +83,22 @@ export function isLiquidatable(pos, price) {
 export function safetyOf(pos, price) {
   if (!canLiquidate(pos)) return 1;
   const open = 1 / pos.lev;
-  const span = open - GAME.maintRate;
+  const limit = maintRateOf(pos);
+  const span = open - limit;
   if (!(span > 0)) return 0;
-  return (marginRateOf(pos, price) - GAME.maintRate) / span;
+  return (marginRateOf(pos, price) - limit) / span;
 }
 
 /**
  * 强平价 —— 让「保证金率 = 维持保证金率」成立的那个价格。
  * 由 margin + dir×(P − entry)×size = maintRate × notional 解出：
  *   P = entry + dir × (maintRate × notional − margin) / size
- * 数值上等于「逆向波动 1/杠杆 − 0.5%」后的价格，与 GDD §10 一致。
+ * 数值上等于「逆向波动 1/杠杆 − 维持保证金率」后的价格，与 GDD §10 一致。
+ * ⚠️ B18 起 `maintRate` 由 `maintRateOf(pos)` 给（Binance 按名义分档、margin 恒 15%）。
  */
 export function liquidationPrice(pos) {
   const dir = pos.side === 'long' ? 1 : -1;
-  return pos.entry + dir * (GAME.maintRate * pos.notional - pos.margin) / pos.size;
+  return pos.entry + dir * (maintRateOf(pos) * pos.notional - pos.margin) / pos.size;
 }
 
 /**
@@ -126,8 +130,9 @@ export function closePosition(pos, price, feeRate) {
 export const isSpot = pos => !!(pos && pos.spot);
 
 /**
- * 这个仓位要不要参与**资金费率**结算（v9 · §15.3 N5）—— **只有合约要**。
- * 现货融资的利息不在资金费里体现（本轮不做融资利息，见 §15.3 N6）。
+ * 这个仓位要不要参与**资金费率**结算（v9 · §15.3 N5）—— **只有永续要**。
+ * 现货融资（margin）不吃资金费，改为**借贷利息**（B26 · 见 `paysInterest`），
+ * 两者在引擎里是同一次结算的两个分支，不是同一笔钱。
  */
 export const paysFunding = pos => !isSpot(pos);
 
@@ -135,9 +140,38 @@ export const paysFunding = pos => !isSpot(pos);
  * 这个仓位会不会被**强平**（v9 · §15.3 N5）—— 引擎的强平循环拿它当判据。
  *   - 合约：恒可（走维持保证金率那一套）
  *   - 现货：**只有带杠杆（`lev > 1`）才可** —— 借来的钱要还，所以要维持保证金
- *   - 现货 1x：只有币价归零才归零本金，不因 0.5% 维持线被强平（GDD §9.1）
+ *   - 现货 1x：只有币价归零才归零本金，不因维持线被强平（GDD §9.1）
  */
 export const canLiquidate = pos => !isSpot(pos) || pos.lev > 1;
+
+/* ───────────── 工具性质与维持保证金率（B18 / B26 · 2026-09-30） ───────────── */
+
+/**
+ * 这条仓位**是什么工具**（B26）—— 史实上「借钱买币」与「永续合约」是两种东西：
+ *
+ *   - `'margin'`：**现货保证金借贷** —— `spot` 表 + `lev > 1`（Bitfinex 2013-04 起 3.3x、
+ *     Binance 2019-07-11 起 3x）。借来的钱 / 币要还，按**借贷日息**计息，
+ *     维持线走 Bitfinex 史实的 **15%（权益口径）**。
+ *   - `'perp'`：**线性 USDT 本位永续** —— `fut` 表的任何仓位。吃 8 小时资金费、维持线 0.5% 起。
+ *
+ * ⚠️ 2016-05-13 之前世界上**没有永续**（BitMEX 的 XBTUSD 是人类第一个）——
+ *    那年头的「杠杆」全是借钱买币，所以早期仓位一律落进 `'margin'` 这一支。
+ * ⚠️ 与 `engine.levKind(s)`（`'spot'` / `'fut'`，回答「走哪张杠杆表」）是**同一条分界**，
+ *    这里回答的是「它是什么工具」—— 两个问题答案一一对应，所以不需要另立一张年代表。
+ */
+export const instrumentOf = pos => (isSpot(pos) && pos.lev > 1 ? 'margin' : 'perp');
+
+/**
+ * 该仓位此刻的**维持保证金率**（B18）—— 按「所 × 工具 × 名义档」取。
+ * 只依赖仓位自己的字段（`ex` / `notional` / `spot` / `lev`），**不需要外部时刻**。
+ */
+export const maintRateOf = pos => maintRateAt(pos.ex, pos.notional, instrumentOf(pos));
+
+/**
+ * 这个仓位要不要付**借贷利息**（B26）—— 只有现货保证金要。
+ * 与 `paysFunding` 互斥，两者合起来覆盖全部可强平的仓位。
+ */
+export const paysInterest = pos => instrumentOf(pos) === 'margin';
 
 /* ───────────────────────── 资金费率（GDD §9.5） ───────────────────────── */
 

@@ -25,7 +25,11 @@ export const GAME = {
   cash: 3000,
   /** 开局资金放在哪家交易所（GDD §7.2：2013 年只有 Mt.Gox 一个选择） */
   ex: 'mtgox',
-  /** 维持保证金率 0.5%（GDD §9.2） */
+  /**
+   * 维持保证金率的**兜底值** 0.5%（B18 起不再是「全所恒定值」）——
+   * 真实取值按「所 × 工具 × 名义档」走 `maintRateAt()`，这里只服务
+   * 「没有分档表的所」与「非 Binance 永续」这两条缺省路径。
+   */
   maintRate: 0.005,
   /**
    * 全局随机种子（S0 · 细粒度模拟的地基）—— 本局**所有**随机数的唯一源头。
@@ -281,6 +285,75 @@ export function leverageOptionsAt(t, exId, kind = 'spot') {
   if (!out.includes(max)) out.push(max);   // 上限不是整数档时直接补进来（Bitfinex 史实 3.3x）
   if (!out.includes(1)) out.unshift(1);
   return out;
+}
+
+/* ══════════════ 维持保证金率 · 借贷日息 · 强平清算费（B18 / B26 / B20 · 2026-09-30） ══════════════
+ *
+ * 改动前这里是**一个全局常量** `GAME.maintRate = 0.5%` —— 四家所、两种工具、任何名义量级共用同一个数。
+ * 史实上这三件事都不成立（方案 §12.1① / §12.3① 的 🔴 条目），本轮按「所 × 工具 × 名义档」重排：
+ *
+ *   - **永续（`perp`）**：Binance 真实四档（越小越松、越大越严）；BitMEX / Bitfinex / 其余恒 0.5%
+ *   - **现货保证金（`margin`）**：Bitfinex 史实的 **15%（权益口径）**（CFTC Docket 16-19 原文
+ *     `equity … fell below 15% → forcibly liquidated`）；本项目把它**统一套到所有 margin 仓**
+ *     （含 Binance 2019-07 起的保证金交易）并声明为近似 —— Binance 自家是另一套分档，不另立一张表
+ *
+ * ⚠️ **工具性质由仓位自己决定**（`positions.instrumentOf`）：`spot` 表 + `lev > 1` ⇒ `margin`、
+ *    `fut` 表 ⇒ `perp`。2016-05-13 之前世界上没有永续（BitMEX XBTUSD 是人类第一个），
+ *    所以那年头的「杠杆」全是借钱买币 —— 这一条正是 B26 与 B18 共用同一次改动的理由。
+ *
+ * ⚠️ **数值口径**：Binance 四档来自 2026-09-29 检索（方案 §12.10 出处）；15% 来自 CFTC 原文；
+ *    **清算费 0.5% 无一手出处**（检索到 0.5% 与 1.25–2.5% 两说）⇒ GDD 声明为合成值。
+ */
+export const MARGIN = {
+  /** 现货保证金的维持保证金率（权益口径）—— CFTC Docket 16-19 史实 */
+  maint: 0.15,
+  /**
+   * **借贷日息**（B26）—— 史实只有「用户间 P2P 按市场利率计息」这个形态（Bitfinex 的
+   * Margin Funding Provider），**具体数值是合成值**：按年代收敛，早年借贷市场薄、利率高，
+   * 近年廉价。形态取自真实机制，数字需在 GDD 声明为合成。
+   */
+  daily: [
+    { from: Date.UTC(2013, 0, 1),  v: 0.0003 },   // 2013–2016：0.03% / 日
+    { from: Date.UTC(2017, 0, 1),  v: 0.0005 },   // 2017–2019：0.05% / 日
+    { from: Date.UTC(2020, 0, 1),  v: 0.0002 },   // 2020 起   ：0.02% / 日
+  ],
+};
+
+/** 强平清算费（B20）—— 触发强平那一刻，从**残余权益**里先扣掉 `名义 × 本值`，抵剩下的才返还。 */
+export const LIQ = { fee: 0.005 };
+
+/**
+ * Binance 永续的维持保证金率四档（名义价值越大越严）。
+ * 尾档 `>= $500 万` 取 5%；真正的 1 亿以上 10–15% 不实现（本作资金量级到不了）。
+ */
+const BINANCE_MARGIN_TIERS = [
+  { upTo: 5e4,       rate: 0.004 },
+  { upTo: 2.5e5,     rate: 0.005 },
+  { upTo: 1e6,       rate: 0.01 },
+  { upTo: 5e6,       rate: 0.025 },
+  { upTo: Infinity,  rate: 0.05 },
+];
+
+/**
+ * 该所 / 该工具 / 该名义档的维持保证金率（B18 + B26）。
+ * @param {string} exId 交易所 id
+ * @param {number} notional 名义价值 —— 只有 Binance 永续按它分档
+ * @param {'perp'|'margin'} kind 工具性质（`positions.instrumentOf` 提供）
+ * @returns {number} 比率；缺省回落到 `GAME.maintRate`（0.5%）
+ */
+export function maintRateAt(exId, notional, kind = 'perp') {
+  if (kind === 'margin') return MARGIN.maint;
+  if (exId !== 'binance') return GAME.maintRate;
+  const n = Number.isFinite(notional) && notional > 0 ? notional : 0;
+  for (const t of BINANCE_MARGIN_TIERS) if (n < t.upTo) return t.rate;
+  return GAME.maintRate;
+}
+
+/** 该时刻的**借贷日息**（B26）—— 升序取「最后一个 `from <= t`」 */
+export function marginDailyRateAt(t) {
+  let v = MARGIN.daily[0].v;
+  for (const s of MARGIN.daily) { if (s.from <= t) v = s.v; else break; }
+  return v;
 }
 
 /**
