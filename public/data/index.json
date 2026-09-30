@@ -3,26 +3,27 @@
   "start": 1356998400000,
   "end": 1735689600000,
   "totalHours": 105192,
+  "preHours": 2304,
   "encoding": "gzip(int32le[o, h-o, l-o, c-o] × count ＋ uint8 成交量份额 × count)",
   "coins": {
     "BTC": {
       "name": "比特币",
       "file": "BTC.bin",
-      "start": 1356998400000,
-      "count": 105192,
+      "start": 1348704000000,
+      "count": 107496,
       "scale": 100,
       "vol": true,
       "maxPrice": 108364,
-      "first": 13.24,
+      "first": 12.2,
       "last": 93381,
-      "bytes": 1788264,
-      "zipped": 1056629,
+      "bytes": 1827432,
+      "zipped": 1065176,
       "sources": {
-        "hourly": 105192,
+        "hourly": 107496,
         "gapHours": 0,
         "gapRanges": [],
         "detail": {
-          "bitstamp btcusd": 105192
+          "bitstamp btcusd": 107496
         }
       }
     },
@@ -121,9 +122,10 @@
   },
   "liq": {
     "file": "liq.bin",
-    "encoding": "gzip(float32le × 4383 × 5)",
+    "encoding": "gzip(float32le × 4479 × 5)",
     "start": 1356998400000,
-    "days": 4383,
+    "days": 4479,
+    "preDays": 96,
     "order": [
       "BTC",
       "DOGE",
@@ -162,14 +164,14 @@
     },
     "smoothing": null,
     "firstDay": {
-      "BTC": 0,
+      "BTC": -96,
       "DOGE": 385,
       "XRP": 590,
       "ETH": 949,
       "SOL": 2779
     },
-    "bytes": 87660,
-    "zipped": 64951
+    "bytes": 89580,
+    "zipped": 65322
   },
   "circulating": {
     "BTC": {

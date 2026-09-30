@@ -160,6 +160,11 @@ const daySigmaCache = new Map();
  * 第 d 天的日收盘 = 那一天**最后一根小时 K**（`d × 24 + 23`）的收盘价。
  * 取 [day−31, day−1] 共 31 个日收盘 ⇒ 30 个日收益 —— **不含今天**：今天还没走完，
  * 把半截行情算进「日均波动」会让 σ 随当天走势抖（与 `hourlySigma` 的按天缓存同一取舍）。
+ *
+ * ⚠️ 起点**不夹到 0**（2026-09-30）：BTC 有 2012 回溯段（`config.COINS` 的 `unlock` 早于
+ *    `GAME.start`），开局前 30 天因此吃的是**真实日波动**而不是兜底 3%；`day` 为负时
+ *    `closeAt` 给的仍是回溯段里的真值（数据区间的左端是 −2304）。其余币的数据晚于 0，
+ *    取到的是越界 `null`，`sigmaOf` 按「洞」跳过 ⇒ 行为与夹取时**逐位相同**。
  */
 function dailySigma(sym, i) {
   const day = dayIndexOf(i);
@@ -167,7 +172,7 @@ function dailySigma(sym, i) {
   if (hit && hit.day === day) return hit.v;
 
   const closes = [];
-  for (let d = Math.max(0, day - SLIP.window - 1); d < day; d++) {
+  for (let d = day - SLIP.window - 1; d < day; d++) {
     closes.push(closeAt(sym, d * HOURS_PER_DAY + HOURS_PER_DAY - 1));
   }
   const v = sigmaOf(closes);

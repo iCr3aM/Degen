@@ -115,7 +115,13 @@ export const TICK = {
  *   SOL  Binance  `SOLUSDT`       2020-08-11 06:00（缺的 20 小时由 Binance.US `SOLUSD` 补齐）
  */
 export const COINS = [
-  { sym: 'BTC',  name: '比特币',  unlock: Date.UTC(2013, 0, 1, 0),  otc: Date.UTC(2013, 0, 1),  src: { bitstamp: 'btcusd', bitfinex: 'tBTCUSD', binance: 'BTCUSDT',  binanceus: null } },
+  /* ⚠️ BTC 的 `unlock` **早于 `GAME.start`**（2026-09-30 定的回溯段）——
+     它是**数据回溯起点**，不是「游戏里能交易的时刻」：游戏照样 2013-01-01 开盘、照样 $3,000 起步。
+     为什么要这一段：`GAME.start` 那一刻图上只有 1 根 K 线（左半边全空）、`24h 涨跌幅` 无参照、
+     `σ_30日` 只能走兜底 3%。补 **96 天**（2,304 根，见下）刚好填满一屏 1d 视野（`view.defaultCount` 上限 96）。
+     ⚠️ 这一段**不是日线插值**，是 Bitstamp 同一接口、同一 `btcusd` 交易对的**真小时线**
+     （实测可回溯到 2011-08-19 00:00；这里只取到 2012-09-27，够用又不冗余）。 */
+  { sym: 'BTC',  name: '比特币',  unlock: Date.UTC(2012, 8, 27, 0),  otc: Date.UTC(2013, 0, 1),  src: { bitstamp: 'btcusd', bitfinex: 'tBTCUSD', binance: 'BTCUSDT',  binanceus: null } },
   { sym: 'DOGE', name: '狗狗币',  unlock: Date.UTC(2014, 0, 21, 22), otc: Date.UTC(2018, 0, 1),  src: { bitstamp: null,     bitfinex: null,      binance: 'DOGEUSDT', binanceus: null },
     cdd: [{ file: 'Poloniex_DOGEUSDT_1h.csv', quote: 'USDT' }, { file: 'Poloniex_DOGEBTC_1h.csv', quote: 'BTC' }] },
   { sym: 'XRP',  name: '瑞波币',  unlock: Date.UTC(2014, 7, 14, 3),  otc: Date.UTC(2018, 0, 1),  src: { bitstamp: 'xrpusd', bitfinex: null,      binance: 'XRPUSDT',  binanceus: null },

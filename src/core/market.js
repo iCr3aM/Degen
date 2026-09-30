@@ -226,6 +226,9 @@ export function supplyAt(sym, i) {
  *      按币懒加载省不了多少，反而让「算一次拥堵」变成异步。
  *   ② **Float32，不是 Int32** —— 它是美元/天的绝对量（$1e3 ~ $3e10），不需要 K 线那套相对编码。
  *   ③ **时间轴是「天」，不是「小时」** —— 索引 = 自 2013-01-01 起的天序号 = `floor(i / 24)`。
+ *      ⚠️ 但 `liq.bin` 的「天 0」比游戏开局早 `manifest.liq.preDays` 天（BTC 的 2012 回溯段，
+ *         2026-09-30）：那条轴是**数据窗口**（最早的 `unlock`），而运行时的 `dayIndexOf(s.i)`
+ *         是**游戏窗口**。平移只发生在 `liqOf` 里一处，别在调用方各自加减。
  * 口径（两端锚定 ＋ 真实年内形状）见 `tools/fetch-data.mjs` 的日流动性一节。
  */
 
@@ -261,9 +264,12 @@ export const dayIndexOf = i => Math.floor(i / HOURS_PER_DAY);
 export function liqOf(sym, dayIndex) {
   if (!liqBuf || !manifest || !manifest.liq) return null;
   const days = manifest.liq.days;
-  if (!Number.isInteger(dayIndex) || dayIndex < 0 || dayIndex >= days) return null;
+  /* 游戏窗口的天序号 → 数据窗口的天序号（BTC 回溯段 96 天，其余币 `preDays` 同样是 96
+     但它们的行情本来就在 2013 之后 ⇒ 平移后落在前半段的 0 值区，语义仍是「没上线」）。 */
+  const d = dayIndex + (manifest.liq.preDays || 0);
+  if (!Number.isInteger(dayIndex) || d < 0 || d >= days) return null;
   const n = manifest.liq.order.indexOf(sym);
   if (n < 0) return null;
-  const v = liqBuf[n * days + dayIndex];
+  const v = liqBuf[n * days + d];
   return v > 0 ? v : null;      // 0 = 该币当天还没有行情（数据管线里未上线日写 0）
 }

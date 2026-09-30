@@ -105,13 +105,28 @@ const onlyArg = [...args].find(a => a.startsWith('--only='));
 const ONLY = onlyArg ? new Set(onlyArg.slice(7).split(',').map(s => s.trim().toUpperCase())) : null;
 
 const END_TS = GAME.end;                 // 排他上界：2025-01-01T00:00Z
-const START_TS = GAME.start;             // 数据包最早可能的起点：2013-01-01T00:00Z
-const TOTAL_HOURS = (END_TS - START_TS) / HOUR_MS;
+/**
+ * **两条时间基座**（2026-09-30 拆开，此前是同一个常数）：
+ *   - `START_TS` = `GAME.start`：**游戏时间轴**的零点。运行时的 `s.i` 是「自它起算的小时序号」，
+ *     数据包里的 `manifest.start` 也必须是它 —— **不许动**。
+ *   - `DATA_TS`  = 各币 `unlock` 里**最早的那个**：**数据窗口**的零点。BTC 的回溯段
+ *     （2012-09-27 起，见 `config.COINS`）落在这里 ⇒ 数据窗口比游戏窗口早 96 小时。
+ *     管线内部一律用 `DATA_TS`（`idxOf` / `tsOf` / `dayUsd` 下标），于是**下标全非负**，
+ *     不必给整条管线引负序号；运行时那侧只在 `market.liqOf` 加一个 `preDays` 偏移。
+ */
+const START_TS = GAME.start;
+const DATA_TS = Math.min(...COINS.map(c => c.unlock));
+/** 数据窗口比游戏窗口早多少小时（BTC 回溯段长度）；`0` = 没有回溯段 */
+const PRE_HOURS = (START_TS - DATA_TS) / HOUR_MS;
+const TOTAL_HOURS = (END_TS - START_TS) / HOUR_MS;    // 游戏窗口根数（清单里的 `totalHours`）
+const DATA_HOURS = (END_TS - DATA_TS) / HOUR_MS;      // 数据窗口根数（一切切片的长度都用它）
 /** 全程天数（每天 24 根小时 K，最后一天可能不足 24 根，向上取整）—— 日流动性按这个刻度落盘 */
-const TOTAL_DAYS = Math.ceil(TOTAL_HOURS / 24);
+const TOTAL_DAYS = Math.ceil(DATA_HOURS / 24);
+/** 日流动性的「天 0」比游戏开局早几天 —— 运行时 `liqOf` 靠它把 `dayIndexOf(s.i)` 平移过来 */
+const PRE_DAYS = Math.round(PRE_HOURS / 24);
 
-const idxOf = ts => (ts - START_TS) / HOUR_MS;
-const tsOf = i => START_TS + i * HOUR_MS;
+const idxOf = ts => (ts - DATA_TS) / HOUR_MS;
+const tsOf = i => DATA_TS + i * HOUR_MS;
 
 /**
  * 已经建好的币的美元序列：`sym → (ms) => 当时的收盘价`。
@@ -216,7 +231,7 @@ async function fetchBitstamp(pair, fromMs, toMs) {
 
     for (const r of rows) {
       const ts = Number(r.timestamp) * 1000;
-      if (ts < START_TS || ts >= toMs) continue;
+      if (ts < DATA_TS || ts >= toMs) continue;      // 回溯段照收（原来这里丢掉了 BTC 的 2011–2012）
       const o = +r.open, h = +r.high, l = +r.low, c = +r.close;
       if (!(o > 0 && h > 0 && l > 0 && c > 0)) continue;
       const i = idxOf(ts);
@@ -269,7 +284,7 @@ async function fetchBitfinex(pair, fromMs, toMs) {
 
     for (const r of rows) {
       const ts = Number(r[0]);
-      if (ts < START_TS || ts >= toMs) continue;
+      if (ts < DATA_TS || ts >= toMs) continue;
       const o = +r[1], c = +r[2], h = +r[3], l = +r[4];
       if (!(o > 0 && h > 0 && l > 0 && c > 0)) continue;
       const i = idxOf(ts);
@@ -319,7 +334,7 @@ const makeBinanceFetcher = (base, tag, label) => async (symbol, fromMs, toMs) =>
 
     for (const r of rows) {
       const ts = Number(r[0]);
-      if (ts < START_TS || ts >= toMs) continue;
+      if (ts < DATA_TS || ts >= toMs) continue;
       const o = +r[1], h = +r[2], l = +r[3], c = +r[4];
       if (!(o > 0 && h > 0 && l > 0 && c > 0)) continue;
       const i = idxOf(ts);
@@ -419,7 +434,7 @@ async function fetchCDDHourly(file, quote, btcAt) {
   const needBTC = quote === 'BTC';
   if (needBTC && !btcAt) return { rows: out };
   for (const [ts, o, h, l, c, qv] of parseCDD(await fetchCDDText(file))) {
-    if (ts < START_TS || ts >= END_TS) continue;
+    if (ts < DATA_TS || ts >= END_TS) continue;
     const i = idxOf(ts);
     if (!Number.isInteger(i)) continue;
     if (!needBTC) { out.set(i, [o, h, l, c, qv]); continue; }
@@ -448,7 +463,7 @@ async function fetchCDDHourly(file, quote, btcAt) {
  */
 async function buildCoin(coin) {
   const startI = idxOf(coin.unlock);
-  const count = TOTAL_HOURS - startI;
+  const count = DATA_HOURS - startI;
   const held = new Float64Array(count * 5);       // [o,h,l,c,usd] × count
   const have = new Uint8Array(count);             // 0 = 还是空的
   // 逐小时成交额按日累加 —— 日流动性（liq.bin）的唯一原料。
@@ -634,14 +649,19 @@ const yearOfDay = d => new Date(tsOf(d * 24)).getUTCFullYear();
  * 由「逐日真实美元成交额」算出该币的日流动性序列。
  * @param {string} sym
  * @param {Float64Array} dayUsd  全程逐日真实成交额（未上线日为 0）
- * @param {number} firstDay      该币第一根真 K 线所在的天
+ * @param {number} firstDay      该币第一根真 K 线所在的天（**覆盖起点**，可早于锚定日）
+ * @param {number} anchorDay     **锚定日** —— `LIQ_ANCHORS.early` 落在这一天所在的年
+ *   ⚠️ 与 `firstDay` 分开是 2026-09-30 回溯段的直接结果：BTC 的覆盖起点落在 2012 年，
+ *      但锚**必须仍然锚在 2013 年**，否则 `firstYear` 变成 2012 ⇒ 2013–2024 全年流动性数值
+ *      会整体平移（滑点分母、脉冲阈值跟着全变）。分开之后：覆盖多出的那几天走**几何向后外推**
+ *      （`L(2013−k)` 用同一个幂式算出，2013 年本身仍是 `early`）⇒ **2013+ 逐位不变**。
  * @returns {{ liq: Float32Array, firstYear, anchorEarly, anchorLate, mean: object, corr: object }}
  *   `mean` = 每年**实际算出的**年均（供验收口径⑦核对）；
  *   `corr` = 年内同形度 `{ mean, worst }`（无平滑 ⇒ 应为 1.000）
  */
-function buildLiqDaily(sym, dayUsd, firstDay) {
+function buildLiqDaily(sym, dayUsd, firstDay, anchorDay) {
   const { early, late } = LIQ_ANCHORS[sym];
-  const firstYear = yearOfDay(firstDay);
+  const firstYear = yearOfDay(anchorDay);
   const liq = new Float32Array(TOTAL_DAYS);
 
   /** 按年求和 / 计数 → 年均表 */
@@ -828,20 +848,26 @@ async function main() {
   mkdirSync(OUT_DIR, { recursive: true });
   mkdirSync(CACHE_DIR, { recursive: true });
 
-  log(`\n时间轴：${new Date(START_TS).toISOString()} → ${new Date(END_TS).toISOString()}`);
-  log(`每小时一根，全程 ${TOTAL_HOURS} 根\n`);
+  log(`\n游戏时间轴：${new Date(START_TS).toISOString()} → ${new Date(END_TS).toISOString()}`);
+  log(`数据时间轴：${new Date(DATA_TS).toISOString()} → ${new Date(END_TS).toISOString()}`);
+  log(`每小时一根：游戏窗 ${TOTAL_HOURS} 根，数据窗 ${DATA_HOURS} 根（多出的 ${PRE_HOURS} 根 = BTC 回溯段）\n`);
 
   const manifest = {
     v: 1,
     start: START_TS,
     end: END_TS,
     totalHours: TOTAL_HOURS,
+    /* 数据窗比游戏窗早多少小时（0 = 没有回溯段）。**运行时不用它** ——
+       负的小时序号由各币 `meta.start < start` 自然推出（`market.rangeOf`）；
+       这里只是把「回溯段有多长」写清楚，免得日后误判数据包损坏。 */
+    preHours: PRE_HOURS,
     encoding: 'gzip(int32le[o, h-o, l-o, c-o] × count ＋ uint8 成交量份额 × count)',
     coins: {},
   };
 
   let sumRaw = 0, sumZip = 0;
   const liqPerCoin = {};              // sym -> Float32Array（日流动性）
+  const anchorDayOf = {};             // sym -> 锚定日（**数据窗**天序号），写清单用
 
   for (const coin of COINS) {
     if (ONLY && !ONLY.has(coin.sym)) continue;
@@ -886,7 +912,11 @@ async function main() {
 
     /* 日流动性：把这一币的逐日真实成交额折算成 liq（年均落在锚上，年内形状全真） */
     const firstDay = Math.floor(startI / 24);
-    const L = buildLiqDaily(coin.sym, dayUsd, firstDay);
+    /* 锚定日 = 「游戏开局那天」与「该币首日」里**较晚**的那个 —— BTC 的覆盖起点在 2012，
+       锚仍锚在 2013（见 `buildLiqDaily` 的注释）；其余币首日本来就晚于开局，两者相同。 */
+    const anchorDay = Math.max(PRE_DAYS, firstDay);
+    anchorDayOf[coin.sym] = anchorDay;
+    const L = buildLiqDaily(coin.sym, dayUsd, firstDay, anchorDay);
     liqPerCoin[coin.sym] = L.liq;
     const yFirst = L.firstYear;
     log(`  日流动性：首年 ${yFirst} 锚 $${L.anchorEarly.toLocaleString()} ／ 2024 锚 $${L.anchorLate.toLocaleString()}`
@@ -921,7 +951,9 @@ async function main() {
   const liqZip = gzipSync(liqRaw, { level: 9 });
   writeFileSync(join(OUT_DIR, 'liq.bin'), liqZip);
 
-  // 每个币的「第一根真 K 线」所在天 = 锚的首年基准，写进清单供运行时换算
+  // 每个币的「第一根真 K 线」所在天 —— **游戏窗**天序号（自 2013-01-01 起算，BTC 为负），
+  // 与 `liq.bin` 自己的轴（数据窗，天 0 = 2012-09-27）差 `preDays`。纯信息字段、运行时不读。
+  // `firstYear` 取的是**锚定日**所在的年：BTC 覆盖起点在 2012，锚仍锚在 2013（见 `buildLiqDaily`）。
   const coinStartDay = {};
   for (const c of COINS) {
     const m = manifest.coins[c.sym];
@@ -933,9 +965,12 @@ async function main() {
     encoding: `gzip(float32le × ${TOTAL_DAYS} × ${COINS.length})`,
     start: START_TS,
     days: TOTAL_DAYS,
+    /* liq 的「天 0」比游戏开局早几天 —— 运行时 `liqOf` 靠它把 `dayIndexOf(s.i)` 平移过来
+       （轴是数据窗口，2026-09-30）。**忘了它，2013 之后的流动性会整体错位 96 天。** */
+    preDays: PRE_DAYS,
     order: COINS.map(c => c.sym),
     anchors: Object.fromEntries(COINS.map(c => [c.sym, LIQ_ANCHORS[c.sym]])),
-    firstYear: Object.fromEntries(COINS.map(c => [c.sym, yearOfDay(coinStartDay[c.sym])])),
+    firstYear: Object.fromEntries(COINS.map(c => [c.sym, yearOfDay(anchorDayOf[c.sym])])),
     smoothing: null,   // 不做平滑（2026-09-29 定案）：年内形状 = 真实成交额的等比缩放，同形度恒 1.000
     firstDay: coinStartDay,
     bytes: liqRaw.length,
