@@ -5633,3 +5633,24 @@ s.orders = { BTC: { side:'long', lev, spot, ex, limit, dLock, σLock,
 - 不引入日线数据源 —— 1d 视图本来就是小时线的同源聚合，§34.1 已述。
 - 不动 `GAME.start` / `s.i` 语义 / `STATE_VERSION`（本批是数据与读取层改动，与存档无关）。
 
+---
+
+## 三十五、正式版收口 · **已移除**清单（2026-09-30）
+
+> **本节只是一张回写索引。** v1.0 代码审核删掉的一批**死代码**，本文档里仍有它们的**历史设计条目** ——
+> 那些条目**一律降级为档案**（只记「当时为什么这么设计」，**不代表代码里还有这个符号**），正文**不改**。
+> 本批**未动** `STATE_VERSION`（仍 **15**）：删的全是**无消费者的死导出**，不碰存档形状。
+
+| 符号 | 原文档条目 | 移除理由 | 现存替代 |
+| --- | --- | --- | --- |
+| `s.consumed` / `consumedOf(s, sym)` | §21.3 U2 · §21.4 · §21.5 · §21.9（U2 原已落地） | U2 是「累计消耗口径」，**落地时即写明没有消费者**；「买光供应量」的**唯一**活口径是瞬时的 `capturedOf`（`SUPPLY_CAP` 校验用）⇒ 纯冗余 | `capturedOf`（保留） |
+| `exchangesAt(t)` | §四 P1-B 改动清单 | 从未被引用 —— 年代过滤由 `EXCHANGES[]` ＋ `haltedAt(t)` / `exchangeOf(t)` 承担 | `EXCHANGES` / `haltedAt` / `exchangeOf` |
+| `isLiqLoaded()` | §五 P2-A 改动清单 | 从未被引用 —— 流动性是否就绪由 `loadLiq()` 返回与 `liqOf()` 判空天然覆盖 | `loadLiq` / `liqOf` |
+| `clearSimCache()` | 卷首 v27 条目 · §19.3 工程口径 | 从未接线 —— S2/S3 落地后缓存按 key 变化自然失效，不需手动清 | 无（按 key 自失效） |
+| `getManifest()` | （ROADMAP 无条目） | 清单读取器已被 `loadManifest()` 取代，消费者一律走后者 | `loadManifest` |
+
+**同批一并删除、ROADMAP 中无对应条目**（不另列）：`isLocked`（`ui/view.js`）、`debugRange`（`ui/render.js`）、
+`tradable`（`core/engine.js` —— ⚠️ `ui/render.js` 里另有一个**同名局部变量**，那个**保留**）。
+
+> 若将来要查「现在到底还有没有这东西」，**以 `src/` 为准**，不要以本文档的历史条目为准。
+
