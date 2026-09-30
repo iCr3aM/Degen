@@ -628,8 +628,10 @@ export function update(refs, s, view) {
        （着色那三档是按**现货**费率定的门槛：Mt.Gox 0.60% 红 / Bitfinex 0.20% 红 /
         BitMEX 0.05% 灰 / Binance 0.10% 金，合约费率普遍更低 ⇒ 落到灰档，不误导。） */
     /* v19：带上这家所**近 30 天**的成交量 —— 顶栏必须显示玩家**现在真的会付**的那一档，
-       否则巨鲸看着 0.60% 却被收了 0.53%，账对不上。 */
-    const fr = feeRateOf(s.ex, now, chanOf(s) !== 'otc' && s.mode === 'fut' ? 'fut' : 'spot', vol30Of(s, s.ex, s.i));
+       否则巨鲸看着 0.60% 却被收了 0.53%，账对不上。
+       ⚠️ v20：成交量也按**产品线**分账 ⇒ 这里取的 `kind` 必须与 `openTrade` 同源（一处算、两处用）。 */
+    const fk = chanOf(s) !== 'otc' && s.mode === 'fut' ? 'fut' : 'spot';
+    const fr = feeRateOf(s.ex, now, fk, vol30Of(s, s.ex, s.i, fk));
     setText(refs.exRate, `费率 ${fmtRate(fr, 2)}`);
     setCls(refs.exRate, fr >= 0.002 ? 'down' : fr >= 0.001 ? 'gold' : '');
   }
@@ -947,10 +949,13 @@ export function update(refs, s, view) {
  *   `canvas` / `head` 两个节点（回顾页各有一套，所以由调用方传进来）；
  *   `sym` / `i` 看哪个币的第几根；`view` 本帧尺寸；`mark` 标记价；
  *   `cur` 当前仓位（**回顾页恒传 null** —— 回顾没有持仓）
+ *   `own` 是否把**玩家自己的成交额**并进量柱（v20）。交易页默认真；
+ *         **回顾页必须传假** —— 那一屏讲市场史，玩家这一局的成交不该混进 2013 年的柱子
+ *         （模块里那个 `playerVolSource` 注入的是**当前存档**的 `s.pvol`，不关掉就会串台）。
  * @returns {object} `windowFor` 的返回值（`mode` / `count` / `locked` / `right` 都要用）
  */
-function chartOpts({ canvas, head, sym, i, view, mark, cur }) {
-  const win = windowFor(sym, i, view.chartW);
+function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true }) {
+  const win = windowFor(sym, i, view.chartW, own);
   /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
      日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
      （`count` 可能大于可用根数，这里的下界会算成负数）。 */
@@ -965,6 +970,9 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur }) {
   const effY = drawChart(canvas, {
     candles: win.candles,
     vols: win.vols,
+    /* 玩家自己那一段（v20 · 现货 / 合约分色）—— 只换色不改高度，`chart.js` 把它叠画在柱底。
+       ⚠️ `own=false`（回顾页）时 `win.pvols` 全是 `null`，`chart.js` 自己会跳过。 */
+    pvols: win.pvols,
     /* 槽位数（= 视野要的根数）：柱宽按它算、柱子右对齐，币种刚上线时才不会一根撑满屏（B22）。 */
     slots: win.slots,
     /* 历史锚点刻度（P2-C）—— 与最右那根一起交给图上换算槽位 */
@@ -1439,8 +1447,14 @@ export function openIntro() {
  * ⚠️ 弹窗期间时钟不启动（`main.js` 的 `clock.start()` 排在 `onMenu` 之后）。
  * ⚠️ 「继续游戏」在**没有存档**时整枚不出现（LESS IS MORE：没有的选项不显示）；
  *    「开始游戏」在有档时会先变「确认重开」（双重确认的状态机在 `main.js`，理由同 `onReset`）。
+ *
+ * ⚠️ 「安装应用」（PWA）只在**浏览器确实把安装事件交出来**时才出现（`canInstall`）——
+ *    桌面 Chrome / Android Chrome 会发，iOS Safari 与已安装状态不会。没得装就不显示按钮
+ *    （同「没有的选项不显示」）。
+ * ⚠️ 底部那行构建日期由 `vite.config.js` 的 `define` 注入（`__BUILD_DATE__`，UTC+8）——
+ *    上传服务器后一眼能看出拿到的是不是最新版。
  */
-export function openMenu({ canContinue = false } = {}) {
+export function openMenu({ canContinue = false, canInstall = false } = {}) {
   closePicker();
   const ov = document.getElementById('overlay');
   if (!ov) return;
@@ -1466,11 +1480,34 @@ export function openMenu({ canContinue = false } = {}) {
   const review = el('button', 'act chan', '历史回顾');
   review.dataset.menu = 'review';
   btns.append(review);
+  if (canInstall) menuInstallBtn(btns);
   box.append(btns);
+
+  /* 构建日期（UTC+8）——`__BUILD_DATE__` 由构建期替换成字面量字符串 */
+  box.append(el('p', 'menu-build', `构建 ${__BUILD_DATE__}`));
 
   ov.append(back, box);
   ov.hidden = false;
   picker = ov;
+}
+
+/** 菜单里的「安装应用」按钮（PWA）—— 抽出来是因为**开菜单之后**才收到 `beforeinstallprompt`
+ *  时，`main.js` 要用 `menuAttachInstall()` 现补一枚进去。 */
+function menuInstallBtn(btns) {
+  const inst = el('button', 'act chan', '安装应用');
+  inst.dataset.menu = 'install';
+  btns.append(inst);
+}
+
+/**
+ * 若主菜单正在屏上，把「安装应用」补进去（幂等：已在则不动）。
+ * 供 `main.js` 在 `beforeinstallprompt` 事件晚于 `openMenu` 到达时调用 ——
+ * 装不了就直接不补，菜单保持原样。
+ */
+export function menuAttachInstall() {
+  const btns = document.querySelector('.menu-box .menu-btns');
+  if (!btns || btns.querySelector('[data-menu="install"]')) return;
+  menuInstallBtn(btns);
 }
 
 /* ═════════════════════════ 新手分步引导（本轮 ④） ═════════════════════════ */
@@ -1575,7 +1612,10 @@ export function renderReview(refs, rv, view) {
   }
 
   const win = chartOpts({
-    canvas: refs.rvCanvas, head: refs.rvHead, sym, i: rv.i, view, mark, cur: null,
+    /* ⚠️ `own: false`（v20）：回顾那一屏**不并玩家自己的成交额** ——
+       `playerVolSource` 注入的是当前存档的 `pvol`，不关掉就会把「你这一局在 2015 年买的那一笔」
+       画进 2015 年的历史柱子里。 */
+    canvas: refs.rvCanvas, head: refs.rvHead, sym, i: rv.i, view, mark, cur: null, own: false,
   });
   refs.rvModeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
 

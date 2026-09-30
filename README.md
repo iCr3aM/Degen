@@ -158,6 +158,9 @@ tools/
   fetch-data.mjs   离线数据管线（Node 跑，不在游戏运行时里）
 public/
   data/            预置行情数据包（见下）
+  manifest.webmanifest  PWA 清单
+  sw.js            Service Worker（行情包 stale-while-revalidate，其余 network-first）
+  icon-192.png · icon-512.png  应用图标
 ```
 
 ## 架构约定

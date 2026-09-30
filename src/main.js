@@ -20,7 +20,7 @@ import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
-  renderReview, openNodeCard, openYearPick, openGuide,
+  renderReview, openNodeCard, openYearPick, openGuide, menuAttachInstall,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -48,6 +48,28 @@ let resetTimer = 0;
 let menuNode = null;
 let menuArmed = false;
 let menuTimer = 0;
+
+/* ── PWA（2026-10-01）────────────────────────────────────────────────
+   `installEvt`：浏览器交出来的 `beforeinstallprompt` 事件，抓到后**拦下自带横幅**
+   （`preventDefault`），改由主菜单里那枚「安装应用」触发（LESS IS MORE：入口收在一处）。
+   它**只用一次**：点完就置空，浏览器若还想让玩家装，会再发一次事件。
+   ⚠️ iOS Safari 从不发这个事件 ⇒ 那台机器上永远不出现「安装应用」按钮（同「没有的选项不显示」）。 */
+let installEvt = null;
+
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  installEvt = e;
+  menuAttachInstall();             // 菜单若已在屏上，现补一枚按钮（事件常在 boot 之后才到）
+});
+
+/* Service Worker：**只生产环境注册** —— dev 下 vite 自己的模块热更与 SW 缓存打架。
+   注册脚本是 `public/sw.js`，`base: './'` ⇒ 相对路径在子目录部署下同样成立。
+   策略见 sw.js：`/data/` 走 cache-first（行情包大且不变），其余 network-first（上了新版立刻拿新版）。 */
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => {});
+  });
+}
 
 /* ── 历史回顾模式（需求 4 ·《主菜单与历史回顾模式方案》§3）─────────────────
    `rv` 非 null 就是「正处在回顾态」。**模块级变量、不进 `s`、不进存档**
@@ -141,13 +163,19 @@ async function boot() {
 
   /* 玩家自己的成交量（v17 · 2026-10-01）：同样走**注入**，让 `view.windowFor` 不必认识 `s`。
      没成交的小时恒返回 0 ⇒ 量柱与「只有数据包份额」的那一版**逐位相同**（离线断言靠这条）。 */
-  /* ⚠️ v19 起 `pvol[i]` 是**按所分账**的对象（`{ exId: { u, b } }`），量柱要的是**全所合计的 `u`**。 */
+  /* ⚠️ v19 起 `pvol[i]` 是**按所分账**的对象（`{ exId: … }`），v20 起再按**产品线**分账
+     （`pvol[i][exId][kind] = { u, b }`）。量柱要的是**全所 × 两条产品线各自合计的 `u`**
+     —— 现货一段、合约一段，画布上分色叠画；两段之和与 v19 的单一数字**逐位相同**。 */
   bindPlayerVolSource(i => {
     const cell = s.pvol && s.pvol[i];
-    if (!cell) return 0;
-    let sum = 0;
-    for (const id in cell) sum += cell[id].u;
-    return sum;
+    if (!cell) return null;
+    let spot = 0, fut = 0;
+    for (const id in cell) {
+      const byKind = cell[id];
+      if (byKind.spot) spot += byKind.spot.u;
+      if (byKind.fut) fut += byKind.fut.u;
+    }
+    return (spot || fut) ? { spot, fut } : null;
   });
 
   refs = mount(root);
@@ -194,7 +222,7 @@ async function boot() {
      ⚠️ 菜单期间**时钟不启动**（与开场叙事同一条）：玩家选完才真正开盘，
         否则停在这一屏时行情已经自己走了几十根。
      ⚠️ 「继续游戏」只在**这一局确实读到档**时出现（`isNewGame` 的反面）。 */
-  openMenu({ canContinue: !isNewGame });
+  openMenu({ canContinue: !isNewGame, canInstall: !!installEvt });
 }
 
 /** 保证某个币的数据已加载；失败只记一条日志，不让整个游戏崩掉 */
@@ -865,7 +893,9 @@ const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.v
    · `continue`：读档续玩 —— 直接开盘，**不弹开场白**（世界观只在开新局时讲一遍）。
    · `start`   ：无档 ⇒ 直接转开场叙事；**有档 ⇒ 先「武装」**（按钮变红，3 秒内再点一次才重开），
                  走既有 `onWipe()`（`disableSave` ＋ `wipe` ＋ reload）——**不新写重开逻辑**。
-   · `review`  ：只读回顾模式（`enterReview`）。 */
+   · `review`  ：只读回顾模式（`enterReview`）。
+   · `install` ：PWA 安装（2026-10-01）—— 把 `beforeinstallprompt` 交出来的事件 `prompt()` 一次；
+                 事件只消费一次，之后按钮再点无效果（浏览器想再给机会会重发事件）。 */
 function onMenu(kind, node) {
   if (kind === 'continue') {
     closePicker();
@@ -874,6 +904,13 @@ function onMenu(kind, node) {
     return;
   }
   if (kind === 'review') return enterReview();
+  if (kind === 'install') {
+    const evt = installEvt;
+    if (!evt) return;
+    installEvt = null;
+    evt.prompt();
+    return;
+  }
   /* kind === 'start' */
   if (isNewGame) {                 // 无档：直接进开场叙事（新手 / 老手）
     closePicker();
@@ -982,7 +1019,7 @@ function exitReview() {
   rv = null;
   rvAcc = 0;
   draw(true);                                    // `rv` 归 nil ⇒ `showPage` 自动切回交易页
-  openMenu({ canContinue: !isNewGame });
+  openMenu({ canContinue: !isNewGame, canInstall: !!installEvt });
 }
 
 /** 回顾日志（**加长那一栏**的内容源）：节点史实 ＋ 里程碑，只装回顾自己的东西 */

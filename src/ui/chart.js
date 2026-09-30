@@ -51,6 +51,8 @@ const THEME_VARS = {
   FG: '--fg',        // 正文
   GOLD: '--gold',    // 开仓价
   LINE: '--line',    // 网格线
+  PV_SPOT: '--pv-spot',   // 量柱里**玩家自己的现货**那一段（v20）
+  PV_FUT: '--pv-fut',     // 量柱里**玩家自己的合约**那一段（v20）
 };
 
 let themeCache = null;
@@ -98,6 +100,9 @@ function axisLabel(p) {
  * @param {object} o
  *   candles  Array<{o,h,l,c}>  视野内的小时线（或日线聚合），已按时间升序，最后一个是当前根
  *   vols     Array<number>     与 `candles` 一一对齐的**绝对美元成交额**（0 = 该根无成交）
+ *   pvols    Array<{spot,fut}> 与 `candles` 一一对齐的**玩家自己那一份**（v20）：
+ *                              `spot + fut` 恒 ≤ `vols[k]`，只用来把量柱的下半段**换个色**画出来
+ *                              （现货 / 合约各一色）—— 不给高度、不改归一化口径。
  *   mark     number            当前价（画水平线）
  *   entry    number|null       持仓开仓价
  *   side     'long'|'short'|null
@@ -116,7 +121,7 @@ function axisLabel(p) {
  *                   否则玩家一直往同一边拖时状态里的值会越滚越大，松手再按就从远处跳回来。
  */
 export function drawChart(canvas, o) {
-  const { candles, vols, mark, entry, side, liq, anchors, right } = o;
+  const { candles, vols, pvols, mark, entry, side, liq, anchors, right } = o;
   const T = theme();
   const dpr = Math.min(3, (typeof devicePixelRatio === 'number' ? devicePixelRatio : 1) || 1);
   const W = Math.max(1, Math.round(o.cssW));
@@ -265,6 +270,9 @@ export function drawChart(canvas, o) {
       if (key) p90Cache = { key, v: vscale };
     }
   }
+  const PV = pvols || [];
+  const bx = new Array(n);                       // 每根柱子的左沿与柱宽（两遍画法共用）
+  for (let k = 0; k < n; k++) bx[k] = Math.round(xAt(k) - bw / 2);
   if (vscale > 0) {
     ctx.save();
     ctx.globalAlpha = VOL_ALPHA;
@@ -275,10 +283,44 @@ export function drawChart(canvas, o) {
       const r = Math.min(1, v / vscale);
       const h = Math.max(1, Math.round(r * volH));
       ctx.fillStyle = c.c >= c.o ? T.UP : T.DOWN;
-      const x = xAt(k);
-      ctx.fillRect(Math.round(x - bw / 2), bot - h, Math.round(bw), h);
+      ctx.fillRect(bx[k], bot - h, Math.round(bw), h);
     }
     ctx.restore();
+  }
+
+  // ── 玩家自己那一段：**只换色、不改高度**（v20 · 用户 2026-10-01 拍板） ──
+  // 高度仍按同一把尺（`vscale` / `volH`）量，所以柱顶一格不动；变的是**下半段**的色相：
+  //   现货 = `--pv-spot`、合约 = `--pv-fut`，两段从基线往上叠（现货在下、合约在上）。
+  // ⚠️ 为什么原来的玩家量「看不见」（2026-10-01 诊断结论）：柱高按**视野内 P90** 归一化
+  //    （B29），一屏 68 根小时线里市场自己的成交额动辄几万到几十亿美元，玩家那一笔被压到
+  //    十几像素 —— **不是没接进来，而是被同一根柱子里的市场量淹了**。分色之后即使高度不变，
+  //    也能一眼看出「这根里有多少是我的」。
+  // ⚠️ 本段用**不透明**（不吃 `VOL_ALPHA`）：量柱本体是 .30 的「压暗同色带」，玩家段若也压暗
+  //    就与涨跌色糊在一起。不透明 ≠ 改高度，柱顶仍由 `vols` 决定。
+  if (vscale > 0) {
+    for (let k = 0; k < n; k++) {
+      const p = PV[k];
+      if (!p) continue;
+      const tot = p.spot + p.fut;
+      if (!(tot > 0)) continue;
+      const barH = Math.max(1, Math.round(Math.min(1, V[k] / vscale) * volH));
+      // 玩家的整段高度（封在柱内 —— `tot ≤ V[k]` 数学上恒成立，这里是浮点兜底）
+      const hAll = Math.min(barH, Math.max(1, Math.round(Math.min(1, tot / vscale) * volH)));
+      let seg;
+      if (p.spot > 0 && p.fut > 0) {
+        // 两段都有：按占比切，两段各留 1px 最小可见高度
+        const hs = Math.max(1, Math.min(hAll - 1, Math.round(hAll * (p.spot / tot))));
+        seg = [[T.PV_SPOT, hs], [T.PV_FUT, hAll - hs]];
+      } else {
+        seg = [[p.spot > 0 ? T.PV_SPOT : T.PV_FUT, hAll]];
+      }
+      let y = bot;
+      for (const [col, sh] of seg) {
+        y -= sh;
+        ctx.fillStyle = col;
+        ctx.fillRect(bx[k], y, Math.round(bw), sh);
+      }
+    }
   }
 
   // ── 历史锚点刻度（P2-C · 裁决 ④：**全部锚点都画在当前币上**） ──

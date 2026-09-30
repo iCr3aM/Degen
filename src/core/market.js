@@ -168,23 +168,29 @@ export function volumeAt(sym, i) {
 }
 
 /**
- * 玩家自己的成交额源 —— 由 `main.js`（唯一的接线层）注入 `i => 美元名义额`。
+ * 玩家自己的成交额源 —— 由 `main.js`（唯一的接线层）注入 `i => { spot, fut }`（美元名义额）。
  *
  * ⚠️ 与 `factorSource` 同一范式：market.js 是最底层的数据读取者，**不该知道 `s` 长什么样**，
  *    所以这里只留一个注入点，由接线层把 `s.pvol` 递进来。未注入时恒返回 0 ⇒ 量柱与
  *    「数据包逐位相同」—— 离线断言靠这一条。
+ * ⚠️ v20 起**按产品线分开返回**（现货 / 合约两段，画布上分色叠画）—— 高度合计仍与
+ *    改动前**逐位相同**（= 两条线之和），只有颜色分开了。
  */
 let playerVolSource = null;
 
 /** 注入玩家成交量源；不传 = 解除（回到只有数据包份额的量柱） */
 export function bindPlayerVolSource(fn) { playerVolSource = fn || null; }
 
+/** 空样本：**共用一个冻结对象**，免得每帧给没成交的小时都造一个临时对象（热路径） */
+const NO_PV = Object.freeze({ spot: 0, fut: 0 });
+
 /**
- * 第 i 根 K 线上**玩家自己**贡献的成交额（美元）—— 加在包内份额折算出的市场成交额之上。
- * 未注入 / 该小时没成交 ⇒ 0。调用方一律按「只有市场那一份」处理。
+ * 第 i 根 K 线上**玩家自己**贡献的成交额（美元），按产品线分开 —— 加在包内份额折算出的
+ * 市场成交额之上。未注入 / 该小时没成交 ⇒ `{ spot: 0, fut: 0 }`。
  */
-export function playerVolAt(i) {
-  return playerVolSource ? (playerVolSource(i) || 0) : 0;
+export function playerVolOf(i) {
+  if (!playerVolSource) return NO_PV;
+  return playerVolSource(i) || NO_PV;
 }
 
 /** 只取收盘价 —— 标记价用这个 */

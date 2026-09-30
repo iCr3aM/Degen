@@ -3,9 +3,9 @@
 > 与 `GDD.MD` §20「开发优先级」一一对应，只回答两件事：**现在站在哪**、**下一步做什么**。
 > 最后更新：2026-10-01
 >
-> **当前态（v41 · 2026-10-01）**：**P0–P4 与全部已排期批次均已收口，`STATE_VERSION` = 19** ——
+> **当前态（v42 · 2026-10-01）**：**P0–P4 与全部已排期批次均已收口，`STATE_VERSION` = 20** ——
 > 路线图上**没有已排期的新功能**，只剩「实机确认清单」；现状与暂缓池见 **§一 · 当前坐标**，
-> 最新落地记录见 **§33.11 / §三十六 – §四十七**。
+> 最新落地记录见 **§33.11 / §三十六 – §四十八**。
 > §三十八 是**桌面端适配 ＋ 音效扩展 ＋ 配色层次**（T-1）；
 > §三十九 是**30 秒档量口径 ＋ 日内相位 ＋ 回顾粒度锁定**，§四十 **把细刻度档（30 秒）整体移除** ⇒ **§三十九 的 P-A / P-B 随之作废**；
 > §四十一 是**上帝模式解锁后单击标题即可开面板**；§四十二 是**文献参数复核 V-1…V-7 裁决**（`src/` 一行未改）；
@@ -17,6 +17,8 @@
 > §四十七 是**持仓影响收口 ＋ 阶梯手续费** —— 抛压折价**按日刷新**、OTC 溢价接入**单笔规模依赖**、
 > `flow` vs `overhang` **实测标定**（交叉点 ≈ $100 万）、四家交易所的**成交量阶梯手续费**（按所分账），
 > `STATE_VERSION` **18 → 19**；
+> §四十八 是**量柱分色 ＋ 现货/合约彻底分账 ＋ 桌面端缩放 ＋ 构建日期 ＋ PWA**，
+> `STATE_VERSION` **19 → 20**；
 > 另有两份**只出方案**的文件：`.trae/documents/桌面端适配与音效配色方案.md`（已落地）、
 > `.trae/documents/逐笔成交流与对手盘仓位方案.md`（**待拍板**，其中 §1 的 P-A / P-B 因删档作废）。
 
@@ -6499,6 +6501,128 @@ BTC 2013-01-31、盘口 **$19.46**、**真行情 ＋ 真引擎** `openTrade`（�
 - **代码审核**：四处仓位变更（开仓 / 加仓、平仓、强平、换所归零）全部调 `refreshOverhang`；
   OTC 与合约仓在 `capturedOf` 中返回 0 ⇒ 自动跳过；`impactFor` / `hourLiqOf` 五个调用点全部同步；
   无循环依赖；`save.SHAPE` 的 `pvol: 'obj'` 与新形状兼容（`s.pvol` 顶层仍是对象）。
+
+> 同 §三十五：以 `src/` 为准。
+
+---
+
+## 四十八、量柱分色 ＋ 现货/合约分账 ＋ 桌面端缩放 ＋ 构建日期 ＋ PWA（✅ 2026-10-01 · 用户拍板 · v42）
+
+> **起因**：用户四问 ——
+> ①「为什么小时线看不到玩家的量？真的接入了吗？」
+> ②「现在合约和现货的量是否混在一起了，要如何区分开来？」
+> ③「桌面端的游戏页面还是需要优化一下」＋「开始游戏底部加一个构建日期（UTC+8），
+> 并且直接上传至服务器能否获取到最新更新？」
+> ④「将游戏变为 PWA 应用（开始游戏菜单可以加入按钮）」。
+>
+> 拍板四项：**量柱只换色不改高度** / **现货与合约彻底分账** / **桌面端居中 ＋ 适度放大** /
+> **PWA 手写 manifest ＋ SW**。
+
+### 48.1 为什么小时线看不到玩家的量（先诊断，后动刀）
+
+用**真数据 ＋ 真引擎 ＋ 画布桩**跑通全链路（`openTrade` → `s.pvol` → `bindPlayerVolSource`
+→ `view.windowFor` → `drawChart` 的 `fillRect`），**玩家的量柱确实画出来了**：
+
+| 场景 | 玩家那一份 | 视野内最大小时量 | 视野 P90 | 玩家柱高 |
+| --- | --- | --- | --- | --- |
+| 开局 $3,000 买入（i=0） | $2,982 | $43,189 | $9,139 | **19px / 59px** |
+| 2024 上帝模式 $5 亿（i=100056） | $5 亿 | $54.8 亿 | $21.3 亿 | **23px / 59px** |
+
+**根因**：量柱按**视野内 P90** 归一化（Batch 5 · B29，防单根天量压扁其余）。
+视野只有 68 根小时线，市场自己的成交额动辄几万到几十亿，玩家那笔自然被压矮。
+**不是 bug，是量柱口径决定的** ⇒ 解法定为「**只换色、不改高度**」：给玩家那一段一个**不透明的专色**，
+在那一柱里就地认出来，归一化口径一根不动。
+
+### 48.2 现货与合约彻底分账（`STATE_VERSION` 19 → 20）
+
+- **问题**：`pvol[i][exId] = { u, b }` 只按**交易所**分账，没有产品线维度
+  ⇒ 两张费率表（`fees.spot` / `fees.fut`）读的是**同一份 30 天量**，
+  等于「拿现货刷量把合约费率刷低」；量柱也把两条线的成交混成一根。
+- **改形状**：`pvol[i][exId][kind] = { u, b }`，`kind` = `'spot'` / `'fut'`。
+- **`engine.vol30Of(s, exId, i, kind = 'spot')`** —— 新增第 4 参；默认 `'spot'` 保证旧调用点语义不变。
+- **`kind` 一处算好、三处共用**（`openTrade` 里那句注释）：费率 / 30 天量 / 记量柱必须同源，
+  否则会出现「按合约费率收钱、却把量记到现货账上」。四处写入点全部同步：
+  `openTrade`、`closeTrade`（含加仓）、`forceLiquidate`、以及顶栏费率的读取点。
+- **卡位维度**：现货与合约各攒各的，跨产品线不互相打折。
+- **量柱**：读**全所 × 两条产品线合计**的 `u`，现货 / 合约**分段着色**
+  （`--pv-spot: #4da3ff` / `--pv-fut: #ffc44d`，画在柱子最下面那一段）。
+  ⚠️ 玩家那一段的**总高**恒 ≤ 该柱原本的高度 ⇒ **观感与改动前逐位一致**，只是多了颜色。
+- **顺手修掉一个串台 bug**：历史回顾页的 `windowFor` 会读**当前存档**的 `s.pvol`，
+  把玩家这一局的成交混进 2013 年的历史柱子 ⇒ 新增 `own` 参数，回顾页传 `false`。
+
+### 48.3 桌面端：居中 ＋ 限宽 ＋ 适度放大
+
+- **`calc(Npx * var(--ui))` 全量参数化**（`style.css`）：新增 `--ui` 旋钮，只乘
+  **字号 / 行高 / 控件高度 / 文字盒宽度**四类，**内边距与 8/12 间距节奏一律不乘**
+  ⇒ 手机端 `--ui: 1` 时逐位等于改前（回归红线）。
+- `@media (min-width: 900px)`：`:root { --ui: 1.15 }` ⇒ 全站等比放大一档；
+  `#app` 限宽 `1440px → 1180px`（左列 K 线 ≈ 711px，宽高比终于正常）；
+  右列 `380px → calc(380px * var(--ui))`（≈ 437px，9 档杠杆照样不挤）。
+- ⚠️ `--ui` 挂在 `:root` 而不是 `#app`：`#overlay` 是 `body` 的子节点、**不在 `#app` 内**，
+  挂在 `#app` 上会让主菜单那种弹层「小字压在大字界面上」。
+
+### 48.4 构建日期（UTC+8）
+
+- `vite.config.js` 新增 `BUILD_DATE` 常量 ＋ `define: { __BUILD_DATE__: … }`
+  ⇒ **编译期**把「这一刻」写进产物，`render.js` 的主菜单底部读出来：`构建 2026-10-01 06:39 UTC+8`。
+- ⚠️ 必须是 `define` 而不是运行时的 `new Date()`：后者取到的是**玩家打开页面的时刻**，每次刷新都变。
+- ⚠️ 手写 +8 小时再切 ISO，不用 `toLocaleString('zh-CN', { timeZone })`：
+  后者跟 Node 的 ICU 数据走，同一份代码在 CI 与本机会印出不同的串。
+
+#### 「直接上传至服务器能否获取到最新更新？」—— 原先**不能**，本轮靠 SW 解决
+
+`vite.config.js` 的 `entryFileNames` 是 `assets/[name].js`，**文件名不带哈希**
+⇒ 浏览器会按 HTTP 缓存把旧 JS 缓存住，只上传新文件、不换 URL，玩家很可能**仍跑旧代码**。
+两条路（本轮走前者）：
+
+1. **SW 的 network-first ＋ `cache: 'no-store'`**（已落地）—— 绕过 HTTP 缓存，每次上线即最新；
+2. 服务器对 `index.html` 发 `Cache-Control: no-cache`（**未做**，由部署方决定）。
+
+⚠️ 遗留：`assets/[name].js` 不带哈希 ⇒ **回滚时浏览器可能仍拿旧 SW 缓存过的版本**（靠 `CACHE` 版本号清）。
+
+### 48.5 PWA：手写 manifest ＋ Service Worker
+
+| 文件 | 内容 |
+| --- | --- |
+| `public/manifest.webmanifest` | `name / short_name / start_url "./" / scope "./" / display standalone / portrait`，`theme_color = background_color = #0d0f12`；图标 192 与 512（512 兼作 `maskable`） |
+| `public/icon-192.png` · `icon-512.png` | 与 favicon 同一副图案（深底 ＋ 一根绿烛）等比放大，一次性 Node 脚本生成后**即删** |
+| `public/sw.js` | 两条策略，见下 |
+| `index.html` | 加 `manifest` / `theme-color` / `apple-touch-icon` / `apple-mobile-web-app-*`（iOS 不读 manifest 的 display 与图标，只认 `apple-*`，两条路都要走） |
+| `src/main.js` | `beforeinstallprompt` 拦下自带横幅 ＋ 存事件；**仅 PROD** 注册 SW |
+| `src/ui/render.js` | 主菜单加「安装应用」按钮（`canInstall`）＋ `menuAttachInstall()`（事件晚于开菜单时现补） |
+
+**SW 缓存策略**（以「上传后能拿到最新版」为第一优先）：
+
+- `/data/…` 行情包 → **stale-while-revalidate**：先吐缓存（秒开、离线可用），后台拉新的写回；
+- 其余同源请求 → **network-first ＋ `no-store`**：绕 HTTP 缓存取最新，断网退回缓存；
+- 跨域 → 不插手（行情源直连）。
+- `install` 时 `skipWaiting()`、`activate` 时清旧缓存 ＋ `clients.claim()`。
+- ⚠️ 改缓存规则要**同时改 `CACHE` 版本号**，否则 activate 里那段清旧缓存不执行。
+
+### 48.6 落点与验收
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/core/state.js` | `STATE_VERSION` 19 → 20；`pvol` 注释改「三个消费方」 |
+| `src/core/engine.js` | `addPlayerVol` 加 `kind` 参；`vol30Of` 加 `kind` 参；四处写入点 ＋ 两处费率读取同步 |
+| `src/core/market.js` | `playerVolAt` → `playerVolOf`（返回 `{spot, fut}`） |
+| `src/main.js` | `bindPlayerVolSource` 返回 `{spot, fut}`；PWA 安装事件 ＋ SW 注册；两处 `openMenu` 传 `canInstall` |
+| `src/ui/view.js` | `dayBar` / `windowFor` 加 `own` 参；`windowFor` 返回 `pvols` |
+| `src/ui/chart.js` | `PV_SPOT` / `PV_FUT` 主题色；量柱叠画玩家那一段（**只换色、不改高度**） |
+| `src/ui/render.js` | 顶栏费率按产品线取量；`chartOpts(…, own)`；菜单加「安装应用」＋ 构建日期行 |
+| `src/ui/style.css` | `--pv-spot` / `--pv-fut` / `--ui`；全量 `calc(Npx * var(--ui))`；≥900px 断点；`.menu-build` |
+| `vite.config.js` | `BUILD_DATE` ＋ `define` |
+
+- `npm run build` ✅ 通过：22 modules，`dist/assets/index.js` **92.45 kB**
+  （`__BUILD_DATE__` 已逐字替换，产物内无裸 token）；`dist/` 内 `manifest.webmanifest` / `sw.js` /
+  `icon-192.png` / `icon-512.png` 均已随 `public/` 拷出。
+- 离线断言 ✅ **19/19 全绿**（临时脚本 `tools/_v20_check.mjs`，跑完已删）：
+  ① `vol30Of` 的 kind 分离 ＋ 30 天窗口切边 ＋ 默认 `'spot'` ＋ 按所隔离；
+  ② **真数据**：现货单只落 `spot` 桶、`fut` 桶不存在、`playerVolOf` 返回 `{spot, fut}`、
+  `windowFor(own=true)` 带出非零 `pvols`、`own=false` 时归零；
+  ③ **真数据 ＋ 上帝模式跳到 2019-09**：合约开仓只落 `fut` 桶、平仓也记进 `fut`、
+  全程不产生 `spot` 桶。
+- ⚠️ **丢弃旧档**：`s.pvol` 改了形状 ⇒ 旧档直接弃档重开（既有规范，不写迁移）。
 
 > 同 §三十五：以 `src/` 为准。
 

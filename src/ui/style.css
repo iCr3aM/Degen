@@ -34,6 +34,12 @@
   --accent: #4da3ff;
   --accent-soft: rgba(77, 163, 255, .16);   /* 选中态淡底：`.on` 一律走这个变量，不再各写各的 rgba */
   --gold: #ffc44d;
+  /* ── v20（2026-10-01）玩家自己成交额的量柱色 ─────────────────────
+     量柱本体是「涨跌色 × .30」，玩家自己那一段改成**不透明的专色**（见 `chart.js`）：
+     现货一枚蓝（与主色同相，读作「你自己的」）、合约一枚金（与开仓价那根虚线同相，
+     读作「带杠杆的那一类」）。两者与涨跌绿红都不撞，缩到 1px 也还分得开。 */
+  --pv-spot: #4da3ff;
+  --pv-fut: #ffc44d;
   /* ── T-1 新增 token（2026-10-01）：**彩色填充上的文字色** ──────────────
      全项目原本只有这 4 个魔数没有名字（各出现 1–2 次）。只做同名值替换 ⇒
      视觉**逐位不变**，只是把「金底 / 绿底 / 红底 / 蓝底上写什么颜色的字」收进一处。
@@ -50,6 +56,14 @@
   --dur-fast: .1s;        /* 选中态 / 按下 */
   --dur: .18s;            /* 淡入 */
   --ease: cubic-bezier(.4, 0, .2, 1);
+  /* ── 桌面端「适度放大」的总旋钮（本轮 · 桌面端优化）─────────────
+     全站的字号 / 行高 / 控件高度都写成 `calc(Npx * var(--ui))`，手机端 `--ui: 1`
+     ⇒ `calc(48px * 1)` 逐位等于 `48px`，**手机端一个像素都不动**（回归红线）。
+     宽屏（≥900px）那一档把它调到 1.15，整块界面连同控件一起等比放大。
+     ⚠️ 只乘**字号 / 行高 / 高度 / 文字盒宽度**这四类，**内边距与间距一律不乘** ——
+        8 / 12 的纵向节奏是这个项目的一条硬约束（见文件头 ④），放大时不该被一起拉散。
+     ⚠️ 新增任何「装字的固定高度」时，请一并写成 `calc(...)`，否则桌面端会在这里被裁字。 */
+  --ui: 1;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
@@ -69,7 +83,7 @@ html, body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui));
   line-height: 1.4;
   -webkit-text-size-adjust: 100%;
   overscroll-behavior: none;
@@ -143,12 +157,12 @@ b, strong { font-weight: 600; }
 .tab {
   flex: 1;
   min-width: 0;
-  height: 44px;
+  height: calc(44px * var(--ui));
   background: none;
   border: 0;
   color: var(--mut);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   cursor: pointer;
 }
 .tab.on { color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
@@ -162,7 +176,7 @@ b, strong { font-weight: 600; }
   gap: 8px;
   /* 52 → **48px**（Batch 5 · B26，2026-09-29）：`.who` 两行内容 33.75px、按钮 32px，48 都放得下。
      省下的 4px 全部让给 K 线区 —— 这一版所有纵向压缩都是同一个目的。 */
-  height: 48px;
+  height: calc(48px * var(--ui));
   border-bottom: 1px solid var(--line);
 }
 .top .who {
@@ -171,11 +185,11 @@ b, strong { font-weight: 600; }
   min-width: 0;
   line-height: 1.25;
 }
-.top .who b { font-size: 15px; font-weight: 600; color: var(--accent); }
+.top .who b { font-size: calc(15px * var(--ui)); font-weight: 600; color: var(--accent); }
 /* 上帝模式**常驻标识**（本轮 ④）：改过资金 / 跳过日期之后，标题转金 ——
    ⚠️ 必须写成 `.top .who b.gold`（0,3,1）这一级：上面那条 (0,2,1) 压过全局 `.gold`（0,1,0）。 */
 .top .who b.gold { color: var(--gold); }
-.top .who span { font-size: 12px; color: var(--mut); }
+.top .who span { font-size: calc(12px * var(--ui)); color: var(--mut); }
 /* 按钮间隙 6 → **4px**（Batch 5 · B26）：只影响横向，给「交易所双行按钮」多留 4px，
    防止窄机型上 `费率 0.04%` 那行被压到折行。 */
 .top .tools { margin-left: auto; flex: none; display: flex; gap: 4px; }
@@ -185,11 +199,11 @@ b, strong { font-weight: 600; }
   background: none;
   border: 1px solid var(--line);
   color: var(--fg);
-  min-width: 42px;
-  height: 32px;
+  min-width: calc(42px * var(--ui));
+  height: calc(32px * var(--ui));
   padding: 0 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   cursor: pointer;
 }
 .ic.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -205,7 +219,7 @@ b, strong { font-weight: 600; }
      ② 确认态文案从「确认重开」缩成「确认」（仍 2 个汉字），红色 `.warn` 边框负责表达「已进入确认态」
    为什么是 `.top .ic` 而不是 `.ic`：`renderBoot()` 里那枚「清除存档并重开」（7 个汉字 = 84px）
    也带 `.ic` 类，定宽 42px 会把它截断 —— 只锁顶栏这一处。 */
-.top .ic { width: 42px; }
+.top .ic { width: calc(42px * var(--ui)); }
 
 /* 交易所切换器（GDD §7.2）：搬来顶栏后做成**双行**小按钮 —— 上行每家名字、下行「费率 x%」。
    外观完全复用 `.ic`（无底色 + 1px 边框 + 按压压暗），玩家一眼就知道它和暂停 / 重开一样是可点的。
@@ -217,16 +231,16 @@ b, strong { font-weight: 600; }
    字体度量更宽，按钮会跟着长一点而不是把字截掉（约束 ③「文字不会被截断」优先）。 */
 .top .ic.exbtn {
   width: auto;
-  min-width: 86px;
+  min-width: calc(86px * var(--ui));
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: flex-start;
-  line-height: 14px;
+  line-height: calc(14px * var(--ui));
   text-align: left;
 }
-.top .ic.exbtn b { font-size: 12px; font-weight: 600; }
-.top .ic.exbtn u { text-decoration: none; font-size: 12px; color: var(--mut); }
+.top .ic.exbtn b { font-size: calc(12px * var(--ui)); font-weight: 600; }
+.top .ic.exbtn u { text-decoration: none; font-size: calc(12px * var(--ui)); color: var(--mut); }
 /* 费率着色（本轮 ④）：四家所差 5 倍（Mt.Gox 0.20% ↔ Binance 0.04%），这一行是全屏唯一显示它的地方。
    ⚠️ 同样要写到 `.top .ic.exbtn u`（0,3,1）这一级 —— 全局 `.gold` / `.down`（0,1,0）够不着。 */
 .top .ic.exbtn u.gold { color: var(--gold); }
@@ -254,7 +268,7 @@ b, strong { font-weight: 600; }
       降到 12px 后同串只要 86px，主次改由字重（600）承担。
       （交易所搬走后每格已有 179px，理论上回 16px 也放得下 —— 但用户本轮未圈定，**保持 12px 不动**。） */
 .hud .cell {
-  height: 66px;
+  height: calc(66px * var(--ui));
   min-width: 0;
   overflow: hidden;
   background: var(--panel);
@@ -268,16 +282,16 @@ b, strong { font-weight: 600; }
 .hud .cell i {
   display: block;
   font-style: normal;
-  font-size: 12px;
-  line-height: 14px;
+  font-size: calc(12px * var(--ui));
+  line-height: calc(14px * var(--ui));
   color: var(--mut);
 }
-.hud .cell b { display: block; font-size: 12px; line-height: 20px; font-weight: 600; }
+.hud .cell b { display: block; font-size: calc(12px * var(--ui)); line-height: calc(20px * var(--ui)); font-weight: 600; }
 .hud .cell u {
   display: block;
   text-decoration: none;
-  font-size: 12px;
-  line-height: 14px;
+  font-size: calc(12px * var(--ui));
+  line-height: calc(14px * var(--ui));
   color: var(--mut);
 }
 /* 副行里带涨跌语义的两个数（Batch 4 · B17）：「已实现」「未实现」正绿负红。
@@ -305,10 +319,10 @@ b, strong { font-weight: 600; }
   background: none;
   border: 1px solid var(--line);
   color: var(--mut);
-  height: 32px;
+  height: calc(32px * var(--ui));
   padding: 0 10px;
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   cursor: pointer;
 }
 .sym.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -362,14 +376,14 @@ b, strong { font-weight: 600; }
   background: rgba(16, 19, 23, .72);   /* = --panel-2 的七成不透明 */
   pointer-events: none;
 }
-.chart-head b { font-size: 14px; font-weight: 600; }
-.chart-head span { font-size: 12px; }
+.chart-head b { font-size: calc(14px * var(--ui)); font-weight: 600; }
+.chart-head span { font-size: calc(12px * var(--ui)); }
 /* 币种右边两枚**次要读数**（本轮 ⑤）：市值 / 流通。字号压到 12px 与 `.chart-head span` 同档
    （`.chart-head` 自己是 13px，`<i>` 不继承那两条规则）。`min-width:0 ＋ overflow:hidden`
    是刻意的：它们窄屏时**先缩**（省略号），把位置让给币种与粒度小字。 */
 .chart-head i {
   font-style: normal;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   color: var(--mut);
   min-width: 0;
   overflow: hidden;
@@ -381,9 +395,9 @@ b, strong { font-weight: 600; }
   pointer-events: auto;
   /* `font: inherit` 是必须的 —— `button` 默认不继承字体族，不写就用系统字体，和旁边的等宽数字对不上 */
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   cursor: pointer;
-  height: 20px;
+  height: calc(20px * var(--ui));
   padding: 0 6px;
   background: var(--panel);
   color: var(--fg);
@@ -412,7 +426,7 @@ b, strong { font-weight: 600; }
 .chart-lock {
   padding: 6px 8px;
   background: rgba(16, 19, 23, .72);   /* = --panel-2 的七成不透明，同 .chart-head */
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
 }
 /* 锁视野提示（Batch 3 · B14）：玩家拖动/缩放之后才出现（拖动时不再自动跟随当前根） */
 .chart-lock { color: var(--mut); }
@@ -435,8 +449,8 @@ b, strong { font-weight: 600; }
   border: 1px solid var(--line);
 }
 .posbar div { min-width: 0; }
-.posbar i { display: block; font-style: normal; font-size: 12px; color: var(--mut); }
-.posbar b { display: block; font-size: 13px; }
+.posbar i { display: block; font-style: normal; font-size: calc(12px * var(--ui)); color: var(--mut); }
+.posbar b { display: block; font-size: calc(13px * var(--ui)); }
 .posbar .side-long { color: var(--up); }
 .posbar .side-short { color: var(--down); }
 
@@ -444,11 +458,11 @@ b, strong { font-weight: 600; }
 .logline {
   flex: none;
   /* 26 → **24px**（Batch 5 · B26）：12px 字在 24px 里居中仍有余量，省下的 2px 归 K 线区 */
-  height: 24px;
+  height: calc(24px * var(--ui));
   display: flex;
   align-items: center;
   padding: 0 2px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   color: var(--mut);
   overflow: hidden;
   white-space: nowrap;
@@ -466,8 +480,8 @@ b, strong { font-weight: 600; }
 .news-tag {
   flex: none;
   font-style: normal;
-  font-size: 11px;
-  line-height: 14px;
+  font-size: calc(11px * var(--ui));
+  line-height: calc(14px * var(--ui));
   padding: 0 3px;
   color: var(--on-gold);
   background: var(--gold);
@@ -501,7 +515,7 @@ b, strong { font-weight: 600; }
   flex: none;
   display: flex;
   align-items: center;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   color: var(--mut);
   padding-right: 2px;
 }
@@ -513,12 +527,12 @@ b, strong { font-weight: 600; }
 .opt {
   flex: 1;
   min-width: 0;
-  height: 32px;
+  height: calc(32px * var(--ui));
   background: none;
   border: 1px solid var(--line);
   color: var(--fg);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   cursor: pointer;
 }
 /* ≥50x 的风险色（本轮 ④）：杠杆是全屏唯一「一眼看不出代价」的旋钮 —— 50x 与 3x 长得一模一样，
@@ -542,10 +556,10 @@ b, strong { font-weight: 600; }
       三次缩高合计：52 → 44 → 40px。 */
 .act {
   flex: 1;
-  height: 40px;
+  height: calc(40px * var(--ui));
   border: 0;
   font: inherit;
-  font-size: 16px;
+  font-size: calc(16px * var(--ui));
   font-weight: 600;
   cursor: pointer;
   /* B6-c 动效层（§7.5 落点 2）：按压时补一记轻微缩小 —— 只动 `transform` / `filter`，
@@ -565,7 +579,7 @@ b, strong { font-weight: 600; }
   background: none;
   border: 1px solid var(--line);
   color: var(--mut);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui));
 }
 .act.chan.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 /* 主按钮是实心块，按压态不能用 `background` 顶掉语义色 ⇒ 压暗一档 ＋ 轻微缩小（B6-c） */
@@ -586,9 +600,9 @@ b, strong { font-weight: 600; }
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 24px;
+  height: calc(24px * var(--ui));
   margin-top: 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
 }
 .as-head b { flex: none; font-weight: 600; color: var(--fg); }
 .as-head u {
@@ -609,8 +623,8 @@ b, strong { font-weight: 600; }
    ⚠️ 格子高度必须跟着长：数值行 20 → 24px，内容 48 → 52 ⇒ 66 → **70px**。
       资产页整页可滚（`.page` 那条），这 4px 只占页面滚动、不占 K 线高度 —— 与交易页的账无关。
       18px 下 `$1,234,567.89` 约 130px，格子可用宽 340px（390 屏），不会截尾。 */
-.hud.one .cell { height: 70px; }
-.hud.one .cell b { font-size: 18px; line-height: 24px; }
+.hud.one .cell { height: calc(70px * var(--ui)); }
+.hud.one .cell b { font-size: calc(18px * var(--ui)); line-height: calc(24px * var(--ui)); }
 
 /* 明细拆解（用户 2026-10-01 拍板 · 选项 A）：总资产卡下面那两行 ——
    已占用保证金 / 在途转账。复用设置页那副「标签 —— 读数」的样子（同字号、同次要色），
@@ -620,7 +634,7 @@ b, strong { font-weight: 600; }
   padding: 8px;
   background: var(--panel);
   border: 1px solid var(--line);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
 }
 .eq-break-row {
   display: flex;
@@ -639,7 +653,7 @@ b, strong { font-weight: 600; }
 canvas.curve {
   display: block;
   width: 100%;
-  height: 110px;
+  height: calc(110px * var(--ui));
   background: var(--panel);
   border: 1px solid var(--line);
 }
@@ -649,9 +663,9 @@ canvas.curve {
 .plist { margin-top: 8px; padding-bottom: 8px; }
 .plist h4 {
   margin: 0;
-  height: 24px;
-  line-height: 24px;
-  font-size: 12px;
+  height: calc(24px * var(--ui));
+  line-height: calc(24px * var(--ui));
+  font-size: calc(12px * var(--ui));
   font-weight: 600;
   color: var(--mut);
 }
@@ -661,9 +675,9 @@ canvas.curve {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 32px;
+  height: calc(32px * var(--ui));
   padding: 0 12px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
 }
 .prow + .prow { border-top: 1px solid var(--line); }
 /* 中间那格（方向 ＋ 杠杆）吃掉余量，长了就在自己这一格截尾，不挤两边 */
@@ -696,17 +710,17 @@ canvas.curve {
   padding: 24px;
   text-align: center;
 }
-.over b { font-size: 20px; }
-.over p { margin: 0; font-size: 13px; color: var(--mut); line-height: 1.7; }
+.over b { font-size: calc(20px * var(--ui)); }
+.over p { margin: 0; font-size: calc(13px * var(--ui)); color: var(--mut); line-height: 1.7; }
 .over button {
-  height: 44px;
+  height: calc(44px * var(--ui));
   padding: 0 20px;
   background: var(--accent);
   color: var(--on-accent);
   border: 0;
   font: inherit;
   font-weight: 600;
-  font-size: 14px;
+  font-size: calc(14px * var(--ui));
   cursor: pointer;
 }
 .over button:active { filter: brightness(.88); }
@@ -752,9 +766,9 @@ canvas.curve {
 .pick-head {
   display: flex;
   align-items: center;
-  height: 32px;
+  height: calc(32px * var(--ui));
   padding: 0 12px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   border-bottom: 1px solid var(--line);
 }
 .pick-row {
@@ -762,13 +776,13 @@ canvas.curve {
   flex-direction: column;
   justify-content: center;
   width: 100%;
-  height: 44px;
+  height: calc(44px * var(--ui));
   padding: 0 12px;
   background: none;
   border: 0;
   border-bottom: 1px solid var(--line);
   font: inherit;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui));
   color: var(--fg);
   text-align: left;
   cursor: pointer;
@@ -776,10 +790,10 @@ canvas.curve {
 .pick-row:last-child { border-bottom: 0; }
 /* `nowrap` 由 `.pick-l1` 统一给（`white-space` 会继承到 b/u）—— 折行只可能发生在这一行，
    下行文案短、本来就单行，一并锁死免得某台机型上「预估 24h」也断成两截。 */
-.pick-l1 { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; line-height: 18px; white-space: nowrap; }
+.pick-l1 { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; line-height: calc(18px * var(--ui)); white-space: nowrap; }
 .pick-row b { font-weight: 600; }
-.pick-row u { text-decoration: none; font-size: 12px; color: var(--mut); }
-.pick-note { font-style: normal; font-size: 12px; line-height: 16px; color: var(--mut); white-space: nowrap; }
+.pick-row u { text-decoration: none; font-size: calc(12px * var(--ui)); color: var(--mut); }
+.pick-note { font-style: normal; font-size: calc(12px * var(--ui)); line-height: calc(16px * var(--ui)); color: var(--mut); white-space: nowrap; }
 .pick-row.on, .pick-row.on u { color: var(--accent); }
 .pick-row:active:not(:disabled) { background: var(--line); }
 .pick-row:disabled { opacity: .4; cursor: default; }
@@ -805,14 +819,14 @@ canvas.curve {
   flex: none;
   margin: 0;
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui));
   font-weight: 600;
   border-bottom: 1px solid var(--line);
 }
 .log-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 0; }
 /* 一行的两格：时间（定宽、不折）＋ 正文（**允许折行** —— 这正是浮层存在的理由，拍板 ③）。
    行距靠 `line-height` 排开、不写 gap —— 遵守「纵向间距只有 8 与 12 两档」那条约束。 */
-.log-row { display: flex; gap: 8px; padding: 2px 12px; font-size: 12px; line-height: 16px; }
+.log-row { display: flex; gap: 8px; padding: 2px 12px; font-size: calc(12px * var(--ui)); line-height: calc(16px * var(--ui)); }
 .log-row u { flex: none; text-decoration: none; color: var(--mut); }
 .log-row span { flex: 1 1 auto; min-width: 0; word-break: break-word; }
 /* 新闻那条：正文提到「正文色」，与普通日志区分（底下的 `.log-row span` (0,1,1) 被这条盖过） */
@@ -832,15 +846,15 @@ canvas.curve {
   border: 1px solid var(--line);
   padding: 12px;
 }
-.confirm h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.confirm h3 { margin: 0; font-size: calc(14px * var(--ui)); font-weight: 600; }
 /* 三行「标签 —— 数值」：行高 20px 排开，不用 gap —— 遵守「纵向间距只有 8 与 12 两档」那条约束 */
 .confirm-rows { margin-top: 12px; }
 .confirm-row {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  line-height: 20px;
-  font-size: 12px;
+  line-height: calc(20px * var(--ui));
+  font-size: calc(12px * var(--ui));
 }
 .confirm-row i { font-style: normal; color: var(--mut); }
 .confirm-btns { display: flex; gap: 8px; margin-top: 12px; }
@@ -867,7 +881,7 @@ canvas.curve {
   border: 1px solid var(--line);
   padding: 12px;
 }
-.guide-text { margin: 0; font-size: 12px; line-height: 18px; }
+.guide-text { margin: 0; font-size: calc(12px * var(--ui)); line-height: calc(18px * var(--ui)); }
 
 /* ══════════════ 设置面板（Batch 4 · B21） ══════════════
    复用 `.confirm` 那副居中盒（同一个 `#overlay`、同一层暗底），只多两种零件：
@@ -877,18 +891,18 @@ canvas.curve {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
 }
 .set-row i { font-style: normal; color: var(--mut); }
 /* 开关：与 `.opt` / `.ic` 同档的 32px 高，宽度锁死 64px —— 文案在「开 / 关」之间切换时不抖 */
 .set-btn {
   width: 64px;
-  height: 32px;
+  height: calc(32px * var(--ui));
   background: none;
   border: 1px solid var(--line);
   color: var(--fg);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   cursor: pointer;
 }
 .set-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -910,12 +924,12 @@ canvas.curve {
 .god-in {
   flex: 1;
   min-width: 0;
-  height: 32px;
+  height: calc(32px * var(--ui));
   background: none;
   border: 1px solid var(--line);
   color: var(--fg);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   padding: 0 8px;
   text-align: right;
 }
@@ -944,7 +958,7 @@ canvas.curve {
    `white-space: pre-line`：文案里的 `\n` 直接当成换行，不在 JS 里塞 `<br>`。 */
 .intro p {
   margin: 12px 0 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   line-height: 1.9;
   color: var(--mut);
   white-space: pre-line;
@@ -962,9 +976,9 @@ canvas.curve {
   background: var(--bg);
   padding: 24px;
   text-align: center;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui));
 }
-.boot .err { color: var(--down); white-space: pre-wrap; word-break: break-all; font-size: 12px; text-align: left; max-width: 100%; }
+.boot .err { color: var(--down); white-space: pre-wrap; word-break: break-all; font-size: calc(12px * var(--ui)); text-align: left; max-width: 100%; }
 
 /* ══════════════ 开机画面（主菜单 · 本轮 ①） ══════════════
    用户拍板：进游戏前这一屏必须**整屏** —— 暗底铺满 ＋ 居中一列（图标 / 标题 / 副标题 / 三入口）。
@@ -984,14 +998,14 @@ canvas.curve {
 }
 /* 游戏图标：与 favicon 同一副图案（深底 ＋ 一根绿烛）。72px 是这个盒子里最大的元素 ——
    开机画面只需要一个视觉中心。 */
-.menu-logo { width: 72px; height: 72px; display: block; }
+.menu-logo { width: calc(72px * var(--ui)); height: calc(72px * var(--ui)); display: block; }
 .menu-logo .bg { fill: var(--panel); }
 .menu-logo .c { fill: var(--up); }
-.menu-box h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.menu-box h3 { margin: 0; font-size: calc(15px * var(--ui)); font-weight: 600; }
 /* 副标题：与 `.intro p` 同一副字（12px / 1.9 行高 / mut），只是这里居中 —— 两块讲的是一件事。 */
 .menu-box p {
   margin: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   line-height: 1.9;
   color: var(--mut);
   white-space: pre-line;
@@ -1007,6 +1021,16 @@ canvas.curve {
 .menu-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; width: 100%; max-width: 280px; }
 /* ⚠️ `.act` 自带 `flex: 1`（横排时等分宽度），纵向 flex 下会变成等分高度、把卡片拉满屏 */
 .menu-btns .act { flex: none; }
+
+/* 构建日期（UTC+8）：一行小字，压在菜单最底部 —— 上传服务器后一眼看出拿到的是不是最新版。
+   ⚠️ 它也是 `.menu-box p`，会被上面那条「12px / 1.9 行高 / 居中」逮住，所以这里逐条压回去。 */
+.menu-build {
+  margin-top: 16px;
+  font-size: calc(11px * var(--ui));
+  line-height: 1.4;
+  color: var(--mut-2);
+  letter-spacing: .02em;
+}
 
 /* B6-a（§7.9）：按钮上禁选文字（手机长按会弹出选择手柄，很碍事）。
    ⚠️ 用 `button` 兜底而不是逐个类名：全站可点的东西都是 `<button>`，一条覆盖完，
@@ -1027,7 +1051,7 @@ button { user-select: none; -webkit-user-select: none; }
 /* 节点卡：复用 `.confirm` 骨架，正文用 `.intro p` 那一副（可折行、`pre-line` 认 `\n`） */
 .nodecard p {
   margin: 12px 0 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui));
   line-height: 1.9;
   color: var(--mut);
   white-space: pre-line;
@@ -1045,7 +1069,7 @@ button { user-select: none; -webkit-user-select: none; }
 /* 回顾页顶栏：左边是**可点的日期**（点开年份跳转），右边是速度档 / 暂停 / 退出。
    ⚠️ 宽度必须放开 —— `.top .ic` 是给顶栏那两枚定宽 42px 的（防「确认重开」撑宽），
       日期是 10 个字符，42px 会被截掉。 */
-.top .ic.rv-date { width: auto; padding: 0 8px; font-size: 12px; }
+.top .ic.rv-date { width: auto; padding: 0 8px; font-size: calc(12px * var(--ui)); }
 /* 速度档：三枚小方键，与操作区那套 `.opt` 同一副样子，只是不被 flex 等分 */
 .rv-spd { display: flex; gap: 4px; }
 .rv-spd .opt { flex: none; width: 46px; }
@@ -1062,7 +1086,7 @@ button { user-select: none; -webkit-user-select: none; }
    固定 6 行（6 × 16 + 8 = 104px），放不下就在面板内滚；内容走与日志浮层同一套 `.log-row`。 */
 .rv-logs {
   flex: none;
-  height: 104px;
+  height: calc(104px * var(--ui));
   margin-bottom: 8px;
   overflow-y: auto;
   background: var(--panel);
@@ -1099,8 +1123,8 @@ button { user-select: none; -webkit-user-select: none; }
    基座 13 → 12px（全局同比缩一档），HUD 数值 12 → 11px（与 `.news-tag` 同一个「小字例外」口径）。
    目标视口是 390px，此档只在 360px 级老机型上命中，正常机型**逐位不受影响**。 */
 @media (max-width: 374px) {
-  html, body { font-size: 12px; }
-  .hud .cell b { font-size: 11px; }
+  html, body { font-size: calc(12px * var(--ui)); }
+  .hud .cell b { font-size: calc(11px * var(--ui)); }
 }
 
 /* ══════════════ B6-c：动效层（§7.5） ══════════════
@@ -1177,11 +1201,22 @@ button { user-select: none; -webkit-user-select: none; }
 }
 
 @media (min-width: 900px) {
-  #app { max-width: 1440px; }
+  /* 桌面端「适度放大」（用户 2026-10-01 拍板）：把总旋钮推高一档，全站字号 / 行高 / 控件高度
+     一起等比放大（见 `:root` 的 `--ui`）。放在 `:root` 上而不是 `#app` 上，是为了让
+     `#overlay` 里的那些弹层（它是 `body` 的子节点、不在 `#app` 内）**跟着一起放大** ——
+     否则一进主菜单就会「小字弹层压在大字界面上」。
+     ⚠️ 1.15 是**保守**值：实测 390px 手机上那些恰好塞满的计算（HUD 66px、顶栏 48px）在这个
+        倍率下仍有余量；再往上调要重新核对每一处「固定高度装字」的预算。 */
+  :root { --ui: 1.15; }
+
+  /* 容器**收窄**再居中：原来 1440px 会让左列 K 线拉到一千多像素、右列却还是手机宽度，
+     整页读起来像「被拉长的手机」。1180px 下左列 ≈ 711px（K 线宽高比终于正常）、
+     右列 = 380 × 1.15 ≈ 437px（仍是手机上那个操作区的等宽放大版，9 档杠杆照样不挤）。 */
+  #app { max-width: 1180px; }
 
   .page.trade-page.on {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 380px;
+    grid-template-columns: minmax(0, 1fr) calc(380px * var(--ui));
     grid-template-rows: auto auto minmax(0, 1fr) auto auto;
     column-gap: 8px;
   }

@@ -13,8 +13,27 @@ import { defineConfig } from 'vite';
  *    这个目标与项目本来的口径一致：`market.js` 依赖 `DecompressionStream`（2023 起才铺开）、
  *    `Blob.stream()` 等，本来就不是给老浏览器准备的。
  */
+/**
+ * 构建时间戳（用户 2026-10-01 拍板）—— 编译期把「这一刻」写进产物，主菜单底部读出来，
+ * 一眼分辨「服务器上跑的是哪一版」。
+ *
+ * ⚠️ 必须是 `define` 而不是运行时的 `new Date()`：运行时取到的是**玩家打开页面的时刻**，
+ *    那是这个读数最没有意义的东西（每次刷新都变）。
+ * ⚠️ 手写 +8 小时再切 ISO，而不是 `toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })`：
+ *    后者跟 Node 的 ICU 数据与运行环境走，同一份代码在 CI 与本机会印出不同的串。
+ */
+const BUILD_DATE = (() => {
+  const d = new Date(Date.now() + 8 * 3600 * 1000);
+  return `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC+8`;
+})();
+
 export default defineConfig({
   base: './',
+
+  define: {
+    /* `render.js` 的主菜单底部那行「构建 …」读它。dev 与 build 都生效（esbuild 的 define）。 */
+    __BUILD_DATE__: JSON.stringify(BUILD_DATE),
+  },
 
   build: {
     outDir: 'dist',
