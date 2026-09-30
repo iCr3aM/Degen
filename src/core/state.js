@@ -9,9 +9,11 @@
 
 import { GAME } from './config.js';
 
-/* ⚠️ v15（C8-B2 · 2026-09-30）：新增限价挂单 `s.orders`——挂单即冻结保证金，
-   并把冻结款计入 `equity`。旧档没有这张表，`createState` 之外没有任何地方能补出来 ⇒ **弃档重开**（既有规范）。 */
-export const STATE_VERSION = 15;
+/* ⚠️ v16（2026-10-01 · 用户拍板两项移除）：
+   ① **限价挂单 `s.orders` 整体移除**（C8-B2 回滚）—— 改动前它是 v15 新增的键。
+   ② **场外配资改版为「一次性救济金」**—— 删除 `s.loan`（在贷）字段与全部利息/到期/违约逻辑。
+   两处都动了状态形状，旧档对不上 ⇒ **弃档重开**（既有规范，不写迁移）。 */
+export const STATE_VERSION = 16;
 
 export function createState() {
   return {
@@ -48,26 +50,6 @@ export function createState() {
      * 全仓模式是 GDD §9.2 里「后期解锁」的东西，本版不做。
      */
     positions: {},
-
-    /**
-     * 限价挂单表（C8-B2 · ROADMAP §33）—— 与 `positions` **同构**：键 = 币符号，`{}` = 无挂单，
-     * **每币最多一张**（LESS IS MORE）。
-     *
-     *     `orders[sym] = { side, lev, spot, ex, limit, dLock, size, filled, margin, mix }`
-     *
-     * - `side`   ：`'long'` / `'short'`
-     * - `limit`  ：挂单价 L（触及即成交，成交价**恒 = L**，跳空也不给 price improvement）
-     * - `dLock`  ：挂单那一刻锁定的偏离度 `|L − 中间价| / 中间价` —— 深度上限 Q 用它，
-     *              不随行情漂移（否则挂单越久越容易成交，那是错的）
-     * - `size`   ：挂单名义**币量**（不是保证金），`filled` = 已成交币量（分批建仓）
-     * - `margin` ：**仍未成交**部分冻结的保证金（已经离开 `books`，但钱还是玩家的）
-     * - `mix`    ：冻结时说好的两格构成 —— 撤单 / 成交原路退回用（与 `positions.mix` 同一套）
-     *
-     * ⚠️ `margin` **必须**计入 `equity()`（见 `engine.equity`）—— 钱只是离开了 `books`，
-     *    没离开本局；漏了就会「一挂单就被误判破产」（与 `s.transfer.amount` 同一先例）。
-     * ⚠️ `margin` **不进** `spendableOf` —— 冻结的钱不能再拿来开新仓。
-     */
-    orders: {},
 
     /**
      * 在途的划转（P2-A）—— `null` 或 `{ amount, fee, rail, cur, from, to, departAt, arriveAt }`。
@@ -166,16 +148,15 @@ export function createState() {
     eq: [],
 
     /**
-     * 场外配资（Batch 5 · B30）—— 只在**资产归零**时触发一次。
-     *   `loaned`：本局是否已经借过（只给一次机会，第二次归零就是真结束）
-     *   `loan`  ：在贷：`null` 或 `{ amount, owe, dueAt }`
-     *   `pending`：待玩家决策：`null` / `'loan'`（归零后的借贷遮罩）/ `'warn'`（破产预警遮罩）。
+     * 救济金（原场外配资 Batch 5 · B30，2026-10-01 改版为**一次性、不用还**）—— 只在**资产归零**时触发一次。
+     *   `loaned`：本局是否已经领过救济金（只给一次机会，第二次归零就是真结束）
+     *   `pending`：待玩家决策：`null` / `'loan'`（归零后的**救济金**遮罩）/ `'warn'`（破产预警遮罩）。
      *     **两种待决态下时钟都暂停**（`s.paused` 同真），遮罩替掉正常界面（见 `main.js` 的 `draw`）。
      *     ⚠️ `'warn'` 与 `'loan'` 是**两回事**：前者只是提醒（点「知道了」即可），后者是要命的二选一。
+     *     ⚠️ `'loan'` 这个键名**保留**（遮罩的分派键），但它现在指的是救济金，不再是借贷。
      *     所有 `s.pending` 的消费点都必须按**值**分派，不能只判真值。
      */
     loaned: false,
-    loan: null,
     pending: null,
 
     /**

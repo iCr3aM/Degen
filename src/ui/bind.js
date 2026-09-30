@@ -48,10 +48,6 @@ export const ACTION_KEYS = [
   /* 资金曲线区间（用户 2026-10-01 拍板）：`eqrange` ＝ 资产页曲线上方那排档位键，
      值是「最近多少个游戏日」（`7` / `30` / `90` / `365` / `0`，`0` = 全部）。 */
   'eqrange',
-  /* C8-B2（限价挂单 · ROADMAP §33.5 ①）：`order` ＝ 操作区那枚二态键（`toggle`）
-     ＋ 挂单浮层里那八枚「方向:偏离档」键（`long:0.01` / `short:0.10` …）。
-     值与 `review` 同一手法：**走子命令串**，分派见 `main.js` 的 `onOrder`。 */
-  'order',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');

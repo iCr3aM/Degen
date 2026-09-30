@@ -179,9 +179,6 @@ export const open = () => { tone({ f: 523, dur: 0.09, type: 'triangle', gain: 0.
 /** 平仓：下行两度 */
 export const close = () => { tone({ f: 784, dur: 0.09, type: 'triangle', gain: 0.05 }); tone({ f: 523, dur: 0.1, type: 'triangle', gain: 0.05, at: 0.07 }); };
 
-/** 限价挂单**被动成交**（C8-B2）：比 `open` 更「远」—— 不是玩家亲手点的 */
-export const fill = () => tone({ f: 660, to: 880, dur: 0.12, type: 'sine', gain: 0.045 });
-
 /** 新闻 / 锚点播报：两声**定音**音铃（与 `notice` 的一声滑音上行区分） */
 export const news = () => { tone({ f: 880, dur: 0.11, type: 'sine', gain: 0.045 }); tone({ f: 1174, dur: 0.2, type: 'sine', gain: 0.045, at: 0.12 }); };
 

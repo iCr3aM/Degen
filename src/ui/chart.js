@@ -352,33 +352,6 @@ export function drawChart(canvas, o) {
     }
   }
 
-  // ── 限价挂单线（C8-B2 · ROADMAP §33.5 ⑥）：灰色虚线 + 右端一枚小标签 ──
-  // 与开仓线同一套画法（同样**夹到价格区**：挂单价常常落在视野之外），但走 `--mut` 而不是金/红 ——
-  // 「挂了还没成」本来就该比「已成（开仓线）」「要命（强平线）」弱一档。
-  // 标签靠**右端内侧**（`plotW − tw`）对齐：右边那条 `PAD_R` 是现价标签的地盘，不能去抢。
-  if (o.order && Number.isFinite(o.order.limit)) {
-    const y = Math.round(clamp(yOf(o.order.limit), top, bot)) + .5;
-    ctx.save();
-    ctx.setLineDash([2, 3]);
-    ctx.strokeStyle = T.MUT;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(plotW, y);
-    ctx.stroke();
-    ctx.restore();
-
-    const tag = '挂 ' + axisLabel(o.order.limit);
-    ctx.font = '12px ui-monospace, monospace';
-    const tw = ctx.measureText(tag).width + 6;
-    const ty = Math.round(clamp(y, top + 8, bot - 8)) + .5;
-    ctx.fillStyle = T.MUT;
-    ctx.fillRect(plotW - tw, ty - 8, tw, 16);
-    ctx.fillStyle = '#0b0f14';
-    ctx.textAlign = 'left';
-    ctx.fillText(tag, plotW - tw + 3, ty);
-  }
-
   // ── 当前价（实线 + 右端高亮标签） ──
   // **总是画**：平移到过去之后当前价可能整条落在视野之外，那就把它夹到价格区边缘 ——
   // 贴边的标签仍然报着真价，玩家不会「以为没在持仓」。原来是越界就整条消失，反而更容易误读。

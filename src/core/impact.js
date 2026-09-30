@@ -93,41 +93,6 @@ export function fillPrice(price, dir, impact) {
   return dir > 0 ? price * (1 + impact) : price * (1 - impact);
 }
 
-/**
- * **限价挂单的深度上限**（C8-B2 · ROADMAP §33.3）—— 按偏离度反推「这个价位最多能吃下多少名义」。
- *
- * 把 `impactOf` **反解**：想让成交代价恰为 `d`，需要 `q = (d / (A·σ))²`。
- * 于是本价位当根能成交的名义上限：
- *
- *     Q = hourLiq × clamp( (d / (A·σ))² , SLIP.threshold , SLIP.cap )
- *
- * ⚠️ **下限取 `SLIP.threshold`（2026-09-30 裁决，原为纯 `min`）**：`impactOf` 自带 0.10 的死区
- *    （`q ≤ threshold ⇒ 冲击恒为 0`），于是 `d < 0.632σ` 的**近档**反解出的 `q` 会落进死区、
- *    深度偏保守。但模型那句「q ≤ 0.10 ⇒ 零冲击」本身就在说**市场能免费吃下当根流动量的 10%**
- *    ⇒ 任何档位的深度都不该低于 `threshold × hourLiq`。下限与幂式在 `d = 0.632σ` 处**连续**
- *    （无跳变），也不破红线 A（深度只用来截断成交量，成交价恒 = L）。
- *
- * 为什么是「上限」而不是「概率队列」（弃 §26.5 那个方案）：
- *   真 L2 深度数据已被判死（§24.10），编一套挂单排队的概率模型＝凭空造数据；
- *   而「离中间价越远 ⇒ 盘口那一侧越薄 ⇒ 能吃下的越少」是**同一套平方根定律的必然推论**，
- *   用的仍是现有的 `impactOf` 反函数 —— 没有引入任何新常数。
- *
- * ⚠️ **红线 A · 不双重计价**：挂单是 maker 被动成交，成交价恒 = L，
- *    因此 `Q` **只用来截断成交量**，成交后**不写** `s.flow` 冲击池（价格位移已经体现在 L 本身）。
- *
- * @param {number} d       偏离度 `|L − 中间价| / 中间价`（**挂单时锁定**，不随行情漂移）
- * @param {number} sigma   日收盘收益率标准差（撮合当根的 `dailySigma`）
- * @param {number} hourLiq 当根小时流动性（分母与 `impactFor` 同一处）—— **每根重算**
- * @returns {number} 该价位当根可成交的**名义价值**上限（货币单位，不是币量）
- */
-export function depthOf(d, sigma, hourLiq) {
-  if (!(hourLiq > 0)) return 0;
-  if (!(d > 0)) return 0;
-  const s = Number.isFinite(sigma) && sigma > 0 ? sigma : SLIP.sigmaDefault;
-  const q = Math.min(Math.max((d / (SLIP.A * s)) ** 2, SLIP.threshold), SLIP.cap);
-  return q * hourLiq;
-}
-
 /* ──────────────────── 合成盘口（C8-B1 · ROADMAP §二十六） ──────────────────── */
 
 /**

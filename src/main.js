@@ -11,7 +11,7 @@ import { GAME, COINS, HOUR_MS, cashCurAt, hasFinancingAt, maxLeverageAt } from '
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, placeOrder, cancelOrder, rewindTo, dailySigma } from './core/engine.js';
+import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { enableGod, factorFor } from './core/god.js';
@@ -20,7 +20,7 @@ import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
-  renderReview, openNodeCard, openYearPick, openGuide, openOrder,
+  renderReview, openNodeCard, openYearPick, openGuide,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -266,10 +266,9 @@ let lastMarketI = null;
 /**
  * 事件音：按日志头一条的**文案**认（§2.3）—— 每一类都已经写进日志了，零结构改动。
  *
- * ⚠️ 判据的坑（§2.3 点名的那个）：`text.includes('归零')` 会**同时命中「账户归零 ｜ 可借 …」**
+ * ⚠️ 判据的坑（§2.3 点名的那个）：`text.includes('归零')` 会**同时命中「账户归零 ｜ 可领 …」**
  *    （`engine.js` 破产待决），那是玩家破产、不是交易所灾难。所以必须匹配 `${ex.name} 归零`
  *    这个形态（**前面有一个空格**）—— 交易所塌方的日志正是这么写的。
- * ⚠️ `限价成交失败 …` 也带「限价成交」四个字，`fill` 必须排掉它。
  * ⚠️ 「上线」用的是 `'上线 ｜'`（带上分隔符）—— 裸「上线」会命中「XRP 还没上线」那条失败日志。
  *
  * **资金费 / 借贷利息不再出声**（T-1 删除项）：它每 8 小时结算一次，50x 下一局上千次，
@@ -280,9 +279,8 @@ function eventSound(last) {
   if (text.includes('推高拥堵')) return snd.pulse();
   if (last.kind === 'news') return snd.news();
   if (text.includes('被盗削减') || / 归零/.test(text)) return snd.crash();
-  if (text.includes('限价成交') && !text.includes('失败')) return snd.fill();
   if (text.includes('上线 ｜') || text.includes('恢复交易') || text.startsWith('到账')) return snd.notice();
-  if (text.includes('停机维护') || text.includes('借款还剩') || text.includes('借款明天到期')) return snd.warn();
+  if (text.includes('停机维护')) return snd.warn();
 }
 
 /**
@@ -424,7 +422,7 @@ function dispatch(node) {
      逻辑：一次点击最多响一次，任何时刻都不会叠。 */
   if (d.act !== 'long' && d.act !== 'short' && d.act !== 'close'
     && d.buy === undefined && d.sell === undefined && d.reset === undefined
-    && d.intro === undefined && d.order === undefined) snd.tap();   // 开场两枚键已有专属的起手音（`snd.begin`），不叠轻点声
+    && d.intro === undefined) snd.tap();   // 开场两枚键已有专属的起手音（`snd.begin`），不叠轻点声
 
   /* ── 暂停闸门（本轮 ① · 操作逻辑审计）──────────────────────────────────
      **暂停时必须被拦住的只有「会动钱」的动作**：下单（`buy`/`sell`/`long`/`short`）、
@@ -441,9 +439,7 @@ function dispatch(node) {
      ⚠️ 给一条日志而不是静默吞掉：玩家按了键没反应时，「为什么」比「没反应」重要。 */
   if (!rv && s.paused && (d.buy !== undefined || d.sell !== undefined
     || d.act === 'long' || d.act === 'short' || d.act === 'close'
-    || d.ex !== undefined || d.exok !== undefined || d.chan !== undefined || d.buyu !== undefined
-    /* 挂单同样是「会动钱」：挂下去就把保证金冻结走，撤单则把钱退回来（C8-B2 · §33.5）。 */
-    || d.order !== undefined)) {
+    || d.ex !== undefined || d.exok !== undefined || d.chan !== undefined || d.buyu !== undefined)) {
     pushLog(s, '已暂停 ｜ 先点顶栏「继续」再进行交易', 'info');
     after();
     return;
@@ -503,8 +499,6 @@ function dispatch(node) {
 
   if (d.sym !== undefined) return onSym(d.sym);
   if (d.chan !== undefined) return onChan();
-  /* 限价挂单（C8-B2 · §33.5 ①）：值即子命令 —— `toggle`（二态键）或 `方向:偏离档`（浮层八枚）。 */
-  if (d.order !== undefined) return onOrder(d.order);
   if (d.ex !== undefined) return onEx(d.ex);
   /* 换所二次确认的两个出口（Batch 2 · B10）—— 确认键自带目标所 id，所以不需要额外的「待确认」状态。 */
   if (d.exok !== undefined) {
@@ -640,7 +634,7 @@ function dispatch(node) {
  * 失败（没开业 / 已归零 / 还挂着仓）由 `switchExchange` 判，只记一条日志。
  */
 function onEx(id) {
-  // 结束 / 待借贷决策（B30）时换所没有意义：待决态下只该回答遮罩上那个问题
+  // 结束 / 待领救济金决策（B30）时换所没有意义：待决态下只该回答遮罩上那个问题
   if (s.over || s.pending) { closePicker(); return; }
   if (id === 'pick') {
     pickExchange(s, refs.exBtn);
@@ -674,32 +668,6 @@ function onChan() {
   after();
 }
 
-/* ── 限价挂单（C8-B2 · ROADMAP §33.5 ①）────────────────────────────────
-   一枚二态键走两个值，加上浮层那八枚「方向:偏离档」：
-     · `toggle`（操作区的键）：当前币**有**挂单 ⇒ 撤单；**没有** ⇒ 打开浮层选方向与档位。
-     · `long:0.01` / `short:0.10`（浮层）：直接落一张单。
-   ⚠️ 音效在这一支里**自己发**（`dispatch` 顶部的轻点声已把 `order` 排除，理由同买入/卖出）：
-      撤单是「收回来」走 `close` 音，落单走 `open` 音，其余（开/关浮层、失败）落 `tap` 音。 */
-function onOrder(v) {
-  if (v === 'toggle') {
-    if (s.orders[s.sym]) {
-      const r = cancelOrder(s, s.sym);
-      if (!r.ok) { pushLog(s, r.why, 'bad'); snd.tap(); } else snd.close();
-      after();
-      return;
-    }
-    snd.tap();
-    openOrder(s, refs.orderBtn);
-    return;
-  }
-  /* 浮层里那八枚：`方向:偏离档`（如 `long:0.05`） */
-  const [side, dev] = String(v).split(':');
-  const r = placeOrder(s, side, Number(dev));
-  if (!r.ok) { pushLog(s, r.why, 'bad'); snd.tap(); } else snd.open();
-  closePicker();
-  after();
-}
-
 /* ── 上帝模式 ＋ 订单冲击（隐藏入口 · 方案 §2）─────────────────────
    一个隐藏入口（连点标题）、一个玩法开关（设置面板）、一张面板（资金 / 跳日期 / 关闭）。
    ⚠️ 面板是**静态 DOM**，所以「填入」要从它内部读输入框的值 —— 输入框不能挂 `data-*`
@@ -715,7 +683,7 @@ function onOrder(v) {
  */
 function onGodTap() {
   if (s.god) {
-    /* 与下面那条同一个理由：本局已结束 / 正停在借贷遮罩上，时间不再前进，开面板没有意义 */
+    /* 与下面那条同一个理由：本局已结束 / 正停在救济金遮罩上，时间不再前进，开面板没有意义 */
     if (s.over || s.pending) return;
     godSel = null;                      // 重新打开 ⇒ 选择器回到「当前日期」起手
     showGod();
@@ -727,7 +695,7 @@ function onGodTap() {
   godTapAt = now;
   if (godTaps < GOD_TAPS) return;
   godTaps = 0;
-  /* 本局已结束 / 正停在借贷遮罩上：时间不再前进，开这张面板没有意义（而且 `s.over` 下评论区那些
+  /* 本局已结束 / 正停在救济金遮罩上：时间不再前进，开这张面板没有意义（而且 `s.over` 下评论区那些
      动作本来就被别处挡掉了，这里先拦一次更干净）。 */
   if (s.over || s.pending) return;
   enableGod(s);
@@ -808,10 +776,10 @@ function onGodGo() {
  * 跳日期 —— **向前 = 时间自然流过；向后 = 回到过去**（2026-09-30 裁决）。
  *
  * 向前 ⇒ 逐小时重放（`advanceOneHour`）：不能只改 `s.i`，那等于把这段时间里的事件白送
- *        （Mt.Gox 归零、币解锁、杠杆阶梯、借款到期、强平、资金费、转账到账），
+ *        （Mt.Gox 归零、币解锁、杠杆阶梯、强平、资金费、转账到账），
  *        而且玩家的持仓必须**真的走过**这段时间。
  * 向后 ⇒ 倒放没有定义（行情与事件都是单向累积的），改走 `godRewind`：
- *        保留资金、清空持仓与挂单，直接把时钟落到那一刻。
+ *        保留资金、清空持仓，直接把时钟落到那一刻。
  *
  * @param {number} target 目标小时序号（未夹取）
  * @param {string} label  日志里的日期文案（`fmtDate` 的结果）
@@ -828,26 +796,26 @@ function godJump(target, label) {
 
   /* 同步循环 ⇒ `createClock` 的 `setInterval` 不可能插进来。三种情况都要停：
        ① 到目标日期  ② 到 2024-12-31 收盘（`s.over`）
-       ③ **中途账户归零、弹出借贷遮罩**（`s.pending`）—— 少了第三个判据这里会**死循环**：
+       ③ **中途账户归零、弹出救济金遮罩**（`s.pending`）—— 少了第三个判据这里会**死循环**：
           `advanceOneHour` 在 `pending` 下会立刻 return（`s.i` 永远不前进），
           而 `!s.over` 一直为真，浏览器就卡死了（2026-09-29 离线断言逮到）。
      ⚠️ 时长实测：2013-01 → 2024-12 全程 10.5 万小时 ≈ 0.4 秒（长局抽检 2026-09-30），
         所以这里不需要分片或进度提示。 */
   while (s.i < to && !s.over && !s.pending) advanceOneHour(s);
-  /* 停在借贷遮罩上时**不要**再开上帝面板 —— `draw()` 刚把遮罩铺上，压一张面板上去只会打架 */
+  /* 停在救济金遮罩上时**不要**再开上帝面板 —— `draw()` 刚把遮罩铺上，压一张面板上去只会打架 */
   if (!s.over && !s.pending) showGod();
   after();
 }
 
 /**
- * **回到过去**（2026-09-30 裁决）—— 保留资金、清空持仓与挂单。
+ * **回到过去**（2026-09-30 裁决）—— 保留资金、清空持仓。
  *
  * 状态变换整块在 `engine.rewindTo`（core 侧，可离线断言）；这里只做 UI 该做的三件事：
  * 记一条日志、重开面板、必要时把回落到的币的行情拉进来。
  */
 function godRewind(to, label) {
   const cash = rewindTo(s, to);
-  pushLog(s, `回到 ${label} ｜ 资金已保留（${fmtMoney(cash)}），持仓与挂单已清空`, 'ok');
+  pushLog(s, `回到 ${label} ｜ 资金已保留（${fmtMoney(cash)}），持仓已清空`, 'ok');
   showGod();
   after();
   /* 回落到的币可能还没加载过 —— 与 `onSym` 同一手法：先重画，拉到之后再刷新 */
@@ -1191,7 +1159,7 @@ function endGuide() {
   after();
 }
 
-/** 借贷遮罩上的两枚按钮（Batch 5 · B30）：借 → `takeLoan`；收摊 → `giveUp`（真的结束本局） */
+/** 救济金遮罩上的两枚按钮（Batch 5 · B30）：领 → `takeLoan`；收摊 → `giveUp`（真的结束本局） */
 function onLoan(what) {
   if (what === 'take') {
     const r = takeLoan(s);
@@ -1256,7 +1224,7 @@ function onLogClose() {
  *   - 离开交易页（去资产 / 设置）⇒ **暂停 ＋ 速度归 1x**（P2：不留「切到设置页时间还在跑」的例外）
  *   - **切回交易页 ⇒ 自动 1x 续跑**（用户 2026-09-29 拍板）：去别的页只是看一眼，
  *     回来就该接着玩，不必再点一次「继续」。原来那条「切回仍然暂停」的手感是多余的。
- *   - 结束 / 借贷待决时不许切页（与顶栏那两枚按钮的 `lockedUI` 同一条判据；遮罩本来就盖住了 Tab 条）
+ *   - 结束 / 救济金待决时不许切页（与顶栏那两枚按钮的 `lockedUI` 同一条判据；遮罩本来就盖住了 Tab 条）
  * ⚠️ 离开设置页要撤销「重开本局」的武装态：那个按钮是静态 DOM，不还原的话切回来它还是红的，
  *    一点就真重开（`cancelReset` 是超时 / 关面板 / 切页三条路共用的还原口）。
  * ⚠️ 暂停闸门（`dispatch` 顶部那条）仍然管用：切回交易页后**只有这一瞬间**是自动运行的，
