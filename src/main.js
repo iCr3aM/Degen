@@ -11,7 +11,7 @@ import { GAME, COINS, HOUR_MS, cashCurAt, hasFinancingAt, maxLeverageAt } from '
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource } from './core/market.js';
-import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook, buyUsdt, sampleEquity } from './core/engine.js';
+import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook, buyUsdt, sampleEquity, placeOrder, cancelOrder } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { enableGod, factorFor } from './core/god.js';
@@ -20,7 +20,7 @@ import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
-  renderReview, openNodeCard, openYearPick, openGuide,
+  renderReview, openNodeCard, openYearPick, openGuide, openOrder,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -351,7 +351,7 @@ function dispatch(node) {
      逻辑：一次点击最多响一次，任何时刻都不会叠。 */
   if (d.act !== 'long' && d.act !== 'short' && d.act !== 'close'
     && d.buy === undefined && d.sell === undefined && d.reset === undefined
-    && d.intro === undefined) snd.tap();   // 开场两枚键已有专属的起手音（`snd.begin`），不叠轻点声
+    && d.intro === undefined && d.order === undefined) snd.tap();   // 开场两枚键已有专属的起手音（`snd.begin`），不叠轻点声
 
   /* ── 暂停闸门（本轮 ① · 操作逻辑审计）──────────────────────────────────
      **暂停时必须被拦住的只有「会动钱」的动作**：下单（`buy`/`sell`/`long`/`short`）、
@@ -368,7 +368,9 @@ function dispatch(node) {
      ⚠️ 给一条日志而不是静默吞掉：玩家按了键没反应时，「为什么」比「没反应」重要。 */
   if (!rv && s.paused && (d.buy !== undefined || d.sell !== undefined
     || d.act === 'long' || d.act === 'short' || d.act === 'close'
-    || d.ex !== undefined || d.exok !== undefined || d.chan !== undefined || d.buyu !== undefined)) {
+    || d.ex !== undefined || d.exok !== undefined || d.chan !== undefined || d.buyu !== undefined
+    /* 挂单同样是「会动钱」：挂下去就把保证金冻结走，撤单则把钱退回来（C8-B2 · §33.5）。 */
+    || d.order !== undefined)) {
     pushLog(s, '已暂停 ｜ 先点顶栏「继续」再进行交易', 'info');
     after();
     return;
@@ -419,6 +421,8 @@ function dispatch(node) {
 
   if (d.sym !== undefined) return onSym(d.sym);
   if (d.chan !== undefined) return onChan();
+  /* 限价挂单（C8-B2 · §33.5 ①）：值即子命令 —— `toggle`（二态键）或 `方向:偏离档`（浮层八枚）。 */
+  if (d.order !== undefined) return onOrder(d.order);
   if (d.ex !== undefined) return onEx(d.ex);
   /* 换所二次确认的两个出口（Batch 2 · B10）—— 确认键自带目标所 id，所以不需要额外的「待确认」状态。 */
   if (d.exok !== undefined) {
@@ -584,6 +588,32 @@ function onChan() {
   /* 切到 OTC 就把杠杆归 1：OTC 只有现货，让操作区当场显示 1x 比事后再拒绝更直白。
      切回盘口**不还原**原来的杠杆 —— 那需要多存一个字段，而 `1x` 是个安全的默认值。 */
   if (s.chan === 'otc') s.lev = 1;
+  after();
+}
+
+/* ── 限价挂单（C8-B2 · ROADMAP §33.5 ①）────────────────────────────────
+   一枚二态键走两个值，加上浮层那八枚「方向:偏离档」：
+     · `toggle`（操作区的键）：当前币**有**挂单 ⇒ 撤单；**没有** ⇒ 打开浮层选方向与档位。
+     · `long:0.01` / `short:0.10`（浮层）：直接落一张单。
+   ⚠️ 音效在这一支里**自己发**（`dispatch` 顶部的轻点声已把 `order` 排除，理由同买入/卖出）：
+      撤单是「收回来」走 `close` 音，落单走 `open` 音，其余（开/关浮层、失败）落 `tap` 音。 */
+function onOrder(v) {
+  if (v === 'toggle') {
+    if (s.orders[s.sym]) {
+      const r = cancelOrder(s, s.sym);
+      if (!r.ok) { pushLog(s, r.why, 'bad'); snd.tap(); } else snd.close();
+      after();
+      return;
+    }
+    snd.tap();
+    openOrder(s, refs.orderBtn);
+    return;
+  }
+  /* 浮层里那八枚：`方向:偏离档`（如 `long:0.05`） */
+  const [side, dev] = String(v).split(':');
+  const r = placeOrder(s, side, Number(dev));
+  if (!r.ok) { pushLog(s, r.why, 'bad'); snd.tap(); } else snd.open();
+  closePicker();
   after();
 }
 

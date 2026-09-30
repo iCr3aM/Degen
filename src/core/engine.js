@@ -16,9 +16,9 @@ import { GAME, HOUR_MS, EXCHANGES, LIQ, OTC, SUPPLY_CAP, USDT_LIVE, coinOf, exch
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
 import { warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
-import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
+import { SLIP, bookFills, depthOf, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow, residualOfSide } from './god.js';
-import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtRate } from './format.js';
+import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, maintRateOf, openPosition, pnlOf,
   FUNDING, fundingOf, fundingRateOf, canLiquidate, paysFunding, paysInterest,
@@ -74,6 +74,10 @@ export function totalUnrealized(s) {
 export function equity(s) {
   let sum = cashOf(s);
   if (s.transfer) sum += s.transfer.amount;
+  /* ⚠️ **限价挂单冻结的保证金必须算进来**（C8-B2 · §33.4）：钱离开了 `books`，但仍是玩家的 ——
+     与在途转账同一个道理。漏了这一项，挂单那一刻权益就凭空少一截，`isBankrupt` 会当场误判破产。
+     ⚠️ 它是本方案**唯一**触碰破产判定的地方；`available`（可用保证金）**不加** —— 那笔钱锁着。 */
+  for (const sym in s.orders) sum += s.orders[sym].margin;
   for (const sym of heldSyms(s)) {
     const pos = s.positions[sym];
     const p = markPrice(s, sym);
@@ -262,6 +266,66 @@ const spotOf = (s, otc) => !!otc || s.mode !== 'fut';
 export const levKind = s => (s.mode === 'fut' ? 'fut' : 'spot');
 
 /**
+ * 同币加仓的**兼容性闸门**（v13 · B4 / 方案 §5.2）—— 市价单与限价挂单**共用**这一段。
+ *
+ * 四项各给一句明确文案，不静默失败：
+ *   · 反方向 ⇒ 引导玩家自己「先平仓」（不替他反手：反手是一笔新仓，该由他决定）
+ *   · 性质不同（现货 / 合约）⇒ 两张杠杆表、两种费率，混在一条仓里算不出强平价
+ *   · 通道不同（盘口 / OTC）⇒ 成交价口径不同，且 OTC 恒 1x
+ *   · 杠杆不同 ⇒ 加权均价对两种杠杆没有意义（D4 已拍板）
+ *
+ * ⚠️ 挂单在**下单那一刻**过这道闸就够：成交前那条仓位只会被「同向成交」改动，
+ *    不可能在中间变成反手 / 换性质（换所、切通道那些路都另有闸门）。
+ * @returns {string|null} 拒绝理由；`null` = 放行
+ */
+function posGate(s, sym, side, spotOrder, otc, lev) {
+  const prev = posOf(s, sym);
+  if (!prev) return null;
+  if (prev.side !== side) return `${sym} 已有${prev.side === 'long' ? '多' : '空'}单 ｜ 反手请先平仓`;
+  if (isSpot(prev) !== spotOrder) return `${sym} 已有${isSpot(prev) ? '现货' : '合约'}仓 ｜ 加仓请先切回同一模式`;
+  if (!!prev.otc !== otc) return `${sym} 已有${prev.otc ? 'OTC' : '盘口'}仓 ｜ 加仓请先切回同一通道`;
+  if (prev.lev !== lev) return `${sym} 已持 ${prev.lev}x ｜ 加仓必须同杠杆 ｜ 先平仓再重开`;
+  return null;
+}
+
+/**
+ * **落账**：新开一条仓位，或并进同币已有仓位（v13 · B4 / 方案 §5.1）。
+ *
+ * 从 `openTrade` 里整块搬出来（C8-B2 · §33.5 ①），市价单与限价挂单成交**共用同一段** ——
+ * `entry` 走 **`size` 加权平均**：
+ *     entry = (entry×size + fill×addSize) / (size + addSize)
+ * ⇒ 强平价、未实现盈亏、资金费全都自动落在「一条加权后的仓位」上，不需要任何额外分支。
+ *
+ * ⚠️ **运算顺序一字不改**（§33.9 的最高风险项）：这段与改动前逐字同源，
+ *    断言⑦专门钉「未挂单的市价单成交价与改动前逐位相同」。
+ * ⚠️ `openFee` **累加**（各收各的，不重算）：平仓时要报「本回合两笔之和」（见 `closeTrade`）。
+ * ⚠️ `mix` **两格各自累加**：平仓按合计比例退回，等价于两笔各按原比例退。
+ * ⚠️ `pos.i` 不更新：它是「这条仓位什么时候开的」，加仓不改出生时刻。
+ */
+function applyFill(s, { sym, side, fill, margin, notional, lev, feeRate, spot, fee, mix, otc = false }) {
+  const prev = posOf(s, sym);
+  let pos = prev;
+  if (pos) {
+    const addSize = notional / fill;
+    pos.entry = (pos.entry * pos.size + fill * addSize) / (pos.size + addSize);
+    pos.size += addSize;
+    pos.notional += notional;
+    pos.margin += margin;
+    pos.openFee += fee;
+    pos.mix = { usd: pos.mix.usd + mix.usd, usdt: pos.mix.usdt + mix.usdt };
+  } else {
+    pos = openPosition(sym, side, fill, margin, lev, feeRate, spot);
+    pos.i = s.i;
+    pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
+    pos.openFee = fee;
+    pos.mix = mix;                    // 保证金的两格构成（v13）—— 平仓原路退回
+    if (otc) pos.otc = true;          // 只给 OTC 仓位打标（`capturedOf` 见到它就跳过）
+    s.positions[sym] = pos;
+  }
+  return pos;
+}
+
+/**
  * 按比例下单。`frac` 是「用掉多少可用保证金」，对应操作区的 1/4 · 1/2 · 全部。
  *
  * 多仓（2026-09-28）：**同一个币只许一条仓位**，不同币可以同时持有（BTC 多 + ETH 空）。
@@ -317,18 +381,10 @@ export function openTrade(s, side, frac = 1) {
 
   /* ── 同币加仓的兼容性闸门（v13 · B4 / 方案 §5.2）──
      这一单若与已有仓位冲突，**必须在动账之前**拒绝（下面一旦 `debit`，钱就已经扣了）。
-     四项各给一句明确文案，不静默失败：
-       · 反方向 ⇒ 引导玩家自己「先平仓」（不替他反手：反手是一笔新仓，该由他决定）
-       · 性质不同（现货 / 合约）⇒ 两张杠杆表、两种费率，混在一条仓里算不出强平价
-       · 通道不同（盘口 / OTC）⇒ 成交价口径不同，且 OTC 恒 1x
-       · 杠杆不同 ⇒ 加权均价对两种杠杆没有意义（D4 已拍板） */
+     四项判据搬进了 `posGate`（C8-B2 起与限价挂单共用同一段，判据与文案一字未改）。 */
   const prev = posOf(s, s.sym);
-  if (prev) {
-    if (prev.side !== side) return { ok: false, why: `${s.sym} 已有${prev.side === 'long' ? '多' : '空'}单 ｜ 反手请先平仓` };
-    if (isSpot(prev) !== isSpotOrder) return { ok: false, why: `${s.sym} 已有${isSpot(prev) ? '现货' : '合约'}仓 ｜ 加仓请先切回同一模式` };
-    if (!!prev.otc !== otc) return { ok: false, why: `${s.sym} 已有${prev.otc ? 'OTC' : '盘口'}仓 ｜ 加仓请先切回同一通道` };
-    if (prev.lev !== lev) return { ok: false, why: `${s.sym} 已持 ${prev.lev}x ｜ 加仓必须同杠杆 ｜ 先平仓再重开` };
-  }
+  const gate = posGate(s, s.sym, side, isSpotOrder, otc, lev);
+  if (gate) return { ok: false, why: gate };
 
   // 保证金 = 可用余额 × frac；开仓费按名义价值另收，所以要让「保证金 + 费 ≤ 余额」
   let margin = cash * Math.max(0.0001, Math.min(1, frac));
@@ -373,31 +429,10 @@ export function openTrade(s, side, frac = 1) {
   s.lev = lev;
 
   const spot = isSpotOrder;
-  /* ── 落账：新开 or 并进已有仓位（v13 · B4 / 方案 §5.1）──
-     合并式只动 5 个字段，`entry` 走 **`size` 加权平均**：
-         entry = (entry×size + fill×addSize) / (size + addSize)
-     ⇒ 强平价、未实现盈亏、资金费全都自动落在「一条加权后的仓位」上，不需要任何额外分支。
-     ⚠️ `openFee` **累加**（各收各的，不重算）：平仓时要报「本回合两笔之和」（见 `closeTrade`）。
-     ⚠️ `mix` **两格各自累加**：平仓按合计比例退回，等价于两笔各按原比例退。
-     ⚠️ `pos.i` 不更新：它是「这条仓位什么时候开的」，加仓不改出生时刻。 */
-  let pos = prev;
-  if (pos) {
-    const addSize = notional / fill;
-    pos.entry = (pos.entry * pos.size + fill * addSize) / (pos.size + addSize);
-    pos.size += addSize;
-    pos.notional += notional;
-    pos.margin += margin;
-    pos.openFee += fee;
-    pos.mix = { usd: pos.mix.usd + mix.usd, usdt: pos.mix.usdt + mix.usdt };
-  } else {
-    pos = openPosition(s.sym, side, fill, margin, lev, feeRate, spot);
-    pos.i = s.i;
-    pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
-    pos.openFee = fee;
-    pos.mix = mix;                    // 保证金的两格构成（v13）—— 平仓原路退回
-    if (otc) pos.otc = true;          // 只给 OTC 仓位打标（`capturedOf` 见到它就跳过）
-    s.positions[s.sym] = pos;
-  }
+  /* ── 落账（新开 or 并进已有仓位）—— 与限价挂单成交共用 `applyFill`（C8-B2 · §33.5 ①）── */
+  const pos = applyFill(s, {
+    sym: s.sym, side, fill, margin, notional, lev, feeRate, spot, fee, mix, otc,
+  });
 
   /* 累计消耗（U2 · ROADMAP §21.4）：这笔买入从市场里拿走了多少枚，**只增不减**、平仓不退还。
      ⚠️ 与 `capturedOf`（瞬时口径，进 `SUPPLY_CAP` 校验）**并存互不影响**；OTC 不算（不消耗流通量）。 */
@@ -493,6 +528,179 @@ export function closeTrade(s, why = '手动') {
 
   if (checkRuin(s)) return { ok: false, why: s.over.reason };
   return { ok: true };
+}
+
+/* ───────────────────────── 限价挂单（C8-B2 · ROADMAP §33） ───────────────────────── */
+
+/**
+ * 挂一张**限价建仓单**（C8-B2 · §33）。
+ *
+ * 口径（六条已拍板，勿擅改）：
+ *   - 形态**甲 · 全量**：浮层选「方向 ＋ 偏离档」，图上画线，可撤单
+ *   - 成交模型是**深度上限**（§33.3），不是概率队列 —— 见 `impact.depthOf`
+ *   - **挂单即冻结**保证金（**不含手续费**，成交那一刻才按实际成交量收）⇒ 撤单只退保证金
+ *   - 偏离档是**固定百分比**：买单挂在现价下方、卖单挂在现价上方
+ *   - 手续费**沿用 taker 表**（`feeRateOf`，GDD 里标 🟡 合成值）
+ *
+ * 每币最多一张（与 `positions` 同构）；换所前必须先撤单（`switchExchange` 那道闸门）。
+ * @param {'long'|'short'} side
+ * @param {number} dev 偏离度（0.01 = 1%）—— 挂单时锁定，成交模型里的 `dLock` 就是它
+ * @returns {{ok:boolean, why?:string}}
+ */
+export function placeOrder(s, side, dev) {
+  if (s.over) return { ok: false, why: '本局已结束' };
+
+  /* 停机维护（B24）：与开仓同性质 —— 窗口内不许挂单（`matchOrders` 那边同样不撮合）。 */
+  if (haltedAt(timeOf(s), s.ex)) {
+    return { ok: false, why: `${exchangeOf(s.ex)?.name ?? s.ex} 维护中 ｜ 暂时不能挂单` };
+  }
+  /* OTC 是私下一口价的大宗通道，**没有盘口可挂**（§33.6）。 */
+  if (chanOf(s) === 'otc') return { ok: false, why: 'OTC 通道不能挂单 ｜ 切回盘口再挂' };
+
+  const sym = s.sym;
+  /* 现货做空要先借到币（v10 口径）：挂单是**未来的**开仓，此刻就该拦住 ——
+     否则成交那一刻才发现开不出来，冻结的保证金白锁一场。 */
+  if (side === 'short' && spotOf(s, false) && !hasFinancingAt(timeOf(s), s.ex)) {
+    return { ok: false, why: '现货做空 暂不可用 ｜ 该所此刻没有融资业务' };
+  }
+
+  const coin = coinOf(sym);
+  if (!coin || !isLoaded(sym)) return { ok: false, why: '行情还没加载完' };
+  if (timeOf(s) < coin.unlock) return { ok: false, why: `${sym} 还没上线` };
+  if (s.orders[sym]) return { ok: false, why: `${sym} 已有一张挂单 ｜ 先撤单` };
+
+  const price = markPrice(s, sym);
+  if (!(price > 0)) return { ok: false, why: '当前没有可成交的价格' };
+
+  const lev = Math.max(1, Math.min(s.lev, maxLeverageAt(timeOf(s), s.ex, levKind(s))));
+  const spot = spotOf(s, false);
+  const mustUsdt = !spot;
+  const cash = spendableOf(s, mustUsdt);
+  const gate = posGate(s, sym, side, spot, false, lev);
+  if (gate) return { ok: false, why: gate };
+
+  /* 挂单价：买**挂在现价下方**（等它跌下来）、卖**挂在现价上方**（等它涨上去）——
+     玩家给的是偏离度，价位由它折算。 */
+  const limit = side === 'long' ? price * (1 - dev) : price * (1 + dev);
+  if (!(limit > 0)) return { ok: false, why: '偏离档太大 ｜ 这个价位不成立' };
+
+  /* 冻结的保证金 = 可用余额 × 金额档（与市价单同一套比例）。
+     ⚠️ 也按市价单那条口径**留出成交时要收的手续费**（`保证金 ＋ 费 ≤ 可用`）——
+     手续费虽然成交那一刻才扣，但挂单时不留位置，全额冻结的玩家到成交时会付不出那笔费。 */
+  const feeRate = feeRateOf(s.ex, timeOf(s), spot ? 'spot' : 'fut');
+  let margin = cash * Math.max(0.0001, Math.min(1, s.sizeFrac));
+  if (margin + margin * lev * feeRate > cash) margin = cash / (1 + lev * feeRate);
+  if (!(margin > 0)) {
+    return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用保证金不足' };
+  }
+  const notional = margin * lev;
+  const size = notional / limit;
+  if (!(size > 0)) return { ok: false, why: '可用保证金不足' };
+
+  /* 供应量上限（§15.1 / §15.4）：**挂单时先校验**（超上限不许挂），
+     成交时再按剩余额度**截断**（不失败 —— 钱都冻了，失败最难看；§33.6）。 */
+  const cap = SUPPLY_CAP[sym];
+  if (side === 'long' && cap != null && capturedOf(s, sym) + size > cap) {
+    return { ok: false, why: `${sym} 已触及供应量上限，无法继续买入` };
+  }
+
+  /* 冻结（**不含手续费**）：钱离开 `books`，但仍是玩家的 —— `equity()` 会把它加回来。 */
+  const mix = debit(s, margin, mustUsdt);
+  if (!mix) {
+    return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用保证金不足' };
+  }
+  s.lev = lev;
+  s.orders[sym] = { side, lev, spot, ex: s.ex, limit, dLock: dev, size, filled: 0, margin, mix };
+
+  const verb = spot ? (side === 'long' ? '买入' : '卖出') : (side === 'long' ? '做多' : '做空');
+  pushLog(s, `挂单 ${verb} ${sym} ${lev}x｜限价 ${fmtLogPrice(limit)}（${fmtPct(side === 'long' ? -dev : dev)}）`
+    + `｜冻结 ${fmtMoneyShort(margin)}`, side === 'long' ? 'long' : 'short');
+  return { ok: true };
+}
+
+/**
+ * 撤单 —— 把冻结的保证金**按 `mix` 原路退回**两格（与平仓同一套 `credit`），
+ * 于是两格余额**逐位回到挂单前**（验收 ⑤）。
+ */
+export function cancelOrder(s, sym = s.sym) {
+  const o = s.orders[sym];
+  if (!o) return { ok: false, why: `${sym} 没有挂单` };
+  credit(s, o.ex, o.margin, o.mix);
+  delete s.orders[sym];
+  pushLog(s, `撤单 ${sym} ${o.lev}x｜退回 ${fmtMoneyShort(o.margin)}`, 'info');
+  return { ok: true };
+}
+
+/**
+ * **撮合**全部挂单（每根小时 K 线跑一次，见 `advanceOneHour`）。
+ *
+ * 三条口径（§33.3，全部可断言）：
+ *   ① 触及：**当根 K 线的高低点**穿越挂单价即算成交 —— 细路径的 `min ≡ l` / `max ≡ h`
+ *      （S1 红线 1）⇒「细路径穿越 L」与「当根 l/h 穿越 L」**互为充要**，不必再跑一遍 `pathOf`
+ *   ② 成交价**恒 = L**（跳空也不给 price improvement）：一根小时内部是模拟出来的，
+ *      给它送钱等于凭仿真发钱；账目可预期优先
+ *   ③ 成交量上限 = 该价位的**合成深度** `Q`（`impact.depthOf`）⇒ `min(余量, Q)`，
+ *      余量继续挂着 ⇒ **分批建仓是涌现的**，不需要第二套机制
+ *
+ * ⚠️ **不写 `s.flow` 冲击池**（红线 A）：限价是 maker 被动成交，价格位移已经体现在 L 本身。
+ */
+function matchOrders(s) {
+  for (const sym of Object.keys(s.orders)) {
+    const o = s.orders[sym];
+    /* 停机维护窗口内**不撮合**（§33.6）：所都停了，哪来的成交。 */
+    if (haltedAt(timeOf(s), o.ex)) continue;
+
+    const c = candleAt(sym, s.i);
+    if (!c) continue;
+    const L = o.limit;
+    const long = o.side === 'long';
+    if (!(long ? c.l <= L : c.h >= L)) continue;
+
+    const rem = o.size - o.filled;
+    if (!(rem > 0)) { delete s.orders[sym]; continue; }
+
+    /* 深度上限（§33.3）：挂得越远、这个价位能吃得越多（二次增长），到 `SLIP.cap` 封顶。
+       ⚠️ `dLock` **挂单时锁死**（不随行情漂），`σ` 与 `hourLiq` 取**此刻**的 —— 与市价单同一处取数。 */
+    let q = depthOf(o.dLock, dailySigma(sym, s.i), hourLiqOf(sym, s.i));
+
+    /* 供应量上限：成交时按**剩余额度截断**，不失败（钱都冻了，失败最难看 —— §33.6）。 */
+    const cap = SUPPLY_CAP[sym];
+    if (long && cap != null) q = Math.min(q, Math.max(0, cap - capturedOf(s, sym)) * L);
+
+    const qty = Math.min(rem, q / L);
+    if (!(qty > 0)) continue;
+
+    /* 成交价恒 = L；保证金按「剩余冻结款 × 成交占比」划出（等价于 `qty × L / lev`，
+       与挂单时的 `margin = size × L / lev` 逐位同源）。 */
+    const notional = qty * L;
+    const margin = notional / o.lev;
+    const feeRate = feeRateOf(o.ex, timeOf(s), o.spot ? 'spot' : 'fut');
+    const fee = notional * feeRate;
+    const share = qty / rem;
+    const mix = { usd: o.mix.usd * share, usdt: o.mix.usdt * share };
+
+    /* 手续费**成交那一刻**才收（§33.4）—— 按实际成交量收，所以撤单只退保证金。
+       兜底（理论不可达：挂单时已保证 `保证金 ＋ 费 ≤ 可用`）：与 `settleLoan` 同口径记账。 */
+    const feeMix = debit(s, fee, !o.spot);
+    if (feeMix) { mix.usd += feeMix.usd; mix.usdt += feeMix.usdt; }
+    else { ensureBook(s).usd -= fee; mix.usd -= fee; }
+    s.realized -= fee;
+
+    applyFill(s, {
+      sym, side: o.side, fill: L, margin, notional, lev: o.lev, feeRate, spot: o.spot, fee, mix,
+    });
+    if (long) s.consumed[sym] = (s.consumed[sym] ?? 0) + qty;
+
+    o.filled += qty;
+    o.margin -= margin;
+    const done = o.filled >= o.size - 1e-12;
+    if (done) delete s.orders[sym];
+
+    const verb = o.spot ? (long ? '买入' : '卖出') : (long ? '做多' : '做空');
+    pushLog(s, `限价成交 ${sym} ${o.lev}x｜${verb} ${fmtMoneyShort(notional)} @ ${fmtLogPrice(L)}`
+      + `｜手续费 ${fmtMoneyShort(fee)}${done ? '' : `｜余 ${fmtMoneyShort(o.margin * o.lev)}`}`,
+      long ? 'long' : 'short');
+  }
 }
 
 /**
@@ -670,6 +878,10 @@ export function switchExchange(s, id) {
   if (t < ex.open) return { ok: false, why: `${ex.name} 还没开业` };
   if (ex.close != null && t >= ex.close) return { ok: false, why: `${ex.name} 已经归零` };
   if (heldSyms(s).length) return { ok: false, why: '有持仓，先全部平仓再换所' };
+  /* 挂单同持仓一样**搬不走**（C8-B2 · §33.6）：挂单是挂在**这一家所**的盘口上，
+     换了所它就失去了成交的地方。所以要求「先撤单」——**只提示，不替玩家退单**
+     （退单会把一笔他自己下的决定悄悄抹掉，与「数据不擅自改」同一条口径）。 */
+  if (Object.keys(s.orders).length) return { ok: false, why: '有挂单，先全部撤单再换所' };
   if (s.transfer) return { ok: false, why: '上一笔转账还没到账' };
 
   const from = s.ex;
@@ -727,6 +939,15 @@ function collapseExchange(s, ex) {
     margin += pos.margin;
     delete s.positions[sym];
   }
+  /* 挂在该所的挂单同样作废，**冻结的钱一并损失**（C8-B2 · §33.6）——
+     它与仓位是同一命运：那笔钱早就不在 `books` 里了（冻结时已扣走），
+     所以这里只把它计进「损失」总额，账目上没有第二处要动。 */
+  for (const sym of Object.keys(s.orders)) {
+    const o = s.orders[sym];
+    if (o.ex !== ex.id) continue;
+    margin += o.margin;
+    delete s.orders[sym];
+  }
   if (margin) s.realized -= margin;
 
   const hit = lost + margin;
@@ -746,9 +967,19 @@ function collapseExchange(s, ex) {
  */
 function applyHackCut(s, ex) {
   const book = bookOf(s, ex.id);
-  const lost = (book.usd + book.usdt) * ex.hack.cut;
+  let lost = (book.usd + book.usdt) * ex.hack.cut;
   book.usd *= 1 - ex.hack.cut;
   book.usdt *= 1 - ex.hack.cut;
+  /* 挂在该所的挂单，**冻结款同比例削**（C8-B2 · §33.6）—— 「全体账户普损」的口径：
+     钱虽然已经离开 `books`，但它记在**这家所**的名下，普损就该普到它头上。
+     两格构成（`mix`）按同一比例缩 —— 撤单时才不会退出一笔超出冻结额的钱。 */
+  for (const sym of Object.keys(s.orders)) {
+    const o = s.orders[sym];
+    if (o.ex !== ex.id) continue;
+    lost += o.margin * ex.hack.cut;
+    o.margin *= 1 - ex.hack.cut;
+    o.mix = { usd: o.mix.usd * (1 - ex.hack.cut), usdt: o.mix.usdt * (1 - ex.hack.cut) };
+  }
   s.realized -= lost;
 
   pushLog(s, lost > 0
@@ -937,6 +1168,11 @@ export function advanceOneHour(s) {
   if (s.i % FUNDING.hours === 0 && settleFunding(s)) return;
 
   liquidateAll(s);
+
+  /* 限价挂单撮合（C8-B2 · §33.3）—— 排在强平**之后**：这一小时该结的资金费、该爆的仓都已落账，
+     挂单成交产生的新仓位从**下一根**起才参与资金费与强平（成交走 `applyFill`，
+     与市价单是同一条落账路径）。`s.over` 时不撮合：本局都结束了。 */
+  if (!s.over) matchOrders(s);
 
   /* 资金曲线采样（v13 · 方案 §4）排在**最后**：这一小时该结的资金费、该爆的仓都已经落账，
      此刻记下的才是「这一天真正剩下的钱」。上面几条 `return`（待决态 / 借款到期 / 资金费爆仓）

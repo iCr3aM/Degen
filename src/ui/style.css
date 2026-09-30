@@ -416,6 +416,7 @@ b, strong { font-weight: 600; }
    的单行撑开，三格高度与「有持仓」时完全一致，所以常驻不会让 K 线少一格。 */
 .posbar {
   flex: none;
+  position: relative;
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
@@ -430,6 +431,21 @@ b, strong { font-weight: 600; }
 .posbar b { display: block; font-size: 13px; }
 .posbar .side-long { color: var(--up); }
 .posbar .side-short { color: var(--down); }
+/* 挂单角标（C8-B2 · §33.5）：**绝对定位**在持仓条右上角 —— 它既不加第四格、也不参与 `grid`，
+   所以固定块高度一个像素都不动（§33.5 的「UI 不新增行」）。字色/底色与 `.logline .news-tag`
+   同一套（11px 金底暗字，那是全站唯一被允许低于 12px 的小字例外）。
+   ⚠️ 必须写成 `.posbar .pos-badge`（0,2,0）：上面那条 `.posbar i`（0,1,1）会把它压掉。 */
+.posbar .pos-badge {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 4px;
+  color: #1a1405;
+  background: var(--gold);
+}
+.pos-badge[hidden] { display: none; }
 
 /* ══════════════ 日志条（一行，只显示最近一条） ══════════════ */
 .logline {
@@ -550,13 +566,16 @@ b, strong { font-weight: 600; }
    它不是「一次成交」，是「换一条成交路径」，所以用方框而不是实心块。
    字号压到 14px 也是同一个意思：它比旁边三枚低半档，但仍高于 12px 的地板。
    选中 OTC 时走全站统一的 `.on` 三件套（说明见 `--accent` 那段）。 */
-.act.chan {
+.act.chan, .act.order {
   background: none;
   border: 1px solid var(--line);
   color: var(--mut);
   font-size: 14px;
 }
-.act.chan.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+/* 限价挂单键（C8-B2 · §33.5）与通道键**同一副长相**：两枚都是空心的「换个方式交易」，
+   与右边三枚实心成交键天然分档。挂单键比通道键还窄一档 —— 它写「挂单 / 撤单」两个字，
+   与「盘口 / OTC」同长，所以共用同一条规则即可。 */
+.act.chan.on, .act.order.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 /* 主按钮是实心块，按压态不能用 `background` 顶掉语义色 ⇒ 压暗一档 ＋ 轻微缩小（B6-c） */
 .act:active { filter: brightness(.88); transform: scale(.985); }
 .act:disabled { opacity: .45; }
@@ -727,6 +746,16 @@ canvas.curve {
   font-size: 12px;
   border-bottom: 1px solid var(--line);
 }
+/* 挂单浮层的内容区（C8-B2 · §33.5 ②）：四行「方向 × 偏离档」，每行两枚 `.act`。
+   面板本体是 `width: max-content`（见上），而内容区里是 `flex: 1` 的键 —— 若只让内容撑，
+   不同内核对 `max-content` 里 flex 子项的算法并不一致（有的按 `flex-basis: 0` 算），面板会时宽时窄。
+   这里给内容区一个**确定宽度**：224 = 两枚 100px ＋ 8px 缝 ＋ 16px 内边距 ⇒ 面板宽度恒定，
+   与约束 ②「列宽固定不跳」同一条。最长的那枚文案「买入 -10.0%」在 14px 等宽下约 87px，
+   留 13px 余量 —— 机型字体度量再宽也折不了行。
+   ⚠️ 字号 14px 与 `.act.chan` 同档（弹层里的字比主操作区低半档是本项目的既有口径）：
+      16px 的粗体铺满八枚键会盖过弹层自己，而 13px 又低于主操作键太多。 */
+.pick-body { width: 224px; padding: 8px; }
+.pick-body .act { font-size: 14px; white-space: nowrap; }
 .pick-row {
   display: flex;
   flex-direction: column;

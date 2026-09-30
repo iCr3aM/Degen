@@ -43,6 +43,10 @@ export const ACTION_KEYS = [
      三枚金额档（`0.25` / `0.5` / `1`）＋ 那枚「兑换」键（`go`）。
      B5：`colors` ＝ 设置页的「涨跌色」开关（绿涨红跌 ⇄ 红涨绿跌）。 */
   'buyu', 'colors',
+  /* C8-B2（限价挂单 · ROADMAP §33.5 ①）：`order` ＝ 操作区那枚二态键（`toggle`）
+     ＋ 挂单浮层里那八枚「方向:偏离档」键（`long:0.01` / `short:0.10` …）。
+     值与 `review` 同一手法：**走子命令串**，分派见 `main.js` 的 `onOrder`。 */
+  'order',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');

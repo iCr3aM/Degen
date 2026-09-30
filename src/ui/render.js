@@ -197,11 +197,16 @@ export function mount(root) {
   const posSide = el('b', 'num');
   const posPnl = el('b', 'num');
   const posRate = el('b', 'num');
+  /* 挂单角标（C8-B2 · §33.5）：`n > 0` 才出现 —— **绝对定位**，既不是第四格、
+     也不参与 `.posbar` 的 `grid` 布局，所以固定块高度一个像素都不动。 */
+  const posBadge = el('i', 'pos-badge');
+  posBadge.hidden = true;
   const posbar = el('div', 'posbar');
   posbar.append(
     mini('持仓', posSide),
     mini('未实现盈亏', posPnl),
     mini('保证金率', posRate),
+    posBadge,
   );
 
   /* ── 日志条 ──
@@ -276,8 +281,13 @@ export function mount(root) {
      权益够但当前币还没开通 OTC 时**禁用而不隐藏**（三级状态，见 `update()` 里那段注释）。 */
   const chanBtn = el('button', 'act chan', '盘口');
   chanBtn.dataset.chan = 'toggle';
+  /* 挂单键（C8-B2 · §33.5）：与通道键同一副**字面即现状**的二态键 ——
+     没有挂单时写「挂单」（点开浮层选方向与偏离档），有挂单时写「撤单」（点一下撤掉）。
+     铺在通道键右边（两枚空心键挨着，与三枚实心成交键分开），**不新增行**。 */
+  const orderBtn = el('button', 'act order', '挂单');
+  orderBtn.dataset.order = 'toggle';
   const actRow = el('div', 'row');
-  actRow.append(chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn);
+  actRow.append(chanBtn, orderBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn);
 
   const trade = el('div', 'trade');
   trade.append(fracRow, levRow, spdRow, actRow);
@@ -470,10 +480,10 @@ export function mount(root) {
     eqVal, eqSub, cashVal, cashSub,
     symbols, symBtns,
     canvas, chartWrap, chartHead, chSym, chMcap, chSupp, chChg, modeBtn, chartEta, chartLock,
-    posbar, posSide, posPnl, posRate,
+    posbar, posSide, posPnl, posRate, posBadge,
     logline, newsTag, logTime, logText,
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
-    chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
+    chanBtn, orderBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asList,
     asCurve, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
     sndBtn, impBtn, hintBtn, colBtn,
@@ -741,7 +751,8 @@ export function update(refs, s, view) {
   const canLev = hasFinancingAt(now, s.ex);
 
   /* 动作行（v9 · §15.3 N4）：「没有的选项不显示」——
-     现货三枚（盘口 / 买入 / 卖出）、合约四枚（盘口 / 做多 / 做空 / 平仓），两组互斥。 */
+     现货四枚（盘口 / 挂单 / 买入 / 卖出）、合约五枚（盘口 / 挂单 / 做多 / 做空 / 平仓），两组互斥。
+     ⚠️ 「挂单」不参与这组互斥（C8-B2）：两个模式都能挂限价单，所以它在两行里都常驻。 */
   const spotMode = !fut;
   refs.buyBtn.hidden = !spotMode;
   refs.sellBtn.hidden = !spotMode;
@@ -839,6 +850,20 @@ export function update(refs, s, view) {
   refs.chanBtn.textContent = chan === 'otc' ? 'OTC' : '盘口';
   refs.chanBtn.classList.toggle('on', chan === 'otc');
 
+  /* 挂单键（C8-B2 · §33.5）—— 二态：
+       · 没有挂单 ⇒ 字面「挂单」，点开浮层选方向与偏离档
+       · 有挂单   ⇒ 字面「撤单」，点一下把冻结的保证金退回来
+     ⚠️ 只吃暂停 / 待决闸门（同 `exBtn`），**不看行情加载状态、也不看当前币** ——
+        撤单是「把自己的钱拿回来」，任何情况下都该点得动（下单本身失败会有一条明确日志）。 */
+  const ord = s.orders[sym];
+  refs.orderBtn.textContent = ord ? '撤单' : '挂单';
+  refs.orderBtn.classList.toggle('on', !!ord);
+  refs.orderBtn.disabled = lockedUI || frozen;
+  /* 挂单角标：**跨币**的总数（不看当前币也能一眼看到还有单挂着）——`n > 0` 才出现。 */
+  const ordN = Object.keys(s.orders).length;
+  refs.posBadge.hidden = ordN === 0;
+  refs.posBadge.textContent = `挂单 ${ordN}`;
+
   /* 资产页（§6.2 ①–⑤ 全部落地 · v13）：账本抬头 ＋ 两格余额 ＋ 总资产 ＋ 资金曲线 ＋ 买 U ＋ 持仓列表。
      切到别的页就不写 —— 那是隐藏 DOM，而且持仓列表是**重建**出来的，白建一遍不如不建。 */
   if (view.tab === 'assets') {
@@ -924,7 +949,7 @@ export function update(refs, s, view) {
  *   `cur` 当前仓位（**回顾页恒传 null** —— 回顾没有持仓）；`seed` 细刻度种子；`liqTick` 致命一针
  * @returns {object} `windowFor` 的返回值（`mode` / `count` / `locked` / `right` / `liqSlot` 都要用）
  */
-function chartOpts({ canvas, head, sym, i, view, mark, cur, seed, liqTick = null }) {
+function chartOpts({ canvas, head, sym, i, view, mark, cur, seed, liqTick = null, order = null }) {
   const win = windowFor(sym, i, view.chartW, seed, liqTick);
   /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
      日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
@@ -961,6 +986,9 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur, seed, liqTick = null
     side: cur ? cur.side : null,
     /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。现货 1x 没有强平价 ⇒ 传 null。 */
     liq: cur && canLiquidate(cur) ? liquidationPrice(cur) : null,
+    /* 挂单线（C8-B2 · §33.5 ⑥）：玩家得能在图上看见自己挂在哪个价 —— 灰色虚线，
+       与金色开仓线、红色强平线一眼分得开（「挂了还没成」本来就该比「已成」弱一档）。 */
+    order,
     cssW: view.chartW,
     cssH: view.chartH,
     yPx: win.yPx,
@@ -1010,6 +1038,7 @@ function syncChart(refs, s, view, sym, cur, mark) {
     : null;
   const win = chartOpts({
     canvas: refs.canvas, head: refs.chartHead, sym, i: s.i, view, mark, cur, seed: s.seed, liqTick,
+    order: s.orders[sym] ?? null,
   });
 
   /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种（`main.js` 里定的目标档） */
@@ -1364,6 +1393,61 @@ export function openLog(s, onClose) {
      只有日志浮层这个入口知道要「关了就 1x 续跑」。 */
   back.addEventListener('pointerdown', () => { closePicker(); if (onClose) onClose(); });
   ov.append(back, box);
+  ov.hidden = false;
+  picker = ov;
+}
+
+/* ═════════════════════════ 挂单浮层（C8-B2 · ROADMAP §33） ═════════════════════════ */
+
+/** 四档偏离（固定百分比 · §33.10 ④）—— 买单挂在现价下方、卖单挂在现价上方。 */
+const ORDER_DEVS = [0.01, 0.02, 0.05, 0.10];
+
+/**
+ * 挂单浮层 —— 「方向 × 偏离档」两列四行，一枚键直接就是一张单（`data-order="long:0.01"`）。
+ *
+ * 为什么不做「先选档、再点方向」（少四枚键）：那需要一份浮层内的临时选择态，
+ * 而浮层的点击是走 `main.js` 那条全局 `data-*` 分派的（浮层里没有局部事件），
+ * 临时态就得为了重绘高亮再往主状态里塞一个字段 —— 多一个状态换少四枚键，不划算。
+ *
+ * 骨架原样复用选所那一套（`#overlay` ＋ `.pick-back` ＋ `closePicker`）：点暗底即关。
+ * @param {object} s
+ * @param {HTMLElement} anchor 贴靠的那枚按钮（操作区的挂单键）
+ */
+export function openOrder(s, anchor) {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const price = markPrice(s, s.sym);
+  const back = el('div', 'pick-back');
+  const panel = el('div', 'pick');
+  panel.append(el('div', 'pick-head', `挂单 ${s.sym} · 现价 ${fmtLogPrice(price)}`));
+
+  /* 字面跟着模式走（与操作区那几枚键同一口径）：「没有的选项不显示」。 */
+  const fut = futuresAvailable(s) && s.mode !== 'spot';
+  const [longLabel, shortLabel] = fut ? ['做多', '做空'] : ['买入', '卖出'];
+
+  const body = el('div', 'pick-body');
+  for (const dev of ORDER_DEVS) {
+    const row = el('div', 'row');
+    /* 买单挂**下面**（等跌）、卖单挂**上面**（等涨）—— 号与方向一起给，
+       所以左边恒是负号、右边恒是正号，一眼看出「越往下的行挂得越远」。 */
+    const b1 = el('button', 'act long', `${longLabel} ${fmtPct(-dev)}`);
+    b1.dataset.order = `long:${dev}`;
+    const b2 = el('button', 'act short', `${shortLabel} ${fmtPct(dev)}`);
+    b2.dataset.order = `short:${dev}`;
+    row.append(b1, b2);
+    body.append(row);
+  }
+  panel.append(body);
+
+  // 贴在锚点正上方（下方是 K 线区，浮层会盖住行情）—— 与选所同一套视口坐标写法
+  const r = anchor.getBoundingClientRect();
+  panel.style.bottom = Math.round(document.documentElement.clientHeight - r.top + 4) + 'px';
+  panel.style.right = Math.round(document.documentElement.clientWidth - r.right) + 'px';
+
+  back.addEventListener('pointerdown', closePicker);
+  ov.append(back, panel);
   ov.hidden = false;
   picker = ov;
 }

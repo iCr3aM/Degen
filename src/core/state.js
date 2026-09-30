@@ -9,10 +9,9 @@
 
 import { GAME } from './config.js';
 
-/* ⚠️ v14（Batch A · 2026-09-30）：维持保证金率按「所 × 工具 × 名义档」取值（B18）＋
-   现货保证金仓改付借贷利息（B26）＋ 爆仓结算计入清算费与返还（B20）——
-   旧档里的现货杠杆仓会突然换一套维持线与成本口径，**语义已变 ⇒ 弃档重开**（既有规范）。 */
-export const STATE_VERSION = 14;
+/* ⚠️ v15（C8-B2 · 2026-09-30）：新增限价挂单 `s.orders`——挂单即冻结保证金，
+   并把冻结款计入 `equity`。旧档没有这张表，`createState` 之外没有任何地方能补出来 ⇒ **弃档重开**（既有规范）。 */
+export const STATE_VERSION = 15;
 
 export function createState() {
   return {
@@ -49,6 +48,26 @@ export function createState() {
      * 全仓模式是 GDD §9.2 里「后期解锁」的东西，本版不做。
      */
     positions: {},
+
+    /**
+     * 限价挂单表（C8-B2 · ROADMAP §33）—— 与 `positions` **同构**：键 = 币符号，`{}` = 无挂单，
+     * **每币最多一张**（LESS IS MORE）。
+     *
+     *     `orders[sym] = { side, lev, spot, ex, limit, dLock, size, filled, margin, mix }`
+     *
+     * - `side`   ：`'long'` / `'short'`
+     * - `limit`  ：挂单价 L（触及即成交，成交价**恒 = L**，跳空也不给 price improvement）
+     * - `dLock`  ：挂单那一刻锁定的偏离度 `|L − 中间价| / 中间价` —— 深度上限 Q 用它，
+     *              不随行情漂移（否则挂单越久越容易成交，那是错的）
+     * - `size`   ：挂单名义**币量**（不是保证金），`filled` = 已成交币量（分批建仓）
+     * - `margin` ：**仍未成交**部分冻结的保证金（已经离开 `books`，但钱还是玩家的）
+     * - `mix`    ：冻结时说好的两格构成 —— 撤单 / 成交原路退回用（与 `positions.mix` 同一套）
+     *
+     * ⚠️ `margin` **必须**计入 `equity()`（见 `engine.equity`）—— 钱只是离开了 `books`，
+     *    没离开本局；漏了就会「一挂单就被误判破产」（与 `s.transfer.amount` 同一先例）。
+     * ⚠️ `margin` **不进** `spendableOf` —— 冻结的钱不能再拿来开新仓。
+     */
+    orders: {},
 
     /**
      * 累计消耗（U2 · ROADMAP §21.4）—— `sym -> 玩家一共从市场里买走了多少枚`。
