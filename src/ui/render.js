@@ -668,10 +668,11 @@ export function update(refs, s, view) {
     const p = cur;
     const posMark = markPrice(s, p.sym);
     setText(refs.posSide, isSpot(p)
-      /* 字面（v9 · §15.6 N4）：现货写「买入 / 卖出 Nx」—— 与操作区那两枚键一一对应。
+      /* 字面（v9 · §15.6 N4）：现货写「买入 / 卖出」—— 与操作区那两枚键一一对应。
          原来这里笼统写「现货」两个字，是因为现货恒为 1x 做多；§15.6 N2 起现货**也带杠杆、
-         也能做空**，光写「现货」就说不清方向与倍数了。 */
-      ? `${p.sym} ${p.side === 'long' ? '买入' : '卖出'} ${p.lev}x`
+         也能做空**，光写「现货」就说不清方向与倍数了。
+         ⚠️ **倍数只在 lev > 1 时写**（用户 2026-10-01）：普通现货（1x）写个 `1x` 会与杠杆现货混同。 */
+      ? `${p.sym} ${p.side === 'long' ? '买入' : '卖出'}${p.lev > 1 ? ` ${p.lev}x` : ''}`
       : `${p.sym} ${p.side === 'long' ? '多' : '空'} ${p.lev}x`);
     setCls(refs.posSide, 'num ' + (p.side === 'long' ? 'side-long' : 'side-short'));
     const pnl = unrealizedOf(s, p.sym);
@@ -1090,7 +1091,7 @@ function buildPosList(box, s) {
       const pnl = unrealizedOf(s, sym);
       /* 方向字面与交易页持仓条一一对应（v9 · §15.6 N4）：现货写「买入 / 卖出」、合约写「多 / 空」。 */
       const dirText = isSpot(p)
-        ? `${p.side === 'long' ? '买入' : '卖出'} ${p.lev}x`
+        ? `${p.side === 'long' ? '买入' : '卖出'}${p.lev > 1 ? ` ${p.lev}x` : ''}`
         : `${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
       /* 现货多一行**币量**（用户 2026-10-01「花多少钱买了多少枚币」）——
          杠杆现货 / 合约的 `size` 只是名义的折算，玩家不看这个数，所以不报。 */
@@ -1098,7 +1099,7 @@ function buildPosList(box, s) {
       const row = el('div', 'prow');
       row.append(
         el('b', null, sym),
-        el('span', 'mut', `${dirText} · 开仓 ${fmtLogPrice(p.entry)}${qtyText}`),
+        el('span', 'mut', `${dirText}${qtyText} · 开仓 ${fmtLogPrice(p.entry)}`),
         el('b', 'num sign ' + (pnl >= 0 ? 'up' : 'down'), fmtMoney(pnl, { sign: true })),
       );
       card.append(row);

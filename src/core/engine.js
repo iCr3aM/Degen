@@ -467,14 +467,17 @@ export function openTrade(s, side, frac = 1) {
      玩家却只看到「保证金 $3,000.0」——账对不上。`fee` 就是本笔按名义价值收的那一次。
      ★ 加仓（B4）：字面换成「加仓 ＋ 追加保证金」，并补一个**加权后的均价** ——
        否则玩家只能看到「这笔按 $13.5 成的」，看不到自己整条仓位现在的成本在哪。 */
-  const head = prev ? `加仓 ${s.sym} ${lev}x` : `${verb} ${s.sym} ${lev}x`;
-  /* 正文按**三类**分开报（用户 2026-10-01「花多少钱买了多少枚币」）：
-     · **普通现货**（现货 1x）：根本没有保证金这回事 ⇒ 报「花多少、拿到多少枚」；
-     · **杠杆现货 / 合约**：报「保证金 ＋ 名义」—— 币量不参与结算，也不是玩家看盈亏的单位。 */
   const qty = notional / fill;                 // 本次成交拿到的币量（加仓时是这一笔的量）
+  /* 三类表述（用户 2026-10-01，两轮拍板）：
+     · **普通现货**（现货 1x）：**不写 `1x`** —— 它没有「倍数」这回事，写了反而与前两类混同；
+       币量**提到最前** ⇒「买入 N 枚 SYM｜花费 $X」，正文就不再重复币量；
+     · **杠杆现货 / 合约**：带倍数，正文报「保证金 ＋ 名义」（币量不参与结算，玩家也不看它）。 */
   const plainSpot = spot && lev === 1;
+  const head = plainSpot
+    ? `${prev ? '加仓' : verb} ${fmtQty(qty)} 枚 ${s.sym}`
+    : (prev ? `加仓 ${s.sym} ${lev}x` : `${verb} ${s.sym} ${lev}x`);
   const line = plainSpot
-    ? `${prev ? '追加' : '花费'} ${fmtMoneyShort(margin)} 得 ${fmtQty(qty)} 枚`
+    ? `${prev ? '追加' : '花费'} ${fmtMoneyShort(margin)}`
     : `${prev ? '追加保证金' : '保证金'} ${fmtMoneyShort(margin)} · 名义 ${fmtMoneyShort(notional)}`;
   const avg = prev ? `｜均价 ${fmtLogPrice(pos.entry)}` : '';
   pushLog(s, `${head}｜${line} @ ${fmtLogPrice(fill)}${avg}｜手续费 ${fmtMoneyShort(fee)}${tag}`,
