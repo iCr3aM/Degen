@@ -34,6 +34,14 @@
   --accent: #4da3ff;
   --accent-soft: rgba(77, 163, 255, .16);   /* 选中态淡底：`.on` 一律走这个变量，不再各写各的 rgba */
   --gold: #ffc44d;
+  /* ── B6-a 新增 token（§7.2）──────────────────────────────
+     只做**命名化**，只服务本轮新写 / 正在改的规则：老规则一个字不动（全量替换是 30+ 处
+     零观感收益的 diff）。`--mut-2` 的定值以 §7.3 对比度脚本的结果为准。 */
+  --mut-2: #6b7480;       /* 三等信息（时间戳）：比 --mut 再暗一档 */
+  --fs-xs: 12px;          /* 次级文字字号 = 现有 12px，只是给它一个名字 */
+  --dur-fast: .1s;        /* 选中态 / 按下 */
+  --dur: .18s;            /* 淡入 */
+  --ease: cubic-bezier(.4, 0, .2, 1);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
@@ -58,6 +66,9 @@ html, body {
   -webkit-text-size-adjust: 100%;
   overscroll-behavior: none;
   touch-action: manipulation;
+  /* B6-a（§7.9）：iOS / Android 点按按钮时会闪一块灰色高亮，深色界面上很刺眼；关掉后
+     反馈全部由 `:active` / `.on` 自己负责。该属性可继承，写在根上即全站生效。 */
+  -webkit-tap-highlight-color: transparent;
 }
 
 #app {
@@ -67,15 +78,29 @@ html, body {
   max-width: 620px;
   margin: 0 auto;
   padding: 0 12px calc(8px + env(safe-area-inset-bottom, 0px));
+  /* B6-a（§7.9）：顶部安全区（刘海 / 灵动岛）。普通浏览器里 `env()` 取不到值，退回 0px ——
+     与底部安全区同一手法，不写这条则顶栏会被状态栏压住。 */
+  padding-top: env(safe-area-inset-top, 0px);
   overflow: hidden;
 }
 
-/* 数字：所有会变的数值都走这个 —— **不许换行、不许撑高格子** */
-.num { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+/* 数字：所有会变的数值都走这个 —— **不许换行、不许撑高格子**。
+   ⚠️ `font-feature-settings: "tnum" 1` 是 `font-variant-numeric` 的**兜底写法**（B6-a · §7.9）：
+      `--mono` 回退到系统字体时，个别内核只认前者 —— 两条并存，数字才不会在跳动时带宽度抖动。 */
+.num {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
 .up { color: var(--up); }
 .down { color: var(--down); }
 .mut { color: var(--mut); }
 .gold { color: var(--gold); }
+
+/* B6-a（§7.1）：`<b>` 不写 `font-weight` 时吃浏览器默认的 **700**，于是同一个 `<b>`
+   在 HUD 上是 600、在持仓条上是 700 —— 全站唯一的字重不一致。一条兜底统一到 600，
+   与文件里现有的 12 处 `font-weight: 600` 对齐。 */
+b, strong { font-weight: 600; }
 
 /* ══════════════ 三页框架 ＋ 底部 Tab（A6 · 方案 §6） ══════════════
    顶栏与 Tab 条建在三个 `.page` **之外** ⇒ 它们三页常驻（§6.2）。
@@ -906,6 +931,22 @@ canvas.curve {
 /* ⚠️ `.act` 自带 `flex: 1`（横排时等分宽度），纵向 flex 下会变成等分高度、把卡片拉满屏 */
 .menu-btns .act { flex: none; }
 
+/* B6-a（§7.9）：按钮上禁选文字（手机长按会弹出选择手柄，很碍事）。
+   ⚠️ 用 `button` 兜底而不是逐个类名：全站可点的东西都是 `<button>`，一条覆盖完，
+      **日志浮层（`.logs`）刻意不吃** —— 它是 `#overlay` 里的普通容器，玩家要能复读行情。 */
+button { user-select: none; -webkit-user-select: none; }
+
+/* B6-a（§7.5）：`prefers-reduced-motion` **空壳** —— 动效层（B6-c）落地的全部
+   transition / animation 都压到这里；现在只是先把门立起来，命中时全站动效归零。
+   时长压到 0.01ms 而不是 `none`：保留「状态即刻翻转」的语义，只是不播动画。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 /* 节点卡：复用 `.confirm` 骨架，正文用 `.intro p` 那一副（可折行、`pre-line` 认 `\n`） */
 .nodecard p {
   margin: 12px 0 0;
@@ -962,3 +1003,25 @@ canvas.curve {
 .rv-logs::-webkit-scrollbar-thumb, .log-list::-webkit-scrollbar-thumb { background: var(--line); }
 .rv-logs::-webkit-scrollbar-thumb:hover, .log-list::-webkit-scrollbar-thumb:hover { background: var(--mut); }
 .rv-logs::-webkit-scrollbar-button, .log-list::-webkit-scrollbar-button { display: none; }
+
+/* ══════════════ B6-b：触摸命中区 ＋ 窄屏（§7.4 / §7.7） ══════════════ */
+
+/* 命中区扩张：只给短边 32px 的三类次级控件，**不动 `height`**（高度预算全部留给 K 线）。
+   纵向块间留白正好是 8（硬约束 ④），上下各伸 4px ⇒ 恰好相接、不重叠；扩完短边 40px，
+   落在 WCAG 2.2 AA 的 24px 之上，而**观感零变化**。
+   ⚠️ 用伪元素而不是 `min-height`：后者会把整块布局顶高，等于从 K 线区偷高度。
+   ⚠️ `.pick-row` 实测高 **44px**（§7.4 表里写的 32 与现状不符），已达标 —— **不动它**。 */
+.opt, .sym, .ic { position: relative; }
+.opt::after, .sym::after, .ic::after {
+  content: '';
+  position: absolute;
+  inset: -4px 0;
+}
+
+/* 窄屏 360px 一档（§7.7）：**只压字号、不动间距** —— 间距是硬约束 ④，动它整页纵向节奏就散了。
+   基座 13 → 12px（全局同比缩一档），HUD 数值 12 → 11px（与 `.news-tag` 同一个「小字例外」口径）。
+   目标视口是 390px，此档只在 360px 级老机型上命中，正常机型**逐位不受影响**。 */
+@media (max-width: 374px) {
+  html, body { font-size: 12px; }
+  .hud .cell b { font-size: 11px; }
+}
