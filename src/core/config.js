@@ -358,8 +358,72 @@ export const LIQ = { fee: 0.005 };
  * （长局抽检实测 7 处尘埃仓）。
  * ⚠️ 门槛取 **$1**：比本作任何一笔正常下单小三个数量级（开局 $3,000），
  *    只用来砍掉「数值上等于 0」的东西，不参与任何平衡。
+ *
+ * ⚠️ **2026-10-01 起它降级为「浮点保底」**：真实门槛改由下面的 `minNotionalAt()` 按
+ *    「所 × 产品 × 年代」给出（丙案）。两者取大 —— 本值仍兜住所有表里查不到的格子。
  */
 export const MIN_NOTIONAL = 1;
+
+/**
+ * 各所 / 各产品的**单笔最小名义**（丙案 · 2026-10-01 拍板，单位：美元）——
+ * 与 `EXCHANGES[].fees` 同一套「升序取最后一个 `from <= t`」读法。
+ *
+ * 史实核对（2026-10-01，web.archive.org 历史快照 ＋ 官方接口元数据；**未证实处已在注释里标明**）：
+ *   - **Mt.Gox**：查不到任何**下单**门槛 —— 官方 FAQ 那一档只有「最小**提现** 0.01 BTC」，
+ *     答的不是同一个问题 ⇒ 沿用浮点保底 **$1**（`fut: null`，Mt.Gox 全期无合约）。
+ *   - **Bitfinex**：官方 FAQ 原文只说各交易对最小单「定期调整、与其价值相称」，
+ *     目标约 **$10–25 等值**（具体数值出自二手文献 Brauneis et al. 2018）⇒ 取**保守下沿 $10**。
+ *     永续（2019-09-02 起）**无史料** ⇒ 沿用现货的 $10。
+ *   - **BitMEX**：`XBTUSD` 永续 **1 张 = 1 USD 名义**、`lotSize = 1` ⇒ 最小 **$1**（一手接口元数据）。
+ *     现货（本作把 BitMEX 的现货抽象为 1x）无史料 ⇒ 同样 $1。
+ *   - **Binance 现货**：`MIN_NOTIONAL` 2021 快照 = **$10**、2024 快照 = **$5**（一手字段）。
+ *     ⚠️ 它的**引入确切日期不可考**（只能由快照反推约 2019）⇒ 首档直接挂**开业日 2017-07-14**，
+ *     宁可保守（早年也按 $10 卡）。早年真实的最小名义按 BTC 计价（0.001 BTC）、随币价浮动，
+ *     本作**不做「按币价浮动的门槛」**。
+ *   - **Binance 合约**：交易对不同则 $5–10，取**下沿 $5**；`BTCUSDT` / `ETHUSDT` 于
+ *     **2023-11-02** 上调至 **$20**（官方公告）。
+ *
+ * ⚠️ 这些数相对本作资金量级（开局 $3,000 → 中后期百万）小三个数量级，
+ *    **只影响「极小单被拒」这一件事**，不参与任何平衡。
+ */
+const MIN_NOTIONAL_STEPS = {
+  mtgox: {
+    spot: [{ from: Date.UTC(2013, 0, 1), v: 1 }],
+    fut: null,
+  },
+  bitfinex: {
+    spot: [{ from: Date.UTC(2013, 0, 1), v: 10 }],
+    fut: [{ from: Date.UTC(2019, 8, 2), v: 10 }],
+  },
+  bitmex: {
+    spot: [{ from: Date.UTC(2016, 4, 13), v: 1 }],
+    fut: [{ from: Date.UTC(2016, 4, 13), v: 1 }],
+  },
+  binance: {
+    spot: [{ from: Date.UTC(2017, 6, 14), v: 10 }, { from: Date.UTC(2024, 0, 1), v: 5 }],
+    fut: [{ from: Date.UTC(2019, 8, 13), v: 5 }, { from: Date.UTC(2023, 10, 2), v: 20 }],
+  },
+};
+
+/**
+ * 某家交易所**某一时刻、某一类**的单笔最小名义（丙案 · 2026-10-01）。
+ *
+ * 回落链：该所 / 该产品的阶梯取不到（含 `fut: null`、该所那时还没开业）⇒ 返回 `MIN_NOTIONAL`（$1），
+ * 由调用方 `Math.max` 兜住 —— 与 `feeRateOf` 的回落风格一致，**不返回 0**（返回 0 等于取消这道闸）。
+ *
+ * @param {string} exId 交易所 id
+ * @param {number} t    时刻（毫秒）—— 门槛是**年代阶梯**，同一家所不同年份可能不同
+ * @param {'spot'|'fut'} kind 产品。**判据与费率同源**：由这一单**自己的性质**决定
+ *   （`engine.openTrade` 的 `isSpotOrder`），不是由玩家此刻站在哪个页面决定。
+ * @returns {number} ≥ `MIN_NOTIONAL` 的正数
+ */
+export function minNotionalAt(exId, t, kind = 'spot') {
+  const ladder = MIN_NOTIONAL_STEPS[exId]?.[kind === 'fut' ? 'fut' : 'spot'];
+  if (!ladder) return MIN_NOTIONAL;
+  let v = null;
+  for (const s of ladder) { if (s.from <= t) v = s.v; else break; }
+  return v != null ? Math.max(MIN_NOTIONAL, v) : MIN_NOTIONAL;
+}
 
 /**
  * Binance 永续的维持保证金率四档（名义价值越大越严）。

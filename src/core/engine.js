@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, OTC, SUPPLY_SHARE, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
@@ -412,10 +412,13 @@ export function openTrade(s, side, frac = 1) {
   if (!(margin > 0) || margin + fee > cash + 1e-9) {
     return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用保证金不足' };
   }
-  /* 单笔最小名义（2026-09-30）：余额只剩浮点残值时上面那条**拦不住**（`margin > 0` 恒真），
-     会建出一张点不掉的幽灵持仓 —— 见 `config.MIN_NOTIONAL`。 */
-  if (!(margin * lev >= MIN_NOTIONAL)) {
-    return { ok: false, why: `下单金额太小 ｜ 单笔名义需 ≥ ${fmtMoneyShort(MIN_NOTIONAL)}` };
+  /* 单笔最小名义（2026-09-30 建闸 · 2026-10-01 丙案改按「所 × 产品 × 年代」取值）：
+     余额只剩浮点残值时上面那条**拦不住**（`margin > 0` 恒真），会建出一张点不掉的幽灵持仓。
+     `MIN_NOTIONAL`（$1）降级为**浮点保底**，真实门槛走 `config.minNotionalAt` ——
+     产品口径与费率**同源**（都用这一单自己的 `isSpotOrder`），所以切页面换不出不同的门槛。 */
+  const minNotional = Math.max(MIN_NOTIONAL, minNotionalAt(s.ex, timeOf(s), isSpotOrder ? 'spot' : 'fut'));
+  if (!(margin * lev >= minNotional)) {
+    return { ok: false, why: `下单金额太小 ｜ 单笔名义需 ≥ ${fmtMoneyShort(minNotional)}` };
   }
 
   /* OTC 的门槛（§15.3）：单笔名义 ≥ $100 万。锁定 1x ⇒ 名义 = 保证金。
