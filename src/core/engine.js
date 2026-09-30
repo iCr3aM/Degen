@@ -12,9 +12,9 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, LIQ, OTC, SUPPLY_CAP, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, OTC, SUPPLY_CAP, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
-import { warnAnchorAt } from './anchors.js';
+import { newsStartAt, newsTextOf, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, depthOf, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow, residualOfSide } from './god.js';
@@ -29,6 +29,9 @@ import { hashStr, rand } from './rng.js';
 
 /** 交易所归零前多少毫秒给一条预警日志（7 天） */
 const WARN_LEAD = 7 * 24 * HOUR_MS;
+
+/** OTC 通道**自动回退**时那句日志（§15.3）—— 文案单独提出来，因为它的「已播过」闩锁就是比对这句话（见 `advanceOneHour`） */
+const OTC_OFF = '场外通道关闭 ｜ 已自动切回盘口';
 
 /** 一局结束的原因 */
 export const OVER = {
@@ -1139,6 +1142,55 @@ export function advanceOneHour(s) {
   // 被盗削减（B21 · Bitfinex 2016-08-02）：只削该所余额，不归零、不作废仓位。
   for (const ex of EXCHANGES) {
     if (ex.hack && t === ex.hack.at && applyHackCut(s, ex)) return;
+  }
+
+  /* ═══════════ 历史时刻入日志（本轮 · 用户 2026-09-30 拍板「新闻也要写入日志串」）═══════════
+     下面三类都是**一局内只说一次**的历史时刻，一律用 `===` 判等（同 Mt.Gox 归零预警的写法），
+     天然只命中一次，不需要任何「已播过」状态位。
+     ⚠️ 顺序即日志条的**先后**：`pushLog` 把最新的插在队首，同一个小时里最后写的那句才是
+        日志条上显示的那句。新闻放在最前 —— 它是个 24 小时的「填充态」，该让位给同一小时里
+        更具体的事件（与 P2-C「新闻让位于更新的日志」同一条口径）。 */
+  const news = newsStartAt(s.i);
+  if (news) pushLog(s, newsTextOf(news), 'news');
+
+  for (const ex of EXCHANGES) {
+    /* 开张：只报「开局之后才开」的所 —— Mt.Gox / Bitfinex 在 2013-01-01 就在，
+       `s.i` 那根永远不会等于 0（`advanceOneHour` 先自增），开局界面因此天然干净。 */
+    if (ex.open > GAME.start && t === ex.open) pushLog(s, `${ex.name} 上线 ｜ 可在此交易`, 'ok');
+    // 停机维护（B24 · BitMEX 2020-03-13）：窗口内**只平不开**
+    for (const h of ex.halts || []) {
+      if (t === h.from) pushLog(s, `${ex.name} 停机维护 ｜ 只能平仓，不能开仓`, 'bad');
+      if (t === h.to) pushLog(s, `${ex.name} 恢复交易`, 'ok');
+    }
+    /* 杠杆阶梯：**首档 > 1x** 才叫「这类杠杆上线」（1x 就是纯现货，不是杠杆，不播）；
+       其后每一档都是「上限调整」。Mt.Gox / BitMEX / Binance 的现货首档是 1x ⇒ 只在开张时取到。 */
+    for (const [steps, label] of [[ex.spotSteps, '现货'], [ex.futSteps, '合约']]) {
+      if (!steps) continue;
+      steps.forEach((st, k) => {
+        if (t !== st.from) return;
+        if (k > 0) pushLog(s, `${ex.name} ${label}杠杆上限调整为 ${st.max}x`, 'info');
+        else if (st.max > 1) pushLog(s, `${ex.name} ${label}杠杆上线 ｜ 最高 ${st.max}x`, 'ok');
+      });
+    }
+  }
+
+  // 币种上线（BTC 的 `unlock` 是回溯段、**早于开局**，索引为负 ⇒ 永不命中）
+  for (const c of COINS) {
+    if (Math.round((c.unlock - GAME.start) / HOUR_MS) === s.i) {
+      pushLog(s, `${c.name} ${c.sym} 上线 ｜ 可交易`, 'ok');
+    }
+  }
+
+  // Tether 上线（2014-11-20）：资产页那块「买 U」从这一根 K 线起才存在
+  if (t === USDT_LIVE) pushLog(s, 'USDT 上线 ｜ 资产页可买入', 'ok');
+
+  /* 通道自动回退（§15.3）：玩家选了 OTC，但权益跌破门槛 / 换到了还没开通 OTC 的币时，
+     `chanOf` 会**悄悄**退回盘口。它是个**持久状态**（不是某一根的时刻），没有 `===` 可判，
+     所以拿「日志里已经有这句话」当闩锁 —— 零状态改动、不动 `STATE_VERSION`。
+     ⚠️ 已知代价：这句话一旦被 60 条新日志顶出 `s.log`，条件仍成立时会**再报一次**。
+        权益都掉回 $500 万门槛下了，这是小概率末期场景，先不为它加状态位。 */
+  if (s.chan === 'otc' && chanOf(s) === 'book' && !s.log.some(e => e.text === OTC_OFF)) {
+    pushLog(s, OTC_OFF, 'bad');
   }
 
   /* 破产预警（v11 · ③）：会**直接弄死人**（交易所归零）或**重创杠杆仓**（大级别崩盘）的历史事件，

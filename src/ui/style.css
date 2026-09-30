@@ -467,17 +467,19 @@ b, strong { font-weight: 600; }
 
 /* 新闻态（P2-C）：正文前一枚金色小标签，正文由灰转「正文色」—— 与普通日志一眼分得开。
    标签 `flex:none` 占住自己那一段；正文必须 `min-width:0` 才能被压窄后在**自己那一格**上
-   截尾（`text-overflow` 只对块级 / 行内块生效，弹性子项默认不肯缩到内容宽度以下）。 */
-.logline .news-tag {
+   截尾（`text-overflow` 只对块级 / 行内块生效，弹性子项默认不肯缩到内容宽度以下）。
+   ⚠️ 本轮起**日志浮层里的新闻条也复用这枚标签**（`openLog`），所以选择器从
+      `.logline .news-tag` 放宽成 `.news-tag`；它右侧那 4px 只服务日志条（浮层里是 `gap`）。 */
+.news-tag {
   flex: none;
   font-style: normal;
   font-size: 11px;
   line-height: 14px;
   padding: 0 3px;
-  margin-right: 4px;
   color: #1a1405;
   background: var(--gold);
 }
+.logline .news-tag { margin-right: 4px; }
 /* 时间那一格（2026-09-29 需求 1）：与浮层 `.log-row u` 同款 —— **恒为次要灰**，
    不随正文的 kind 染色（`.logline` 容器上的老做法会把爆仓那条的时间一起染红）。 */
 .logline > u {
@@ -814,6 +816,8 @@ canvas.curve {
 .log-row { display: flex; gap: 8px; padding: 2px 12px; font-size: 12px; line-height: 16px; }
 .log-row u { flex: none; text-decoration: none; color: var(--mut); }
 .log-row span { flex: 1 1 auto; min-width: 0; word-break: break-word; }
+/* 新闻那条：正文提到「正文色」，与普通日志区分（底下的 `.log-row span` (0,1,1) 被这条盖过） */
+.log-row.news span { color: var(--fg); }
 
 /* ══════════════ 换所二次确认（Batch 2 · B10） ══════════════
    挂在同一个 `#overlay` 上（`render.confirmExchange`）。与选所弹层共用 `.pick-back` 暗底，

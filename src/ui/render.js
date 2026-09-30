@@ -15,9 +15,9 @@ import { GAME, COINS, EXCHANGES, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFin
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
-import { isLoaded, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
+import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
-import { anchorAt, anchorsInRange, anchorOfAt } from '../core/anchors.js';
+import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { anyHeld, heldSyms, posOf, slotOf } from '../core/state.js';
 import { ticksPerHour } from '../core/simulate.js';
@@ -71,38 +71,6 @@ function moneySlot(key, n, { sign = false } = {}) {
   const t = moneyTierHeld(slotTier.get(key), Math.abs(n));
   slotTier.set(key, t);
   return fmtMoneyShort(n, { sign, minTier: t });
-}
-
-/**
- * 新闻条尾部的**真实涨跌幅**（P2-C ①·补 ＋ 口径 D，2026-09-29 拍板）：**事件当天**的极端值，
- * **从数据包现算**。
- *
- * 口径（用户拍板 D）：当日（`[at, at + 24)`）相对**前一日收盘**的**最高 / 最深**涨跌幅，
- * **方向随收盘走** —— 当天收红就报最高涨（「单日翻倍」是 +40%，而不是「最深 −0.2%」），
- * 收绿就报最深跌（Mt.Gox / 新冠崩盘那几条才显示得出 −19% / −39%）。
- * 只报「最深跌」会把上涨类锚点全报成近乎零的噪声（实测 20 条里近一半与标题相反）。
- *
- * ⚠️ **无前视**：这个数要等当天 24 根全部走完才存在，所以新闻整段后移一天（`anchors.NEWS_DELAY`）。
- * ⚠️ 走 `rawCloseAt`（不含价格位移）：那是玩家自己的单，与「历史上发生了什么」无关。
- * 取不到（该币此刻还没上线 / 行情未加载）时整段省略 —— 不报一个半截的数。
- */
-function newsMove(news) {
-  const sym = news.chain === 'eth' ? 'ETH' : 'BTC';
-  const base = rawCloseAt(sym, news.at - 1);
-  if (!(base > 0)) return '';
-
-  let hi = -Infinity;
-  let lo = Infinity;
-  let last = 0;
-  for (let k = 0; k < HOURS_PER_DAY; k++) {
-    const c = rawCloseAt(sym, news.at + k);
-    if (!(c > 0)) return '';
-    const r = c / base - 1;
-    if (r > hi) hi = r;
-    if (r < lo) lo = r;
-    last = r;
-  }
-  return ` ｜ ${sym} ${fmtPct(last >= 0 ? hi : lo, 1)}`;
 }
 
 /**
@@ -710,25 +678,24 @@ export function update(refs, s, view) {
      而此刻行情往往已经在跑了 —— 写「等待开盘」等于声称一件不成立的事。
      新开局的「开盘」日志由 `main.js` 的 `onIntro()` 补上，空态几乎只出现在老存档上。 */
   const last = s.log[0];
-  /* **新闻态**（P2-C · 裁决 ③：复用日志条这 24px 槽位，零布局开销）：
-     锚点窗口（`[at, at + 24)`）内改播新闻，**但只要有一条比它更新的日志就让位** ——
-     否则玩家刚开完仓，自己那一拍反馈会被新闻压掉整整 24 游戏小时。
-     新闻是 `s.i` 的纯函数，不存任何「已播过」标志：窗口本身不重叠（锚点稀疏），
-     所以同一句新闻在一局里只可能出现一次。 */
-  const news = anchorAt(s.i);
-  const newsOn = !!news && !(last && last.at > news.at);
+  /* **新闻态**（P2-C · 裁决 ③：复用日志条这 24px 槽位，零布局开销）。
+     本轮起新闻**写进了日志**（引擎在窗口起点 push 一条 `kind:'news'`），所以这里不再按
+     `anchorAt(s.i)` 判时间窗，而是看**最上面那一条**是不是新闻、且没超过 `NEWS_HOURS`。
+     两条好处：① 新闻天然进 60 条日志（浮层里翻得到）；② 「同一事件一局内最多一次」由
+     `newsStartAt` 的 `===` 保证，不再依赖「窗口不重叠」这个巧合。
+     ⚠️ 一旦有更新的日志压上来（玩家自己的操作反馈），新闻就降级成一条普通日志 ——
+        这正是「新闻让位于更新的日志」（P2-C 拍板）想要的行为。 */
+  const newsOn = !!last && last.kind === 'news' && s.i < last.at + NEWS_HOURS;
   refs.newsTag.hidden = !newsOn;
   /* ⚠️ 颜色只上在**正文**那一格（`refs.logText`）：时间恒为 `--mut`（颜色落点是 CSS 的
      `.logline > u`）。改这里就要连 CSS 一起看，两处是一件事。 */
-  refs.logTime.hidden = !newsOn && !last;
+  refs.logTime.hidden = !last;
+  refs.logTime.textContent = last ? fmtHour(GAME.start + (last.at ?? s.i) * HOUR_MS) : '';
+  refs.logText.textContent = last ? last.text : '—';
   if (newsOn) {
-    refs.logTime.textContent = fmtHour(GAME.start + news.at * HOUR_MS);
-    refs.logText.textContent = `${news.title}${newsMove(news)}`;
     refs.logText.className = '';
     refs.logline.className = 'logline news';
   } else {
-    refs.logTime.textContent = last ? fmtHour(GAME.start + (last.at ?? s.i) * HOUR_MS) : '';
-    refs.logText.textContent = last ? last.text : '—';
     refs.logText.className = last ? (last.kind === 'bad' ? 'down' : last.kind === 'ok' ? 'up' : 'mut') : 'mut';
     refs.logline.className = 'logline';
   }
@@ -1381,7 +1348,9 @@ export function openLog(s, onClose) {
 
   const list = el('div', 'log-list');
   for (const e of s.log.slice(0, 30)) {
-    const row = el('div', 'log-row ' + (e.kind === 'bad' ? 'down' : e.kind === 'ok' ? 'up' : 'mut'));
+    const row = el('div', 'log-row ' + (e.kind === 'bad' ? 'down' : e.kind === 'ok' ? 'up' : e.kind === 'news' ? 'news' : 'mut'));
+    /* 新闻那条带一枚金色小标签 —— 与日志条上那枚是**同一个** `.news-tag`，玩家一眼能认出 */
+    if (e.kind === 'news') row.append(el('i', 'news-tag', '新闻'));
     row.append(el('u', null, fmtHour(GAME.start + (e.at ?? s.i) * HOUR_MS)), el('span', null, e.text));
     list.append(row);
   }

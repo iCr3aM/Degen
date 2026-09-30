@@ -13,6 +13,8 @@
  */
 
 import { GAME, HOUR_MS } from './config.js';
+import { rawCloseAt, HOURS_PER_DAY } from './market.js';
+import { fmtPct } from './format.js';
 
 /** 新闻在日志条上停留的游戏小时数。1 游戏日 —— 再长就会盖掉玩家自己的操作反馈。 */
 export const NEWS_HOURS = 24;
@@ -87,6 +89,50 @@ export function anchorAt(i) {
   }
   return null;
 }
+
+/**
+ * 第 `i` 根 K 线是不是某条锚点新闻的**窗口起点**（= `at + NEWS_DELAY`）——
+ * 引擎在**这一刻**把新闻写进 `s.log`（`engine.advanceOneHour`），窗口其余 23 根不再写。
+ * ⚠️ 用 `===` 判等 ⇒ 天然**只命中一次**，不需要「已播过」状态位（同 `warnAnchorAt`）。
+ * @returns {object|null} 命中的锚点（含 `at`），没命中返回 null
+ */
+export function newsStartAt(i) {
+  for (const a of ENTRIES) if (i === a.at + NEWS_DELAY) return a;
+  return null;
+}
+
+/**
+ * 新闻条的「当天涨跌幅」后缀（P2-C）。
+ *
+ * **方向随收盘走** —— 当天收红就报最高涨（「单日翻倍」是 +40%，而不是「最深 −0.2%」），
+ * 收绿就报最深跌（Mt.Gox / 新冠崩盘那几条才显示得出 −19% / −39%）。
+ * 只报「最深跌」会把上涨类锚点全报成近乎零的噪声（实测 20 条里近一半与标题相反）。
+ *
+ * ⚠️ **无前视**：这个数要等当天 24 根全部走完才存在，所以新闻整段后移一天（`NEWS_DELAY`）。
+ * ⚠️ 走 `rawCloseAt`（不含价格位移）：那是玩家自己的单，与「历史上发生了什么」无关。
+ * 取不到（该币此刻还没上线 / 行情未加载）时整段省略 —— 不报一个半截的数。
+ */
+export function newsMove(news) {
+  const sym = news.chain === 'eth' ? 'ETH' : 'BTC';
+  const base = rawCloseAt(sym, news.at - 1);
+  if (!(base > 0)) return '';
+
+  let hi = -Infinity;
+  let lo = Infinity;
+  let last = 0;
+  for (let k = 0; k < HOURS_PER_DAY; k++) {
+    const c = rawCloseAt(sym, news.at + k);
+    if (!(c > 0)) return '';
+    const r = c / base - 1;
+    if (r > hi) hi = r;
+    if (r < lo) lo = r;
+    last = r;
+  }
+  return ` ｜ ${sym} ${fmtPct(last >= 0 ? hi : lo, 1)}`;
+}
+
+/** 新闻的完整正文 —— **写入 `s.log` 的那一句就是日志条上显示的那一句**（同一份真源，两处共用） */
+export const newsTextOf = news => `${news.title}${newsMove(news)}`;
 
 /**
  * 小时序号落在 `[lo, hi]` 内的锚点（K 线标记用）。
