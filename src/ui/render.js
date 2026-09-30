@@ -1410,10 +1410,14 @@ export function openOrder(s, anchor) {
   }
   panel.append(body);
 
-  // 贴在锚点正上方（下方是 K 线区，浮层会盖住行情）—— 与选所同一套视口坐标写法
+  /* 贴在锚点正上方（下方是 K 线区，浮层会盖住行情）——与选所同一套视口坐标写法。
+     ⚠️ 水平方向**贴锚点左边缘**，不是右边缘：选所那枚锚点在顶栏**最右**，右对齐正好；
+        而挂单键在操作区**最左**、只占约 1/3 屏宽，而面板宽 226px（`.pick-body` 定宽 224）
+        —— 再按右边缘对齐就会把整块推出去（实测 390 屏下 left ≈ −96px，左边一列「买入 -x%」全在屏外）。
+        左对齐天然落在 12px 留白里，且 `.pick` 自带 `max-width: calc(100vw - 24px)` ⇒ 任何屏宽都不会出界。 */
   const r = anchor.getBoundingClientRect();
   panel.style.bottom = Math.round(document.documentElement.clientHeight - r.top + 4) + 'px';
-  panel.style.right = Math.round(document.documentElement.clientWidth - r.right) + 'px';
+  panel.style.left = Math.round(r.left) + 'px';
 
   back.addEventListener('pointerdown', closePicker);
   ov.append(back, panel);
