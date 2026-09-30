@@ -180,8 +180,9 @@ export const EXCHANGES = [
     open: Date.UTC(2013, 0, 1), close: Date.UTC(2014, 1, 25),
     spotSteps: [{ from: Date.UTC(2013, 0, 1), max: 1 }],
     futSteps: null,
-    /* 史实：小户 **0.60% 起**，按最近 720 小时（30 天）滚动成交量阶梯递减、最低 0.25%；
-       **买卖双方都收**（本作只有单笔市价成交，记单边一次）。 */
+    /* 史实：小户 **0.60% 起**，按最近 720 小时（30 天）滚动成交量阶梯递减、最低 0.25%
+       （13 档的明细见下面的 `FEE_TIERS.mtgox`）；**买卖双方都收**（本作只有单笔市价成交，记单边一次）。
+       这里的 `0.006` 是**首档（基准）**，阶梯由 `feeRateOf` 按 30 天量打折。 */
     fees: { spot: [{ from: Date.UTC(2013, 0, 1), v: 0.006 }], fut: null },
   },
   {
@@ -460,17 +461,110 @@ export function marginDailyRateAt(t) {
 }
 
 /**
- * 某家交易所**某一时刻、某一类**的吃单费率（v12 · 方案 §11.3）。
+ * **成交量阶梯手续费**（v19 · 2026-10-01 用户拍板）——
+ * 真实交易所都按**近 30 天滚动成交量**给费率打折：量越大、费越低。改动前四家全是**一档价**，
+ * 于是「巨鲸」和「散户」付同样的费率 —— 本轮把这条史实补上（巨鲸规模才看得见，散户落在首档）。
+ *
+ * 分档口径（`unit`）：
+ *   - `btc` —— Mt.Gox 史实就是**按 BTC 枚数**分档（0–100 枚 0.60% 起，13 档递减到 0.25%）
+ *   - `usd` —— 其余三家按**美元名义额**分档（Binance 的 VIP、Bitfinex / BitMEX 的 30 天成交量）
+ *
+ * 表形与 `BINANCE_MARGIN_TIERS` 同构：升序，取**第一个 `vol <= upTo`** 的档；超出末档取末档。
+ * `null` ⇒ 该类不吃阶梯（`feeRateOf` 按既有回落链处理）。
+ *
+ * ⚠️ 表里的数是**绝对费率**，但 `feeRateOf` 真正返回的是「**相对首档的折扣比** × 当时的基准费率」——
+ *    这样 BitMEX 合约 2021-01 那次基准下调（0.075% → 0.05%）会**自动**传导到全部档位，
+ *    不必为每个年代各写一张阶梯。首档恒等于基准（折扣 = 1）⇒ 小额散户的费率**逐位不变**。
+ *
+ * ⚠️ **史实可靠性**（勿凭记忆改动）：Mt.Gox 的 13 档是**确证**的（英文 Bitcoin Wiki 记「近 720 小时
+ *    滚动窗口」，2026-10-01 联网复核）；Bitfinex 2013–2018 的档表**无一手存档**，BitMEX / Binance
+ *    的档表来自**现行档位** ⇒ 这三家是「按当代档位取形、幅度为近似」（GDD §11.3 已声明）。
+ */
+const FEE_TIERS = {
+  mtgox: {
+    unit: 'btc',
+    spot: [
+      { upTo: 100,      v: 0.006  },
+      { upTo: 200,      v: 0.0055 },
+      { upTo: 500,      v: 0.0053 },
+      { upTo: 1000,     v: 0.005  },
+      { upTo: 2000,     v: 0.0046 },
+      { upTo: 5000,     v: 0.0043 },
+      { upTo: 10000,    v: 0.004  },
+      { upTo: 25000,    v: 0.003  },
+      { upTo: 50000,    v: 0.0029 },
+      { upTo: 100000,   v: 0.0028 },
+      { upTo: 250000,   v: 0.0027 },
+      { upTo: 500000,   v: 0.0026 },
+      { upTo: Infinity, v: 0.0025 },
+    ],
+    fut: null,
+  },
+  bitfinex: {
+    unit: 'usd',
+    /* Taker 0.20% 起、随 30 天量降到 0.055%（Maker 侧同样递减，本作只有市价单 ⇒ 只取 taker）。 */
+    spot: [
+      { upTo: 5e5,      v: 0.002   },
+      { upTo: 1.5e6,    v: 0.0018  },
+      { upTo: 3e6,      v: 0.0016  },
+      { upTo: 6e6,      v: 0.0014  },
+      { upTo: 1e7,      v: 0.0012  },
+      { upTo: 2e7,      v: 0.001   },
+      { upTo: 5e7,      v: 0.0008  },
+      { upTo: Infinity, v: 0.00055 },
+    ],
+    fut: null,          // 与费率同一条回落链：合约沿用现货档（史实上本就是同一张表）
+  },
+  bitmex: {
+    unit: 'usd',
+    spot: null,         // 现货 0.05% flat —— 该所现货市场一直很小，史实无阶梯
+    fut: [
+      { upTo: 1e6,      v: 0.00075 },   // 经典期基准（2021-01 起基准降到 0.05%，折扣比不变）
+      { upTo: 5e6,      v: 0.0005  },
+      { upTo: 1e7,      v: 0.0004  },
+      { upTo: Infinity, v: 0.00035 },
+    ],
+  },
+  binance: {
+    unit: 'usd',
+    spot: [
+      { upTo: 2e7,      v: 0.001   },   // VIP0–2：吃单一律 0.100%
+      { upTo: 5e7,      v: 0.0006  },   // VIP3
+      { upTo: 1.5e8,    v: 0.00031 },   // VIP4–5
+      { upTo: Infinity, v: 0.00023 },   // VIP6–9
+    ],
+    fut: [
+      { upTo: 5e6,      v: 0.0004  },   // VIP0–1
+      { upTo: 2e7,      v: 0.00035 },   // VIP2
+      { upTo: 5e7,      v: 0.00032 },   // VIP3
+      { upTo: 1.5e8,    v: 0.00027 },   // VIP4–5
+      { upTo: Infinity, v: 0.00017 },   // VIP6–9
+    ],
+  },
+};
+
+/** 该所 / 该类别的阶梯表；该类没有 ⇒ 回落到现货那类（与费率本身的回落链同向） */
+function tierTableOf(exId, kind) {
+  const t = FEE_TIERS[exId];
+  if (!t) return null;
+  return (kind === 'fut' ? (t.fut || t.spot) : t.spot) || null;
+}
+
+/**
+ * 某家交易所**某一时刻、某一类**的吃单费率（v12 · 方案 §11.3；v19 起带成交量阶梯）。
  *
  * @param {string} exId 交易所 id
  * @param {number} t    时刻（毫秒）—— 费率是**年代阶梯**，同一家所不同年份可能不同
  * @param {'spot'|'fut'} kind 现货 / 合约。**调用方必须传对**：一笔单走哪一张表由那笔单自己的
  *   性质决定（现货仓走 `spot`、合约仓走 `fut`，判据 `positions.isSpot`），不是由玩家此刻站在哪个页面决定。
+ * @param {{u:number,b:number}|number|null} vol 该所**近 30 天**的成交量（`engine.vol30Of` 的返回）：
+ *   传对象时按该所自己的 `unit` 取（`btc` → `b`，`usd` → `u`）；传数字时直接当那个口径用。
+ *   不传 / 传 0 ⇒ 落在首档（无折扣）。
  *
  * 回落链：该类的阶梯取不到 ⇒ **回落到现货**（Bitfinex 的「合约」本就没有独立费率档）；
  * 现货也取不到（该所那时还没开业）⇒ **0**（不收钱，而不是崩）。`fut: null` 同理回落到现货。
  */
-export function feeRateOf(exId, t, kind = 'spot') {
+export function feeRateOf(exId, t, kind = 'spot', vol = null) {
   const ex = exchangeOf(exId);
   if (!ex) return 0;
   const at = (ladder) => {
@@ -480,8 +574,17 @@ export function feeRateOf(exId, t, kind = 'spot') {
     return v;
   };
   const fut = kind === 'fut' ? at(ex.fees.fut) : null;
-  const v = fut != null ? fut : at(ex.fees.spot);
-  return v != null ? v : 0;
+  const base = fut != null ? fut : at(ex.fees.spot);
+  if (base == null) return 0;
+
+  /* 成交量阶梯（v19）：返回「折扣比 × 基准」。首档恒等于基准 ⇒ 小额散户**逐位不变**。 */
+  const tiers = tierTableOf(exId, kind);
+  if (!tiers) return base;
+  const q = typeof vol === 'number' ? vol
+    : (vol ? (FEE_TIERS[exId].unit === 'btc' ? (vol.b || 0) : (vol.u || 0)) : 0);
+  let hit = tiers[tiers.length - 1].v;
+  for (const x of tiers) if (q <= x.upTo) { hit = x.v; break; }
+  return base * (hit / tiers[0].v);
 }
 
 /* ══════════════ 跨所转账的**通道（rail）**（v12 · 方案 §11.4） ══════════════
@@ -781,6 +884,8 @@ export const OTC = {
   ],
   p: 4,             // 市况倍数的指数
   multCap: 40,      // 市况倍数上限
+  sizeP: 0.5,       // 规模倍数的指数（v19）：平方根律，与 §14.3 滑点同形
+  sizeCap: 4,       // 规模倍数上限（v19）：本笔名义 = 16 × min 时顶格
   max: 0.08,        // 溢价硬上限 8%（任何年代、任何市况）
 };
 
@@ -808,11 +913,18 @@ export function otcSigmaRefAt(t) {
  * 一次 OTC 成交的溢价（买上抬 / 卖下压的幅度）。
  * @param {number} sigma 该币当前的 σ_30日（`impact.sigmaOf` 的结果，与滑点同一个数）
  * @param {number} t     游戏时刻（ms）
+ * @param {number} notional 本笔成交的名义额（v19）—— 大宗越大越贵
  * @returns {number} `base(t)` ~ `OTC.max`
+ *
+ * ⚠️ **规模倍数（v19 · 2026-10-01 用户拍板）**：现实里大宗台的报价随**单笔规模**变宽 ——
+ *    同样一个 2013 年 0.50% 的基准点差，$1M 的单与 $100M 的单拿到的价不一样。
+ *    倍率取**平方根律**（`sqrt(名义 ÷ OTC.min)`，与 §14.3 滑点同形），上限 `sizeCap = 4` ——
+ *    即本笔名义 ≥ 16 × min（$1,600 万）后不再变宽。$1M 的单倍率为 1（与改动前逐位相同）。
  */
-export function otcPremiumOf(sigma, t) {
+export function otcPremiumOf(sigma, t, notional = OTC.min) {
   const base = otcBaseAt(t);
   const s = Number.isFinite(sigma) && sigma > 0 ? sigma : otcSigmaRefAt(t);
   const mult = Math.min(OTC.multCap, Math.max(1, Math.pow(s / otcSigmaRefAt(t), OTC.p)));
-  return Math.min(OTC.max, Math.max(base, base * mult));
+  const size = Math.min(OTC.sizeCap, Math.max(1, Math.pow(Math.max(notional, OTC.min) / OTC.min, OTC.sizeP)));
+  return Math.min(OTC.max, Math.max(base, base * mult * size));
 }

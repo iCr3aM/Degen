@@ -282,11 +282,37 @@ function refreshOverhang(s, sym) {
  * ⚠️ 只写量：滑点分母走 `liqOf`、价格位移走 `s.flow`，两条都不看这里 —— 它不参与任何玩法判定。
  * ⚠️ 口径（用户 2026-10-01 拍板）：名义额（含杠杆）／开仓＋平仓＋强平都算／**OTC 不算**
  *    （私下一口价不落公开盘口，与「不写冲击池」同一先例）—— OTC 的过滤放在调用点。
+ * ⚠️ v19 起**按所分账**（`pvol[i][exId]`）：成交量阶梯手续费算的是「你在**这家所**近 30 天做了多少」，
+ *    跨所搬钱后要重新攒量 —— 与真实交易所的 VIP 档按所计算一致。量柱仍是**全所合计**（读的是 `u`）。
  */
-function addPlayerVol(s, notional) {
-  if (!(notional > 0)) return;
+function addPlayerVol(s, notional, exId) {
+  if (!(notional > 0) || !exId) return;
   if (!s.pvol) s.pvol = {};
-  s.pvol[s.i] = (s.pvol[s.i] || 0) + notional;
+  const cell = s.pvol[s.i] || (s.pvol[s.i] = {});
+  const e = cell[exId] || (cell[exId] = { u: 0, b: 0 });
+  e.u += notional;
+  /* BTC 等值另一格（Mt.Gox 的档位是**按 BTC 枚数**分的）。取不到 BTC 价就只留美元那一格。 */
+  const bp = closeAt('BTC', s.i);
+  if (bp > 0) e.b += notional / bp;
+}
+
+/**
+ * 某家交易所**近 30 天（720 根）**的成交量 —— 成交量阶梯手续费的分档依据（v19 · 2026-10-01）。
+ *
+ * 与真实交易所的「30 天滚动成交量」同口径：**含窗口两端、按小时求和**。
+ * 复杂度 O(720)、与局长度无关（只扫窗口，不扫全程）。
+ * @returns {{u:number,b:number}} 两个口径的合计（美元名义额 / BTC 等值）
+ */
+export function vol30Of(s, exId, i) {
+  let u = 0, b = 0;
+  if (!s.pvol) return { u, b };
+  const from = Math.max(0, i - 30 * HOURS_PER_DAY + 1);
+  for (let k = from; k <= i; k++) {
+    const e = s.pvol[k] && s.pvol[k][exId];
+    if (!e) continue;
+    u += e.u; b += e.b;
+  }
+  return { u, b };
 }
 
 /* 日内份额的缓存：键 = `sym|day`，值 = { sum, n }（当天**已上线**小时的份额和与小时数）。
@@ -322,8 +348,9 @@ const slipTag = (impact, count = 1) =>
  * 一次 OTC 成交的溢价（P2-B 修订 · §15.3）。
  * **复用同一个 `dailySigma`** —— 不需要第二套「市场有多慌」的度量，它本来就是现成的。
  * ⚠️ 取「**此刻**」而不是开仓时的：卖出面对的是当时的流动性，不是当初的（§15.3 ⑤）。
+ * ⚠️ v19 起多一个 `notional`：大宗台的报价随**单笔规模**变宽（`OTC.sizeP` / `sizeCap`）。
  */
-const otcPremiumFor = (s, sym) => otcPremiumOf(dailySigma(sym, s.i), timeOf(s));
+const otcPremiumFor = (s, sym, notional) => otcPremiumOf(dailySigma(sym, s.i), timeOf(s), notional);
 
 /**
  * 日志里的价格走 `fmtLogPrice`（本轮 ②）—— `≥ $1` 固定 1 位小数、`< $1` 保留有效数字。
@@ -453,7 +480,9 @@ export function openTrade(s, side, frac = 1) {
   /* 费率是**两张表**（v12 · 方案 §11.3）：这一单走 `spot` 还是 `fut` 由**它自己的性质**定
      （`spotOf` 只看模式 / OTC），与玩家此刻翻到哪一页无关 —— 否则切个页面就能换费率。 */
   const isSpotOrder = spotOf(s, otc);
-  const feeRate = feeRateOf(s.ex, timeOf(s), isSpotOrder ? 'spot' : 'fut');
+  /* 费率带上这家所**近 30 天**的成交量（v19 · 阶梯手续费）：巨鲸买单便宜、散户落在首档。
+     ⚠️ 取的是**本笔之前**的量 —— 这一笔自己不该把自己打进下一档。 */
+  const feeRate = feeRateOf(s.ex, timeOf(s), isSpotOrder ? 'spot' : 'fut', vol30Of(s, s.ex, s.i));
   /* 这一单能动用多少钱（v13 · 方案 §9.2 ②）：**合约只认 USDT**（USDT 本位永续，
      保证金必须是 U），现货 / OTC 是两格之和（扣的时候先扣 U、不足补美元）。
      所以 2013 年那 $3,000 美元可以买现货，但要玩合约得先在资产页「买 U」。 */
@@ -493,7 +522,7 @@ export function openTrade(s, side, frac = 1) {
      ⚠️ 保证金与开仓费都不受它影响（那两项按名义价值算，与成交价无关），
         受影响的是 `size`：买贵了就拿到的币少一点，这才是代价的真实形态。 */
   const notional = margin * lev;
-  const cost = otc ? otcPremiumFor(s, s.sym) : impactFor(s, s.sym, s.i, notional);
+  const cost = otc ? otcPremiumFor(s, s.sym, notional) : impactFor(s, s.sym, s.i, notional);
   const fill = fillPrice(price, side === 'long' ? 1 : -1, cost);
 
   /* 供应量上限（P2-B2 · §15.1 / §15.4）：买入会从市场里锁走一部分币，锁走的枚数不得越界。
@@ -561,8 +590,8 @@ export function openTrade(s, side, frac = 1) {
   if (!otc) {
     const dir = side === 'long' ? 1 : -1;
     if (addFlow(s, s.sym, dir * SHOCK.share * cost)) invalidateSigma();
-    /* 玩家自己的成交量（v17 · 2026-10-01）：这一笔从此在量柱上看得见 */
-    addPlayerVol(s, notional);
+    /* 玩家自己的成交量（v17 · 2026-10-01）：这一笔从此在量柱上看得见，也进这家所的 30 天量（v19） */
+    addPlayerVol(s, notional, s.ex);
   }
   /* 持仓抛压折价（v18 · 2026-10-01）：这一单若**加厚了现货实物多头**，市场对你的忌惮随之变重。
      合约 / OTC 不改变 `capturedOf` ⇒ 值没变时函数内部自己会跳过（不写、不冲 σ 缓存）。 */
@@ -591,12 +620,12 @@ export function closeTrade(s, why = '手动') {
   /* 成交价（P2-B1 / P2-B3）：**平多是卖、平空是买**，所以方向与开仓时相反 ——
      代价永远对玩家不利：卖掉打点折、买回抬点价。本次成交名义 = 整条仓位（一次性平完）。 */
   const notional = pos.size * price;
-  const cost = otc ? otcPremiumFor(s, sym) : impactFor(s, sym, s.i, notional);
+  const cost = otc ? otcPremiumFor(s, sym, notional) : impactFor(s, sym, s.i, notional);
   const fill = fillPrice(price, pos.side === 'long' ? -1 : 1, cost);
 
   /* 平仓费走**开仓时那张表**（v12 · §11.3）：判据是仓位自己的 `isSpot`，
      不是玩家此刻的模式 —— 现货仓平仓不该按合约费率收，反之亦然。 */
-  const r = closePosition(pos, fill, feeRateOf(pos.ex, timeOf(s), isSpot(pos) ? 'spot' : 'fut'));
+  const r = closePosition(pos, fill, feeRateOf(pos.ex, timeOf(s), isSpot(pos) ? 'spot' : 'fut', vol30Of(s, pos.ex, s.i)));
   /* 平仓款**按 `pos.mix` 同比例退回两格**（v13 · 方案 §9.2 ③）——
      2013 年用美元开的仓，平掉回的还是美元：否则 Mt.Gox 会凭空空降一笔 USDT。 */
   credit(s, pos.ex, r.net, pos.mix);
@@ -604,7 +633,7 @@ export function closeTrade(s, why = '手动') {
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(s, sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
   /* 玩家自己的成交量（v17 · 2026-10-01）：平仓同样是成交 ⇒ 记进当根 K 线的量柱。
      OTC 不落公开盘口（与「不写冲击池」同一先例）⇒ 不计。 */
-  if (!otc) addPlayerVol(s, notional);
+  if (!otc) addPlayerVol(s, notional, pos.ex);
   const tag = otc ? `｜OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
   /* 盈亏 ＋ 手续费（本轮 ② · 用户拍板）：
      - **回合净额** = 毛盈亏 − 开仓费 − 平仓费。开仓费在开仓那一刻已经从余额扣过一次
@@ -660,7 +689,7 @@ function forceLiquidate(s, pos, atPrice) {
   const notional = pos.size * atPrice;                // 实际成交名义（强平价上的那笔量）
   /* 玩家自己的成交量（v17 · 2026-10-01）：强平也是一笔真实成交 ⇒ 记进当根 K 线的量柱。
      取 `size × atPrice`，与 `closeTrade` 同口径。 */
-  addPlayerVol(s, notional);
+  addPlayerVol(s, notional, pos.ex);
   /* 订单冲击（2026-10-01 拍板）：强平同样是**卖出 / 买回**，写一笔与开仓对称的反向台阶 ——
      与 `closeTrade` 完全同一公式与方向（平多打压 −1、平空推高 +1）。
      ⚠️ 强平多发生在**急跌那根**，这笔反向冲击会让兵败如山倒的 K 线更陡一档，是刻意的。 */
@@ -981,6 +1010,11 @@ export function advanceOneHour(s) {
     pushLog(s, `到账 ${to ? to.name : tr.to} ｜ ${fmtMoney(tr.amount)}`, 'ok');
   }
   decayPulse(s);
+
+  /* 持仓抛压折价**按日重算**（v19 · 2026-10-01）：流通量逐年增长 ⇒ **同样的持仓占比在缩小**，
+     折价该跟着退坡。只在**跨日那一根**刷新（每 24 根一次），不逐根刷 —— 逐根会把 σ 缓存冲烂。
+     ⚠️ 台阶只影响 `at` 之后的 K 线 ⇒ 按日刷新**不会**重标定历史（与 `s.flow` 逐根约束同一纪律）。 */
+  if (s.i % HOURS_PER_DAY === 0) for (const sym of heldSyms(s)) refreshOverhang(s, sym);
 
   // 交易所归零（目前只有 Mt.Gox 2014-02-25）：提前 7 天预警，到点余额清零、该所仓位作废。
   // 预警只在「玩家此刻就待在那家所」时出现 —— 已经搬走的人不需要被吓一跳。

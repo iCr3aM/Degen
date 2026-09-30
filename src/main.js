@@ -141,7 +141,14 @@ async function boot() {
 
   /* 玩家自己的成交量（v17 · 2026-10-01）：同样走**注入**，让 `view.windowFor` 不必认识 `s`。
      没成交的小时恒返回 0 ⇒ 量柱与「只有数据包份额」的那一版**逐位相同**（离线断言靠这条）。 */
-  bindPlayerVolSource(i => (s.pvol && s.pvol[i]) || 0);
+  /* ⚠️ v19 起 `pvol[i]` 是**按所分账**的对象（`{ exId: { u, b } }`），量柱要的是**全所合计的 `u`**。 */
+  bindPlayerVolSource(i => {
+    const cell = s.pvol && s.pvol[i];
+    if (!cell) return 0;
+    let sum = 0;
+    for (const id in cell) sum += cell[id].u;
+    return sum;
+  });
 
   refs = mount(root);
   hideBoot();

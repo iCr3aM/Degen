@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf } from '../core/engine.js';
+import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
@@ -627,7 +627,9 @@ export function update(refs, s, view) {
        接下来真正会被收的那一档 —— OTC 恒为现货，所以也要算进去。
        （着色那三档是按**现货**费率定的门槛：Mt.Gox 0.60% 红 / Bitfinex 0.20% 红 /
         BitMEX 0.05% 灰 / Binance 0.10% 金，合约费率普遍更低 ⇒ 落到灰档，不误导。） */
-    const fr = feeRateOf(s.ex, now, chanOf(s) !== 'otc' && s.mode === 'fut' ? 'fut' : 'spot');
+    /* v19：带上这家所**近 30 天**的成交量 —— 顶栏必须显示玩家**现在真的会付**的那一档，
+       否则巨鲸看着 0.60% 却被收了 0.53%，账对不上。 */
+    const fr = feeRateOf(s.ex, now, chanOf(s) !== 'otc' && s.mode === 'fut' ? 'fut' : 'spot', vol30Of(s, s.ex, s.i));
     setText(refs.exRate, `费率 ${fmtRate(fr, 2)}`);
     setCls(refs.exRate, fr >= 0.002 ? 'down' : fr >= 0.001 ? 'gold' : '');
   }
