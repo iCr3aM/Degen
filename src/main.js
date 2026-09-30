@@ -61,7 +61,8 @@ let rvTimer = 0;
 let rvLast = 0;
 let rvAcc = 0;
 
-/* 上帝模式的隐藏入口（方案 §2.1）：**1.5 秒内连点顶栏「Degen」5 次**。
+/* 上帝模式的隐藏入口（方案 §2.1）：**1.5 秒内连点顶栏「Degen」5 次**解锁；
+   ⚠️ **解锁之后不用再连点** —— `s.god` 非空即「这一局已经开了」，单击标题直接重开面板（2026-10-01）。
    与上面那套双重确认同一个理由 —— 顶栏是静态 DOM、不参与每帧重绘，武装状态只能放在这里。
    ⚠️ 计数**不写进 `s`**：它是个纯手势状态，进存档只会污染状态位（重开一局还得记得清）。 */
 const GOD_TAPS = 5;
@@ -689,8 +690,22 @@ function onOrder(v) {
       （`bind.js` 会 `preventDefault` 掉 `pointerdown`，挂上去就打不了字）。
       ⚠️ 跳日期那三排档位是**按钮**、不是输入框，照旧走 `data-godyear` / `godmon` / `godday`。 */
 
-/** 连点计数：**1.5 秒内 5 次**才触发；间隔超时就重新从 1 数起 */
+/**
+ * 标题点击。两条路径（2026-10-01）：
+ *   · **已解锁**（`s.god` 非空）⇒ 单击直接重开面板，不必再连点；
+ *   · **未解锁** ⇒ 走连点计数：**1.5 秒内 5 次**才触发，间隔超时就从 1 数起。
+ * 关掉上帝模式（`onGodOff` 把 `s.god` 置空）等于回到未解锁 ⇒ 下次仍要连点 5 次，
+ * 「隐藏入口」这层语义因此没有被削弱。
+ */
 function onGodTap() {
+  if (s.god) {
+    /* 与下面那条同一个理由：本局已结束 / 正停在借贷遮罩上，时间不再前进，开面板没有意义 */
+    if (s.over || s.pending) return;
+    godSel = null;                      // 重新打开 ⇒ 选择器回到「当前日期」起手
+    showGod();
+    after();
+    return;
+  }
   const now = performance.now();
   godTaps = now - godTapAt > GOD_TAP_MS ? 1 : godTaps + 1;
   godTapAt = now;
