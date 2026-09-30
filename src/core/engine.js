@@ -12,8 +12,8 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, OTC, SUPPLY_CAP, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
-import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, OTC, SUPPLY_SHARE, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
+import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, depthOf, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
@@ -139,6 +139,21 @@ export const otcOpenFor = (s, sym = s.sym) => {
  *    换币时若还留着 `'otc'`，玩家会在一个「这个币根本没有的通道」里下单。
  */
 export const chanOf = s => (s.chan === 'otc' && otcUnlocked(s) && otcOpenFor(s) ? 'otc' : 'book');
+
+/**
+ * 某币**此刻**的供应量闸门（枚）—— 「允许锁走的占比 × 当年真实流通量」（§15.1 / §15.4）。
+ *
+ * ⚠️ 2026-09-30 起流通量取的是**真实序列**（`market.supplyAt`，读 `index.json` 的 `circulating`，
+ *    逐年锚点线性插值），不再是 `config` 里那个固定的枚数 —— 那个数的分母是总供应量，
+ *    与 K 线头部显示的流通量是两套口径（详见 `config.SUPPLY_SHARE` 的注释）。
+ * ⚠️ 取不到流通量（清单里没这个币 / `manifest` 还没加载）⇒ 返回 `Infinity`（**不设闸门**）：
+ *    宁可漏放一条背景约束，也不能因为一个数据缺格把所有买入都拒掉。
+ */
+export function supplyCapOf(sym, i) {
+  const share = SUPPLY_SHARE[sym];
+  const circ = supplyAt(sym, i);
+  return share != null && circ > 0 ? share * circ : Infinity;
+}
 
 /**
  * 账户权益归零即破产（GDD §1.3）。
@@ -419,9 +434,9 @@ export function openTrade(s, side, frac = 1) {
      ⚠️ 校验必须排在**动账之前** —— 下面那几行一旦执行，钱已经扣了，这时再拒绝就没法干净地退回。
      ⚠️ 只有多头方向消耗供应量（空头没把币拿走）；**OTC 买入不算**（对手方私下一口价，
         不从市场拿走流通量），所以这里直接跳过 —— 落点就是下面那句 `pos.otc = true`。
-     按真实上限落地后这条整局都不会触发，所以**不为它新增终局**（GDD §16 只有两种收场）。 */
-  const cap = SUPPLY_CAP[s.sym];
-  if (!otc && side === 'long' && cap != null && capturedOf(s, s.sym) + margin * lev / fill > cap) {
+     闸门 = 占比 × 当年真实流通量（`supplyCapOf`），整局不会触发 ⇒ **不为它新增终局**（GDD §16 只有两种收场）。 */
+  const cap = supplyCapOf(s.sym, s.i);
+  if (!otc && side === 'long' && capturedOf(s, s.sym) + margin * lev / fill > cap) {
     return { ok: false, why: `${s.sym} 已触及供应量上限，无法继续买入` };
   }
 
@@ -603,8 +618,8 @@ export function placeOrder(s, side, dev) {
 
   /* 供应量上限（§15.1 / §15.4）：**挂单时先校验**（超上限不许挂），
      成交时再按剩余额度**截断**（不失败 —— 钱都冻了，失败最难看；§33.6）。 */
-  const cap = SUPPLY_CAP[sym];
-  if (side === 'long' && cap != null && capturedOf(s, sym) + size > cap) {
+  const cap = supplyCapOf(sym, s.i);
+  if (side === 'long' && capturedOf(s, sym) + size > cap) {
     return { ok: false, why: `${sym} 已触及供应量上限，无法继续买入` };
   }
 
@@ -668,8 +683,8 @@ function matchOrders(s) {
     let q = depthOf(o.dLock, dailySigma(sym, s.i), hourLiqOf(sym, s.i));
 
     /* 供应量上限：成交时按**剩余额度截断**，不失败（钱都冻了，失败最难看 —— §33.6）。 */
-    const cap = SUPPLY_CAP[sym];
-    if (long && cap != null) q = Math.min(q, Math.max(0, cap - capturedOf(s, sym)) * L);
+    const cap = supplyCapOf(sym, s.i);
+    if (long) q = Math.min(q, Math.max(0, cap - capturedOf(s, sym)) * L);
 
     const qty = Math.min(rem, q / L);
     if (!(qty > 0)) continue;

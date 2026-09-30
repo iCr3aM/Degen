@@ -109,7 +109,7 @@ K 线图一次重绘要跑 ~200 根 × N 次 ⇒ 200×8 = 1600 次浮点幂运�
 | [config.js](file:///f:/Cr3aM/Desktop/Degen/src/core/config.js) | **OTC 溢价**：年代基准 × 市况倍数 | 2013 `.50%` → 2016 `.30%` → 2020+ `.15%`；`mult = (σ/σ_ref)^4`，夹 1–40，硬顶 8% | `otcPremiumOf` |
 | [config.js](file:///f:/Cr3aM/Desktop/Degen/src/core/config.js) | **日流动性**：两端锚定 ＋ 真实年内形状 | 2013 阈值 $5 万 → 2024 真实数据，几何插值 | `liq.bin` → `liqOf`（滑点分母 / 拥堵共享） |
 | [congestion.js](file:///f:/Cr3aM/Desktop/Degen/src/core/congestion.js) | **链上拥堵指数** ＋ 脉冲 | 坡度算法在本地，锚点表从 [anchors.js](file:///f:/Cr3aM/Desktop/Degen/src/core/anchors.js) 派生（20 条） | 确认数 / `arrivalCandles` |
-| [config.js](file:///f:/Cr3aM/Desktop/Degen/src/core/config.js) | **供应量消耗上限** | `SUPPLY_CAP[sym]`，流通量走真实数据源 | `capturedOf` |
+| [config.js](file:///f:/Cr3aM/Desktop/Degen/src/core/config.js) | **供应量消耗上限** | `SUPPLY_SHARE[sym]` × `supplyAt(sym, i)`（占比 × 当年真实流通量） | `supplyCapOf` / `capturedOf` |
 | market.js | **逐根位移系数**（本项目的「混合」接缝） | 未注入时恒为 1 ⇒ 与数据包**逐位相同** | 离线断言靠这一条 |
 
 > 上面这一列，就是原稿说的「混合模式」在本项目的**全部**实体 ——
