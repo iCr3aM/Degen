@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, LIQ, OTC, SUPPLY_CAP, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt } from './config.js';
+import { GAME, HOUR_MS, EXCHANGES, LIQ, OTC, SUPPLY_CAP, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
 import { warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
@@ -274,6 +274,13 @@ export const levKind = s => (s.mode === 'fut' ? 'fut' : 'spot');
  */
 export function openTrade(s, side, frac = 1) {
   if (s.over) return { ok: false, why: '本局已结束' };
+
+  /* 停机维护（B24）：窗口内**只平不开** —— 平仓是逃生通道，不许被维护挡住（2020-03-13 那种暴跌里
+     真被挡住的玩家就是这么绝望的，但本作不打算把「无法平仓」也一起复刻成必然爆仓）。
+     ⚠️ 只拦开仓，`closeTrade` 一个字都不动。 */
+  if (haltedAt(timeOf(s), s.ex)) {
+    return { ok: false, why: `${exchangeOf(s.ex)?.name ?? s.ex} 维护中 ｜ 暂时不能开仓` };
+  }
 
   /* 通道（P2-B3 · §15.3）：OTC 是**现货大宗**，没有做空这一说（空头要借币、要维持保证金，
      都不是「私下一口价买现货」能承接的）。 */
@@ -547,7 +554,7 @@ function endGame(s, reason) {
  * 归零时若本局**还没借过**，不结束本局，而是进「待决态」：时钟停住、弹出借贷遮罩，
  * 等玩家回答「借，还是收摊」。`s.pending` 期间 `s.paused` 为真，时钟自然不再推进。
  *
- * ⚠️ 4 条调用路径（`closeTrade` / `collapseExchange` / `settleFunding` / `liquidateAll`）
+ * ⚠️ 5 条调用路径（`closeTrade` / `collapseExchange` / `applyHackCut` / `settleFunding` / `liquidateAll`）
  *    一个都不能漏，否则会出现「该结束却没结束」或「该弹借贷却直接结束」。
  * @returns {boolean} 本局是否就此结束
  */
@@ -729,6 +736,29 @@ function collapseExchange(s, ex) {
   return checkRuin(s);
 }
 
+/**
+ * 交易所**被盗削减**（B21）—— 到点把该所两格余额各 ×(1 − `cut`)，**持仓与其他所一概不动**。
+ *
+ * 与 `collapseExchange` 的区别是刻意的：那是「整所归零、仓位作废」，这是「**损失社会化**」——
+ * 2016-08-02 的 Bitfinex 正是这么处理的（全体账户按 36.067% 普损分摊），
+ * 玩家若在那家所有仓位，仓位还在、只是现金少了一截；挂在别处的钱一分不动。
+ * @returns {boolean} 是否因此结束了本局
+ */
+function applyHackCut(s, ex) {
+  const book = bookOf(s, ex.id);
+  const lost = (book.usd + book.usdt) * ex.hack.cut;
+  book.usd *= 1 - ex.hack.cut;
+  book.usdt *= 1 - ex.hack.cut;
+  s.realized -= lost;
+
+  pushLog(s, lost > 0
+    ? `${ex.name} 被盗 ｜ 普损 ${fmtRate(ex.hack.cut, 3)} 损失 ${fmtMoney(lost)}`
+    : `${ex.name} 被盗 ｜ 普损 ${fmtRate(ex.hack.cut, 3)}`,
+    lost > 0 ? 'bad' : 'info');
+
+  return checkRuin(s);
+}
+
 /* ───────────────────────────── 场外配资（B30） ───────────────────────────── */
 
 /**
@@ -873,6 +903,11 @@ export function advanceOneHour(s) {
       pushLog(s, `${ex.name} 提现异常，7 天后将停止一切交易`, 'bad');
     }
     if (t === ex.close && collapseExchange(s, ex)) return;
+  }
+
+  // 被盗削减（B21 · Bitfinex 2016-08-02）：只削该所余额，不归零、不作废仓位。
+  for (const ex of EXCHANGES) {
+    if (ex.hack && t === ex.hack.at && applyHackCut(s, ex)) return;
   }
 
   /* 破产预警（v11 · ③）：会**直接弄死人**（交易所归零）或**重创杠杆仓**（大级别崩盘）的历史事件，

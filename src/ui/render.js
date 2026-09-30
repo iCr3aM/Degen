@@ -11,7 +11,7 @@
  * 所有会变的数字都挂在 `refs` 上，`update()` 是唯一的写入口。
  */
 
-import { GAME, COINS, EXCHANGES, SPEEDS, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt, usdtPriceAt } from '../core/config.js';
+import { GAME, COINS, EXCHANGES, SPEEDS, USDT_LIVE, coinOf, exchangeOf, haltedAt, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
@@ -605,6 +605,11 @@ export function update(refs, s, view) {
   if (s.transfer) {
     refs.exRate.textContent = `→ 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`;
     refs.exRate.className = '';
+  } else if (haltedAt(now, s.ex)) {
+    /* 停机维护（B24）：第二行**顶掉费率**显示状态词 —— 这段时间开仓会被拒，
+       不显式说一句，玩家只会觉得「按钮坏了」。（与转账倒计时同一优先级：先报状态、再报费率。） */
+    refs.exRate.textContent = '维护中';
+    refs.exRate.className = 'down';
   } else {
     /* 费率随**下单模式**切换（v12 · 方案 §11.3）：现货与合约是两张表，顶栏必须显示玩家
        接下来真正会被收的那一档 —— OTC 恒为现货，所以也要算进去。

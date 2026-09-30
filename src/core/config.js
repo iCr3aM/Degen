@@ -139,6 +139,10 @@ export const coinOf = sym => COINS.find(c => c.sym === sym) || null;
  *   - `futSteps` ：**合约**（线性 USDT 本位永续）的杠杆上限阶梯；**`null` ＝ 该所永不提供合约**。
  *   - `fees`     ：**吃单费率的两张年代阶梯**（`spot` / `fut`），升序取「最后一个 `from <= t`」，
  *                  `null` ＝ 该所那个时刻还没有这类产品。开仓与平仓各收一次（单边、不区分 Maker/Taker）。
+ *   - `hack`     ：**被盗削减**事件（B21 · 可选）—— `{ at, cut }`：到点把该所**两格余额各 ×(1 − cut)**，
+ *                  **不动持仓、不动其他所**（与 `close` 的整所归零是两回事）。
+ *   - `halts`    ：**停机维护**窗口（B24 · 可选）—— `[{ from, to }]`：窗口内**只平不开**
+ *                  （判据走 `haltedAt()`，别在调用处自己比时刻）。
  *
  * ⚠️ **现货与合约是两回事，费率也必须是两张表**（v12 · 方案 §11.0 偏离①）：
  *    改动前每家只有一个 `fee`，于是 BitMEX 的 **0.05%（衍生品）** 与 Binance 的 **0.04%（合约）**
@@ -179,6 +183,10 @@ export const EXCHANGES = [
       { from: Date.UTC(2021, 1, 17), max: 10 },
     ],
     futSteps: [{ from: Date.UTC(2019, 8, 2), max: 100 }],
+    /* 史实（B21）：2016-08-02 发现被盗 119,756 BTC，随后对**全体账户**做 36.067% 的普损分摊
+       （社会化的损失 —— 不是只扣被偷的那几个人）。本作把它抽象为「当天该所两格余额各打 63.933 折」：
+       不动持仓、不动其他所，也不提前预警（那天的玩家确实无从预知）。 */
+    hack: { at: Date.UTC(2016, 7, 2), cut: 0.36067 },
     /* 史实：Maker 0.10% / **Taker 0.20%** —— 本作只有市价吃单 ⇒ 取 0.20%。
        「合约」侧：Bitfinex 的杠杆史实上是**保证金交易**（trading fee ＋ 借币利息），
        没有独立的合约费率档 ⇒ **沿用现货 taker 0.20%**（§11.2，是史实而非近似）。 */
@@ -192,6 +200,9 @@ export const EXCHANGES = [
     open: Date.UTC(2014, 0, 1), close: null,
     spotSteps: [{ from: Date.UTC(2014, 0, 1), max: 1 }],
     futSteps: [{ from: Date.UTC(2016, 4, 13), max: 100 }],
+    /* 史实（B24）：2020-03-13「黑色星期四」当天 BitMEX 因技术故障停机约 12 小时，
+       恰好在最需要平仓的暴跌里 —— 这段时间**只平不开**（窗口为近似，方案 §12.3）。 */
+    halts: [{ from: Date.UTC(2020, 2, 13, 2), to: Date.UTC(2020, 2, 13, 14) }],
     /* 现货 0.05% flat（该所现货市场一直很小）。
        衍生品 **Taker 0.075% / Maker −0.025%（返佣）** —— 2016-05 XBTUSD 永续上线起的经典档位；
        现代降到 base 0.05%/0.05% ⇒ **2021-01 起 0.05%**（⚠️ 切换时刻为近似，方案 §11.2）。
@@ -232,6 +243,10 @@ export const exchangeOf = id => EXCHANGES.find(e => e.id === id) || null;
 export function exchangesAt(t) {
   return EXCHANGES.filter(e => e.open <= t && (e.close == null || t < e.close));
 }
+
+/** 这家所此刻是否**停机维护**（B24）—— 窗口内只平不开。没配 `halts` 的所恒 `false` */
+export const haltedAt = (t, exId) =>
+  !!exchangeOf(exId)?.halts?.some(h => t >= h.from && t < h.to);
 
 /** 取某家交易所某一类的杠杆阶梯（`kind`：`'spot'` 现货融资 / `'fut'` 合约）；该所不提供时为 `null` */
 export const stepsOf = (ex, kind = 'spot') => (kind === 'fut' ? ex.futSteps : ex.spotSteps);
