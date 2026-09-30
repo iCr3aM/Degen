@@ -7,17 +7,18 @@
  * 单独立一个文件，是因为有三个方向都要碰它：`chart.js` 拿它算单根宽度与量区、
  * `bind.js` 的手势改它、`main.js` 的复位清它。塞进 render.js 会绕成一团。
  *
- * 显示单位随模式走：`1h` 下一根 = 1 小时，`1d` 下一根 = 1 天（24 小时聚合），
- * `1t` 下一根 = 1 tick（30 秒）—— 一根真实小时 K 摊成 `TICK.perHour` 根细刻度（S2 · ROADMAP §19.6）。
- * `count` / `right` **都按显示单位算**，三套模式的限位因此共用同一段代码。
+ * 显示单位随模式走：`1h` 下一根 = 1 小时，`1d` 下一根 = 1 天（24 小时聚合）。
+ * `count` / `right` **都按显示单位算**，两套模式的限位因此共用同一段代码。
+ *
+ * ⚠️ 细刻度档（`1t` ＝ 30 秒）已于 2026-10-01 **整体移除**（ROADMAP §四十）：1x 是「1 秒 1 小时」，
+ *    一根 30 秒 K 只活 0.5 秒、一屏每秒整屏滑过一次，**没有任何速度下能看「活的」**；
+ *    唯一用途「暂停后放大看针」又不值一个只在捏合里才存在的隐藏档。删档后 K 线只剩 `1h` / `1d`。
  *
  * ⚠️ **视野只改「看」，不改玩法**（12.3）：`s.i` 仍然是「第几根小时 K」，
  *    时钟、资金费率、强平、到账全部照旧按小时走。
  */
 
-import { TICK } from '../core/config.js';
 import { rangeOf, candleAt, volumeAt, liqOf, dayIndexOf, HOURS_PER_DAY } from '../core/market.js';
-import { pathOf, weightsOf } from '../core/simulate.js';
 import { PAD_R } from './chart.js';
 
 /** 缩放的硬边界：可见 12 ~ 240 根（12.4） */
@@ -25,12 +26,6 @@ const MIN_BARS = 12;
 const MAX_BARS = 240;
 /** 每根占的宽度（px）—— 与 `chart.js` 算 `bw` 用的是同一个口径 */
 const BAR_PX = 5;
-/** 一根真实小时 K 摊成多少根细刻度 —— 唯一真源在 `config.TICK`（S1） */
-const N = TICK.perHour;
-/** 细刻度档最多可见多少 tick ＝ **12 小时**（＝ `1h` 最细那 12 根的同一跨度 ⇒ 捏合换档无跳变） */
-const FINE_MAX = 12 * N;
-/** 细刻度档里一根至少占几像素 —— 桶聚合的槽位上限由它推出（ROADMAP §19.6.2） */
-const TICK_SLOT_PX = 1.5;
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
@@ -56,32 +51,24 @@ function bounds(sym, mode) {
   if (mode === '1d') {
     return { start: Math.floor(r[0] / HOURS_PER_DAY), end: Math.floor((r[1] - 1) / HOURS_PER_DAY) };
   }
-  /* 细刻度档：一根小时 K 摊成 `N` 根 tick，序号 = `hour × N + j`（`j ∈ [0, N−1]`） */
-  if (mode === '1t') return { start: r[0] * N, end: r[1] * N - 1 };
   return { start: r[0], end: r[1] - 1 };
 }
 
 /**
  * 把记录规整到合法范围，返回本次要用的边界。
- * 三条限制一起夹在这儿（12.4）：右端不许看未来、左端不许早于数据首根、根数在 12~240
- * （细刻度档上界放宽到 `FINE_MAX` ＝ 1440）。
+ * 三条限制一起夹在这儿（12.4）：右端不许看未来、左端不许早于数据首根、根数在 12~240。
  * ⚠️ 右端的下界是「数据首根 ＋ 根数 − 1」而不是「数据首根」—— 12.4 的规则是
  *    **最左一根** ≥ 数据首根，否则窗口会滑到数据左边，屏幕右半边全是空白。
  */
 function norm(sym, i, cssW) {
   const v = viewOf(sym);
-  const fine = v.mode === '1t';
   const b = bounds(sym, v.mode);
   const start = b ? b.start : 0;
   const total = b ? b.end - b.start + 1 : MAX_BARS;
-  const maxCount = Math.max(MIN_BARS, Math.min(fine ? FINE_MAX : MAX_BARS, total));
-  /* 默认根数：两个粗档一样（40~96 根），细刻度档取上界（1440 tick ＝ 12 小时）——
-     双击复位因此天然「在 1t 下保留档位、退回最粗」，不需要在 `resetView` 里另写一支 */
-  v.count = clamp(Math.round(v.count || (fine ? FINE_MAX : defaultCount(cssW))), MIN_BARS, maxCount);
+  const maxCount = Math.max(MIN_BARS, Math.min(MAX_BARS, total));
+  v.count = clamp(Math.round(v.count || defaultCount(cssW)), MIN_BARS, maxCount);
 
-  const cur = v.mode === '1d' ? Math.floor(i / HOURS_PER_DAY)
-    : fine ? i * N + N - 1          // 细刻度档的「当前」＝ 当前小时的**最后一 tick**（与 1h 档同口径）
-      : i;
+  const cur = v.mode === '1d' ? Math.floor(i / HOURS_PER_DAY) : i;
   const maxRight = b ? Math.min(cur, b.end) : cur;
   if (!v.locked) v.right = maxRight;          // 未锁视野 = 自动跟随当前根（原有行为）
   clampRight(v, start, maxRight);
@@ -134,21 +121,17 @@ function dayBar(sym, d, upto) {
 /**
  * 出一帧要画的 K 线与量柱。这是渲染层唯一的入口，也是**唯一**会写回记录的地方
  * （夹取后的 `right` / `count` 必须落回记录，否则玩家一直往同一边拖时数字会越滚越大）。
- * @param {number} [seed] 全局种子（`s.seed`）—— 只有细刻度档要用它生成细路径
- * @param {number|null} [liqTick] 「致命那一针」的**全局 tick 序号**（S3-附）；不相关时传 null
  * @returns {{candles:Array, vols:Array<number>, mode:string, count:number, slots:number,
- *            locked:boolean, yPx:number, right:number, liqSlot:number|null}}
+ *            locked:boolean, yPx:number, right:number}}
  *   `right` 一并返回（P2-C）：锚点刻度要把「小时序号」换算成视野里的槽位，得知道最右那根是第几根。
- *   `slots` ＝ 本帧**要画的槽位数**：粗档下就是 `count`，细刻度档下是**聚合后的桶数**（= `candles.length`）。
+ *   `slots` ＝ 本帧**要画的槽位数**（＝ `count`）。
  */
-export function windowFor(sym, i, cssW, seed, liqTick) {
+export function windowFor(sym, i, cssW) {
   const { v } = norm(sym, i, cssW);
   const right = Math.round(v.right);
   const from = right - v.count + 1;
   const candles = [];
   const vols = [];
-
-  if (v.mode === '1t') return fineWindow(sym, v, cssW, from, right, seed, liqTick);
 
   if (v.mode === '1d') {
     for (let d = from; d <= right; d++) {
@@ -169,73 +152,7 @@ export function windowFor(sym, i, cssW, seed, liqTick) {
       vols.push(share > 0 ? share * (liqOf(sym, dayIndexOf(k)) || 0) : 0);
     }
   }
-  return { candles, vols, mode: v.mode, count: v.count, slots: v.count, locked: v.locked, yPx: v.yPx, right, liqSlot: null };
-}
-
-/**
- * 细刻度档（`1t`）的一屏：把 `[from, right]` 这段 tick 按「一根至少占 `TICK_SLOT_PX` 像素」**分桶聚合**。
- *
- * 为什么必须聚合：`1t` 最粗可见 `FINE_MAX` ＝ 1440 tick，而一屏只有 ≈320px —— 逐根画会糊成一片。
- * 桶 OHLC ＝ `{ o: 桶首 tick 的开, c: 桶末 tick 的收, h: 桶内 max, l: 桶内 min }`，
- * 量 ＝ 桶内 tick 权重之和 × 该小时绝对成交额（与 `1h` 档同源的口径，可跨天比较）。
- *
- * ⚠️ **桶不破锚点**：`simulate.pathOf` 保证 `max ≡ H`、`min ≡ L`（S1 红线 1），且桶**不跨小时**
- *    ⇒ 含针那一桶的 `h` / `l` 与真实小时**逐位相同**（验收 2）。
- * ⚠️ tick 蜡烛的定义：`pathOf` 给的是 `N + 1` 个**价格点**，第 j 根 tick ＝ 线段 `p[j] → p[j+1]`
- *    （30 秒内没有更细的真实结构，不编造）。
- */
-function fineWindow(sym, v, cssW, from, right, seed, liqTick) {
-  /* 槽位上限按像素算：375px 屏 ⇒ (375−52)/1.5 ≈ 215 槽；`bucket` = 每桶最多几根 tick */
-  const slotMax = clamp(Math.floor((cssW - PAD_R) / TICK_SLOT_PX), MIN_BARS, MAX_BARS);
-  const bucket = Math.max(1, Math.ceil(v.count / slotMax));
-
-  const candles = [];
-  const vols = [];
-  let liqK = -1;               // 「致命那一针」所在的桶（= 它在 `candles` 里的下标）
-  let t = from;
-  /* 相邻 tick 绝大多数落在同一小时里 ⇒ 只在该小时变化时取一次路径与量权重（LRU 命中，几乎零成本） */
-  let lastHour = -1, path = null, w = null, hourUsd = 0;
-
-  while (t <= right) {
-    const hh = Math.floor(t / N);
-    const t0 = t;
-    /* **桶不跨小时** —— 小时边界处强制切桶。缺了这一刀，「含针那一桶」可能同时盖住相邻小时的
-       tick，它的 `h` 就成了两小时里的更高价 ⇒ 针被抹平。切在小时边界上还顺带保证：
-       小时的首桶必从该小时第 0 根 tick 起（`o` ≡ 小时 `o`）、末桶必到第 `N−1` 根（`c` ≡ 小时 `c`）。 */
-    const tEnd = Math.min(t0 + bucket - 1, hh * N + N - 1, right);
-
-    if (hh !== lastHour) {
-      lastHour = hh;
-      const cc = candleAt(sym, hh);
-      path = cc ? pathOf(seed, sym, hh, cc) : null;
-      w = cc ? weightsOf(seed, sym, hh) : null;
-      /* ⚠️ 取的是该小时的**真实**成交额 ＝ 真实份额 × 当日流动性 —— 与粗档同一口径。
-         2026-10-01 修：原来乘的是 `dayLiq`，而 `Σw ≡ 1` ⇒ 每小时总量**恒等** ⇒
-         细档量柱「每小时一样高」，真行情的量差被整段丢掉（注释早写对了，代码没跟上）。 */
-      hourUsd = (cc ? volumeAt(sym, hh) : 0) * (liqOf(sym, dayIndexOf(hh)) || 0);
-    }
-
-    let o = 0, h = -Infinity, l = Infinity, c = 0, vol = 0, any = false;
-    for (; t <= tEnd; t++) {
-      if (!path) continue;                     // 数据空档（未上线 / 缺根）—— 整桶跳过，与粗档同口径
-      const j = t - hh * N;
-      const a = path[j], z = path[j + 1];
-      if (!any) { o = a; any = true; }
-      if (a > h) h = a;
-      if (a < l) l = a;
-      if (z > h) h = z;
-      if (z < l) l = z;
-      c = z;
-      vol += w[j] * hourUsd;
-    }
-    if (!any) continue;                        // `t` 已被内层循环推到 `tEnd + 1`，不会卡住
-    if (liqTick != null && liqTick >= t0 && liqTick <= tEnd) liqK = candles.length;
-    candles.push({ o, h, l, c });
-    vols.push(vol);
-  }
-
-  /* 槽位数 = 桶数（`chart.js` 的右对齐因此恒为空操作）；「致命那一针」的槽位就是它所在桶的下标 */
-  return { candles, vols, mode: v.mode, count: v.count, slots: candles.length, locked: v.locked, yPx: v.yPx, right, liqSlot: liqK >= 0 ? liqK : null };
+  return { candles, vols, mode: v.mode, count: v.count, slots: v.count, locked: v.locked, yPx: v.yPx, right };
 }
 
 /**
@@ -261,28 +178,13 @@ export function panBy(sym, dxPx, dyPx, i, cssW) {
  * 以**右端为锚**（12.7 补充决定 3）：`right` 不动，只是左端跟着缩 —— 少一层状态，
  * 而且「看最新」这个最常用的姿态在缩放时天然稳定。
  *
- * ⚠️ **两处换档**（S2）：`1h` 缩到最细（12 根）还要继续放大 ⇒ 展开细刻度档 `1t`；
- *    反向（`1t` 跨度 > 12 小时）⇒ 退回 `1h`。两档在边界**同跨度**（12 小时 ⇄ `FINE_MAX` tick）
- *    ⇒ 捏合过程无缝、不会「跳一下」。
+ * ⚠️ 缩到最细就是 12 根（`MIN_BARS`），**不再换档** —— 细刻度档已于 2026-10-01 移除（ROADMAP §四十）。
  */
 export function zoomBy(sym, factor, i, cssW) {
   const { v } = norm(sym, i, cssW);
   v.locked = true;
-  const want = v.count * factor;
-
-  if (v.mode === '1h' && want < MIN_BARS) {
-    /* `right` 换算到「那一小时的**最后一 tick**」—— 与自动跟随的落点是同一个刻度 */
-    v.mode = '1t';
-    v.right = Math.round(v.right) * N + N - 1;
-    v.count = clamp(Math.round(want * N), MIN_BARS, FINE_MAX);
-  } else if (v.mode === '1t' && want > FINE_MAX) {
-    v.mode = '1h';
-    v.right = Math.floor(v.right / N);
-    v.count = clamp(Math.round(want / N), MIN_BARS, MAX_BARS);
-  } else {
-    v.count = clamp(Math.round(want), MIN_BARS, v.mode === '1t' ? FINE_MAX : MAX_BARS);
-  }
-  norm(sym, i, cssW);      // 换档后按**新档**的边界再夹一次（`locked` 已置真 ⇒ 不会抢走玩家选的位置）
+  v.count = clamp(Math.round(v.count * factor), MIN_BARS, MAX_BARS);
+  norm(sym, i, cssW);      // 缩放后按边界再夹一次（`locked` 已置真 ⇒ 不会抢走玩家选的位置）
   return v;
 }
 
@@ -304,10 +206,8 @@ export function resetView(sym) {
 export function setMode(sym, mode, i, cssW) {
   const v = viewOf(sym);
   if (v.mode === mode) return v;
-  /* 右端先统一换算成**小时序号**（三档口径各不同），再落到目标档 */
-  const hour = v.mode === '1d' ? v.right * HOURS_PER_DAY + HOURS_PER_DAY - 1
-    : v.mode === '1t' ? Math.floor(v.right / N)
-      : v.right;
+  /* 右端先统一换算成**小时序号**（两档口径不同），再落到目标档 */
+  const hour = v.mode === '1d' ? v.right * HOURS_PER_DAY + HOURS_PER_DAY - 1 : v.right;
   v.right = mode === '1d' ? Math.floor(hour / HOURS_PER_DAY) : Math.min(i, hour);
   v.mode = mode;
   v.count = 0;

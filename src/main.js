@@ -11,7 +11,7 @@ import { GAME, COINS, HOUR_MS, cashCurAt, hasFinancingAt, maxLeverageAt } from '
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook, buyUsdt, sampleEquity, placeOrder, cancelOrder, rewindTo, dailySigma } from './core/engine.js';
+import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, placeOrder, cancelOrder, rewindTo, dailySigma } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { enableGod, factorFor } from './core/god.js';
@@ -51,7 +51,7 @@ let menuTimer = 0;
 
 /* ── 历史回顾模式（需求 4 ·《主菜单与历史回顾模式方案》§3）─────────────────
    `rv` 非 null 就是「正处在回顾态」。**模块级变量、不进 `s`、不进存档**
-   （与 `tab` / `godTaps` / `liqMark` 同一口径）：重开一局走 `location.reload()`，它自然归零 ——
+   （与 `tab` / `godTaps` 同一口径）：重开一局走 `location.reload()`，它自然归零 ——
    `STATE_VERSION` 因此**不动**（仍 11，方案 §6）。
    ⚠️ 回顾**有自己的一支时钟**（下面那三行 `rvTimer/rvLast/rvAcc`）：不能复用 `createClock` ——
       它闭包捕获 `s`，读的是 `s.paused` / `s.speed` / `s.over`，而回顾态一条都不该碰。
@@ -74,11 +74,6 @@ let godTapAt = 0;
       少了这层暂存，在 2 月与 3 月之间来回点就会每一下都触发一次「回到过去」的状态重置。
    ⚠️ 与 `godTaps` 同一个口径：纯界面状态，**不进 `s`**。 */
 let godSel = null;
-
-/* 「致命那一针」的一句短记忆（S3-附 · ROADMAP §19.6.3）：`{ sym, hour, k }`，**只记最近一次、覆盖式**。
-   ⚠️ **不进存档**（拍板口径）：`save()` 是整对象序列化，写进 `s` 就等于落盘；它只活在渲染进程里，
-      重开本局走 `location.reload()`，这个变量自然归零。由 `engine` 的注入式回调喂进来。 */
-let liqMark = null;
 
 /* 当前页（A6 · 方案 §6.3）—— `'trade'|'assets'|'settings'`。
    ⚠️ **模块级变量，不进 `s`**（§9 B6 拍板）：它和 `godTaps` / `resetArmed` 一样只是**界面位置**，
@@ -103,7 +98,7 @@ let guideStep = null;
 const GUIDE = [
   { at: () => refs.exBtn, text: '交易所。点它换所 —— 搬钱要等链上确认，路上还可能被拥堵拖住。' },
   { at: () => refs.symbols, text: '币种条。五个币按真实上线时间逐个解锁，点一下切换行情。' },
-  { at: () => refs.chartWrap, text: '行情区。捏合放大能看到 30 秒级的细刻度，拖动可以回看历史。' },
+  { at: () => refs.chartWrap, text: '行情区。拖动可以回看历史，捏合能放大缩小，双击复位。' },
   { at: () => refs.buyBtn, text: '下单区。先选金额与杠杆，再按「买入 / 做多」开仓。' },
   { at: () => refs.posbar, text: '持仓条。开仓后这里显示方向、未实现盈亏与保证金率。' },
   { at: () => refs.tabBtns.get('trade'), text: '底部三个页：交易 / 资产 / 设置。随时切回来看盘。' },
@@ -133,10 +128,6 @@ async function boot() {
         所以历史 K 线不会被重新标定，收益率会真的变 ⇒ σ 会变（见 `engine.invalidateSigma`）。
      ⚠️ 没有上帝位移也没有冲击池时 `factorFor` 恒返回 1，`candleAt` 走原路径 —— **逐位相同**。 */
   bindFactorSource((sym, j) => factorFor(s, sym, j));
-
-  /* 「致命那一针」（S3-附）：同上 —— core 不认识 UI，由这里接线。爆仓发生时记下那一段 tick，
-     渲染层在**细刻度档**把它折算成槽位画一枚浅红竖线（粗档不画）。 */
-  bindLiquidateHook((sym, hour, k) => { liqMark = { sym, hour, k }; });
 
   refs = mount(root);
   hideBoot();
@@ -365,12 +356,9 @@ function draw(force = false) {
   showPage(refs, rv ? 'review' : tab);
   /* 回顾页量的是它自己那块 K 线区（两页的 DOM 各有一套，方案 §3.2） */
   const rect = (rv ? refs.rvWrap : refs.chartWrap).getBoundingClientRect();
-  /* `liq`：「致命那一针」的短记忆（S3-附）—— 渲染层只在它属于当前币、且视野处在细刻度档时才画。
-     回顾没有爆仓这回事 ⇒ 恒 null。 */
   const view = {
     chartW: Math.max(1, Math.round(rect.width)),
     chartH: Math.max(1, Math.round(rect.height - 2)),
-    liq: rv ? null : liqMark,
     /* 当前页：K 线只在交易页画（另两页没有 K 线） */
     tab,
     /* 音效偏好归 `sound.js` 管，不进主状态 —— 设置页那两个开关的文案由渲染层每帧从这里取 */
@@ -558,9 +546,8 @@ function dispatch(node) {
     after();
     return;
   }
-  /* 粒度切换（Batch 3 · B12）：小字上写的是**当前**粒度，点一下切到另一种。
-     ⚠️ **非 1h 的一律切回 1h**（S2）：细刻度档（`1t`）没有自己的按钮 —— 它靠**放大**进入
-        （`view.zoomBy`），退出有两条路：缩回小时档，或点这枚小字直接回 1h。
+  /* 粒度切换（Batch 3 · B12）：小字上写的是**当前**粒度，点一下切到另一种 —— `1h ⇄ 1d`。
+     ⚠️ 细刻度档（`1t` ＝ 30 秒）已于 2026-10-01 整体移除（ROADMAP §四十）⇒ 这里只有两档。
      只动视野，不动玩法 —— `s.i` 永远还是「第几根小时 K」。 */
   if (d.mode !== undefined) {
     /* ⚠️ 回顾页那枚粒度小字走 `rv.i` / `rv.sym` —— 回顾的「现在」不在 `s` 里（方案 §3.3）。 */
@@ -935,12 +922,12 @@ const rvSeen = () => (rv && rv.auto ? RV_ALL : rv.seen);
  * ⚠️ 判据走 `rvSeen()`（本轮 ②）：开关打开时全部算「已过」⇒ 全程 100x ＋ 日线。
  *
  * ⚠️ **`force` 与「区间记账」**（2026-10-01 修）：`rvStep` 每一拍（50ms）都会调到这里，
- *    原来无条件 `setMode` ⇒ 玩家在回顾里点那枚粒度小字（`30秒` / `1日` / `1h`），
- *    下一拍就被按回自动档 ⇒ 表现为「点小时线/30 秒线立刻被打回日线」。
+ *    原来无条件 `setMode` ⇒ 玩家在回顾里点那枚粒度小字（`1日` / `1h`），
+ *    下一拍就被按回自动档 ⇒ 表现为「点小时线立刻被打回日线」。
  *    现在按 `rv.autoMode` 记住**上一次自动落下的档**：
  *      - `force`（进回顾 / 切币 / 跳年 / 开关自动）⇒ 一定落一次；
  *      - 非 `force`（`rvStep` 那条自动路径）⇒ **只在自动档自己变了**（巡航区 ⇄ 减速区）时落，
- *        同一区间内玩家的手选档因此能留住（含捏合进 `30秒`）。
+ *        同一区间内玩家的手选档因此能留住。
  */
 function syncRvMode(force = false) {
   if (!rv) return;

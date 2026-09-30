@@ -744,15 +744,6 @@ function matchOrders(s) {
 }
 
 /**
- * 「致命那一针」的对外出口（S3-附 · ROADMAP §19.6.3）—— 由 `main.js` 注入，
- * core 不认识 UI（与 `market.bindFactorSource` 同一套路）；不注入时零开销。
- * ⚠️ 报出去的是**一瞬的事实**（币 / 小时 / 那一段 tick），要不要记、记多久由 UI 决定 ——
- *    它**不写 `s`**：`save()` 是整对象序列化，写进状态就等于落盘。
- */
-let onLiquidate = null;
-export function bindLiquidateHook(fn) { onLiquidate = fn || null; }
-
-/**
  * 强平单个仓位。触发条件是**当根 K 线的高/低**打穿强平价。
  *
  * **结算口径（B20 · 2026-09-30 拍板「甲案」）**：不再是「保证金全部损失」，而是
@@ -764,9 +755,8 @@ export function bindLiquidateHook(fn) { onLiquidate = fn || null; }
  * 账户其余部分原样保留 —— 多仓下它**不再直接等于破产**，是否收摊由调用方看总权益决定。
  * ⚠️ 返还**不产生负债**：清算费最多把残余权益吃到 0，绝不会向玩家追缴。
  * @param {number} atPrice 成交价（S3 起 ＝ **第一次穿越强平价那一 tick 的价**，不再是强平价本身）
- * @param {number} k       那一 tick 在该小时细路径里的**段号**（`0 … N−1`）—— 只给「图上标致命针」用
  */
-function forceLiquidate(s, pos, atPrice, k) {
+function forceLiquidate(s, pos, atPrice) {
   const remain = maintRateOf(pos) * pos.notional;     // 触发时的残余权益（＝维持保证金那一格）
   const back = Math.max(0, remain - pos.notional * LIQ.fee);
 
@@ -782,7 +772,6 @@ function forceLiquidate(s, pos, atPrice, k) {
   if (back > 1e-9) credit(s, pos.ex, back, pos.mix);   // 退回**当初开仓那家所**（原路：按 mix 比例分两格）
   s.realized -= pos.margin - back;                     // 真实现金变动 = 丢掉保证金、收回退款
   delete s.positions[pos.sym];
-  if (onLiquidate) onLiquidate(pos.sym, s.i, k);
 }
 
 function endGame(s, reason) {
@@ -1494,23 +1483,17 @@ function liquidateAll(s) {
        为什么这不会多爆仓：`simulate.pathOf` 保证 `min(p) ≡ L`、`max(p) ≡ H`（S1 红线 1）
        ⇒「细路径穿越强平价」与「当根 l/h 穿越」**互为充要**，上面 `hit` 的判据一个字没改 ——
        变的只是**时点与成交价**（改前是直接拿 `liq` 当成交价写日志）。
-       ⚠️ 兜底命中（路径并未穿越）时取该小时路径**极值所在的那一段**，成交价仍按 `liq` 记
-          （与改前逐位相同），只是给「图上标致命针」配一支有意义的刻度。 */
+       ⚠️ 兜底命中（路径并未穿越）时成交价仍按 `liq` 记（与改前逐位相同）。 */
     const p = pathOf(s.seed, sym, s.i, c);
     const last = p.length - 1;             // ＝ 该小时的 tick 段数 N
-    let k = 0, at = liq;
+    let at = liq;
     if (hit) {
-      /* 全路径取「**第一个**穿越强平价的点」—— `p` 覆盖 `[0, N]`，段号因此夹到 `N−1` */
+      /* 全路径取「**第一个**穿越强平价的点」 */
       for (let j = 0; j <= last; j++) {
-        if (long ? p[j] <= liq : p[j] >= liq) { k = Math.min(j, last - 1); at = p[j]; break; }
-      }
-    } else {
-      let ext = long ? Infinity : -Infinity;
-      for (let j = 0; j <= last; j++) {
-        if (long ? p[j] < ext : p[j] > ext) { ext = p[j]; k = Math.min(j, last - 1); }
+        if (long ? p[j] <= liq : p[j] >= liq) { at = p[j]; break; }
       }
     }
-    forceLiquidate(s, pos, at, k);
+    forceLiquidate(s, pos, at);
     if (checkRuin(s)) return true;
   }
   return false;

@@ -101,9 +101,6 @@ function axisLabel(p) {
  *   anchors  Array<{d:number}>  历史锚点刻度（P2-C）：`d` = **显示单位**下的序号，
  *                              `1h` 模式是小时序号、`1d` 模式是天序号。
  *   right    number            视野**最右那根**的显示单位序号 —— 把 `d` 换算成槽位要用它。
- *   liqSlot  number|null       「致命那一针」（S3-附）：爆仓那根 tick 所在的**槽位号**。
- *                              槽位由 `view.js` 折算好（含桶聚合与右侧对齐），这里只管画；
- *                              粗档（`1h` / `1d`）下恒为 `null` —— 那时那根针就是整根 K 线的高低点。
  *   topInset number            顶部留白 = 左上角遮罩的实测高度（B27）。不传则退回 `PAD_TOP`。
  *   cssW/cssH number           容器尺寸（CSS 像素）
  *   yPx      number            价格轴的垂直平移（像素，向下为正；`view.js` 持有）
@@ -288,26 +285,6 @@ export function drawChart(canvas, o) {
       ctx.stroke();
     }
     ctx.restore();
-  }
-
-  // ── 致命那一针（S3-附）：把「杀死你的那一 tick」标在图上 ──
-  // 只在细刻度档出现（`view.js` 对粗档一律返回 `null`）：`1h` / `1d` 下那根针就是整根 K 线的
-  // 最高 / 最低点，再画一条线只是重复信息。用 `--down` 红（与强平价同一个颜色）＋半透明，
-  // 不新增 CSS 变量；画在 K 线**之上**，否则会被柱身盖住（与锚点刻度同一个理由）。
-  if (Number.isFinite(o.liqSlot)) {
-    const k = Math.round(o.liqSlot);
-    if (k >= 0 && k < n) {
-      const x = Math.round(xAt(k)) + .5;
-      ctx.save();
-      ctx.strokeStyle = T.DOWN;
-      ctx.globalAlpha = 0.6;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(x, top);
-      ctx.lineTo(x, bot);
-      ctx.stroke();
-      ctx.restore();
-    }
   }
 
   // ── 开仓价（金色虚线，画在当前价之前，避免盖住它） ──
