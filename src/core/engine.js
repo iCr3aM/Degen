@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
@@ -198,32 +198,82 @@ export function dailySigma(sym, i) {
 }
 
 /**
- * 该小时的流动性分母 ＝ `liqOf(当天) × hourShareK(该小时份额, 当天份额和, 当天小时数)`。
+ * **玩家持仓占可交易浮筹的比例**（`0 ~ 1`）—— 「持仓影响市场」那份唯一的占比（`config.FLOAT`）。
+ *
+ *   分子 = `capturedOf`（**现货实物多头**的枚数）
+ *   分母 = 当年真实流通量 × `FLOAT.frac`（可交易浮筹）
+ *
+ * ⚠️ 取不到流通量（该币不在清单里 / `manifest` 未加载 / 该币此刻还没上线）⇒ 返回 0、**不折减**：
+ *    宁可漏放这条约束，也不能因为一个数据缺格就把所有单子都按「已经买光了」处理。
+ */
+function floatShareOf(s, sym, i) {
+  const held = capturedOf(s, sym);
+  if (!(held > 0)) return 0;
+  const circ = supplyAt(sym, i);
+  if (!(circ > 0)) return 0;
+  return Math.min(1, held / (circ * FLOAT.frac));
+}
+
+/**
+ * 该小时的流动性分母 ＝ `liqOf(当天) × hourShareK(该小时份额, …) × 持仓折减`。
  *
  * 分母口径（C2，2026-09-29 拍板）：完整交易日里系数 = 24 × share，其**当日均值恰为 1**
  * ⇒ 一天下来的平均行为与「只用日流动性」**完全一致**（`A` / `threshold` / `cap` 无需重校），
  * 只是薄盘时段更痛、活跃时段更轻。
  *
+ * **持仓折减**（v18 · 2026-10-01 拍板）：`max(FLOAT.depthFloor, 1 − share)` —— 你囤走的浮筹越多，
+ * 市场能承接的深度越薄，同一笔单子的 `q` 越大、滑点越痛。下夹 `FLOAT.depthFloor` 是为了在
+ * `share → 1` 时不把分母压到 0（否则 `q` 无穷大，滑点与拆单笔数都会失控）。
+ *
  * ⚠️ 抽成独立函数是因为 **C8-B1 数子单笔数也要用它**（`q = 名义 ÷ 本值`）——
  *    笔数与滑点必须共用同一处口径，否则两者会各说各话。
+ * ⚠️ 只有**滑点 / 笔数**走它；**量柱显示不走**（历史成交量不该被玩家改写，那里直接读 `liqOf`）。
  * @returns {number} 分母；取不到当日流动性时返回 0
  */
-function hourLiqOf(sym, i) {
+function hourLiqOf(s, sym, i) {
   const day = dayIndexOf(i);
   const liq = liqOf(sym, day);
   if (!(liq > 0)) return 0;
   const { sum, n } = dayVolShare(sym, day);
-  return liq * hourShareK(volumeAt(sym, i), sum, n);
+  const shrink = Math.max(FLOAT.depthFloor, 1 - floatShareOf(s, sym, i));
+  return liq * hourShareK(volumeAt(sym, i), sum, n) * shrink;
 }
 
 /**
  * 一次成交的冲击（0 = 不触发）。
  * ⚠️ **取不到当日流动性就不触发** —— 数据还没加载完 / 该币那天还没上线时，不凭空造一个冲击出来。
  */
-function impactFor(sym, i, notional) {
-  const liq = hourLiqOf(sym, i);
+function impactFor(s, sym, i, notional) {
+  const liq = hourLiqOf(s, sym, i);
   if (!(liq > 0) || !(notional > 0)) return 0;
   return impactOf(notional / liq, dailySigma(sym, i));
+}
+
+/**
+ * 重算并写下**持仓抛压折价**（`s.overhang[sym]`，v18 · 2026-10-01 拍板）—— 每次现货实物多头
+ * 增减（开 / 加仓、平仓、强平、交易所归零）之后调用。
+ *
+ * 写的是 `{ v: −FLOAT.overhangMax × share, at: s.i }`；`share = 0`（没持仓 / OTC / 合约仓）时
+ * **删掉整条记录**（折价随之消失）。**值没变时一个字节都不写** —— 否则每点一次都会刷存档，
+ * 还会连带把 σ 缓存白冲一遍。
+ *
+ * ⚠️ 它是**逐根台阶**（`at` 之前的 K 线不受影响）⇒ 必须 `invalidateSigma()`，与 `s.flow` 同一条纪律。
+ * ⚠️ 与 `s.flow` **方向可能相反**（买入把价抬上去、占比上升把价压下来）：两者相加后才是最终位移，
+ *    净效果靠实测标定，别默认它们会互相抵消（见 ROADMAP §四十六）。
+ */
+function refreshOverhang(s, sym) {
+  if (!s.overhang) s.overhang = {};
+  const share = floatShareOf(s, sym, s.i);
+  const v = share > 0 ? -FLOAT.overhangMax * share : 0;
+  const prev = s.overhang[sym];
+  if (v === 0) {
+    if (!prev) return;                     // 本来就没折价：不写、不动 σ
+    delete s.overhang[sym];
+  } else {
+    if (prev && prev.v === v) return;      // 值没变：不写、不动 σ
+    s.overhang[sym] = { v, at: s.i };
+  }
+  invalidateSigma();
 }
 
 /**
@@ -443,7 +493,7 @@ export function openTrade(s, side, frac = 1) {
      ⚠️ 保证金与开仓费都不受它影响（那两项按名义价值算，与成交价无关），
         受影响的是 `size`：买贵了就拿到的币少一点，这才是代价的真实形态。 */
   const notional = margin * lev;
-  const cost = otc ? otcPremiumFor(s, s.sym) : impactFor(s.sym, s.i, notional);
+  const cost = otc ? otcPremiumFor(s, s.sym) : impactFor(s, s.sym, s.i, notional);
   const fill = fillPrice(price, side === 'long' ? 1 : -1, cost);
 
   /* 供应量上限（P2-B2 · §15.1 / §15.4）：买入会从市场里锁走一部分币，锁走的枚数不得越界。
@@ -474,7 +524,7 @@ export function openTrade(s, side, frac = 1) {
   });
 
   /* 笔数（C8-B1）：同一份代价，报出它相当于拆成了几笔。OTC 是私下一口价、不吃滑点 ⇒ 不报。 */
-  const fills = otc ? 1 : bookFills(notional / hourLiqOf(s.sym, s.i), cost);
+  const fills = otc ? 1 : bookFills(notional / hourLiqOf(s, s.sym, s.i), cost);
   const tag = otc ? `｜OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
   /* 字面跟着模式走（v9 · §15.6 N4「没有的选项不显示」的同一条口径）：现货模式的操作键是
      **买入 / 卖出**，日志若还写「做多 / 做空」，就与玩家刚按下的那枚键对不上了。 */
@@ -514,6 +564,9 @@ export function openTrade(s, side, frac = 1) {
     /* 玩家自己的成交量（v17 · 2026-10-01）：这一笔从此在量柱上看得见 */
     addPlayerVol(s, notional);
   }
+  /* 持仓抛压折价（v18 · 2026-10-01）：这一单若**加厚了现货实物多头**，市场对你的忌惮随之变重。
+     合约 / OTC 不改变 `capturedOf` ⇒ 值没变时函数内部自己会跳过（不写、不冲 σ 缓存）。 */
+  refreshOverhang(s, s.sym);
   return { ok: true };
 }
 
@@ -538,7 +591,7 @@ export function closeTrade(s, why = '手动') {
   /* 成交价（P2-B1 / P2-B3）：**平多是卖、平空是买**，所以方向与开仓时相反 ——
      代价永远对玩家不利：卖掉打点折、买回抬点价。本次成交名义 = 整条仓位（一次性平完）。 */
   const notional = pos.size * price;
-  const cost = otc ? otcPremiumFor(s, sym) : impactFor(sym, s.i, notional);
+  const cost = otc ? otcPremiumFor(s, sym) : impactFor(s, sym, s.i, notional);
   const fill = fillPrice(price, pos.side === 'long' ? -1 : 1, cost);
 
   /* 平仓费走**开仓时那张表**（v12 · §11.3）：判据是仓位自己的 `isSpot`，
@@ -548,7 +601,7 @@ export function closeTrade(s, why = '手动') {
      2013 年用美元开的仓，平掉回的还是美元：否则 Mt.Gox 会凭空空降一笔 USDT。 */
   credit(s, pos.ex, r.net, pos.mix);
   s.realized += r.pnl - r.fee;
-  const fills = otc ? 1 : bookFills(notional / hourLiqOf(sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
+  const fills = otc ? 1 : bookFills(notional / hourLiqOf(s, sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
   /* 玩家自己的成交量（v17 · 2026-10-01）：平仓同样是成交 ⇒ 记进当根 K 线的量柱。
      OTC 不落公开盘口（与「不写冲击池」同一先例）⇒ 不计。 */
   if (!otc) addPlayerVol(s, notional);
@@ -580,6 +633,9 @@ export function closeTrade(s, why = '手动') {
     const dir = pos.side === 'long' ? -1 : 1;
     if (addFlow(s, sym, dir * SHOCK.share * cost)) invalidateSigma();
   }
+  /* 持仓抛压折价（v18 · 2026-10-01）：这一条仓位没了（`delete` 在上面）⇒ 折价随之归零。
+     走上一步的**只有现货实物多头** —— 平掉一张合约仓时 `capturedOf` 本来就没变，函数内部会跳过。 */
+  refreshOverhang(s, sym);
 
   if (checkRuin(s)) return { ok: false, why: s.over.reason };
   return { ok: true };
@@ -610,7 +666,7 @@ function forceLiquidate(s, pos, atPrice) {
      ⚠️ 强平多发生在**急跌那根**，这笔反向冲击会让兵败如山倒的 K 线更陡一档，是刻意的。 */
   {
     const dir = pos.side === 'long' ? -1 : 1;
-    if (addFlow(s, pos.sym, dir * SHOCK.share * impactFor(pos.sym, s.i, notional))) invalidateSigma();
+    if (addFlow(s, pos.sym, dir * SHOCK.share * impactFor(s, pos.sym, s.i, notional))) invalidateSigma();
   }
 
   /* 串形与开仓 / 平仓对齐（2026-09-29）：`｜` 两侧不留白、金额走 `fmtMoneyShort`、
@@ -625,6 +681,7 @@ function forceLiquidate(s, pos, atPrice) {
   if (back > 1e-9) credit(s, pos.ex, back, pos.mix);   // 退回**当初开仓那家所**（原路：按 mix 比例分两格）
   s.realized -= pos.margin - back;                     // 真实现金变动 = 丢掉保证金、收回退款
   delete s.positions[pos.sym];
+  refreshOverhang(s, pos.sym);                         // v18：爆掉的若是现货实物多头，折价随之归零
 }
 
 function endGame(s, reason) {
@@ -822,6 +879,7 @@ function collapseExchange(s, ex) {
     if (pos.ex !== ex.id) continue;
     margin += pos.margin;
     delete s.positions[sym];
+    refreshOverhang(s, sym);        // v18：被这家所一起带走的现货实物多头，折价随之归零
   }
   if (margin) s.realized -= margin;
 
