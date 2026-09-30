@@ -729,13 +729,13 @@ html, body {
   border: 1px solid var(--accent);
   box-shadow: 0 0 0 9999px rgba(6, 9, 15, .72);
 }
-/* 卡片贴底（Tab 条 44px 之上 ＋ 安全区），不去挡被高亮的那个块；
-   内边距 / 行距都复用弹层那一档（12px）。 */
+/* 卡片**贴在高亮区的上或下**（本轮 ②）：`top` / `bottom` **由 JS 写**（`render.openGuide` 量完
+   目标矩形再选一侧），这里两条都不预设 —— 两条都写会把卡片拉成整屏高。
+   内边距 / 行距复用弹层那一档（12px）。 */
 .guide-box {
   position: absolute;
   left: 12px;
   right: 12px;
-  bottom: calc(56px + env(safe-area-inset-bottom, 0px));
   background: var(--panel);
   border: 1px solid var(--line);
   padding: 12px;

@@ -9,7 +9,7 @@
 
 import { GAME } from './config.js';
 
-export const STATE_VERSION = 11;
+export const STATE_VERSION = 12;
 
 export function createState() {
   return {
@@ -50,11 +50,15 @@ export function createState() {
     consumed: {},
 
     /**
-     * 在途的链上转账（P2-A）—— `null` 或 `{ amount, from, to, departAt, arriveAt }`。
+     * 在途的划转（P2-A）—— `null` 或 `{ amount, fee, rail, from, to, departAt, arriveAt }`。
      * **同时只允许一笔**（LESS IS MORE），且这笔钱**不在任何交易所的账上**（`books` 里已经扣掉了）：
      *   - 它**计入权益**（否则一换所权益就显示 $0，还会被误判成破产）
      *   - 它**不计入可用保证金**（`cashOf` 只看 `books`，天然满足）
-     *   - 它是**唯一能躲过交易所归零的钱** —— 已经在链上，不归任何一家所管
+     *   - 它是**唯一能躲过交易所归零的钱** —— 已经在路上，不归任何一家所管
+     *
+     * ⚠️ v12 起多了两个字段（方案 §11.4）：`fee` = 发起时就已扣走的划转手续费（**不在**
+     *    `amount` 里 —— `amount` 是**实际到账**的净额），`rail` = 走的哪条通道（`wire` / `omni` /
+     *    `erc20` / `trc20`）。两个字段目前都只供展示与排查，账目本身在发起那一刻就已经结清。
      */
     transfer: null,
 

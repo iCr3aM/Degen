@@ -30,6 +30,10 @@ export const ACTION_KEYS = [
   /* v11（③）：`warn`（破产预警遮罩的那枚「知道了」）/ `hint`（设置页「新手提示」开关）。
      v11（⑤ · 方案 §20.2.1）：`log` ＝ **日志条整条**（点开日志浮层看全 30 条）。 */
   'warn', 'hint', 'log',
+  /* 新手分步引导：`guide` ＝ 那张卡片上的「下一步 / 开始交易」。
+     ⚠️ 漏进这张表 = 「点了没反应」—— `findActionEl` 只认 `ACTION_SELECTOR` 里出现过的键
+     （本轮实测就是这个 bug：引导第一步之后再点「下一步」不走）。 */
+  'guide',
   /* 需求 4（《主菜单与历史回顾模式方案》§2 / §3）：`menu` ＝ 主菜单三入口
      （`start` 开始 / `continue` 继续 / `review` 回顾）；
      `review` ＝ 回顾页的**全部**动作 —— 值是子命令（`exit` / `pause` / `spd:100` / `sym:BTC`

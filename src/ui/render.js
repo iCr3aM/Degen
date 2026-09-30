@@ -13,10 +13,10 @@
 
 import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, unrealizedOf } from '../core/engine.js';
+import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, rangeOf, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
-import { arrivalCandles, confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
+import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { anchorAt, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { anyHeld, heldSyms, posOf } from '../core/state.js';
@@ -541,17 +541,22 @@ export function update(refs, s, view) {
   /* 第二行平时是费率；**有在途转账时临时换成倒计时**（P2-A）——
      顶栏只有 46px 余量（375px 屏），「拥堵 严重」这类词根本放不下，
      所以拥堵状态词只出现在选所弹层里，顶栏这一行只承担倒计时。
-     ⚠️ 费率**着色**（本轮 ④）：四家所差 5 倍（Mt.Gox 0.20% ↔ Binance 0.04%），
+     ⚠️ 费率**着色**（本轮 ④）：四家所差一个数量级（Mt.Gox 0.60% ↔ BitMEX 0.05%），
         而这一行是全屏唯一显示它的地方 —— 不区分就等于把成本藏起来了。
         两档门槛直接落在真实数据上（≥0.20% 红 / ≥0.10% 金 / 其余留 mut 灰），
         与 `.pick-head` 的拥堵状态词同一套「两档门槛」写法，不引入新体系。
         ⚠️ 必须写成 `.top .ic.exbtn u.<色>` 这一级：`.top .ic.exbtn u`（0,3,1）压过全局
            `.gold`（0,1,0），直接挂类名会被 mut 灰吃掉（详见 `style.css` 那两条）。 */
+  const now = timeOf(s);
   if (s.transfer) {
     refs.exRate.textContent = `→ 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`;
     refs.exRate.className = '';
   } else {
-    const fr = feeRateOf(s.ex);
+    /* 费率随**下单模式**切换（v12 · 方案 §11.3）：现货与合约是两张表，顶栏必须显示玩家
+       接下来真正会被收的那一档 —— OTC 恒为现货，所以也要算进去。
+       （着色那三档是按**现货**费率定的门槛：Mt.Gox 0.60% 红 / Bitfinex 0.20% 红 /
+        BitMEX 0.05% 灰 / Binance 0.10% 金，合约费率普遍更低 ⇒ 落到灰档，不误导。） */
+    const fr = feeRateOf(s.ex, now, chanOf(s) !== 'otc' && s.mode === 'fut' ? 'fut' : 'spot');
     refs.exRate.textContent = `费率 ${fmtRate(fr, 2)}`;
     refs.exRate.className = fr >= 0.002 ? 'down' : fr >= 0.001 ? 'gold' : '';
   }
@@ -559,7 +564,6 @@ export function update(refs, s, view) {
   /* 币种条：未解锁的币用**边框环**显示解锁进度（Batch 5 · B25）。
      进度由 `--pf` 这个 CSS 变量驱动（`style.css` 的 `.sym.locked` 拿它画锥形渐变环），
      值没变就不写 —— 每帧 4 个按钮的 `setProperty` 会触发样式失效，能省则省。 */
-  const now = timeOf(s);
   for (const c of COINS) {
     const b = refs.symBtns.get(c.sym);
     b.classList.toggle('on', s.sym === c.sym);
@@ -1099,14 +1103,25 @@ export function pickExchange(s, anchor) {
     row.disabled = notYet || dead || !!s.transfer;
     row.classList.toggle('on', ex.id === s.ex);
 
-    // 上行：名字 ＋ 费率；下行：这家所自己的事（确认数 / 到账预估 / 为什么不能选）
+    /* 上行：名字 ＋ **两张费率**（v12 · 方案 §11.3）；下行：这家所自己的事
+       （通道 / 到账预估 / 为什么不能选）。
+       ⚠️ 合约那一档只在**该所此刻真有合约**时显示（`futSteps` 首档已开）——
+          直接调 `feeRateOf(..., 'fut')` 会在没有合约的年份回落到现货值，
+          于是 2013 年的 Mt.Gox 会凭空显示一行「合约 0.60%」。 */
+    const { rail, n } = transferPlan(s, ex.id);
+    const futOn = ex.futSteps != null && ex.futSteps[0].from <= t;
+    const feeTxt = `费率 ${fmtRate(feeRateOf(ex.id, t, 'spot'), 2)}`
+      + (futOn ? `｜合约 ${fmtRate(feeRateOf(ex.id, t, 'fut'), 2)}` : '');
     const l1 = el('div', 'pick-l1');
-    l1.append(el('b', null, ex.name), el('u', null, `费率 ${fmtRate(ex.fee, 2)}`));
+    l1.append(el('b', null, ex.name), el('u', null, feeTxt));
+    /* 到账口径跟着通道走（§11.6）：链上通道仍报「确认数 ＋ 小时」，电汇时代改成「通道 ＋ 天数」
+       —— 2013 年那行「2 确认 · 预估 3h」是链上才有的说法，电汇根本不吃拥堵。 */
     const note = notYet ? '还没开业'
       : dead ? '已归零'
         : s.transfer ? '转账在途'
           : ex.id === s.ex ? '当前所'
-            : `${confirmationsOf(ex.id)} 确认 · 预估 ${arrivalCandles(congestion, ex.id)}h`;
+            : rail.hours ? `${rail.label} · ${Math.round(n / 24)} 天`
+              : `${confirmationsOf(ex.id)} 确认 · 预估 ${n}h`;
     row.append(l1, el('em', 'pick-note', note));
 
     panel.append(row);
@@ -1156,11 +1171,17 @@ export function confirmExchange(s, id) {
     d.append(el('i', null, k), el('span', 'num', v));
     return d;
   };
+  /* 三行改成**划转本身的账**（v12 · 方案 §11.4 / §11.7）：原来那行「费率」报的是目标所的
+     **交易**费率，与「这一搬要花多少」根本不是一回事 ——「手续费」那一行（电汇 $20 / Omni $0.3 /
+     ERC-20 $30）才是玩家按下确认后立刻会少掉的钱，必须让它站在这里。
+     ⚠️ 「拥堵」只在**链上通道**出现：电汇不吃拥堵（§11.6），对那次搬家一个字节都不影响。 */
+  const { rail, fee, n } = transferPlan(s, id);
   const rows = el('div', 'confirm-rows');
   rows.append(
-    line('拥堵', congestionLabel(congestion)),
-    line('预估到账', `${arrivalCandles(congestion, id)} 小时`),
-    line('费率', fmtRate(ex ? ex.fee : 0, 2)),
+    line('通道', rail.label),
+    ...(rail.hours ? [] : [line('拥堵', congestionLabel(congestion))]),
+    line('预估到账', rail.hours ? `${Math.round(n / 24)} 天` : `${n} 小时`),
+    line('手续费', fmtMoneyShort(fee)),
   );
   box.append(rows);
 
@@ -1326,6 +1347,9 @@ export function openMenu({ canContinue = false } = {}) {
  *
  * ⚠️ 位置**只量一次**：引导期间游戏是暂停的（`main.js` 起手就 `s.paused = true`），
  *    界面尺寸不会变，不需要每帧跟着目标重算。
+ * ⚠️ 卡片**贴在高亮区的上或下**（本轮 ②）：不再固定贴底 —— 贴底时它离被圈中的控件可能隔半屏，
+ *    玩家得来回找。取目标中心与视口中心比大小：在上半屏就贴它**下面**，在下半屏就贴**上面**；
+ *    落地后若下方放不下（`r.bottom + 间距 + 卡高 > 视口高`）再翻到上方。
  * @param {Element} target 要圈出来的控件
  * @param {string} text 一句话说明（含「第 N / M 步」前缀由调用方拼好）
  * @param {boolean} isLast 末步 ⇒ 按钮文案换成「开始交易」
@@ -1350,8 +1374,20 @@ export function openGuide(target, text, isLast) {
   btns.append(btn);
   box.append(btns);
 
+  /* 贴顶 / 贴底二选一（CSS 侧不预设 `top`/`bottom`，否则两条都写会把卡片拉成整屏高）。 */
+  const GAP = 8;
+  const vh = window.innerHeight;
+  const below = (r.top + r.bottom) / 2 < vh / 2;
+  const place = (isBelow) => {
+    box.style.top = isBelow ? `${Math.round(r.bottom + GAP)}px` : '';
+    box.style.bottom = isBelow ? '' : `${Math.round(vh - r.top + GAP)}px`;
+  };
+  place(below);
+
   ov.append(ring, box);
   ov.hidden = false;
+  /* 落地后量真实高度：下方放不下（目标偏下）就翻到上方 —— 只有这一种越界可能，上方越界意味着目标在下半屏，不会同时发生。 */
+  if (below && r.bottom + GAP + box.getBoundingClientRect().height > vh - GAP) place(false);
   picker = ov;
 }
 

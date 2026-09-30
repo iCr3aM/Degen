@@ -12,10 +12,10 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf } from './config.js';
+import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, railAt, railFeeOf, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
 import { warnAnchorAt } from './anchors.js';
-import { arrivalCandles, bumpPulse, congestionLabel, congestionOf, decayPulse } from './congestion.js';
+import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow, residualOfSide } from './god.js';
 import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtRate } from './format.js';
@@ -25,6 +25,7 @@ import {
 } from './positions.js';
 import { cashOf, capturedOf, heldSyms, posOf, pushLog } from './state.js';
 import { pathOf } from './simulate.js';
+import { hashStr, rand } from './rng.js';
 
 /** 交易所归零前多少毫秒给一条预警日志（7 天） */
 const WARN_LEAD = 7 * 24 * HOUR_MS;
@@ -274,7 +275,10 @@ export function openTrade(s, side, frac = 1) {
 
   // 杠杆上限与费率都取**玩家当前所在的交易所**（GDD §7.1）。OTC 一律 1x（= 现货）
   const lev = otc ? 1 : Math.max(1, Math.min(s.lev, maxLeverageAt(timeOf(s), s.ex, levKind(s))));
-  const feeRate = feeRateOf(s.ex);
+  /* 费率是**两张表**（v12 · 方案 §11.3）：这一单走 `spot` 还是 `fut` 由**它自己的性质**定
+     （`spotOf` 只看模式 / OTC），与玩家此刻翻到哪一页无关 —— 否则切个页面就能换费率。 */
+  const isSpotOrder = spotOf(s, otc);
+  const feeRate = feeRateOf(s.ex, timeOf(s), isSpotOrder ? 'spot' : 'fut');
   const cash = cashOf(s);
 
   // 保证金 = 可用余额 × frac；开仓费按名义价值另收，所以要让「保证金 + 费 ≤ 余额」
@@ -313,7 +317,7 @@ export function openTrade(s, side, frac = 1) {
   s.realized -= fee;
   s.lev = lev;
 
-  const spot = spotOf(s, otc);
+  const spot = isSpotOrder;
   const pos = openPosition(s.sym, side, fill, margin, lev, feeRate, spot);
   pos.i = s.i;
   pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
@@ -374,7 +378,9 @@ export function closeTrade(s, why = '手动') {
   const cost = otc ? otcPremiumFor(s, sym) : impactFor(sym, s.i, notional);
   const fill = fillPrice(price, pos.side === 'long' ? -1 : 1, cost);
 
-  const r = closePosition(pos, fill, feeRateOf(pos.ex));
+  /* 平仓费走**开仓时那张表**（v12 · §11.3）：判据是仓位自己的 `isSpot`，
+     不是玩家此刻的模式 —— 现货仓平仓不该按合约费率收，反之亦然。 */
+  const r = closePosition(pos, fill, feeRateOf(pos.ex, timeOf(s), isSpot(pos) ? 'spot' : 'fut'));
   s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
   s.realized += r.pnl - r.fee;
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
@@ -477,12 +483,42 @@ function checkRuin(s) {
 /* ───────────────────────────── 交易所 ───────────────────────────── */
 
 /**
- * 换所（GDD §7.2）—— P2-A 起**不再是「一键搬钱」**，而是**发起一笔链上转账**。
- * 四条规矩：
+ * 一次跨所划转的「方案」：走哪条通道、手续费多少、多少根 K 线到账（v12 · 方案 §11.4 / §11.6）。
+ *
+ * ⚠️ 抽成独立导出是因为**换所确认弹层要显示同一组数** —— 两处各算一遍迟早不一致
+ *    （弹层写「3 小时到账」、真扣的却是电汇的 5 天，那是玩家最不能接受的一类 bug）。
+ * ⚠️ 纯函数、不读时钟、不写状态：`s.i` / `s.seed` 都在存档里 ⇒ 弹层每帧重算都是同一个数。
+ *
+ * @param {object} s    当前状态（只读 `s.i` / `s.seed` / `s.ex`）
+ * @param {string} toId 目标交易所 id
+ * @returns {{rail:object, fee:number, n:number}} 通道定义、手续费、到账所需小时数
+ */
+export function transferPlan(s, toId) {
+  const rail = railAt(timeOf(s));
+  const fee = railFeeOf(rail, timeOf(s));
+  const from = s.ex;
+  /* `wire` 走**银行电汇**：到账时间由 `hours` 这个固定区间给（不吃拥堵）——
+     链堵不堵与银行慢不慢是两件事（方案 §11.6），所以既不调 `arrivalCandles` 也不 `bumpPulse`。
+     具体小时数用 `rand` 抽（可复现）：同一份档、同一时刻、同一对交易所，永远同一个数。 */
+  const n = rail.hours
+    ? rail.hours[0] + Math.floor(rand(s.seed, hashStr(from), s.i, 0, hashStr(toId)) * (rail.hours[1] - rail.hours[0] + 1))
+    : arrivalCandles(congestionOf(s), toId);
+  return { rail, fee, n };
+}
+
+/**
+ * 换所（GDD §7.2）—— P2-A 起**不再是「一键搬钱」**，而是**发起一笔划转**。
+ * 五条规矩（第⑤条为 v12 新增）：
  *   ① 钱**离开旧所、等 N 根 K 线才到**（N 由拥堵指数决定，见 `congestion.js`），到账前不能动用
  *   ② **有持仓必须先全部平掉** —— 仓位是挂在这一家所上的，搬不走（多仓也一样，一条都不许留）
  *   ③ **同时只允许一笔在途**（LESS IS MORE）
  *   ④ **人先到、钱后到** —— `s.ex` 立即切到新所（可以看行情、看费率），但 `books[新所]` 要到账才加钱
+ *   ⑤ **走哪条通道与手续费由年份自动判定**（v12 · 方案 §11.4），手续费**发起时立即扣**
+ *
+ * ⚠️ 第⑤条的年代划分（`TRANSFER_RAILS`）：2013-01～2014-11-19 是**银行电汇**（不来链上、
+ *    固定 $20 定额费、2–10 天到账、**不吃拥堵**）；2014-11-20 起依次是 Omni / ERC-20 / TRC-20
+ *    链上通道（矿工费或 gas，随年代浮动，吃拥堵）。**不给玩家选**（B14 拍板 · LESS IS MORE）：
+ *    那四段是「当年就是这么搬钱的」，不是一个可挑的选项。
  *
  * @returns {{ok:boolean, why?:string}}
  */
@@ -502,19 +538,25 @@ export function switchExchange(s, id) {
   const amount = cashOf(s);
   if (!(amount > 0)) return { ok: false, why: '当前所没有可划转的余额' };
 
-  // ⚠️ 顺序：**先算到账根数，再记脉冲**。口径是「你推高拥堵 ⇒ 你**下一次**转账更慢」（验收口径④），
-  //    本笔转账不能受自己那一脚的影响 —— 否则第一笔在 2013 年就会被自己拖慢，说不通。
-  const congestion = congestionOf(s);
-  const n = arrivalCandles(congestion, id);
+  /* 通道、手续费、到账根数三件一起算（v12 · 方案 §11.4）：走哪条 rail 由**此刻的年份**自动判定。
+     手续费**发起时立即扣**（B14 拍板）—— 所以余额不够付这笔费就搬不动，而不是「到了再扣」。
+     ⚠️ 必须排在 `bumpPulse` **之前**：口径是「你推高拥堵 ⇒ 你**下一次**转账更慢」（验收口径④），
+        本笔转账不能受自己那一脚的影响 —— 否则第一笔在 2013 年就会被自己拖慢，说不通。 */
   const from = s.ex;
+  const { rail, fee, n } = transferPlan(s, id);
+  if (amount <= fee) return { ok: false, why: `余额不足以支付 ${rail.label} 手续费 ${fmtMoneyShort(fee)}` };
 
+  const send = amount - fee;                           // 实际到账的金额（手续费在路上就被收走了）
   s.books[from] = 0;                                   // 钱离开旧所，此后只记在 s.transfer 里
-  s.transfer = { amount, from, to: id, departAt: s.i, arriveAt: s.i + n };
+  s.transfer = { amount: send, fee, rail: rail.id, from, to: id, departAt: s.i, arriveAt: s.i + n };
+  s.realized -= fee;                                   // 手续费是玩家真实付出的钱，与开/平仓费同一口径
   s.ex = id;                                           // 人已经在新所，钱还在路上
   normalizeLeverage(s);                                // 新所的上限可能更低，夹取一次
 
-  const add = bumpPulse(s, amount);                    // > 当日 BTC 流动性的 10% 才算大额
-  pushLog(s, `转账 → ${ex.name}｜${fmtMoneyShort(amount)}｜${congestionLabel(congestion)} · ${n} 小时后到账`
+  /* 只有**走链**的转账才推高拥堵 —— 银行电汇与链无关，`hours != null` 的就是 wire。 */
+  const add = rail.hours ? 0 : bumpPulse(s, send);     // > 当日 BTC 流动性的 10% 才算大额
+  const eta = rail.hours ? `${Math.round(n / 24)} 天后到账` : `${n} 小时后到账`;
+  pushLog(s, `转账 → ${ex.name}｜${fmtMoneyShort(send)}｜${rail.label} · ${eta}｜手续费 ${fmtMoneyShort(fee)}`
     + (add ? `｜推高拥堵 +${add.toFixed(1)}` : ''), 'info');
   return { ok: true };
 }
@@ -612,7 +654,7 @@ function settleLoan(s) {
          不该因为「是系统帮我平的」就白捡一个更好的成交价。这一条不单独写日志，
          下面那条「还款 · 借款结清」已经概括了整件事。 */
       const impact = impactFor(sym, s.i, pos.size * price);
-      const r = closePosition(pos, fillPrice(price, pos.side === 'long' ? -1 : 1, impact), feeRateOf(pos.ex));
+      const r = closePosition(pos, fillPrice(price, pos.side === 'long' ? -1 : 1, impact), feeRateOf(pos.ex, timeOf(s), isSpot(pos) ? 'spot' : 'fut'));
       s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
       s.realized += r.pnl - r.fee;
     } else {

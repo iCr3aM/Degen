@@ -133,7 +133,13 @@ export const coinOf = sym => COINS.find(c => c.sym === sym) || null;
  *     到点那一刻，该所余额清零、挂在该所的持仓一并作废。Mt.Gox 的 2014-02-25 就是本作最重的一记闷棍。
  *   - `spotSteps`：**现货融资**（margin）的杠杆上限阶梯，升序取「最后一个 `from <= t`」。
  *   - `futSteps` ：**合约**（线性 USDT 本位永续）的杠杆上限阶梯；**`null` ＝ 该所永不提供合约**。
- *   - `fee`      ：吃单费率（单边），开仓与平仓各收一次。
+ *   - `fees`     ：**吃单费率的两张年代阶梯**（`spot` / `fut`），升序取「最后一个 `from <= t`」，
+ *                  `null` ＝ 该所那个时刻还没有这类产品。开仓与平仓各收一次（单边、不区分 Maker/Taker）。
+ *
+ * ⚠️ **现货与合约是两回事，费率也必须是两张表**（v12 · 方案 §11.0 偏离①）：
+ *    改动前每家只有一个 `fee`，于是 BitMEX 的 **0.05%（衍生品）** 与 Binance 的 **0.04%（合约）**
+ *    被当成了现货费率套用到全部场景 —— 四个数字里三个偏离史实（§11.0 偏离②）。
+ *    史实出处见方案 §11.9，**不要凭记忆改这些数字**。
  *
  * ⚠️ **两张表是两回事**（v9 · 方案 §15，2026-09-29 拍板）：史实上「现货融资上限」与「合约上限」
  *    从来不是同一个数 —— Bitfinex 现货 3.3x / 合约 100x，BitMEX 没有现货 / 合约 100x。
@@ -156,7 +162,9 @@ export const EXCHANGES = [
     open: Date.UTC(2013, 0, 1), close: Date.UTC(2014, 1, 25),
     spotSteps: [{ from: Date.UTC(2013, 0, 1), max: 1 }],
     futSteps: null,
-    fee: 0.002,
+    /* 史实：小户 **0.60% 起**，按最近 720 小时（30 天）滚动成交量阶梯递减、最低 0.25%；
+       **买卖双方都收**（本作只有单笔市价成交，记单边一次）。 */
+    fees: { spot: [{ from: Date.UTC(2013, 0, 1), v: 0.006 }], fut: null },
   },
   {
     id: 'bitfinex', name: 'Bitfinex',
@@ -167,14 +175,31 @@ export const EXCHANGES = [
       { from: Date.UTC(2021, 1, 17), max: 10 },
     ],
     futSteps: [{ from: Date.UTC(2019, 8, 2), max: 100 }],
-    fee: 0.001,
+    /* 史实：Maker 0.10% / **Taker 0.20%** —— 本作只有市价吃单 ⇒ 取 0.20%。
+       「合约」侧：Bitfinex 的杠杆史实上是**保证金交易**（trading fee ＋ 借币利息），
+       没有独立的合约费率档 ⇒ **沿用现货 taker 0.20%**（§11.2，是史实而非近似）。 */
+    fees: {
+      spot: [{ from: Date.UTC(2013, 0, 1), v: 0.002 }],
+      fut: [{ from: Date.UTC(2019, 8, 2), v: 0.002 }],
+    },
   },
   {
     id: 'bitmex', name: 'BitMEX',
     open: Date.UTC(2014, 0, 1), close: null,
     spotSteps: [{ from: Date.UTC(2014, 0, 1), max: 1 }],
     futSteps: [{ from: Date.UTC(2016, 4, 13), max: 100 }],
-    fee: 0.0005,
+    /* 现货 0.05% flat（该所现货市场一直很小）。
+       衍生品 **Taker 0.075% / Maker −0.025%（返佣）** —— 2016-05 XBTUSD 永续上线起的经典档位；
+       现代降到 base 0.05%/0.05% ⇒ **2021-01 起 0.05%**（⚠️ 切换时刻为近似，方案 §11.2）。
+       ⚠️ 0.075% 那一段的实际起点是永续上线日（`futSteps` 首档 2016-05-13），阶梯写 2014-01
+          只为与方案 §11.2 的表述一致 —— 取不到合约的年份，这条阶梯根本不会被查到。 */
+    fees: {
+      spot: [{ from: Date.UTC(2014, 0, 1), v: 0.0005 }],
+      fut: [
+        { from: Date.UTC(2014, 0, 1),  v: 0.00075 },
+        { from: Date.UTC(2021, 0, 1),  v: 0.0005 },
+      ],
+    },
   },
   {
     id: 'binance', name: 'Binance',
@@ -187,7 +212,12 @@ export const EXCHANGES = [
       { from: Date.UTC(2019, 8, 1),  max: 125 },
       { from: Date.UTC(2021, 6, 19), max: 20 },
     ],
-    fee: 0.0004,
+    /* 现货 **0.10% maker / 0.10% taker**（2017-07 上线即此价；BNB 抵扣属「持平台币」玩法，不做）。
+       合约 USDT-M 永续 **Maker 0.02% / Taker 0.04%** ⇒ 期货上线日 2019-09-01 起 0.04%。 */
+    fees: {
+      spot: [{ from: Date.UTC(2017, 6, 14), v: 0.001 }],
+      fut: [{ from: Date.UTC(2019, 8, 1), v: 0.0004 }],
+    },
   },
 ];
 
@@ -253,11 +283,106 @@ export function leverageOptionsAt(t, exId, kind = 'spot') {
   return out;
 }
 
-/** 某家交易所的费率 */
-export const feeRateOf = exId => {
+/**
+ * 某家交易所**某一时刻、某一类**的吃单费率（v12 · 方案 §11.3）。
+ *
+ * @param {string} exId 交易所 id
+ * @param {number} t    时刻（毫秒）—— 费率是**年代阶梯**，同一家所不同年份可能不同
+ * @param {'spot'|'fut'} kind 现货 / 合约。**调用方必须传对**：一笔单走哪一张表由那笔单自己的
+ *   性质决定（现货仓走 `spot`、合约仓走 `fut`，判据 `positions.isSpot`），不是由玩家此刻站在哪个页面决定。
+ *
+ * 回落链：该类的阶梯取不到 ⇒ **回落到现货**（Bitfinex 的「合约」本就没有独立费率档）；
+ * 现货也取不到（该所那时还没开业）⇒ **0**（不收钱，而不是崩）。`fut: null` 同理回落到现货。
+ */
+export function feeRateOf(exId, t, kind = 'spot') {
   const ex = exchangeOf(exId);
-  return ex ? ex.fee : 0.002;
-};
+  if (!ex) return 0;
+  const at = (ladder) => {
+    if (!ladder) return null;
+    let v = null;
+    for (const s of ladder) { if (s.from <= t) v = s.v; else break; }
+    return v;
+  };
+  const fut = kind === 'fut' ? at(ex.fees.fut) : null;
+  const v = fut != null ? fut : at(ex.fees.spot);
+  return v != null ? v : 0;
+}
+
+/* ══════════════ 跨所转账的**通道（rail）**（v12 · 方案 §11.4） ══════════════
+ *
+ * 史实上「把钱从 A 所搬到 B 所」在不同年代走的路完全不同 —— 四段，由**转账时刻的年份自动判定**
+ * （B14 拍板：不给玩家选，LESS IS MORE）：
+ *
+ *   | 年代 | rail | 本质 | 到账 |
+ *   |---|---|---|---|
+ *   | 2013-01 ～ 2014-11-19 | `wire`  银行电汇 | 走**银行**，与链无关 | 数天（72–240h） |
+ *   | 2014-11-20 ～ 2017-09-10 | `omni`  Omni Layer | USDT 在 **BTC 链**上，成本 = BTC 矿工费 | 数小时（吃拥堵） |
+ *   | 2017-09-11 ～ 2019-03 | `erc20` ERC-20 | 以太坊 gas | 数分钟–数小时（吃拥堵） |
+ *   | 2019-04 起 | `trc20` TRC-20 | Tron 带宽 ＋ Energy | 数分钟（吃拥堵） |
+ *
+ * ⚠️ **`fee` 是「链上费 ＋ 交易所提现固定费」合并后的一个数**（方案 §11.4 的 LESS IS MORE 建议）：
+ *    真实世界里 Binance 的 TRC-20 提现是 1 USDT、ERC-20 是 5–20 USDT，那**是另一层**；
+ *    这里合并显示，但本注释就是「它其实是两层」的存档处 —— 将来别误以为只有链上费。
+ * ⚠️ **`wire` 不吃拥堵**（方案 §11.6）：链堵不堵与银行慢不慢是两件事，用同一个 `congestionOf`
+ *    会串味。它的「慢」由 `hours` 这个固定区间自己给，不接 `arrivalCandles`。
+ * ⚠️ **不实现「改搬 BTC」**（B17）：本作账本是美元/USDT 记价，搬币在模型上等价于「电汇 ＋ 两次现货费」。
+ * ⚠️ **不模拟 Mt.Gox 那 22 个月的电汇积压**（B15）：那等于本局结束；退化为固定定额费 ＋ 数天到账。
+ */
+export const TRANSFER_RAILS = [
+  {
+    id: 'wire', label: '银行电汇', from: Date.UTC(2013, 0, 1),
+    hours: [72, 240],                                            // 固定小时区间（不吃拥堵）
+    fees: [{ from: Date.UTC(2013, 0, 1), v: 20 }],               // 固定美元定额（§11.4 建议 $20）
+  },
+  {
+    id: 'omni', label: 'Omni Layer', from: Date.UTC(2014, 10, 20),
+    hours: null,                                                 // null ⇒ 交给 arrivalCandles（吃拥堵）
+    /* BTC 矿工费：2014–2016 常年 $0.01–0.50；2017 上半年随行情抬升（2017-12 的 $30–56 峰值落在下一段）。 */
+    fees: [
+      { from: Date.UTC(2014, 10, 20), v: 0.3 },
+      { from: Date.UTC(2017, 0, 1),   v: 2 },
+    ],
+  },
+  {
+    id: 'erc20', label: 'ERC-20', from: Date.UTC(2017, 8, 11),
+    hours: null,
+    /* 以太坊 gas：上线即 $3，2017-12 牛市峰值 $30，2018 熊市回落到 $2。
+       ⚠️ **这张表到 2019-03 为止** —— 2019-04 起年代已切到 TRC-20（下表 `from`），
+          之后再往这里加档位是**死代码**（`railAt` 永远不会返回 erc20）。
+          史实上 2021–2022 的 ERC-20 确实飙到 $30–50，但本作「一条年代一条通道」，
+          那几年就认 TRC-20 的价（LESS IS MORE，且 2019 年后大家也确实都在用 TRC-20）。 */
+    fees: [
+      { from: Date.UTC(2017, 8, 11),  v: 3 },
+      { from: Date.UTC(2017, 11, 1),  v: 30 },                   // 2017-12 牛市峰值
+      { from: Date.UTC(2018, 5, 1),   v: 2 },
+    ],
+  },
+  {
+    id: 'trc20', label: 'TRC-20', from: Date.UTC(2019, 3, 1),
+    hours: null,
+    /* Tron 带宽补贴下 2019 年近免费（含交易所那 1 USDT 提现费，合起来就是 $1）；
+       2022 年 Energy 单价近乎翻倍、2023–2025 约 13 TRX ≈ $3.90 ⇒ $4。
+       ⚠️ 这一档**一路管到本作收盘（2024-12）**，是四段里唯一没有后继者的。 */
+    fees: [
+      { from: Date.UTC(2019, 3, 1),  v: 1 },
+      { from: Date.UTC(2023, 0, 1),  v: 4 },
+    ],
+  },
+];
+
+/** 某一时刻走哪条通道 —— 升序取「最后一个 `from <= t`」；2013-01 之前回落到电汇（理论不可达） */
+export function railAt(t) {
+  let out = TRANSFER_RAILS[0];
+  for (const r of TRANSFER_RAILS) { if (r.from <= t) out = r; else break; }
+  return out;
+}
+
+/** 某条通道**某一时刻**的转账手续费（同样按年代阶梯取值） */
+export function railFeeOf(rail, t) {
+  let v = 0;
+  for (const s of rail.fees) { if (s.from <= t) v = s.v; else break; }
+  return v;
+}
 
 /** 数据包目录（public 下的静态资源，打包时原样拷贝到 dist/data/） */
 export const DATA_DIR = 'data';
