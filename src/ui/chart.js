@@ -499,15 +499,42 @@ export function drawEquityCurve(canvas, o) {
   ctx.stroke();
   ctx.restore();
 
+  /* 抽稀（用户 2026-10-01 拍板）：一列像素里塞进多个点时只留**最高 / 最低**两点。
+     全景 4,383 点 ÷ 366px ≈ 12 点每像素，逐点 `lineTo` 既费又糊；按 px 分桶取 min/max
+     （而不是等距抽样或求平均）⇒ **峰谷一个不丢**，下面「区间高低点」所依赖的极值因此逐位不变。
+     ⚠️ 点数不到一列两枚时**原样逐点画** —— 短区间（1周 / 1月）本来就是硬折线，抽稀只会更钝。 */
+  const cols = Math.round(plotW);
+  const idx = [];
+  if (eq.length > cols * 2) {
+    for (let c = 0; c < cols; c++) {
+      const a = Math.floor(c * eq.length / cols);
+      const b = Math.max(a + 1, Math.floor((c + 1) * eq.length / cols));
+      let iLo = a, iHi = a;
+      for (let k = a + 1; k < b && k < eq.length; k++) {
+        if (eq[k] < eq[iLo]) iLo = k;
+        if (eq[k] > eq[iHi]) iHi = k;
+      }
+      if (iLo === iHi) idx.push(a);
+      else if (iLo < iHi) idx.push(iLo, iHi);
+      else idx.push(iHi, iLo);                     // 桶内按索引升序，折线才不在桶里来回跳
+    }
+    const tail = eq.length - 1;                    // 今天那一点必须落在折线上
+    if (idx[idx.length - 1] !== tail) idx.push(tail);
+  } else {
+    for (let k = 0; k < eq.length; k++) idx.push(k);
+  }
+
   // ── 权益折线（颜色只说一件事：最后是赚是亏）──
   const last = eq[eq.length - 1];
   ctx.strokeStyle = last >= o.base ? T.UP : T.DOWN;
   ctx.lineWidth = 1;
   ctx.lineJoin = 'round';
   ctx.beginPath();
-  for (let k = 0; k < eq.length; k++) {
-    const x = xOf(k);
-    const y = yOf(eq[k]);
+  const n = idx.length;
+  for (let k = 0; k < n; k++) {
+    const i = idx[k];
+    const x = xOf(i);
+    const y = yOf(eq[i]);
     if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   if (eq.length === 1) { ctx.lineTo(xOf(0) + 1, yOf(last)); }   // 单点：画一小段，别退化成看不见
