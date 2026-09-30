@@ -1510,6 +1510,32 @@ export function menuAttachInstall() {
   menuInstallBtn(btns);
 }
 
+/** 摘掉菜单里的「安装应用」按钮（幂等）。`beforeinstallprompt` **只能用一次**（`prompt()` 之后
+ *  这个事件就废了），所以消费掉 / 装完之后不能把它留在屏上 —— 那就是一枚点了没反应的死键。 */
+export function menuRemoveInstall() {
+  const inst = document.querySelector('.menu-box .menu-btns [data-menu="install"]');
+  if (inst) inst.remove();
+}
+
+/**
+ * 菜单里的一行说明（PWA 安装的兜底）。`text` 传空 = 抹掉这一行。
+ *
+ * 为什么需要它：`prompt()` 失败 / 浏览器压根不发 `beforeinstallprompt`（iOS Safari、国产内核）
+ * 时，玩家点了按钮**什么都不会发生** —— 这就是「点了没反应」。开机这一屏没有日志可写，
+ * 所以专门留一行小字当唯一的说话通道。插在按钮列下方、构建日期上方。
+ */
+export function menuInstallNote(text) {
+  const box = document.querySelector('.menu-box');
+  if (!box) return;
+  let n = box.querySelector('.menu-note');
+  if (!text) { if (n) n.remove(); return; }
+  if (!n) {
+    n = el('p', 'menu-note');
+    box.querySelector('.menu-btns').after(n);
+  }
+  n.textContent = text;
+}
+
 /* ═════════════════════════ 新手分步引导（本轮 ④） ═════════════════════════ */
 
 /**

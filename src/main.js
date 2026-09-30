@@ -20,7 +20,8 @@ import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
-  renderReview, openNodeCard, openYearPick, openGuide, menuAttachInstall,
+  renderReview, openNodeCard, openYearPick, openGuide,
+  menuAttachInstall, menuRemoveInstall, menuInstallNote,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -59,7 +60,16 @@ let installEvt = null;
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
   installEvt = e;
+  menuInstallNote('');             // 抹掉上一次「浏览器不给装」的兜底话术
   menuAttachInstall();             // 菜单若已在屏上，现补一枚按钮（事件常在 boot 之后才到）
+});
+
+/* 装完（含玩家在浏览器自带的横幅里装的）就把入口收掉 —— 此时菜单多半还在屏上，
+   留着那枚按钮只会让人再点一次、再「没反应」一遍。 */
+window.addEventListener('appinstalled', () => {
+  installEvt = null;
+  menuRemoveInstall();
+  menuInstallNote('已安装到桌面 ｜ 下次从桌面图标直接打开');
 });
 
 /* Service Worker：**只生产环境注册** —— dev 下 vite 自己的模块热更与 SW 缓存打架。
@@ -894,8 +904,7 @@ const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.v
    · `start`   ：无档 ⇒ 直接转开场叙事；**有档 ⇒ 先「武装」**（按钮变红，3 秒内再点一次才重开），
                  走既有 `onWipe()`（`disableSave` ＋ `wipe` ＋ reload）——**不新写重开逻辑**。
    · `review`  ：只读回顾模式（`enterReview`）。
-   · `install` ：PWA 安装（2026-10-01）—— 把 `beforeinstallprompt` 交出来的事件 `prompt()` 一次；
-                 事件只消费一次，之后按钮再点无效果（浏览器想再给机会会重发事件）。 */
+   · `install` ：PWA 安装（2026-10-01）—— 见 `onInstall()`。 */
 function onMenu(kind, node) {
   if (kind === 'continue') {
     closePicker();
@@ -904,13 +913,7 @@ function onMenu(kind, node) {
     return;
   }
   if (kind === 'review') return enterReview();
-  if (kind === 'install') {
-    const evt = installEvt;
-    if (!evt) return;
-    installEvt = null;
-    evt.prompt();
-    return;
-  }
+  if (kind === 'install') return onInstall();
   /* kind === 'start' */
   if (isNewGame) {                 // 无档：直接进开场叙事（新手 / 老手）
     closePicker();
@@ -929,6 +932,46 @@ function onMenu(kind, node) {
   }
   cancelMenuArm();
   onWipe();                        // disableSave ＋ wipe ＋ reload ⇒ 回来后是无档的新局
+}
+
+/**
+ * PWA 安装（2026-10-01 · 修复「点了没反应」）
+ * ===============================================================
+ * 老写法是 `installEvt = null; evt.prompt();` 两行 —— 它有三个洞，合起来正是玩家看到的
+ * 「点了没反应」：
+ *   ① `prompt()` 的 Promise 与 `evt.userChoice` **一个都没接**：浏览器拒绝弹窗（装机次数太少、
+ *      系统层已拦、事件已被用旧了）时是**静默失败**，界面上零反馈；
+ *   ② `installEvt` 在 `prompt()` **之前**就置空 ⇒ 第一下没成，按钮却还留在屏上，
+ *      再点走 `if (!evt) return` —— 连一行日志都没有；
+ *   ③ 没有 `appinstalled` 监听 ⇒ 装完了按钮也不收。
+ * 现在按「每一次点都必须看得见结果」重写：事件作废即摘按钮 ＋ 每种结局都给一句话。
+ *
+ * ⚠️ `beforeinstallprompt` **只能 `prompt()` 一次**，消费掉之后这个事件就废了 —— 所以
+ *    不能靠「留着它下次再点」。浏览器想再给机会会**重发一次事件**（上面的监听会重挂按钮）。
+ * ⚠️ 老版 Chrome 的 `prompt()` 返回 `undefined`，结果只能从 `evt.userChoice` 拿；
+ *    新版两个都返回 `Promise<{outcome}>` —— 所以优先用 `prompt()` 的返回值，退到 `userChoice`。
+ */
+function onInstall() {
+  const evt = installEvt;
+  if (!evt) {
+    /* 事件已经用掉（这个会话里多半点过一次、或在浏览器自带横幅里装过），这台浏览器也没有重发。
+       给一条**走得通**的手动路径，而不是静静地什么都不做。 */
+    menuInstallNote('浏览器不再提供自动安装 ｜ 请点 Chrome 右上角「⋮」→「添加到主屏幕」');
+    return;
+  }
+  installEvt = null;                    // 无论成败都作废：同一个事件 prompt 不了第二次
+  menuRemoveInstall();                  // 一并摘掉按钮 —— 留着就是一枚死键
+  try {
+    const p = evt.prompt();
+    const settled = (p && typeof p.then === 'function') ? p : evt.userChoice;
+    if (settled && typeof settled.then === 'function') {
+      settled.then(c => menuInstallNote(c && c.outcome === 'accepted'
+        ? '正在安装…'
+        : '已取消 ｜ 也可点 Chrome 右上角「⋮」→「添加到主屏幕」')).catch(() => {});
+    }
+  } catch {
+    menuInstallNote('安装弹窗被浏览器拦下 ｜ 请点 Chrome 右上角「⋮」→「添加到主屏幕」');
+  }
 }
 
 /** 撤销主菜单的武装：超时或重开前都要还原按钮，免得下次开局还是红的 */
