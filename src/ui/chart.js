@@ -55,8 +55,11 @@ let themeCache = null;
 
 /**
  * 把 `:root` 的变量读成计算值并缓存。
- * canvas 不认 `var()`，只能读一次字符串；运行时没有换肤，所以缓存终身有效。
- * 样式表是 `<head>` 里的阻塞 `<link>`，首帧执行前就已生效，不存在读到空值的情况。
+ * canvas 不认 `var()`，只能读一次字符串。样式表是 `<head>` 里的阻塞 `<link>`，
+ * 首帧执行前就已生效，不存在读到空值的情况。
+ *
+ * ⚠️ 缓存**不再是终身有效**的（B5 起）：设置页可以把涨跌色对调（`<html>.red-up`），
+ *    那是 `:root` 上的一次真实变化 ⇒ 切换时必须调一次 `resetTheme()`。
  */
 function theme() {
   if (!themeCache) {
@@ -66,6 +69,9 @@ function theme() {
   }
   return themeCache;
 }
+
+/** 丢弃缓存的颜色，下一次绘制重新从 `:root` 取（涨跌色切换时由 `main.js` 调用） */
+export function resetTheme() { themeCache = null; }
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 

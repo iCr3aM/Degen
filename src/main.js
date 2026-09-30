@@ -24,6 +24,7 @@ import {
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
+import { resetTheme } from './ui/chart.js';
 import * as snd from './ui/sound.js';
 
 const root = document.getElementById('app');
@@ -105,6 +106,9 @@ const GUIDE = [
 /* ───────────────────────────── 启动 ───────────────────────────── */
 
 async function boot() {
+  /* 涨跌色偏好**最先落**（B5）：`:root.red-up` 一挂上，连开机那句话的颜色都是对的 ——
+     放到 `mount()` 之后也行，但那样第一次开机画面会闪一下默认色。 */
+  applyRedUp(redUp);
   renderBoot('正在读取行情数据包…');
   try {
     await loadManifest();
@@ -298,6 +302,8 @@ function draw(force = false) {
     tab,
     /* 音效偏好归 `sound.js` 管，不进主状态 —— 设置页那个开关的文案由渲染层每帧从这里取 */
     muted: snd.isMuted(),
+    /* 涨跌色偏好（B5）：同上，归那个独立 localStorage 键管 */
+    redUp,
     /* 新手分步引导正在走（本轮 ①/F）—— 引导期间 `s.paused` 恒为真，但**界面不该装成「暂停」**：
        它正高亮着「买入」按钮教玩家怎么用，把那一枚画成禁用灰会自相矛盾 ⇒ 渲染层靠这个豁免。
        （与 `tab` 同一类：纯界面状态，不进 `s`。） */
@@ -390,6 +396,7 @@ function dispatch(node) {
      ⚠️ 原来的 `data-settings`（顶栏那枚「设置」）已随 A6 撤掉 —— 设置整体成了一个页。 */
   if (d.tab !== undefined) return onTab(d.tab);
   if (d.snd !== undefined) return onSoundToggle();
+  if (d.colors !== undefined) return onColorToggle();
   if (d.reset !== undefined) return onReset(node);
   if (d.sclose !== undefined) return onClosePanel();
 
@@ -1085,6 +1092,32 @@ function onSoundToggle() {
   const muted = !snd.isMuted();
   snd.setMuted(muted);
   if (!muted) snd.tap();
+  after();
+}
+
+/* ── 涨跌色方向（B5 · 用户 2026-09-30 拍板）──────────────────────────────
+   纯**显示偏好**，所以与音效同一个存法：**独立 localStorage 键**（`degen_colors`），
+   不进存档 —— 「重开本局」不该把玩家的习惯一起清掉。
+   ⚠️ 不复用音效那个 `degen_settings`：那格里存的是一个裸字符串（'mute' / 'on'），
+      塞不进第二个值；各存各的键就不会互相覆盖。
+   实现只有两件事：① 在 `<html>` 上挂 / 摘 `.red-up`（`:root.red-up` 负责对调两枚语义色，
+   全站颜色都从变量派生 ⇒ 一处切换、处处生效）；② 让 K 线的颜色缓存失效
+   —— canvas 不认 `var()`，它是读一次就缓存的（`chart.theme()`）。
+   默认**绿涨红跌**（国际惯例）；`true` = 已切到红涨绿跌。 */
+const COLOR_KEY = 'degen_colors';
+let redUp = (() => { try { return localStorage.getItem(COLOR_KEY) === 'red-up'; } catch { return false; } })();
+
+function applyRedUp(v) {
+  redUp = !!v;
+  document.documentElement.classList.toggle('red-up', redUp);
+  try { localStorage.setItem(COLOR_KEY, redUp ? 'red-up' : 'green-up'); } catch { /* 隐私模式：本次会话内有效即可 */ }
+  resetTheme();
+}
+
+/** 涨跌色开关 —— 同音效：只翻偏好，按钮外观由 `update()` 每帧从 `view.redUp` 同步。 */
+function onColorToggle() {
+  applyRedUp(!redUp);
+  snd.tap();
   after();
 }
 

@@ -363,7 +363,14 @@ export function mount(root) {
   /* 新手提示（v11 · ③）：管破产预警遮罩这类**引导**内容（开局叙事不受它管）。 */
   const hintRow = el('div', 'set-row');
   hintRow.append(el('i', null, '新手提示'), hintBtn);
-  setCard.append(sndRow, impRow, hintRow);
+  /* 涨跌色方向（B5 · 用户 2026-09-30 拍板）：文案写**当前方向**（默认「绿涨」），
+     `.on` 表示「已经从惯例切走了」—— 与前三个开关「on = 启用」的语气一致。
+     偏好归 `main.js`（独立 localStorage 键），这里只负责显示。 */
+  const colBtn = el('button', 'set-btn', '绿涨');
+  colBtn.dataset.colors = 'toggle';
+  const colRow = el('div', 'set-row');
+  colRow.append(el('i', null, '涨跌色'), colBtn);
+  setCard.append(sndRow, impRow, hintRow, colRow);
   const resetBtn = el('button', 'act flat', '重开本局');
   resetBtn.dataset.reset = '';
   /* 按钮必须包在 `.row` 里：`.act` 自己带 `flex: 1`，直接放进纵向 flex 的 `.page` 会被拉满整屏 */
@@ -469,7 +476,7 @@ export function mount(root) {
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asList,
     asCurve, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
-    sndBtn, impBtn, hintBtn,
+    sndBtn, impBtn, hintBtn, colBtn,
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
     rvWrap, rvCanvas, rvHead, rvSym, rvMcap, rvSupp, rvChg, rvModeBtn, rvLogs,
@@ -527,8 +534,8 @@ const LOCK_PREV = (() => {
 /**
  * @param {object} refs  `mount()` 的返回值
  * @param {object} s     状态
- * @param {object} view  `{ chartW, chartH, tab, muted }` —— K 线区实测尺寸 ＋ 当前页 ＋ 是否静音
- *   （后两项由 `main.js` 注入：它们一个是界面位置、一个是浏览器偏好，都不属于 `core` 的状态）
+ * @param {object} view  `{ chartW, chartH, tab, muted, redUp, guide }` —— K 线区实测尺寸 ＋ 当前页 ＋ 两个浏览器偏好
+ *   ＋ 是否在走新手引导（后四项由 `main.js` 注入：界面位置与浏览器偏好都不属于 `core` 的状态）
  */
 export function update(refs, s, view) {
   const onTrade = view.tab === 'trade';
@@ -543,14 +550,16 @@ export function update(refs, s, view) {
   refs.pauseBtn.classList.toggle('on', s.paused);
   refs.pauseBtn.disabled = lockedUI;
 
-  /* 设置页那三个开关（静态 DOM，不重建）：文案与高亮**只从这里写**。
-     `view.muted` 由 `main.js` 注入（音效偏好归 `sound.js` 管，不是主状态）。 */
+  /* 设置页那四个开关（静态 DOM，不重建）：文案与高亮**只从这里写**。
+     `view.muted` / `view.redUp` 由 `main.js` 注入（这两个纯显示偏好归浏览器存档管，不是主状态）。 */
   refs.sndBtn.textContent = view.muted ? '关' : '开';
   refs.sndBtn.classList.toggle('on', !view.muted);
   refs.impBtn.textContent = s.impactOn ? '开' : '关';
   refs.impBtn.classList.toggle('on', s.impactOn);
   refs.hintBtn.textContent = s.hintOn ? '开' : '关';
   refs.hintBtn.classList.toggle('on', s.hintOn);
+  refs.colBtn.textContent = view.redUp ? '红涨' : '绿涨';
+  refs.colBtn.classList.toggle('on', view.redUp);
 
   /* 账户三格 */
   const eq = equity(s);

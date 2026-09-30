@@ -37,6 +37,13 @@
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
+/* 涨跌色方向（B5 · 用户 2026-09-30 拍板）：默认**绿涨红跌**（国际惯例），
+   在 `<html>` 上挂一个 `.red-up` 就把两枚语义色整体对调（A 股习惯）。
+   实现上只换这两个变量 —— 全站的颜色都从它们派生，**一处切换、处处生效**。
+   ⚠️ 唯一的例外是 canvas：它不认 `var()`，颜色是读一次就缓存的，
+      所以切换时必须调 `chart.resetTheme()` 让 K 线重新取色（见 `main.js.applyRedUp`）。 */
+:root.red-up { --up: #ff5b6a; --down: #00d18f; }
+
 * { box-sizing: border-box; border-radius: 0; }
 
 html, body {

@@ -40,8 +40,9 @@ export const ACTION_KEYS = [
      / `years` / `year:2017` / `go` / `skip` / `skipall`），分派见 `main.js` 的 `onReview`。 */
   'menu', 'review',
   /* v13（《资产页与手机端 UI 打磨方案》§3.1）：`buyu` ＝ 资产页「买 U」卡片上的
-     三枚金额档（`0.25` / `0.5` / `1`）＋ 那枚「兑换」键（`go`）。 */
-  'buyu',
+     三枚金额档（`0.25` / `0.5` / `1`）＋ 那枚「兑换」键（`go`）。
+     B5：`colors` ＝ 设置页的「涨跌色」开关（绿涨红跌 ⇄ 红涨绿跌）。 */
+  'buyu', 'colors',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');

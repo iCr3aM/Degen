@@ -4,15 +4,15 @@
 > 我们要继续打磨 UI。**给出精细的手机端打磨 UI 方案**。」
 > 上游依据：《上帝模式与现货模块方案》§6.2（三页职能）／§7（两格账本）／§11（费率与通道，已落地）、
 > 《主菜单与历史回顾模式方案》、`ROADMAP.MD` §28.7。
-> 本文是**方案蓝本**，状态随批次更新：**B1–B3 已落地**（commit `361f949`），
-> **B4（同币加仓）/ B5（页面职能）/ B6（UI 打磨）待做** —— 见 §8。
+> 本文是**方案蓝本**，状态随批次更新：**B1–B5 已落地**（B1–B3 `361f949` ／ B4 `c62068c` ／ B5 与本档同批），
+> **只剩 B6（UI 打磨）待做** —— 见 §8。
 
 ---
 
 ## 1. 现状盘点（先说实话）
 
 > ⚠️ **本节是「动手前」的快照**。①②③ 已在 **B1–B3** 落地（commit `361f949`），
-> ④⑤⑦ 动手前就已实现；**⑥ 同币加仓仍未做**（B4）。看进度请以 **§8 表格** 为准。
+> ④⑤⑦ 动手前就已实现；**⑥ 同币加仓已随 B4 落地**（commit `c62068c`）。看进度请以 **§8 表格** 为准。
 
 ### 1.1 用户点名的七项
 
@@ -202,7 +202,17 @@ IMF《Understanding Stablecoins》（2022-05）｜The Defiant / Tether 官方声
 |---|---|---|
 | **交易** | 币种条 / K 线 / HUD / 持仓条 / 日志条 / **操作区（金额·模式·杠杆·通道·动作键）/ 速度** | 基本不动（顶栏见下） |
 | **资产** | ① 总资产（**USD 格 / USDT 格 / 合计**）② **资金曲线** ③ **买 U** ④ 持仓三组列表 ⑤ **交易所切换** | 从「v0 两件」扩成「钱的中央」 |
-| **设置** | 音效 / 订单冲击 / 新手提示 / 重开本局 ＋（新增）单位显示、涨跌色方向 | 小修 |
+| **设置** | 音效 / 订单冲击 / 新手提示 / 重开本局 ＋（新增）**涨跌色方向** | 小修 |
+
+### 6.1 B5 拍板（2026-09-30）
+
+| 项 | 裁决 |
+|---|---|
+| **单位显示** | ❌ **不做** —— 两格账本已经把 USD / USDT 分格显示，再加一个显示开关是冗余（LESS IS MORE） |
+| **涨跌色方向** | ✅ **做** —— 绿涨红跌 ⇄ 红涨绿跌；纯显示偏好，存**独立 localStorage 键** `degen_colors`（与音效同口径，重开本局不清它） |
+
+实现要点（已落地）：`:root.red-up` 一句对调 `--up` / `--down`（全站颜色都从变量派生，一处切换处处生效）；
+唯一的例外是 canvas —— 它不认 `var()`、颜色读一次就缓存，所以切换时必须调 `chart.resetTheme()`。
 
 - **交易所切换**是否从顶栏搬到资产页 → **待拍板 D3**（顶栏那枚是「交易页常驻」，搬走会让
   「换所要先离开行情」）。
@@ -392,13 +402,16 @@ IMF《Understanding Stablecoins》（2022-05）｜The Defiant / Tether 官方声
 | **B1** | **两格账本**（`books[ex].usd/usdt` ＋ `spendableOf` ＋ `debit/credit` ＋ `transfer.cur` ＋ `STATE_VERSION 13`），HUD/资产页显示两格 | state / engine / render / main / god | **高**（动的是所有钱的路径） | ✅ 已落地 |
 | **B2** | **买 U**（`usdtPriceAt` ＋ 资产页卡片 ＋ 27 条史实锚点表） | config / engine / render / bind / main | 中 | ✅ 已落地 |
 | **B3** | **资金曲线**（`s.eq` 采样 ＋ `drawEquityCurve` ＋ 对数轴，canvas 110px） | state / engine / chart / render / style | 中 | ✅ 已落地 |
-| **B4** | **同币加仓**（`openTrade` 合并分支 ＋ 文案，见 §5） | engine / main / render | 中 | ⏳ 待做 |
-| **B5** | **页面职能重划** ＋ 设置项（单位、涨跌色） | render / main / style | 低 | ⏳ 待做 |
+| **B4** | **同币加仓**（`openTrade` 合并分支 ＋ 文案，见 §5） | engine / main / render | 中 | ✅ 已落地 |
+| **B5** | **页面职能重划** ＋ 设置项（涨跌色方向） | render / main / style / bind / chart | 低 | ✅ 已落地 |
 | **B6** | **UI 打磨** —— 拆成 **B6-a / B6-b / B6-c** 三小批，见 **§7.11** | style / render（少量） | 低（但改动面广） | ⏳ 待做 |
 
-> B1–B3 一批落地，commit `361f949`（9 files changed, 882 insertions, 51 deletions），
-> 离线断言 `tools/_v13_check.mjs` **58/58** 通过 ＋ `npm run build` 通过。
-> 该临时脚本留作 B4–B6 的回归网，**v13 全部做完后删除**。
+> B1–B3 一批落地，commit `361f949`（9 files changed, 882 insertions, 51 deletions）。
+> B4 单独一批，commit `c62068c`：同币加仓（`openTrade` 合并分支 ＋ 四道冲突闸门 ＋ 加权均价日志）。
+> B5 与本档同批：设置页新增**涨跌色方向** —— `:root.red-up` 对调 `--up/--down` ＋
+> `chart.resetTheme()` 失效 canvas 颜色缓存，偏好独立键 `degen_colors`。
+> 离线断言 `tools/_v13_check.mjs` **85/85** 通过 ＋ `npm run build` 通过。
+> 该临时脚本留作 B6 的回归网，**v13 全部做完后删除**。
 
 > 每批结束：离屏断言 ＋ `npm run build` ＋ 一次 `git commit`（不 push）。
 
