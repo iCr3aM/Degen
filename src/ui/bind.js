@@ -19,12 +19,12 @@ export const ACTION_KEYS = [
      ⚠️ `settings` **保留**（§9 B8）：顶栏那枚「设置」按钮已随 A6 撤掉，但设置页里
         将来仍可能复用它做一个「关」的出口 —— 现在页的出口就是底部 Tab，所以没有任何 DOM 挂它。 */
   'tab',
-  /* 上帝模式 ＋ 订单冲击：`god`（顶栏标题连点 5 次的隐藏入口）/ `impact`（设置面板的冲击开关）
+  /* 上帝模式：`god`（顶栏标题连点 5 次的隐藏入口）
      / `godcash` `godyear` `godmon` `godday` `godgo` `godoff`（上帝面板内的各枚按钮）
      ⚠️ 原来的 `godmult` `godscale` `godreset` 三枚已随上帝模式瘦身整体删除（2026-09-29）；
         `goddate` 随原生日期框一起删除，日期改由 `godyear` / `godmon` / `godday` 三排档位选择、
         `godgo` 才真正跳（2026-09-30）。 */
-  'god', 'impact', 'godcash', 'godyear', 'godmon', 'godday', 'godgo', 'godoff',
+  'god', 'godcash', 'godyear', 'godmon', 'godday', 'godgo', 'godoff',
   /* U1（ROADMAP §21.4）：`mode2`（操作区「金额」行末尾那枚「现货 / 合约」模式键）。
      ⚠️ 用 `mode2` 而不是 `mode` —— `mode` 已被 K 线左上角那枚**粒度**小字占用（`main.js` 的 `d.mode`）。
      v9（§15.3 N4）：`buy` / `sell` ＝ 现货模式那两枚动作键（借 U 买入 / 借币卖出）。 */

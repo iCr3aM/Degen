@@ -369,8 +369,6 @@ export function mount(root) {
      那四声环境音（50x 下吵了可以只关它），事件音照响。默认开。 */
   const mktBtn = el('button', 'set-btn on', '开');
   mktBtn.dataset.market = 'toggle';
-  const impBtn = el('button', 'set-btn on', '开');
-  impBtn.dataset.impact = 'toggle';
   const hintBtn = el('button', 'set-btn on', '开');
   hintBtn.dataset.hint = 'toggle';
   const setCard = el('div', 'set-card');
@@ -378,8 +376,6 @@ export function mount(root) {
   sndRow.append(el('i', null, '音效'), sndBtn);
   const mktRow = el('div', 'set-row');
   mktRow.append(el('i', null, '行情音'), mktBtn);
-  const impRow = el('div', 'set-row');
-  impRow.append(el('i', null, '订单冲击'), impBtn);
   /* 新手提示（v11 · ③）：管破产预警遮罩这类**引导**内容（开局叙事不受它管）。 */
   const hintRow = el('div', 'set-row');
   hintRow.append(el('i', null, '新手提示'), hintBtn);
@@ -390,7 +386,7 @@ export function mount(root) {
   colBtn.dataset.colors = 'toggle';
   const colRow = el('div', 'set-row');
   colRow.append(el('i', null, '涨跌色'), colBtn);
-  setCard.append(sndRow, mktRow, impRow, hintRow, colRow);
+  setCard.append(sndRow, mktRow, hintRow, colRow);
   const resetBtn = el('button', 'act flat', '重开本局');
   resetBtn.dataset.reset = '';
   /* 按钮必须包在 `.row` 里：`.act` 自己带 `flex: 1`，直接放进纵向 flex 的 `.page` 会被拉满整屏 */
@@ -496,7 +492,7 @@ export function mount(root) {
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asList,
     asCurve, eqRangeBtns, asBusy, asOnway, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
-    sndBtn, mktBtn, impBtn, hintBtn, colBtn,
+    sndBtn, mktBtn, hintBtn, colBtn,
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
     rvWrap, rvCanvas, rvHead, rvSym, rvMcap, rvSupp, rvChg, rvModeBtn, rvLogs,
@@ -576,8 +572,6 @@ export function update(refs, s, view) {
   refs.sndBtn.classList.toggle('on', !view.muted);
   refs.mktBtn.textContent = view.marketSound ? '开' : '关';
   refs.mktBtn.classList.toggle('on', view.marketSound);
-  refs.impBtn.textContent = s.impactOn ? '开' : '关';
-  refs.impBtn.classList.toggle('on', s.impactOn);
   refs.hintBtn.textContent = s.hintOn ? '开' : '关';
   refs.hintBtn.classList.toggle('on', s.hintOn);
   refs.colBtn.textContent = view.redUp ? '红涨' : '绿涨';
@@ -1098,10 +1092,13 @@ function buildPosList(box, s) {
       const dirText = isSpot(p)
         ? `${p.side === 'long' ? '买入' : '卖出'} ${p.lev}x`
         : `${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
+      /* 现货多一行**币量**（用户 2026-10-01「花多少钱买了多少枚币」）——
+         杠杆现货 / 合约的 `size` 只是名义的折算，玩家不看这个数，所以不报。 */
+      const qtyText = isSpot(p) ? ` · ${fmtQty(p.size)} 枚` : '';
       const row = el('div', 'prow');
       row.append(
         el('b', null, sym),
-        el('span', 'mut', `${dirText} · 开仓 ${fmtLogPrice(p.entry)}`),
+        el('span', 'mut', `${dirText} · 开仓 ${fmtLogPrice(p.entry)}${qtyText}`),
         el('b', 'num sign ' + (pnl >= 0 ? 'up' : 'down'), fmtMoney(pnl, { sign: true })),
       );
       card.append(row);
@@ -1663,12 +1660,12 @@ export function openYearPick(curYear) {
 
 /**
  * 设置原先是**弹层**（`openSettings`），A6（方案 §6.2，2026-09-29）起整体搬成**设置页**：
- *   **① 音效开关**（偏好存 `degen_settings`，独立于存档 —— 重开不会把开关一起清掉）
- *   **② 订单冲击开关**（方案 §2.7）—— 它是**玩法开关**，所以读的是状态 `s.impactOn`，不是偏好存档
- *   **③ 重开本局**（**页内双重确认**：第一次点变「确认重开」，3 秒不点自动还原）
+ *   **① 音效 / 行情音 / 新手提示 / 涨跌色 四个开关**
+ *   **② 重开本局**（**页内双重确认**：第一次点变「确认重开」，3 秒不点自动还原）
  *
- * ⚠️ 三件东西的 DOM 都在 `mount()` 里一次建好（页是常驻骨架，不像弹层每次现建），
- *    两个开关的文案 / 高亮由 `update()` 每帧从状态同步。
+ * ⚠️ 原「订单冲击」开关已于 2026-10-01 随 `s.impactOn` 字段一起删除 —— 冲击是基础玩法，不再是选项。
+ * ⚠️ 各控件的 DOM 都在 `mount()` 里一次建好（页是常驻骨架，不像弹层每次现建），
+ *    文案 / 高亮由 `update()` 每帧从状态同步。
  * ⚠️ 双重确认的**状态机仍在 `main.js`**（`onReset` / `cancelReset`）：页是静态 DOM、
  *    不参与每帧重绘，把「已武装」这个状态放进渲染层只会两处打架。
  * ⚠️ 这个页**没有「关闭」出口** —— 底部 Tab 就是出口（切回交易 / 资产）。

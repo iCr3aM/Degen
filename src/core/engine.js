@@ -18,7 +18,7 @@ import { newsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow, residualOfSide } from './god.js';
-import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtRate } from './format.js';
+import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, maintRateOf, openPosition, pnlOf,
   FUNDING, fundingOf, fundingRateOf, canLiquidate, paysFunding, paysInterest,
@@ -468,7 +468,14 @@ export function openTrade(s, side, frac = 1) {
      ★ 加仓（B4）：字面换成「加仓 ＋ 追加保证金」，并补一个**加权后的均价** ——
        否则玩家只能看到「这笔按 $13.5 成的」，看不到自己整条仓位现在的成本在哪。 */
   const head = prev ? `加仓 ${s.sym} ${lev}x` : `${verb} ${s.sym} ${lev}x`;
-  const line = prev ? `追加保证金 ${fmtMoneyShort(margin)}` : `保证金 ${fmtMoneyShort(margin)}`;
+  /* 正文按**三类**分开报（用户 2026-10-01「花多少钱买了多少枚币」）：
+     · **普通现货**（现货 1x）：根本没有保证金这回事 ⇒ 报「花多少、拿到多少枚」；
+     · **杠杆现货 / 合约**：报「保证金 ＋ 名义」—— 币量不参与结算，也不是玩家看盈亏的单位。 */
+  const qty = notional / fill;                 // 本次成交拿到的币量（加仓时是这一笔的量）
+  const plainSpot = spot && lev === 1;
+  const line = plainSpot
+    ? `${prev ? '追加' : '花费'} ${fmtMoneyShort(margin)} 得 ${fmtQty(qty)} 枚`
+    : `${prev ? '追加保证金' : '保证金'} ${fmtMoneyShort(margin)} · 名义 ${fmtMoneyShort(notional)}`;
   const avg = prev ? `｜均价 ${fmtLogPrice(pos.entry)}` : '';
   pushLog(s, `${head}｜${line} @ ${fmtLogPrice(fill)}${avg}｜手续费 ${fmtMoneyShort(fee)}${tag}`,
     side === 'long' ? 'long' : 'short');
@@ -479,8 +486,10 @@ export function openTrade(s, side, frac = 1) {
         剩下的就是 AC 里的「暂时冲击」（随成交结束而消失，已由成交价本身承担）。
      ⚠️ OTC 不写：私下一口价的大宗交易不落公开盘口（与它不消耗供应量同一口径）。
      ⚠️ 与上帝模式**无关**（2026-09-29 瘦身）：原来这里乘过一个「冲击倍率」`s.god.mult`，
-        已删除 —— 上帝模式不再有任何价格能力。 */
-  if (!otc && s.impactOn) {
+        已删除 —— 上帝模式不再有任何价格能力。
+     ⚠️ **永远是开的**（2026-10-01 用户拍板）：设置页那枚「订单冲击」开关已删除，`s.impactOn`
+        字段一并删掉 —— 它不再是选项，而是基础玩法的一部分。 */
+  if (!otc) {
     const dir = side === 'long' ? 1 : -1;
     if (addFlow(s, s.sym, dir * SHOCK.share * cost)) invalidateSigma();
   }
@@ -539,7 +548,7 @@ export function closeTrade(s, why = '手动') {
      A2 口径 = 「返还款打对折」：基数是**开仓方向此刻的残存值** `R`（不是开仓时的原值），写回 `−giveBack·R`。
      ⇒ 砸出的坑只回填一半；且新写的反向笔幅度 ≤ 同向残存值 ⇒ **过冲在数学上不可能发生**
         （原来那种「弹得比原价还高」正是「先写的衰减多、后写的衰减少」这条不对称造成的）。 */
-  if (!otc && s.impactOn) {
+  if (!otc) {
     const dir = pos.side === 'long' ? 1 : -1;
     const back = SHOCK.giveBack * residualOfSide(s, sym, s.i, dir);
     if (addFlow(s, sym, -dir * back)) invalidateSigma();

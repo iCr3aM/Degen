@@ -478,12 +478,12 @@ function dispatch(node) {
   if (d.reset !== undefined) return onReset(node);
   if (d.sclose !== undefined) return onClosePanel();
 
-  /* ── 上帝模式 ＋ 订单冲击（隐藏入口 · 方案 §2）──
-     `god` 是标题上的连点入口，「订单冲击」开关在**设置页**里，其余三枚在上帝面板里（`data-god*`）。
+  /* ── 上帝模式（隐藏入口 · 方案 §2）──
+     `god` 是标题上的连点入口，其余几枚在上帝面板里（`data-god*`）。
      ⚠️ 上帝模式**只有「跳日期 / 填资金 / 关掉」三件事**（2026-09-29 瘦身）：原来那两套价格能力
-        （倍率 `godmult`、手动砸盘 `godscale` / 复位 `godreset`）已整体删除。 */
+        （倍率 `godmult`、手动砸盘 `godscale` / 复位 `godreset`）已整体删除。
+     ⚠️ 设置页那枚「订单冲击」开关已于 2026-10-01 随 `s.impactOn` 字段一起删除 —— 冲击永远是开的。 */
   if (d.god !== undefined) return onGodTap();
-  if (d.impact !== undefined) return onImpactToggle();
   if (d.godcash !== undefined || d.godyear !== undefined || d.godmon !== undefined
     || d.godday !== undefined || d.godgo !== undefined || d.godoff !== undefined) {
     /* 这几枚只可能出现在上帝面板里，而面板只在 `s.god` 非空时打开。这一行是**状态机不靠 DOM 兜底**：
@@ -706,16 +706,6 @@ function onGodTap() {
 
 /** 面板的统一出口 —— 每次都把暂存的选择器带上，点年 / 月 / 日之后才不会跳回「当前日期」 */
 const showGod = () => openGod(s, godSel);
-
-/**
- * 订单冲击开关（方案 §2.7）—— **玩法开关**，落在主状态 `s.impactOn`（不是 `degen_settings`）。
- * ⚠️ 关掉只是「不再产生新的冲击」，**已落地的行情位移不还原**（那是已发生的历史）。
- * ⚠️ 与音效开关同理：按钮外观由 `update()` 同步，不在这里手改节点。
- */
-function onImpactToggle() {
-  s.impactOn = !s.impactOn;
-  after();
-}
 
 /**
  * 面板里那枚「填入」：**直接设定当前交易所的余额**（方案 §2.3），不是在原余额上加。
