@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, railAt, railFeeOf, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf } from './config.js';
+import { GAME, HOUR_MS, EXCHANGES, OTC, SUPPLY_CAP, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, LOAN, loanAmountAt, otcPremiumOf, usdtPriceAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, volumeAt, HOURS_PER_DAY } from './market.js';
 import { warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse } from './congestion.js';
@@ -23,7 +23,7 @@ import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, openPosition, pnlOf,
   FUNDING, fundingOf, fundingRateOf, canLiquidate, paysFunding,
 } from './positions.js';
-import { cashOf, capturedOf, heldSyms, posOf, pushLog } from './state.js';
+import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
 import { hashStr, rand } from './rng.js';
 
@@ -68,6 +68,8 @@ export function totalUnrealized(s) {
  *
  * ⚠️ **在途资金必须算进来**（P2-A 陷阱①）：换所后 `books` 是空的，漏掉这一项会让权益显示 $0.00，
  *    并且被 `isBankrupt` 直接误判成破产、本局当场结束。它不是「隐藏资产」，是**可见但不可用**。
+ * ⚠️ **USDT 按面值 $1 计入**（v13 · 方案 §2.2）：溢价已经在「买 U」那一刻结清（`usdtPriceAt`），
+ *    这里再按市价重估就是把同一笔钱计两次价。副作用是好的：破产判定不会因为 U 脱锚而提前触发。
  */
 export function equity(s) {
   let sum = cashOf(s);
@@ -81,11 +83,29 @@ export function equity(s) {
 }
 
 /**
- * 可用保证金 = 当前所里未被持仓占用的余额。
+ * 可用保证金 = 当前所里未被持仓占用的余额（**两格之和**）。
  * ⚠️ **在途的钱不算**（P2-A 陷阱③）：它躺在链上，不能开仓、也不能再搬一次。
  *    实现上天然成立 —— `cashOf` 只看 `books`，而发起转账时旧所那一格已经清零。
+ * ⚠️ v13 起它是**总口径**（HUD 那格「可用保证金」显示的就是这个数）；某一种订单**真正**
+ *    能动用多少由 `spendableOf(s, mustUsdt)` 回答（合约只认 USDT）—— 别拿这个去开合约。
  */
 export const available = s => cashOf(s);
+
+/* ───────────────────── 资金曲线采样（v13 · 方案 §4） ───────────────────── */
+
+/**
+ * 每**游戏日**记一个权益点（`s.eq`，资产页那张折线图的唯一数据源）。
+ *
+ * ⚠️ `s.eq.length` 本身就是「下一个该记的日子」：一天只推一个点，第 0 天推完长度变 1，
+ *    第 1 天就轮到下标 1 …… 不需要另存一份「上次记到哪天」的状态。
+ * ⚠️ **补记循环**：一帧在 50x 下连跑 50 根小时线、跨天很正常；上帝模式「跳日期」更是逐小时重放。
+ *    同一根小时线落在已记过的那天就不动，跨过了几天就用当前权益补齐 ——
+ *    曲线宁可多一小段平线，也不能留洞。
+ */
+export function sampleEquity(s) {
+  const day = Math.floor(s.i / 24);
+  while (s.eq.length <= day) s.eq.push(equity(s));
+}
 
 /* ───────────────────────── 下单通道（P2-B3 · GDD §15.3） ───────────────────────── */
 
@@ -279,14 +299,20 @@ export function openTrade(s, side, frac = 1) {
      （`spotOf` 只看模式 / OTC），与玩家此刻翻到哪一页无关 —— 否则切个页面就能换费率。 */
   const isSpotOrder = spotOf(s, otc);
   const feeRate = feeRateOf(s.ex, timeOf(s), isSpotOrder ? 'spot' : 'fut');
-  const cash = cashOf(s);
+  /* 这一单能动用多少钱（v13 · 方案 §9.2 ②）：**合约只认 USDT**（USDT 本位永续，
+     保证金必须是 U），现货 / OTC 是两格之和（扣的时候先扣 U、不足补美元）。
+     所以 2013 年那 $3,000 美元可以买现货，但要玩合约得先在资产页「买 U」。 */
+  const mustUsdt = !isSpotOrder;
+  const cash = spendableOf(s, mustUsdt);
 
   // 保证金 = 可用余额 × frac；开仓费按名义价值另收，所以要让「保证金 + 费 ≤ 余额」
   let margin = cash * Math.max(0.0001, Math.min(1, frac));
   const feeOf = m => m * lev * feeRate;
   if (margin + feeOf(margin) > cash) margin = cash / (1 + lev * feeRate);
   const fee = feeOf(margin);
-  if (!(margin > 0) || margin + fee > cash + 1e-9) return { ok: false, why: '可用保证金不足' };
+  if (!(margin > 0) || margin + fee > cash + 1e-9) {
+    return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用保证金不足' };
+  }
 
   /* OTC 的门槛（§15.3）：单笔名义 ≥ $100 万。锁定 1x ⇒ 名义 = 保证金。
      ⚠️ 门槛只卡**买入**，不卡平仓 —— 卡平仓会把玩家困在一条「币价跌下来、名义已不足 $100 万」的仓位上。 */
@@ -310,7 +336,11 @@ export function openTrade(s, side, frac = 1) {
     return { ok: false, why: `${s.sym} 已触及供应量上限，无法继续买入` };
   }
 
-  s.books[s.ex] = cash - margin - fee;
+  /* 扣账（v13）：`debit` **先扣 USDT、不足补 USD**（合约只认 USDT），并返回两格各扣了多少 ——
+     那个 `mix` 就是「原路退回」的凭据，平仓时按同比例还回两格（见 `state.credit`）。
+     ⚠️ 校验已在上面的 `margin + fee > cash` 拦过一次，这里返回 `null` 属兜底（理论不可达）。 */
+  const mix = debit(s, margin + fee, mustUsdt);
+  if (!mix) return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用保证金不足' };
   /* ⚠️ 开仓费是**玩家真实付出的钱**，必须同时记进「已实现」（Batch 5 · B23）——
      原来只从余额里扣、不写 `realized`，于是 HUD 副行那个数既不等于真实现金变动、
      也不等于已实现盈亏。它只被 `render.js` 读来展示，不参与任何玩法判定。 */
@@ -322,6 +352,7 @@ export function openTrade(s, side, frac = 1) {
   pos.i = s.i;
   pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
   pos.openFee = fee;
+  pos.mix = mix;                    // 保证金的两格构成（v13）—— 平仓原路退回
   if (otc) pos.otc = true;          // 只给 OTC 仓位打标（`capturedOf` 见到它就跳过）
   s.positions[s.sym] = pos;
 
@@ -381,7 +412,9 @@ export function closeTrade(s, why = '手动') {
   /* 平仓费走**开仓时那张表**（v12 · §11.3）：判据是仓位自己的 `isSpot`，
      不是玩家此刻的模式 —— 现货仓平仓不该按合约费率收，反之亦然。 */
   const r = closePosition(pos, fill, feeRateOf(pos.ex, timeOf(s), isSpot(pos) ? 'spot' : 'fut'));
-  s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
+  /* 平仓款**按 `pos.mix` 同比例退回两格**（v13 · 方案 §9.2 ③）——
+     2013 年用美元开的仓，平掉回的还是美元：否则 Mt.Gox 会凭空空降一笔 USDT。 */
+  credit(s, pos.ex, r.net, pos.mix);
   s.realized += r.pnl - r.fee;
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
   const tag = otc ? `｜OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
@@ -480,6 +513,42 @@ function checkRuin(s) {
   return true;
 }
 
+/* ───────────────────────── 买 U（v13 · 方案 §3） ───────────────────────── */
+
+/**
+ * 买入 USDT —— **当前所内的 USD → USDT 兑换**（方案 §3.1）。
+ *
+ * 三条口径：
+ *   - **同所内兑换、不过链**：它不产生矿工费、不吃拥堵，秒到账（跨所搬 U 是另一回事，走 rail）；
+ *   - **价格走 `usdtPriceAt`**（1 USDT 值多少美元）：纯锚点插值、**双向** ——
+ *     大多时候 $1 附近，危机时能买到 0.88（折价，捡便宜），挤兑时 1.05（溢价，吃亏）。
+ *     ⚠️ 溢价是**真实史实**，不是惩罚机制；它也是 `equity` 里 USDT 按面值 $1 计的原因
+ *        （溢价的账只在**这一刻**结一次，之后不再按市价重估）。
+ *   - **只做买入，不做卖出**（LESS IS MORE）：跨所搬 U 已经给了出口，再开一条卖 U
+ *     只是把同一件事做两遍。
+ *
+ * @param {number} frac 用掉多少**美元那一格**（沿用操作区那套 1/4 · 1/2 · 全部）
+ * @returns {{ok:boolean, why?:string}}
+ */
+export function buyUsdt(s, frac = 1) {
+  if (s.over) return { ok: false, why: '本局已结束' };
+  const t = timeOf(s);
+  if (t < USDT_LIVE) return { ok: false, why: '这个年代还没有 USDT' };
+
+  const b = ensureBook(s);
+  const usd = b.usd * Math.max(0.0001, Math.min(1, frac));
+  if (!(usd > 0)) return { ok: false, why: '当前所没有美元可兑换' };
+
+  const price = usdtPriceAt(t);        // 1 USDT = $price
+  const got = usd / price;             // 花掉的美元买到了多少 U
+  b.usd -= usd;
+  b.usdt += got;
+  /* 日志把**汇率**写出来（而不是只报两个金额）：玩家要能看出这一笔是赚了还是亏了 ——
+     0.900 时买 U 是捡便宜、1.050 时是挨宰，那正是这个机制的全部意义。 */
+  pushLog(s, `买入 USDT ${fmtMoney(got)}｜1 USDT = $${price.toFixed(3)}｜花费 ${fmtMoney(usd)}`, 'info');
+  return { ok: true };
+}
+
 /* ───────────────────────────── 交易所 ───────────────────────────── */
 
 /**
@@ -535,20 +604,27 @@ export function switchExchange(s, id) {
   if (heldSyms(s).length) return { ok: false, why: '有持仓，先全部平仓再换所' };
   if (s.transfer) return { ok: false, why: '上一笔转账还没到账' };
 
-  const amount = cashOf(s);
-  if (!(amount > 0)) return { ok: false, why: '当前所没有可划转的余额' };
+  const from = s.ex;
+  /* 搬的是**哪一格的钱**由年代定（v13 · 方案 §2.3）：电汇时代搬美元、链上时代搬 U。
+     ⚠️ 它和「走哪条通道」是**同一件事的两种说法**（`cashCurAt` 与 `TRANSFER_RAILS` 的分界点
+        是同一个 2014-11-20），所以不给玩家选（LESS IS MORE）—— 那年头手上根本没有 U。
+     ⚠️ 另一格的钱**留在原所、仍归玩家**（按所分账）：搬不走的不是丢了，回头再换回来就是。 */
+  const cur = cashCurAt(t);
+  const amount = bookOf(s, from)[cur] ?? 0;
+  if (!(amount > 0)) {
+    return { ok: false, why: cur === 'usdt' ? '这个年代搬钱走稳定币 ｜ 先在资产页把美元换成 U' : '当前所没有可划转的余额' };
+  }
 
   /* 通道、手续费、到账根数三件一起算（v12 · 方案 §11.4）：走哪条 rail 由**此刻的年份**自动判定。
      手续费**发起时立即扣**（B14 拍板）—— 所以余额不够付这笔费就搬不动，而不是「到了再扣」。
      ⚠️ 必须排在 `bumpPulse` **之前**：口径是「你推高拥堵 ⇒ 你**下一次**转账更慢」（验收口径④），
         本笔转账不能受自己那一脚的影响 —— 否则第一笔在 2013 年就会被自己拖慢，说不通。 */
-  const from = s.ex;
   const { rail, fee, n } = transferPlan(s, id);
   if (amount <= fee) return { ok: false, why: `余额不足以支付 ${rail.label} 手续费 ${fmtMoneyShort(fee)}` };
 
   const send = amount - fee;                           // 实际到账的金额（手续费在路上就被收走了）
-  s.books[from] = 0;                                   // 钱离开旧所，此后只记在 s.transfer 里
-  s.transfer = { amount: send, fee, rail: rail.id, from, to: id, departAt: s.i, arriveAt: s.i + n };
+  s.books[from][cur] = 0;                              // 那一格离开旧所，此后只记在 s.transfer 里
+  s.transfer = { amount: send, fee, rail: rail.id, cur, from, to: id, departAt: s.i, arriveAt: s.i + n };
   s.realized -= fee;                                   // 手续费是玩家真实付出的钱，与开/平仓费同一口径
   s.ex = id;                                           // 人已经在新所，钱还在路上
   normalizeLeverage(s);                                // 新所的上限可能更低，夹取一次
@@ -572,8 +648,9 @@ export function switchExchange(s, id) {
  * @returns {boolean} 是否因此结束了本局
  */
 function collapseExchange(s, ex) {
-  const lost = s.books[ex.id] ?? 0;
-  s.books[ex.id] = 0;
+  const book = bookOf(s, ex.id);
+  const lost = book.usd + book.usdt;                   // 两格一起归零（v13）—— 它就是这么倒的
+  s.books[ex.id] = blankBook();
 
   let margin = 0;
   for (const sym of heldSyms(s)) {
@@ -606,7 +683,10 @@ export function takeLoan(s) {
   const owe = amount * (1 + LOAN.ratePerDay * LOAN.days);
   s.loaned = true;
   s.loan = { amount, owe, dueAt: s.i + LOAN.days * 24 };
-  s.books[s.ex] = (s.books[s.ex] ?? 0) + amount;
+  /* 借款打**这个年代的那一格**（v13 · 方案 §9.2 ④）：2013–2014 借到的是美元，
+     2014-11 之后借到的是 U —— 与跨所通道同一把尺子。 */
+  const cur = cashCurAt(timeOf(s));
+  ensureBook(s)[cur] += amount;
   s.pending = null;
   s.paused = false;
   pushLog(s, `借款 ${fmtMoney(amount)} ｜ ${LOAN.days} 天后还 ${fmtMoney(owe)}`, 'info');
@@ -655,16 +735,16 @@ function settleLoan(s) {
          下面那条「还款 · 借款结清」已经概括了整件事。 */
       const impact = impactFor(sym, s.i, pos.size * price);
       const r = closePosition(pos, fillPrice(price, pos.side === 'long' ? -1 : 1, impact), feeRateOf(pos.ex, timeOf(s), isSpot(pos) ? 'spot' : 'fut'));
-      s.books[pos.ex] = (s.books[pos.ex] ?? 0) + r.net;
+      credit(s, pos.ex, r.net, pos.mix);
       s.realized += r.pnl - r.fee;
     } else {
-      s.books[pos.ex] = (s.books[pos.ex] ?? 0) + pos.margin;   // 取不到价：按权益口径退回保证金
+      credit(s, pos.ex, pos.margin, pos.mix);                  // 取不到价：按权益口径退回保证金
     }
     delete s.positions[sym];
   }
 
   const owe = s.loan.owe;
-  const pool = (s.books[s.ex] ?? 0) + (s.transfer ? s.transfer.amount : 0);
+  const pool = cashOf(s) + (s.transfer ? s.transfer.amount : 0);
   if (pool + 1e-9 < owe) {
     endGame(s, OVER.DEFAULTED);
     return true;
@@ -678,7 +758,10 @@ function settleLoan(s) {
     rest -= use;
     if (s.transfer.amount <= 1e-9) s.transfer = null;
   }
-  s.books[s.ex] = (s.books[s.ex] ?? 0) - rest;
+  /* 还款与扣保证金同一口径：**先扣 USDT、不足补美元**。池子在上面已校验 ≥ `owe`
+     （`pool` = 两格之和 ＋ 在途），而在途那段刚被扣掉 ⇒ 两格之和必 ≥ `rest`，扣得干净。
+     兜底（理论不可达）：直接把美元那格减成负数，交给 `isBankrupt` 接住 —— 与原实现同效。 */
+  if (!debit(s, rest)) ensureBook(s).usd -= rest;
   s.realized -= owe - s.loan.amount;      // 只有利息是成本
   pushLog(s, `还款 ${fmtMoney(owe)} ｜ 借款结清`, 'ok');
   s.loan = null;
@@ -711,7 +794,9 @@ export function advanceOneHour(s) {
   //    「归零那一刻正好到账」的钱会落进一个已经清零的账本、反而活下来，那是个漏洞。
   if (s.transfer && s.i >= s.transfer.arriveAt) {
     const tr = s.transfer;
-    s.books[tr.to] = (s.books[tr.to] ?? 0) + tr.amount;
+    /* 进**当初搬的那一格**（v13 · 方案 §9.2 ①）：2013 年电汇搬的是美元，2014-11 后链上搬的是 U。
+       少了这一条，Mt.Gox 会凭空到账一笔 2013 年根本不存在的 USDT。 */
+    ensureBook(s, tr.to)[tr.cur] += tr.amount;
     s.transfer = null;
     const to = exchangeOf(tr.to);
     pushLog(s, `到账 ${to ? to.name : tr.to} ｜ ${fmtMoney(tr.amount)}`, 'ok');
@@ -756,6 +841,11 @@ export function advanceOneHour(s) {
   if (s.i % FUNDING.hours === 0 && settleFunding(s)) return;
 
   liquidateAll(s);
+
+  /* 资金曲线采样（v13 · 方案 §4）排在**最后**：这一小时该结的资金费、该爆的仓都已经落账，
+     此刻记下的才是「这一天真正剩下的钱」。上面几条 `return`（待决态 / 借款到期 / 资金费爆仓）
+     会跳过它 —— 无所谓，下一天照样采样，`sampleEquity` 的补记循环不会留下洞。 */
+  sampleEquity(s);
 }
 
 /* ───────────────────────── 资金费率与强平 ───────────────────────── */

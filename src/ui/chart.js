@@ -385,3 +385,99 @@ export function drawChart(canvas, o) {
 const SIDE_RESERVE = 56;
 /** 避让的位移 = 一个标签高 16 ＋ 一个块内间距 6，恰好整行让开 */
 const SIDE_SHIFT = 22;
+
+/* ═════════════════════ 资金曲线（v13 · 方案 §4） ═════════════════════
+ * 把 `s.eq`（每个游戏日一个权益点）画成一条折线 ＋ 一条 $3,000 基准虚线。
+ *
+ * ⚠️ 它**住在本文件**的原因只有一个：K 线那套「读 `:root` 变量（`theme()`）＋ dpr 缩放」
+ *    的地基在这里，另起一个模块只会把这两件事抄第二遍。
+ * ⚠️ **对数纵轴**：$3,000 → $1,000 万跨三个半数量级，线性轴会把前两年压成贴着底边的一条线，
+ *    而那正是玩家最需要看清「有没有在慢慢往上爬」的一段。
+ * ⚠️ 它是**复盘图**：不画轴、不画网格、不做任何手势 —— 资产页上点它什么也不会发生。
+ */
+
+/** 纵轴下限（对数值）：权益归零后取 $1e-6 会让 `log10` 变成 −6，白白吃掉半屏纵轴 —— 兜在 $1 上 */
+const CURVE_FLOOR = 1;
+/** 上下各留的余量比（对数空间），免得最高 / 最低那一点贴着边框 */
+const CURVE_PAD_RATIO = 0.06;
+
+/**
+ * @param {HTMLCanvasElement} canvas
+ * @param {object} o
+ *   `eq`   Array<number>  每游戏日收盘的权益（升序，最后一个 = 今天）
+ *   `base` number         基准线（开局资金 $3,000）—— 也是「赚了还是亏了」那条分界
+ *   `cssW` / `cssH`       画布尺寸（CSS 像素）
+ */
+export function drawEquityCurve(canvas, o) {
+  const T = theme();
+  const dpr = Math.min(3, (typeof devicePixelRatio === 'number' ? devicePixelRatio : 1) || 1);
+  const W = Math.max(1, Math.round(o.cssW));
+  const H = Math.max(1, Math.round(o.cssH));
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) {
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const eq = o.eq || [];
+  if (!eq.length) {
+    ctx.fillStyle = T.MUT;
+    ctx.font = '12px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('暂无记录', W / 2, H / 2);
+    return;
+  }
+
+  const padX = 4;
+  const padY = 12;
+  const plotW = Math.max(1, W - padX * 2);
+  const plotH = Math.max(1, H - padY * 2);
+
+  const lg = v => Math.log10(Math.max(CURVE_FLOOR, v));
+  let lo = lg(o.base);
+  let hi = lo;
+  for (const v of eq) {
+    const g = lg(v);
+    if (g < lo) lo = g;
+    if (g > hi) hi = g;
+  }
+  /* 全程一条水平线（比如开局第一天）时 `hi === lo` ⇒ 强行撑开 0.1 个数量级，
+     否则 `hi - lo` 为 0 会把所有点除成 NaN。 */
+  if (hi - lo < 0.1) { const c = (hi + lo) / 2; lo = c - 0.05; hi = c + 0.05; }
+  const pad = (hi - lo) * CURVE_PAD_RATIO;
+  lo -= pad; hi += pad;
+  const yOf = v => padY + plotH * (1 - (lg(v) - lo) / (hi - lo));
+  const xOf = k => (eq.length === 1 ? padX + plotW / 2 : padX + plotW * k / (eq.length - 1));
+
+  // ── 基准虚线（$3,000）──
+  ctx.save();
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = T.LINE;
+  ctx.lineWidth = 1;
+  const yb = Math.round(yOf(o.base)) + .5;
+  ctx.beginPath();
+  ctx.moveTo(padX, yb);
+  ctx.lineTo(W - padX, yb);
+  ctx.stroke();
+  ctx.restore();
+
+  // ── 权益折线（颜色只说一件事：最后是赚是亏）──
+  const last = eq[eq.length - 1];
+  ctx.strokeStyle = last >= o.base ? T.UP : T.DOWN;
+  ctx.lineWidth = 1;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (let k = 0; k < eq.length; k++) {
+    const x = xOf(k);
+    const y = yOf(eq[k]);
+    if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  if (eq.length === 1) { ctx.lineTo(xOf(0) + 1, yOf(last)); }   // 单点：画一小段，别退化成看不见
+  ctx.stroke();
+
+  // ── 今天那一点 ──
+  ctx.fillStyle = ctx.strokeStyle;
+  ctx.fillRect(Math.round(xOf(eq.length - 1)) - 1.5, Math.round(yOf(last)) - 1.5, 3, 3);
+}

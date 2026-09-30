@@ -11,7 +11,7 @@
  * 所有会变的数字都挂在 `refs` 上，`update()` 是唯一的写入口。
  */
 
-import { GAME, COINS, EXCHANGES, SPEEDS, coinOf, exchangeOf, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt } from '../core/config.js';
+import { GAME, COINS, EXCHANGES, SPEEDS, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
@@ -19,9 +19,9 @@ import { isLoaded, rangeOf, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { anchorAt, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
-import { anyHeld, heldSyms, posOf } from '../core/state.js';
+import { anyHeld, heldSyms, posOf, slotOf } from '../core/state.js';
 import { ticksPerHour } from '../core/simulate.js';
-import { drawChart } from './chart.js';
+import { drawChart, drawEquityCurve } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 
 const el = (tag, cls, text) => {
@@ -290,17 +290,60 @@ export function mount(root) {
   const tradePage = el('div', 'page trade-page');
   tradePage.append(hud, symbols, chartWrap, posbar, logline, trade);
 
-  /* ── 资产页 v0（§6.2 的 ① 与 ④；② 曲线 / ③ 买U 属 Step 2）──
-     先落「现有数据就能算的两样」：**总资产**（复用 `equity`）＋ **持仓列表**（现货 / 合约分组）。
+  /* ── 资产页（§6.2 ①②③④ 全部落地 · v13）──
+     四块自上而下：**两格余额 → 资金曲线 → 买 U → 持仓列表**。
      ⚠️ 与交易页那条持仓条**不是重复**（§14.7）：那条只看当前币、是开仓后的风险仪表；
         这里是**跨币复盘**。 */
+  /* ① 两格余额（v13 · 方案 §6）：美元 / 稳定币**分列两格** ＋ 一行合计。
+     分列是要紧的 —— 「游戏内的 USDT 要和美元区分开」正是这一批的起点，而这个格
+     是玩家唯一能一眼看清「我手上是哪种钱」的地方。 */
+  /* ⑤ 账本抬头（方案 §6 D3）：**账是按所分的**（`books[ex]`），所以「上面这两个数是哪家所的」
+     必须写在脸上，否则两格余额是悬空的。交易所切换键仍留在顶栏（不在这里放第二枚）——
+     这一行是**只读摘要**。 */
+  const asExName = el('b');
+  const asExNote = el('u', 'num');
+  const asHead = el('div', 'as-head');
+  asHead.append(asExName, asExNote);
+  const asUsd = el('b', 'num');
+  const asUsdSub = el('u', 'num');
+  const asUsdt = el('b', 'num');
+  const asUsdtSub = el('u', 'num');
+  const asSlots = el('div', 'hud');
+  asSlots.append(
+    cell('美元 USD', asUsd, asUsdSub),
+    cell('稳定币 USDT', asUsdt, asUsdtSub),
+  );
   const asTotal = el('b', 'num');
   const asNote = el('u', 'num');
   const asBox = el('div', 'hud one');
   asBox.append(cell('总资产', asTotal, asNote));
+  /* ② 资金曲线（方案 §4）：`<canvas>` 高度固定 110px，**不做缩放交互**（它是复盘图，不是 K 线）。
+     ⚠️ 与 K 线同一个坑：它是 canvas，容器一隐藏就量成 0 ⇒ 只在资产页可见时画。 */
+  const asCurve = el('canvas', 'curve');
+  const asCurveBox = el('div', 'curve-box');
+  asCurveBox.append(asCurve);
+  /* ③ 买 U（方案 §3.1）：价格 ＋ 金额档 ＋ 一枚「买入」。2014-11-20 之前整块不存在
+     （那年头没有 U）—— 与「没有的选项不显示」同一条口径。 */
+  const uPrice = el('i');
+  const uHead = el('div', 'set-row');
+  uHead.append(el('i', null, '买 U'), uPrice);
+  const uFracBtns = new Map();
+  const uFracRow = el('div', 'row');
+  uFracRow.append(el('span', 'lbl', '金额'));
+  for (const [f, label] of [[0.25, '1/4'], [0.5, '1/2'], [1, '全部']]) {
+    const b = el('button', 'opt', label);
+    b.dataset.buyu = String(f);
+    uFracRow.append(b);
+    uFracBtns.set(String(f), b);
+  }
+  const uBuyBtn = el('button', 'act flat', '买入');
+  uBuyBtn.dataset.buyu = 'go';
+  uFracRow.append(uBuyBtn);
+  const uCard = el('div', 'set-card');
+  uCard.append(uHead, uFracRow);
   const asList = el('div', 'plist');
   const assetsPage = el('div', 'page assets-page');
-  assetsPage.append(asBox, asList);
+  assetsPage.append(asHead, asSlots, asBox, asCurveBox, uCard, asList);
 
   /* ── 设置页（原设置弹层那三件，原封不动搬成页 · §6.2）──
      ⚠️ 两个开关的文案 / 高亮**每帧由 `update()` 从状态与偏好同步**，不在这里手改节点：
@@ -424,7 +467,8 @@ export function mount(root) {
     logline, newsTag, logTime, logText,
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
-    pages, tabBtns, asTotal, asNote, asList,
+    pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asList,
+    asCurve, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
     sndBtn, impBtn, hintBtn,
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
@@ -775,13 +819,56 @@ export function update(refs, s, view) {
   refs.chanBtn.textContent = chan === 'otc' ? 'OTC' : '盘口';
   refs.chanBtn.classList.toggle('on', chan === 'otc');
 
-  /* 资产页（§6.2 ①②④ 的 v0）：总资产 ＋ 持仓列表。切到别的页就不写 —— 那是隐藏 DOM，
-     而且这个列表是**重建**出来的，白建一遍不如不建。 */
+  /* 资产页（§6.2 ①–⑤ 全部落地 · v13）：账本抬头 ＋ 两格余额 ＋ 总资产 ＋ 资金曲线 ＋ 买 U ＋ 持仓列表。
+     切到别的页就不写 —— 那是隐藏 DOM，而且持仓列表是**重建**出来的，白建一遍不如不建。 */
   if (view.tab === 'assets') {
+    /* ⑤ 账本抬头（方案 §6 · D3）：账是按所分的，所以先把「这两个数属于哪家所」写出来；
+        右端接「在途」——它是**此刻唯一不在任何所账上的钱**，玩家在资产页看不见它就会以为钱丢了。 */
+    const ex = exchangeOf(s.ex);
+    refs.asExName.textContent = ex ? ex.name : s.ex;
+    if (s.transfer) {
+      const to = exchangeOf(s.transfer.to);
+      refs.asExNote.textContent = `在途 ${to ? to.name : s.transfer.to} · 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`;
+    } else {
+      refs.asExNote.textContent = '';
+    }
+
+    /* ① 两格余额（v13）：副行写**占比**（基数是当前所的余额合计，不是权益 ——
+       权益里还有仓位与在途的钱，拿它当分母会让「美元 30%」这种读法失真）。 */
+    const usd = slotOf(s, 'usd');
+    const usdt = slotOf(s, 'usdt');
+    const book = usd + usdt;
+    refs.asUsd.textContent = moneySlot('usd', usd);
+    refs.asUsdt.textContent = moneySlot('usdt', usdt);
+    const share = v => (book > 0 ? `占 ${Math.round(v / book * 100)}%` : '--');
+    refs.asUsdSub.textContent = share(usd);
+    refs.asUsdtSub.textContent = share(usdt);
+
     refs.asTotal.textContent = moneySlot('eq', eq);
     refs.asTotal.className = 'num ' + (eq >= GAME.cash ? 'up' : 'down');
     refs.asNote.textContent = `已实现 ${moneySlot('realized', s.realized, { sign: true })}`;
     refs.asNote.className = 'num ' + (s.realized >= 0 ? 'up' : 'down');
+
+    /* ② 资金曲线（方案 §4）：与 K 线同一个坑 —— 它是 canvas，容器一隐藏就量成 0，
+       所以只在资产页（此刻必然可见）画。基准线恒取**开局资金**（$3,000）：
+       它不是「成本」，是「到此为止赚了还是亏了」那条分界。 */
+    drawEquityCurve(refs.asCurve, {
+      eq: s.eq,
+      base: GAME.cash,
+      cssW: refs.asCurve.clientWidth,
+      cssH: refs.asCurve.clientHeight,
+    });
+
+    /* ③ 买 U（方案 §3.1）：2014-11-20 之前整块不存在 —— 那年头没有 U，也没什么可换的。 */
+    const usdtLive = now >= USDT_LIVE;
+    refs.uCard.hidden = !usdtLive;
+    if (usdtLive) {
+      refs.uPrice.textContent = `1 USDT = $${usdtPriceAt(now).toFixed(3)}`;
+      for (const [k, b] of refs.uFracBtns) b.classList.toggle('on', Math.abs(s.sizeFrac - Number(k)) < 1e-9);
+      /* 没有美元可换 ⇒ 键画灰（`.act:disabled` 那档，与「暂停时画灰」同一副样子） */
+      refs.uBuyBtn.disabled = frozen || !(usd > 0);
+    }
+
     const listSig = posListSignature(s);
     if (listSig !== refs._posListSig) {
       refs._posListSig = listSig;

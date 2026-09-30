@@ -512,12 +512,48 @@ html, body {
    ⚠️ 规则写在 `.act:active` 之后，同优先级下由源码顺序取胜，按压态不会把去色顶掉。 */
 .act.off { opacity: .28; filter: grayscale(.7); cursor: default; }
 
-/* ══════════════ 资产页（A6 · 方案 §6.2） ══════════════
-   ① 总资产 ② 资金曲线（Step 2）③ 买U（Step 2）④ 持仓列表 —— 本步先落 ① 与 ④。 */
+/* ══════════════ 资产页（A6 · 方案 §6.2 · v13 扩成「钱的中央」） ══════════════
+   ① 账本抬头 ② 两格余额（美元 / 稳定币）③ 总资产 ④ 资金曲线 ⑤ 买 U ⑥ 持仓列表。 */
+
+/* 账本抬头（v13 · 方案 §6 · D3）：一行小字交代「上面那两格余额属于哪家所」＋ 右端接「在途」。
+   高度与 `.plist h4` 同档（24px），左端是所名（正文色，别抢主色）、右端是次要信息，
+   长了就在自己那半截截尾 —— 与 `.prow > span` 同一套写法。 */
+.as-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.as-head b { flex: none; font-weight: 600; color: var(--fg); }
+.as-head u {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  text-decoration: none;
+  color: var(--mut);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* 总资产卡：复用交易页 HUD 那副格子（同样的 `.cell` 三行结构，字色 / 行高全部一致）。
-   **单列**是过渡态：Step 2 拆成 USD / USDT 分列两格 ＋ 一行合计。 */
+   单列 —— 「合计」只有一格，拆两列没有意义（分列那件事已由上面 `asSlots` 那两格承担）。 */
 .hud.one { grid-template-columns: 1fr; }
+
+/* 资金曲线（v13 · 方案 §4）：canvas 固定高 **110px**，它是**复盘图**，不参与纵向节奏、
+   也不做任何手势（不像 K 线区那样是全屏唯一弹性块 —— 资产页整页可滚，见 `.page` 那条）。
+   ⚠️ canvas 的 CSS 尺寸与 `width` / `height` 属性必须由 render.js 按 DPR 对齐（同 K 线那一套），
+      否则在高 DPR 上线条会被拉糊。 */
+.curve-box { margin-top: 8px; }
+canvas.curve {
+  display: block;
+  width: 100%;
+  height: 110px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
 
 /* 持仓列表：按**现货 / 合约**分组（组名走 `h4`），组内是一个 `.pcard`，行与行之间一条细线。
    用途是**跨币复盘** —— 与交易页那条「只看当前币」的持仓条不是重复（§14.7）。 */

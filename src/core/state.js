@@ -9,7 +9,7 @@
 
 import { GAME } from './config.js';
 
-export const STATE_VERSION = 12;
+export const STATE_VERSION = 13;
 
 export function createState() {
   return {
@@ -28,11 +28,17 @@ export function createState() {
     ex: GAME.ex,
 
     /**
-     * 各交易所的余额（USDT）—— **资产按所分账**（GDD §7.2）：
-     * Mt.Gox 归零时只清零它自己的那一格，玩家早搬走的钱安然无恙。
-     * 没有持仓占用的那一格，就是「可用保证金」（当前所的那一格）。
+     * 各交易所的余额 —— **资产按所分账 ＋ 每所两格**（v13 · 方案 §2）：
+     *
+     *     `books[exId] = { usd, usdt }`
+     *
+     * - **按所分账**（GDD §7.2）：Mt.Gox 归零时只清它自己那一格，玩家早搬走的钱安然无恙。
+     * - **两格**（v13 新增）：`usd` = 美元法币、`usdt` = 稳定币。开局那 $3,000 是**美元**
+     *   —— 2013 年世界上还没有 USDT（Tether 2014-11 才在 Omni 上发币），
+     *   当年入金、电汇、结算全部走法币。要玩合约得先在资产页「买 U」。
+     *   ⚠️ 两者**面值 1:1** 参与权益计算（见 `engine.equity`）—— 溢价只在「买 U」那一刻结算。
      */
-    books: { [GAME.ex]: GAME.cash },
+    books: { [GAME.ex]: { usd: GAME.cash, usdt: 0 } },
 
     /**
      * 持仓表（逐仓，**每个币最多一条**）—— 键 = 币符号，`{}` 表示空仓。
@@ -50,7 +56,7 @@ export function createState() {
     consumed: {},
 
     /**
-     * 在途的划转（P2-A）—— `null` 或 `{ amount, fee, rail, from, to, departAt, arriveAt }`。
+     * 在途的划转（P2-A）—— `null` 或 `{ amount, fee, rail, cur, from, to, departAt, arriveAt }`。
      * **同时只允许一笔**（LESS IS MORE），且这笔钱**不在任何交易所的账上**（`books` 里已经扣掉了）：
      *   - 它**计入权益**（否则一换所权益就显示 $0，还会被误判成破产）
      *   - 它**不计入可用保证金**（`cashOf` 只看 `books`，天然满足）
@@ -59,6 +65,9 @@ export function createState() {
      * ⚠️ v12 起多了两个字段（方案 §11.4）：`fee` = 发起时就已扣走的划转手续费（**不在**
      *    `amount` 里 —— `amount` 是**实际到账**的净额），`rail` = 走的哪条通道（`wire` / `omni` /
      *    `erc20` / `trc20`）。两个字段目前都只供展示与排查，账目本身在发起那一刻就已经结清。
+     * ⚠️ **v13 再加 `cur`**（方案 §2.3）：这笔钱是 `'usd'` 还是 `'usdt'` —— 由发起时的年代定
+     *    （`config.cashCurAt`，与通道同步：电汇时代搬美元、链上时代搬 U）。到账时进新所的**那一格**，
+     *    否则 2013 年的 Mt.Gox 会凭空冒出一笔 USDT。
      */
     transfer: null,
 
@@ -127,6 +136,14 @@ export function createState() {
     realized: 0,
 
     /**
+     * 资金曲线（v13 · 方案 §4）—— `s.eq[n]` = **第 n 个游戏日**记录的权益，升序。
+     * 由 `engine.sampleEquity()` 在每根小时 K 线跑完时补记（`s.eq.length` 天然就是「下一个要记的日子」，
+     * 所以不需要另存一份「上次记到哪天」的眼睛）。
+     * ⚠️ 全程 4,383 个点 ≈ 45 KB —— 存得下，但**不许**改成每小时的粒度（那是 10 万个数）。
+     */
+    eq: [],
+
+    /**
      * 场外配资（Batch 5 · B30）—— 只在**资产归零**时触发一次。
      *   `loaned`：本局是否已经借过（只给一次机会，第二次归零就是真结束）
      *   `loan`  ：在贷：`null` 或 `{ amount, owe, dueAt }`
@@ -174,11 +191,81 @@ export function createState() {
   };
 }
 
+/* ───────────────────────── 两格账本（v13 · 方案 §2） ───────────────────────── */
+
+/** 一格空账 —— **冻结常量**：`bookOf` 在「这所还没去过」时返回它，
+ *  调用方一旦就地改它就会在严格模式（ESM 天然严格）下当场抛错，而不是悄悄污染所有人。 */
+const ZERO_BOOK = Object.freeze({ usd: 0, usdt: 0 });
+
+/** 一格新的空账（**每次都是新对象** —— 不许把上面的冻结常量拿去用） */
+export const blankBook = () => ({ usd: 0, usdt: 0 });
+
+/** 取某一所的账，缺省「当前所」；没去过 ⇒ 冻结的空账（只读，别改它） */
+export const bookOf = (s, ex = s.ex) => s.books[ex] ?? ZERO_BOOK;
+
+/** 取某一所的账，没有就**建一格**（写账前必须先过这一步） */
+export const ensureBook = (s, ex = s.ex) => (s.books[ex] ??= blankBook());
+
 /**
- * 当前交易所的余额（= 可用保证金）。
- * 没去过的交易所 `books` 里没有那一格，所以取不到就当 0。
+ * 某一所的**总余额**（两格之和）—— 面值 1:1。
+ * ⚠️ 它与 `engine.equity` 的口径必须一致：USDT 在权益里也按 $1 计，
+ *    溢价已经在「买 U」那一刻结清，不再按市价重估（否则同一笔钱被计两次价）。
  */
-export const cashOf = s => s.books[s.ex] ?? 0;
+export const cashOf = (s, ex = s.ex) => { const b = bookOf(s, ex); return b.usd + b.usdt; };
+
+/** 当前所**这一格**的余额（资产页分列显示用） */
+export const slotOf = (s, cur, ex = s.ex) => bookOf(s, ex)[cur] ?? 0;
+
+/**
+ * **这一单能用多少钱**（`openTrade` 的保证金基数）。
+ * - `mustUsdt`（合约）：只认 USDT —— USDT 本位永续，保证金必须是 U。
+ * - 否则（现货 / OTC）：两格之和，先扣 U 不足补美元（见 `debit`）。
+ */
+export const spendableOf = (s, mustUsdt = false) => {
+  const b = bookOf(s);
+  return mustUsdt ? b.usdt : b.usd + b.usdt;
+};
+
+/**
+ * **扣款** —— 优先扣 USDT、不足部分补 USD（方案 §9.2 ②）。
+ * @param {boolean} mustUsdt 合约保证金：只认 USDT，美元那一格**一分都不许动**
+ * @returns {{usd:number, usdt:number}|null} 实际从两格各扣了多少（**原路退回用这个**）；
+ *   余额不够返回 `null`，且**一格都不动**（调用方可安全地直接拒绝）。
+ */
+export function debit(s, amount, mustUsdt = false) {
+  const b = ensureBook(s);
+  if (!(amount > 0)) return { usd: 0, usdt: 0 };
+  if (mustUsdt) {
+    if (b.usdt + 1e-9 < amount) return null;
+    b.usdt -= amount;
+    return { usd: 0, usdt: amount };
+  }
+  if (b.usd + b.usdt + 1e-9 < amount) return null;
+  const usdt = Math.min(b.usdt, amount);
+  b.usdt -= usdt;
+  const usd = amount - usdt;
+  b.usd -= usd;
+  return { usd, usdt };
+}
+
+/**
+ * **入账** —— 按 `mix`（当初扣的那两笔）的**比例**分回两格：平仓原路退回。
+ *   2013 年那 $3,000 是美元 ⇒ 平仓回的还是美元（否则 Mt.Gox 会凭空空降 USDT）。
+ * 盈利 / 亏损按同比例放大缩小（两格一起长、一起缩），不会凭空改变资产构成。
+ *
+ * ⚠️ `mix` 缺失或两格全 0（老档、贷款、转账到账）⇒ **整笔进 USDT** ——
+ *    现代年代的钱默认就是 U；需要按币种入账的调用方（转账到账）自己指定格子，不走这里。
+ * ⚠️ `amount` 可以是**负数**（极小保证金下平仓费 > 权益的边角）：两格按比例一起减，
+ *    与原实现「余额可直接被减成负数」逐位一致 —— 那时会被 `isBankrupt` 接住。
+ */
+export function credit(s, ex, amount, mix) {
+  const b = ensureBook(s, ex);
+  if (!Number.isFinite(amount) || amount === 0) return;
+  const total = mix ? mix.usd + mix.usdt : 0;
+  const usdt = total > 0 ? amount * (mix.usdt / total) : amount;
+  b.usdt += usdt;
+  b.usd += amount - usdt;
+}
 
 /** 某个币的持仓；没持仓取到 `undefined`，统一折成 `null` 方便判断 */
 export const posOf = (s, sym) => s.positions[sym] ?? null;

@@ -7,11 +7,11 @@
  *   main.js 是唯一把两边连起来的地方（也是唯一允许读时钟的地方）
  */
 
-import { GAME, COINS, HOUR_MS, hasFinancingAt, maxLeverageAt } from './core/config.js';
-import { createState, heldSyms, posOf, pushLog } from './core/state.js';
+import { GAME, COINS, HOUR_MS, cashCurAt, hasFinancingAt, maxLeverageAt } from './core/config.js';
+import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource } from './core/market.js';
-import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook } from './core/engine.js';
+import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, bindLiquidateHook, buyUsdt, sampleEquity } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { enableGod, factorFor } from './core/god.js';
@@ -133,6 +133,9 @@ async function boot() {
 
   // 数据到位后把杠杆夹到当前年份允许的范围内（读档时年份可能已经变了）
   normalizeLeverage(s);
+  /* 资金曲线（v13 · 方案 §4）的**第 0 天**：采样写在小时间隔里（`advanceOneHour`），
+     不先在开盘这一刻补一个点，玩家头 24 个游戏小时打开资产页会看到一张空图。 */
+  sampleEquity(s);
 
   /* 新闻窗口内**强制一帧**（P2-C）：一次 `step()` 在 50x 下最多能推进 50 个游戏小时，
      而渲染被节流到 80ms —— 不强制就会「窗口整个落在两帧之间」，玩家一次都看不到。
@@ -343,8 +346,9 @@ function dispatch(node) {
     && d.intro === undefined) snd.tap();   // 开场两枚键已有专属的起手音（`snd.begin`），不叠轻点声
 
   /* ── 暂停闸门（本轮 ① · 操作逻辑审计）──────────────────────────────────
-     **暂停时必须被拦住的只有「会动钱」的四个动作**：下单（`buy`/`sell`/`long`/`short`）、
-     平仓（`close`）、换所（`ex` 弹层 ＋ `exok` 二次确认）、盘口 ⇄ OTC 切换（`chan`）。
+     **暂停时必须被拦住的只有「会动钱」的动作**：下单（`buy`/`sell`/`long`/`short`）、
+     平仓（`close`）、换所（`ex` 弹层 ＋ `exok` 二次确认）、盘口 ⇄ OTC 切换（`chan`）、
+     **买 U（`buyu`）**。
      其余一律**照常可用**（用户 2026-09-29 拍板）：杠杆档 / 金额档 / 现货合约 / 切币 /
      粒度 / 切页 / 日志浮层 / 设置页（音效·新手提示·重开）/ 上帝面板 / 暂停键本身。
      理由：那些只改「下一单的参数」，此时既没有行情在走、也没有一笔单会成交 ——
@@ -356,7 +360,7 @@ function dispatch(node) {
      ⚠️ 给一条日志而不是静默吞掉：玩家按了键没反应时，「为什么」比「没反应」重要。 */
   if (!rv && s.paused && (d.buy !== undefined || d.sell !== undefined
     || d.act === 'long' || d.act === 'short' || d.act === 'close'
-    || d.ex !== undefined || d.exok !== undefined || d.chan !== undefined)) {
+    || d.ex !== undefined || d.exok !== undefined || d.chan !== undefined || d.buyu !== undefined)) {
     pushLog(s, '已暂停 ｜ 先点顶栏「继续」再进行交易', 'info');
     after();
     return;
@@ -417,6 +421,18 @@ function dispatch(node) {
   }
   if (d.exno !== undefined) { closePicker(); after(); return; }
   if (d.frac !== undefined) { s.sizeFrac = Number(d.frac); after(); return; }
+  /* 买 U（v13 · 方案 §3）：一枚键走两个值 —— 金额档（`0.25` / `0.5` / `1`）写进 `s.sizeFrac`，
+     `go` 才真的兑换。**与操作区的金额档共用同一个状态**：它本来就是同一个概念
+     （「用掉我手上多少钱」），再开一个只服务买 U 的比例，玩家得记两处高亮，反而更糊涂。 */
+  if (d.buyu !== undefined) {
+    if (d.buyu !== 'go') { s.sizeFrac = Number(d.buyu); after(); return; }
+    const r = buyUsdt(s, s.sizeFrac);
+    /* 成功时 `buyUsdt` 内部已经写了日志（含成交价与花费），这里**只补失败原因**，
+       否则会多出一条空串日志。 */
+    if (!r.ok) { pushLog(s, r.why, 'bad'); snd.tap(); } else snd.fundUp();
+    after();
+    return;
+  }
   if (d.lev !== undefined) {
     /* OTC 通道只有现货 ⇒ 杠杆被锁在 1x。这里只给一条日志、**不改 s.lev** ——
        他切回盘口时那个杠杆还在，不必重新点一遍（Batch 5 的 `数据不擅自改` 口径）。 */
@@ -592,7 +608,13 @@ function onImpactToggle() {
   after();
 }
 
-/** 面板里那枚「填入」：**直接设定当前交易所的余额**（方案 §2.3），不是在原余额上加 */
+/**
+ * 面板里那枚「填入」：**直接设定当前交易所的余额**（方案 §2.3），不是在原余额上加。
+ *
+ * ⚠️ v13 起要填的是**这个年代的那一格**（方案 §9.2 ④）：2014-11-20 之前填美元、之后填 U
+ *    —— 与「搬钱走哪条通道」同一把尺子。否则在 2013 年填 100 万，玩家手上会多出一笔
+ *    那一年根本不存在的 USDT，合约也就能在 2013 年开出来了（史实上要等到 2014-11 之后）。
+ */
 function onGodCash(node) {
   const v = readGodInput(node, '.god-cash');
   const num = Number(v);
@@ -601,7 +623,7 @@ function onGodCash(node) {
     after();
     return;
   }
-  s.books[s.ex] = num;
+  ensureBook(s)[cashCurAt(timeOf(s))] = num;
   s.god.lastFill = num;
   s.godRuined = false;                 // 补上钱之后，下一次归零要能再提示一遍
   pushLog(s, `上帝模式 ｜ 资金已填入 ${fmtMoney(num)}`, 'ok');
