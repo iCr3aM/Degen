@@ -226,6 +226,19 @@ function impactFor(sym, i, notional) {
   return impactOf(notional / liq, dailySigma(sym, i));
 }
 
+/**
+ * 把一笔成交的**名义额**记到当根 K 线的量柱账上（`s.pvol`，v17 · 2026-10-01）。
+ *
+ * ⚠️ 只写量：滑点分母走 `liqOf`、价格位移走 `s.flow`，两条都不看这里 —— 它不参与任何玩法判定。
+ * ⚠️ 口径（用户 2026-10-01 拍板）：名义额（含杠杆）／开仓＋平仓＋强平都算／**OTC 不算**
+ *    （私下一口价不落公开盘口，与「不写冲击池」同一先例）—— OTC 的过滤放在调用点。
+ */
+function addPlayerVol(s, notional) {
+  if (!(notional > 0)) return;
+  if (!s.pvol) s.pvol = {};
+  s.pvol[s.i] = (s.pvol[s.i] || 0) + notional;
+}
+
 /* 日内份额的缓存：键 = `sym|day`，值 = { sum, n }（当天**已上线**小时的份额和与小时数）。
    ⚠️ 与两个 σ 缓存不同，它**只依赖原始成交额**、不受价格位移影响，所以 `invalidateSigma()`
       不清它；但**只在 `sum > 0` 时入缓存** —— 数据尚未加载完时会全读成 0，那不能留下。 */
@@ -498,6 +511,8 @@ export function openTrade(s, side, frac = 1) {
   if (!otc) {
     const dir = side === 'long' ? 1 : -1;
     if (addFlow(s, s.sym, dir * SHOCK.share * cost)) invalidateSigma();
+    /* 玩家自己的成交量（v17 · 2026-10-01）：这一笔从此在量柱上看得见 */
+    addPlayerVol(s, notional);
   }
   return { ok: true };
 }
@@ -534,6 +549,9 @@ export function closeTrade(s, why = '手动') {
   credit(s, pos.ex, r.net, pos.mix);
   s.realized += r.pnl - r.fee;
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
+  /* 玩家自己的成交量（v17 · 2026-10-01）：平仓同样是成交 ⇒ 记进当根 K 线的量柱。
+     OTC 不落公开盘口（与「不写冲击池」同一先例）⇒ 不计。 */
+  if (!otc) addPlayerVol(s, notional);
   const tag = otc ? `｜OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
   /* 盈亏 ＋ 手续费（本轮 ② · 用户拍板）：
      - **回合净额** = 毛盈亏 − 开仓费 − 平仓费。开仓费在开仓那一刻已经从余额扣过一次
@@ -576,6 +594,9 @@ export function closeTrade(s, why = '手动') {
 function forceLiquidate(s, pos, atPrice) {
   const remain = maintRateOf(pos) * pos.notional;     // 触发时的残余权益（＝维持保证金那一格）
   const back = Math.max(0, remain - pos.notional * LIQ.fee);
+  /* 玩家自己的成交量（v17 · 2026-10-01）：强平也是一笔真实成交 ⇒ 记进当根 K 线的量柱。
+     取 `size × atPrice`（实际成交名义），与 `closeTrade` 同口径。 */
+  addPlayerVol(s, pos.size * atPrice);
 
   /* 串形与开仓 / 平仓对齐（2026-09-29）：`｜` 两侧不留白、金额走 `fmtMoneyShort`、
      价格走 `fmtLogPrice`（本轮 ② —— 原来这里是 `showPrice`，现在统一 ≥$1 一位小数）。
@@ -1020,6 +1041,7 @@ export function rewindTo(s, to) {
   s.transfer = null;
   s.pulse = [];
   s.flow = {};
+  s.pvol = {};          // 玩家自己的成交量（v17）也是「进度」，回退时一并抹掉 —— 与 s.flow 同口径
   s.realized = 0;
   s.eq = [];
   s.loaned = false;

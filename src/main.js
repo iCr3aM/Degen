@@ -10,7 +10,7 @@
 import { GAME, COINS, HOUR_MS, cashCurAt, hasFinancingAt, maxLeverageAt } from './core/config.js';
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
-import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, closeAt, candleAt, volumeAt } from './core/market.js';
+import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
 import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
@@ -137,6 +137,10 @@ async function boot() {
         所以历史 K 线不会被重新标定，收益率会真的变 ⇒ σ 会变（见 `engine.invalidateSigma`）。
      ⚠️ 没有上帝位移也没有冲击池时 `factorFor` 恒返回 1，`candleAt` 走原路径 —— **逐位相同**。 */
   bindFactorSource((sym, j) => factorFor(s, sym, j));
+
+  /* 玩家自己的成交量（v17 · 2026-10-01）：同样走**注入**，让 `view.windowFor` 不必认识 `s`。
+     没成交的小时恒返回 0 ⇒ 量柱与「只有数据包份额」的那一版**逐位相同**（离线断言靠这条）。 */
+  bindPlayerVolSource(i => (s.pvol && s.pvol[i]) || 0);
 
   refs = mount(root);
   hideBoot();

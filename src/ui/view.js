@@ -18,7 +18,7 @@
  *    时钟、资金费率、强平、到账全部照旧按小时走。
  */
 
-import { rangeOf, candleAt, volumeAt, liqOf, dayIndexOf, HOURS_PER_DAY } from '../core/market.js';
+import { rangeOf, candleAt, volumeAt, playerVolAt, liqOf, dayIndexOf, HOURS_PER_DAY } from '../core/market.js';
 import { PAD_R } from './chart.js';
 
 /** 缩放的硬边界：可见 12 ~ 240 根（12.4） */
@@ -103,7 +103,7 @@ function dayBar(sym, d, upto) {
   const a = Math.max(d * HOURS_PER_DAY, r[0]);
   const z = Math.min(d * HOURS_PER_DAY + HOURS_PER_DAY - 1, upto, r[1] - 1);
   if (a > z) return null;
-  let o = null, h = -Infinity, l = Infinity, c = null, share = 0;
+  let o = null, h = -Infinity, l = Infinity, c = null, share = 0, pv = 0;
   for (let k = a; k <= z; k++) {
     const cc = candleAt(sym, k);
     if (!cc) continue;
@@ -112,10 +112,11 @@ function dayBar(sym, d, upto) {
     if (cc.l < l) l = cc.l;
     c = cc.c;
     share += volumeAt(sym, k);
+    pv += playerVolAt(k);          // 玩家自己那一份（v17）也按**同一批已过小时**聚合
   }
   if (o == null) return null;
   /* 上市首日 / 今天这类**不完整的桶照画**（12.3）：只有几个小时就按几个小时聚合，不补齐。 */
-  return { o, h, l, c, share };
+  return { o, h, l, c, share, pv };
 }
 
 /**
@@ -140,7 +141,7 @@ export function windowFor(sym, i, cssW) {
       candles.push(bar);
       /* 日线的量 = **已过小时的份额之和** × 当天真实总量（Batch 4 · B15）：
          整天 = 份额和约 1 ⇒ 拿回全量；今天 = 只算已过的那几个小时 ⇒ 柱子随小时推进逐格抬升。 */
-      vols.push(bar.share * (liqOf(sym, d) || 0));
+      vols.push(bar.share * (liqOf(sym, d) || 0) + bar.pv);
     }
   } else {
     for (let k = from; k <= right; k++) {
@@ -149,7 +150,8 @@ export function windowFor(sym, i, cssW) {
       candles.push(c);
       /* 包里的份额是「占当日成交额的比例」，乘回当日总量才是可跨天比较的绝对美元量 */
       const share = volumeAt(sym, k);
-      vols.push(share > 0 ? share * (liqOf(sym, dayIndexOf(k)) || 0) : 0);
+      /* 市场那一份 ＋ **玩家自己那一份**（v17）—— 玩家砸出的天量从此在图上看得到 */
+      vols.push((share > 0 ? share * (liqOf(sym, dayIndexOf(k)) || 0) : 0) + playerVolAt(k));
     }
   }
   return { candles, vols, mode: v.mode, count: v.count, slots: v.count, locked: v.locked, yPx: v.yPx, right };
