@@ -70,14 +70,6 @@ export function createState() {
     orders: {},
 
     /**
-     * 累计消耗（U2 · ROADMAP §21.4）—— `sym -> 玩家一共从市场里买走了多少枚`。
-     * ⚠️ 与 `capturedOf`（**瞬时**口径，平仓即归零）相对：这里**只增不减**，平仓**不退还**
-     *    （币是真的被你囤走了，卖回去也是先买走后卖出两件事）。目前**没有消费者** ——
-     *    只为口径完整与将来的「资产页持仓列表」（U3）。暂不影响任何玩法判定。
-     */
-    consumed: {},
-
-    /**
      * 在途的划转（P2-A）—— `null` 或 `{ amount, fee, rail, cur, from, to, departAt, arriveAt }`。
      * **同时只允许一笔**（LESS IS MORE），且这笔钱**不在任何交易所的账上**（`books` 里已经扣掉了）：
      *   - 它**计入权益**（否则一换所权益就显示 $0，还会被误判成破产）
@@ -312,12 +304,6 @@ export function capturedOf(s, sym) {
 
 /** 是否持有任何仓位 */
 export const anyHeld = s => heldSyms(s).length > 0;
-
-/**
- * 某个币**累计被玩家买走的枚数**（U2 · ROADMAP §21.4）—— 与 `capturedOf` 的**瞬时口径**相对：
- * 这里只增不减，平仓也不退还（币真的被囤走了）。⚠️ 目前**没有消费者**，只为口径完整与将来的资产页。
- */
-export const consumedOf = (s, sym) => (s.consumed ? s.consumed[sym] ?? 0 : 0);
 
 /** 日志上限：只留最近这些条，免得存档无限膨胀 */
 export const LOG_MAX = 60;

@@ -11,11 +11,11 @@
  * 所有会变的数字都挂在 `refs` 上，`update()` 是唯一的写入口。
  */
 
-import { GAME, COINS, EXCHANGES, SPEEDS, USDT_LIVE, coinOf, exchangeOf, haltedAt, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt, usdtPriceAt } from '../core/config.js';
+import { GAME, COINS, EXCHANGES, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, LOAN, loanAmountAt, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
-import { isLoaded, rangeOf, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
+import { isLoaded, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { anchorAt, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
@@ -854,7 +854,7 @@ export function update(refs, s, view) {
        · 没有挂单 ⇒ 字面「挂单」，点开浮层选方向与偏离档
        · 有挂单   ⇒ 字面「撤单」，点一下把冻结的保证金退回来
      ⚠️ 只吃暂停 / 待决闸门（同 `exBtn`），**不看行情加载状态、也不看当前币** ——
-        撤单是「把自己的钱拿回来」，任何情况下都该点得动（下单本身失败会有一条明确日志）。 */
+        撤单是「把自己的钱拿回来」，除这两种闸门之外都该点得动（下单本身失败会有一条明确日志）。 */
   const ord = s.orders[sym];
   refs.orderBtn.textContent = ord ? '撤单' : '挂单';
   refs.orderBtn.classList.toggle('on', !!ord);
@@ -1833,11 +1833,4 @@ export function renderBoot(text, err) {
 
 export function hideBoot() {
   document.querySelector('.boot')?.remove();
-}
-
-/** 供调试：某个币的数据区间 */
-export function debugRange(sym) {
-  const r = rangeOf(sym);
-  const coin = coinOf(sym);
-  return { sym, range: r, unlock: coin ? coin.unlock : null };
 }

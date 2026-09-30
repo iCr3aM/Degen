@@ -245,11 +245,6 @@ export const EXCHANGES = [
 /** 按 id 取交易所定义 */
 export const exchangeOf = id => EXCHANGES.find(e => e.id === id) || null;
 
-/** 某一时刻**可以选**的交易所（已开业且未归零） */
-export function exchangesAt(t) {
-  return EXCHANGES.filter(e => e.open <= t && (e.close == null || t < e.close));
-}
-
 /** 这家所此刻是否**停机维护**（B24）—— 窗口内只平不开。没配 `halts` 的所恒 `false` */
 export const haltedAt = (t, exId) =>
   !!exchangeOf(exId)?.halts?.some(h => t >= h.from && t < h.to);

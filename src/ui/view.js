@@ -235,9 +235,6 @@ function fineWindow(sym, v, cssW, from, right, seed, liqTick) {
   return { candles, vols, mode: v.mode, count: v.count, slots: candles.length, locked: v.locked, yPx: v.yPx, right, liqSlot: liqK >= 0 ? liqK : null };
 }
 
-/** 视野是否被玩家锁住（锁住 = 不再自动跟随当前根，双击才回最新） */
-export const isLocked = sym => viewOf(sym).locked;
-
 /**
  * 单指拖动：水平改「看第几根」，垂直改价格轴。
  * **一旦拖动就锁视野**（12.4）—— 否则拖到一半会被时间推进拽回去。

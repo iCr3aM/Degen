@@ -95,7 +95,7 @@ export const fundUp = () => tone({ f: 880, to: 1320, dur: 0.13, type: 'sine', ga
 /** 资金费支出：闷一点的下行 */
 export const fundDown = () => tone({ f: 440, to: 300, dur: 0.13, type: 'sine', gain: 0.05 });
 
-/** 保证金率跌破 5%：两声低鸣，像警报 */
+/** 归一化安全垫跌破 0.2（红区）：两声低鸣，像警报 */
 export const warn = () => { tone({ f: 233, dur: 0.1, type: 'square', gain: 0.035 }); tone({ f: 233, dur: 0.1, type: 'square', gain: 0.035, at: 0.16 }); };
 
 /** 拥堵脉冲（大额转账推高了全网拥堵）：一记低频闷响 */

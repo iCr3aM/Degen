@@ -10,7 +10,7 @@
 </head>
 <body>
   <div id="app"></div>
-  <!-- 弹窗层必须在 #app 之外：主循环每帧重建 #app，挂在里面的弹窗会被立刻擦掉。
+  <!-- 弹窗层（#overlay）放在 #app 之外：主界面骨架只建一次，弹层是独立的一层，不被主结构改动波及。
        平时带 hidden（否则这层会盖住整屏、把所有点击都吃掉），由 render.pickExchange 摘掉。 -->
   <div id="overlay" hidden></div>
   <script type="module" src="/src/main.js"></script>

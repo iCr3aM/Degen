@@ -69,12 +69,6 @@ function lruSet(cache, key, val) {
   if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
 }
 
-/** 清掉两级缓存 —— 换种子 / 上帝模式改了价位时必须调（缓存键含 ohlc，正常情况下不需要） */
-export function clearSimCache() {
-  pathCache.clear();
-  volCache.clear();
-}
-
 /**
  * 一根小时的**细价格路径**：长度 `N + 1` 的价格点，`p[j]` = 第 j 个刻度上的价。
  * 第 j 个刻度（0-based）＝ `p[j] → p[j+1]` 这一段，即小时内的第 j 个 1/N 区间。

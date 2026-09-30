@@ -113,7 +113,7 @@ async function boot() {
   try {
     await loadManifest();
   } catch (err) {
-    renderBoot('行情数据包没找到。\n先在项目目录跑一次 `npm run data` 生成 public/data/。', err);
+    renderBoot('行情数据加载失败。\n请检查网络连接后刷新页面重试。', err);
     return;
   }
 
@@ -210,7 +210,7 @@ const chartW = () => {
 };
 
 /**
- * 渲染节流到 ~12fps。K 线一秒钟最多走 20 根（20x），12fps 足够把每一根都画出来，
+ * 渲染节流到 ~12fps。K 线一秒钟最多走 50 根（50x），12fps 足够把每一根都画出来，
  * 又不会让手机一直满负荷重绘（GDD §19.2 省电）。
  *
  * ⚠️ 本局结束的那一帧**必须**落地，不能被节流吞掉：结束时时钟会把 `paused` 置真，
@@ -1223,4 +1223,10 @@ window.addEventListener('error', e => {
   if (!refs) renderBoot('启动失败', e.error || e.message);
 });
 
-boot();
+/* 开盘前（`refs` 还没挂上）的异步失败同样兜到开机面板：`boot()` 里那一串 `await`
+   （读清单 / 懒加载行情 / 流动性）任一被拒，都不该变成一个白屏。 */
+window.addEventListener('unhandledrejection', e => {
+  if (!refs) renderBoot('启动失败', e.reason);
+});
+
+boot().catch(err => renderBoot('启动失败', err));

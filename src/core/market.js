@@ -17,7 +17,6 @@ const BASE = (import.meta.env && import.meta.env.BASE_URL) || './';
 let manifest = null;
 const series = new Map();      // sym -> { ints: Int32Array, vol: Uint8Array }（vol = 成交量份额，Batch 3）
 const inflight = new Map();    // sym -> Promise（防并发重复下载）
-const failed = new Map();      // sym -> Error
 
 let liqBuf = null;             // Float32Array，长度 = days × 币数（日流动性，P2-A）
 let liqInflight = null;
@@ -36,9 +35,7 @@ export function bindFactorSource(fn) { factorSource = fn || null; }
 /** 一天 = 24 根 K 线（GDD §11：1 根 K 线 = 1 游戏小时） */
 export const HOURS_PER_DAY = 24;
 
-export const getManifest = () => manifest;
 export const isLoaded = sym => series.has(sym);
-export const isLiqLoaded = () => !!liqBuf;
 
 /** 极简 gzip 解压：解压流已进入所有现代移动浏览器（2023 起全覆盖） */
 async function gunzip(buf) {
@@ -60,7 +57,7 @@ export async function loadManifest() {
   if (manifest) return manifest;
   const res = await fetch(`${BASE}${DATA_DIR}/index.json`);
   if (!res.ok) {
-    throw new Error(`行情清单读取失败（HTTP ${res.status}）—— 先跑一次 npm run data 生成数据包`);
+    throw new Error(`行情清单读取失败（HTTP ${res.status}）`);
   }
   manifest = await res.json();
   return manifest;
@@ -73,7 +70,6 @@ export async function loadManifest() {
  */
 export function loadCoin(sym) {
   if (series.has(sym)) return Promise.resolve(series.get(sym));
-  if (failed.has(sym)) return Promise.reject(failed.get(sym));
   if (inflight.has(sym)) return inflight.get(sym);
 
   const p = (async () => {
@@ -83,7 +79,7 @@ export function loadCoin(sym) {
     const raw = await gunzip(await fetchBuffer(`${BASE}${DATA_DIR}/${meta.file}`));
     const want = meta.count * 17;              // 4 列 Int32（16B）＋ 1 字节成交量份额
     if (raw.byteLength !== want) {
-      throw new Error(`${sym} 数据长度不符：期望 ${want} 字节，实得 ${raw.byteLength} —— 先重新跑 npm run data`);
+      throw new Error(`${sym} 数据长度不符：期望 ${want} 字节，实得 ${raw.byteLength}`);
     }
     const rec = {
       ints: new Int32Array(raw, 0, meta.count * 4),
@@ -94,7 +90,9 @@ export function loadCoin(sym) {
   })();
 
   inflight.set(sym, p);
-  p.catch(err => failed.set(sym, err));
+  /* ⚠️ 失败**不缓存**（正式版）：弱网抖一下就让某个币在本会话里永远加载不出来，代价太大。
+     并发去重仍由 `inflight` 保证（同一次请求只发一份）；失败后清掉键，下次调用可重试。 */
+  p.catch(() => inflight.delete(sym));
   return p;
 }
 
@@ -232,7 +230,7 @@ export function supplyAt(sym, i) {
  * 口径（两端锚定 ＋ 真实年内形状）见 `tools/fetch-data.mjs` 的日流动性一节。
  */
 
-/** 加载日流动性包。只需一次；与 `loadCoin` 一样做并发去重与失败缓存。 */
+/** 加载日流动性包。只需一次；与 `loadCoin` 一样做并发去重（失败**不缓存**，可重试）。 */
 export function loadLiq() {
   if (liqBuf) return Promise.resolve(liqBuf);
   if (liqInflight) return liqInflight;
@@ -240,7 +238,7 @@ export function loadLiq() {
   liqInflight = (async () => {
     const mf = await loadManifest();
     const meta = mf.liq;
-    if (!meta) throw new Error('清单里没有 liq 段 —— 先重新跑一次 npm run data');
+    if (!meta) throw new Error('行情清单缺少日流动性数据');
     const raw = await gunzip(await fetchBuffer(`${BASE}${DATA_DIR}/${meta.file}`));
     const f = new Float32Array(raw);
     const want = meta.days * meta.order.length;
@@ -249,6 +247,7 @@ export function loadLiq() {
     return f;
   })();
 
+  liqInflight.catch(() => { liqInflight = null; });   // 同上：失败不缓存，下次可重试
   return liqInflight;
 }
 

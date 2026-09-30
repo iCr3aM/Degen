@@ -37,7 +37,7 @@ export const ACTION_KEYS = [
   /* 需求 4（《主菜单与历史回顾模式方案》§2 / §3）：`menu` ＝ 主菜单三入口
      （`start` 开始 / `continue` 继续 / `review` 回顾）；
      `review` ＝ 回顾页的**全部**动作 —— 值是子命令（`exit` / `pause` / `spd:100` / `sym:BTC`
-     / `years` / `year:2017` / `go` / `skip` / `skipall`），分派见 `main.js` 的 `onReview`。 */
+     / `years` / `year:2017` / `go` / `skip` / `all`），分派见 `main.js` 的 `onReview`。 */
   'menu', 'review',
   /* v13（《资产页与手机端 UI 打磨方案》§3.1）：`buyu` ＝ 资产页「买 U」卡片上的
      三枚金额档（`0.25` / `0.5` / `1`）＋ 那枚「兑换」键（`go`）。

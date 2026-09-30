@@ -2,7 +2,7 @@
  * 交易与时间引擎（GDD §4 / §9 / §10 / §11）
  * ===============================================================
  * 这里只有三件事：**推进时间**、**改状态**、**判破产**。不碰 DOM，不读 `Date.now()`
- * （时钟从 `main.js` 注入，这样无头测试才能复现「20x 跑完 12 年」这类断言）。
+ * （时钟从 `main.js` 注入，这样无头测试才能复现「50x 跑完 12 年」这类断言）。
  *
  * 时间的真相源只有一个：`s.i`（第几根小时 K 线）。
  * K 线推进 = 真实秒 × 倍速 ÷ 1 秒/根（GDD §11：1x 下 1 游戏小时 = 1 真实秒）。
@@ -439,10 +439,6 @@ export function openTrade(s, side, frac = 1) {
     sym: s.sym, side, fill, margin, notional, lev, feeRate, spot, fee, mix, otc,
   });
 
-  /* 累计消耗（U2 · ROADMAP §21.4）：这笔买入从市场里拿走了多少枚，**只增不减**、平仓不退还。
-     ⚠️ 与 `capturedOf`（瞬时口径，进 `SUPPLY_CAP` 校验）**并存互不影响**；OTC 不算（不消耗流通量）。 */
-  if (!otc && side === 'long') s.consumed[s.sym] = (s.consumed[s.sym] ?? 0) + margin * lev / fill;
-
   /* 笔数（C8-B1）：同一份代价，报出它相当于拆成了几笔。OTC 是私下一口价、不吃滑点 ⇒ 不报。 */
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(s.sym, s.i), cost);
   const tag = otc ? `｜OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
@@ -694,7 +690,6 @@ function matchOrders(s) {
     applyFill(s, {
       sym, side: o.side, fill: L, margin, notional, lev: o.lev, feeRate, spot: o.spot, fee, mix,
     });
-    if (long) s.consumed[sym] = (s.consumed[sym] ?? 0) + qty;
 
     o.filled += qty;
     o.margin -= margin;
@@ -1367,7 +1362,7 @@ function liquidateAll(s) {
  *    定时器则至少保持 1 秒一次的心跳。
  *
  *    两者都不影响精度：每次都用 `performance.now()` 的真实间隔去补，
- *    所以后台掉到 1 秒一跳时，20x 依然会是「一秒走 20 小时」，而不是慢 20 倍。
+ *    所以后台掉到 1 秒一跳时，50x 依然会是「一秒走 50 小时」，而不是慢 50 倍。
  *    `dt` 只封顶 1 秒 —— 封太久会漏掉时间，封太松又会在切回前台时一次性快进一大段。
  *
  *    渲染**不再跟着时钟走**：只有真的推进过才回调一次 `onFrame`，
@@ -1435,12 +1430,3 @@ export function normalizeLeverage(s) {
  * 判据 = 该所 `futSteps` 非 `null` **且**首档已生效（`config.hasLeverageKindAt`）。
  */
 export const futuresAvailable = s => hasLeverageKindAt(timeOf(s), s.ex, 'fut');
-
-/** 某个币此刻能不能交易（已解锁 + 数据已加载） */
-export function tradable(s, sym) {
-  const coin = coinOf(sym);
-  if (!coin) return false;
-  if (timeOf(s) < coin.unlock) return false;
-  if (!hasCandle(sym, s.i)) return false;
-  return true;
-}
