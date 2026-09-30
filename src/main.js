@@ -935,43 +935,62 @@ function onMenu(kind, node) {
 }
 
 /**
- * PWA 安装（2026-10-01 · 修复「点了没反应」）
+ * 手动安装路径的话术 —— 手机上一行放不下太长，压到 30 字以内。
+ * 安卓 Chrome 的「⋮」里那一项叫「安装应用 / 添加到主屏幕」，**任何情况下都能装上**，
+ * 是自动弹窗被拦时的唯一出路。
+ * ⚠️ 写成**条件句**（「没弹框就…」）而不是断言：这一句是在按下那一刻就显示的，此时安装框
+ *    可能正开着，说「没弹出」就成了误报。
+ */
+const INSTALL_TIP = '没弹框就点 Chrome 右上角「⋮」→「添加到主屏幕」，一样装';
+
+/**
+ * PWA 安装（2026-10-01）
  * ===============================================================
- * 老写法是 `installEvt = null; evt.prompt();` 两行 —— 它有三个洞，合起来正是玩家看到的
- * 「点了没反应」：
- *   ① `prompt()` 的 Promise 与 `evt.userChoice` **一个都没接**：浏览器拒绝弹窗（装机次数太少、
- *      系统层已拦、事件已被用旧了）时是**静默失败**，界面上零反馈；
- *   ② `installEvt` 在 `prompt()` **之前**就置空 ⇒ 第一下没成，按钮却还留在屏上，
- *      再点走 `if (!evt) return` —— 连一行日志都没有；
- *   ③ 没有 `appinstalled` 监听 ⇒ 装完了按钮也不收。
- * 现在按「每一次点都必须看得见结果」重写：事件作废即摘按钮 ＋ 每种结局都给一句话。
+ * 玩法：点一下 => 浏览器弹安装框。「点了没反应」这件事前后踩了两个坑，都在这儿记着。
  *
- * ⚠️ `beforeinstallprompt` **只能 `prompt()` 一次**，消费掉之后这个事件就废了 —— 所以
- *    不能靠「留着它下次再点」。浏览器想再给机会会**重发一次事件**（上面的监听会重挂按钮）。
- * ⚠️ 老版 Chrome 的 `prompt()` 返回 `undefined`，结果只能从 `evt.userChoice` 拿；
- *    新版两个都返回 `Promise<{outcome}>` —— 所以优先用 `prompt()` 的返回值，退到 `userChoice`。
+ * ⚠️ 坑 ①（老代码）：`evt.prompt()` 的 Promise 与 `evt.userChoice` 一个都没接 —— 浏览器拒绝
+ *    弹框时是**静默失败**，界面上零反馈；而 `installEvt` 又已置空，再点走 `if (!evt) return`。
+ * ⚠️ 坑 ②（2026-10-01 第一版修复）：为了让按钮不变成「点了没反应」的死键，我在 `prompt()`
+ *    **之前**就调了 `menuRemoveInstall()`。结果按钮先没了，而 `prompt()` 依然没弹框 ——
+ *    玩家看到的就成了「按钮一按就没，什么也没发生」，比原来更糟。
+ *    ⇒ **按钮的摘除必须挂在「真的装上了」上**（`accepted` / `appinstalled`），不能提前摘。
+ * ⚠️ 坑 ③（本轮）：Chrome 拒绝弹框时 `prompt()` 返回的 Promise **既不 resolve 也不 reject**
+ *    （实测，pending 不落定）。所以 `.then/.catch` 两条路都出不了声 —— 光等回调＝永远静默。
+ *    ⇒ 解法**不是**超时兜底（那会在安装框正常开着、玩家还没点的时候误报），而是**按下那一刻
+ *      就先显示 `INSTALL_TIP`**：它写的是条件句，弹框开着时是一句无害提示，没弹时就是答案。
+ *    这三条叠起来才是完整的「点了没反应」。
+ *
+ * ⚠️ `beforeinstallprompt` **只能 `prompt()` 一次**：消费掉之后这个事件就废了，所以不能指望
+ *    「留着它下次再点」。浏览器想再给机会会**重发一次事件**（上面的 `beforeinstallprompt`
+ *    监听会把按钮重挂回来）。
+ * ⚠️ 老版 Chrome 的 `prompt()` 返回 `undefined`，结果只在 `evt.userChoice` 上；新版两者都返回
+ *    `Promise<{outcome}>` —— 所以优先用 `prompt()` 的返回值，退到 `userChoice`。
  */
 function onInstall() {
   const evt = installEvt;
-  if (!evt) {
-    /* 事件已经用掉（这个会话里多半点过一次、或在浏览器自带横幅里装过），这台浏览器也没有重发。
-       给一条**走得通**的手动路径，而不是静静地什么都不做。 */
-    menuInstallNote('浏览器不再提供自动安装 ｜ 请点 Chrome 右上角「⋮」→「添加到主屏幕」');
-    return;
-  }
-  installEvt = null;                    // 无论成败都作废：同一个事件 prompt 不了第二次
-  menuRemoveInstall();                  // 一并摘掉按钮 —— 留着就是一枚死键
+
+  /* ① 先出声（坑 ③）：不等任何回调。事件用完了、浏览器不发事件、Chrome 把 prompt() 挂住
+     不落定 —— 这三种「永远等不到结果」的情况下，这一句就是唯一的可见反馈。 */
+  menuInstallNote(INSTALL_TIP);
+
+  if (!evt) return;                     // 事件已用尽 / 这台机器压根不发 —— 手动路径已给出
+  installEvt = null;                    // 同一个事件 prompt 不了第二次
+
   try {
     const p = evt.prompt();
-    const settled = (p && typeof p.then === 'function') ? p : evt.userChoice;
-    if (settled && typeof settled.then === 'function') {
-      settled.then(c => menuInstallNote(c && c.outcome === 'accepted'
-        ? '正在安装…'
-        : '已取消 ｜ 也可点 Chrome 右上角「⋮」→「添加到主屏幕」')).catch(() => {});
+    /* 老版 Chrome 的 `prompt()` 返回 `undefined`，结果只在 `evt.userChoice` 上；新版两者都返回 Promise */
+    const res = (p && typeof p.then === 'function') ? p : evt.userChoice;
+    if (res && typeof res.then === 'function') {
+      res.then(c => {
+        if (c && c.outcome === 'accepted') {
+          menuRemoveInstall();          // ② 只有真装上了才摘按钮（坑 ②）
+          menuInstallNote('正在安装…');
+        } else {
+          menuInstallNote('已取消 ｜ 点 Chrome 右上角「⋮」→「添加到主屏幕」也一样装');
+        }
+      }).catch(() => { /* 保持第 ① 步那句话，它已经把出路说清了 */ });
     }
-  } catch {
-    menuInstallNote('安装弹窗被浏览器拦下 ｜ 请点 Chrome 右上角「⋮」→「添加到主屏幕」');
-  }
+  } catch { /* 同步抛：同上，第 ① 步那句话兜着 */ }
 }
 
 /** 撤销主菜单的武装：超时或重开前都要还原按钮，免得下次开局还是红的 */
