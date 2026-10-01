@@ -1448,13 +1448,15 @@ export function openIntro() {
  * ⚠️ 「继续游戏」在**没有存档**时整枚不出现（LESS IS MORE：没有的选项不显示）；
  *    「开始游戏」在有档时会先变「确认重开」（双重确认的状态机在 `main.js`，理由同 `onReset`）。
  *
- * ⚠️ 「安装应用」（PWA）只在**浏览器确实把安装事件交出来**时才出现（`canInstall`）——
- *    桌面 Chrome / Android Chrome 会发，iOS Safari 与已安装状态不会。没得装就不显示按钮
- *    （同「没有的选项不显示」）。
+ * ⚠️ 「安装应用」（PWA）**只要不在桌面上跑就一律出现**（2026-10-01 改）。
+ *    原来是「只有浏览器交出 `beforeinstallprompt` 才出现」—— 那条规矩在**能感知到失败**时才成立：
+ *    按钮不出现，玩家知道这条路不通。可它挡不住「按钮出现了、点下去却什么都没发生」这种更糟的情况
+ *    （Chrome 冷却期里 `prompt()` 静默失效），也直接把 iOS Safari / 国产内核挡在门外 ——
+ *    那些机器**装得上，只是没有一键通道**。现在按钮常驻，点下去必定给到结果：原生弹窗，或三步图文。
  * ⚠️ 底部那行构建日期由 `vite.config.js` 的 `define` 注入（`__BUILD_DATE__`，UTC+8）——
  *    上传服务器后一眼能看出拿到的是不是最新版。
  */
-export function openMenu({ canContinue = false, canInstall = false } = {}) {
+export function openMenu({ canContinue = false } = {}) {
   closePicker();
   const ov = document.getElementById('overlay');
   if (!ov) return;
@@ -1480,7 +1482,7 @@ export function openMenu({ canContinue = false, canInstall = false } = {}) {
   const review = el('button', 'act chan', '历史回顾');
   review.dataset.menu = 'review';
   btns.append(review);
-  if (canInstall) menuInstallBtn(btns);
+  if (!isStandalone()) menuInstallBtn(btns);
   box.append(btns);
 
   /* 构建日期（UTC+8）——`__BUILD_DATE__` 由构建期替换成字面量字符串 */
@@ -1491,8 +1493,20 @@ export function openMenu({ canContinue = false, canInstall = false } = {}) {
   picker = ov;
 }
 
-/** 菜单里的「安装应用」按钮（PWA）—— 抽出来是因为**开菜单之后**才收到 `beforeinstallprompt`
- *  时，`main.js` 要用 `menuAttachInstall()` 现补一枚进去。 */
+/**
+ * 是否已经「装在桌面上」在跑（独立窗口）。
+ * 装了就不再显示安装入口 —— 那是玩家已经完成的事。
+ * ⚠️ 两条都要判：标准是 `display-mode: standalone`，iOS Safari 用的是它自己那套
+ *    `navigator.standalone`（它不实现 display-mode 媒体查询的那部分）。
+ */
+export function isStandalone() {
+  try {
+    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+      || window.navigator.standalone === true;
+  } catch { return false; }
+}
+
+/** 菜单里的「安装应用」按钮（PWA） */
 function menuInstallBtn(btns) {
   const inst = el('button', 'act chan', '安装应用');
   inst.dataset.menu = 'install';
@@ -1500,40 +1514,54 @@ function menuInstallBtn(btns) {
 }
 
 /**
- * 若主菜单正在屏上，把「安装应用」补进去（幂等：已在则不动）。
- * 供 `main.js` 在 `beforeinstallprompt` 事件晚于 `openMenu` 到达时调用 ——
- * 装不了就直接不补，菜单保持原样。
- */
-export function menuAttachInstall() {
-  const btns = document.querySelector('.menu-box .menu-btns');
-  if (!btns || btns.querySelector('[data-menu="install"]')) return;
-  menuInstallBtn(btns);
-}
-
-/** 摘掉菜单里的「安装应用」按钮（幂等）。`beforeinstallprompt` **只能用一次**（`prompt()` 之后
- *  这个事件就废了），所以消费掉 / 装完之后不能把它留在屏上 —— 那就是一枚点了没反应的死键。 */
-export function menuRemoveInstall() {
-  const inst = document.querySelector('.menu-box .menu-btns [data-menu="install"]');
-  if (inst) inst.remove();
-}
-
-/**
- * 菜单里的一行说明（PWA 安装的兜底）。`text` 传空 = 抹掉这一行。
+ * 把「安装应用」换成三步图文引导（PWA · 2026-10-01）。
  *
- * 为什么需要它：`prompt()` 失败 / 浏览器压根不发 `beforeinstallprompt`（iOS Safari、国产内核）
- * 时，玩家点了按钮**什么都不会发生** —— 这就是「点了没反应」。开机这一屏没有日志可写，
- * 所以专门留一行小字当唯一的说话通道。插在按钮列下方、构建日期上方。
+ * 这是照 `我创造的完美球员` 那套抄的 —— 它「保存至手机桌面」一直好使，靠的不是原生弹窗
+ * （那边同样有 `prompt()` 静默失效的时候），而是**弹窗没确认就立刻摊开图文**：
+ * 玩家照着点浏览器自带的「安装应用 / 添加到主屏幕」，一样能拿到桌面图标。
+ * 拿到图标才是玩家的目的，原生弹窗只是最快的那条路，不是唯一那条。
+ *
+ * `kind = 'ios'` 走「分享 → 添加到主屏幕」（iOS Safari 从不发 `beforeinstallprompt`）；
+ * 其余一律走浏览器菜单那条路（Chrome / Edge / 国产内核都在这儿）。
+ *
+ * 幂等：已在则不动 —— 连点两下不会叠出两份。
  */
-export function menuInstallNote(text) {
+export function menuInstallGuide(kind) {
   const box = document.querySelector('.menu-box');
   if (!box) return;
-  let n = box.querySelector('.menu-note');
-  if (!text) { if (n) n.remove(); return; }
-  if (!n) {
-    n = el('p', 'menu-note');
-    box.querySelector('.menu-btns').after(n);
-  }
-  n.textContent = text;
+  const btns = box.querySelector('.menu-btns');
+  if (!btns) return;
+
+  const btn = btns.querySelector('[data-menu="install"]');
+  if (btn) btn.remove();                    // 按钮换成图文，不并排（点是它触发的）
+  if (box.querySelector('.menu-guide')) return;
+
+  const steps = kind === 'ios'
+    ? ['点浏览器底部工具栏的「分享」按钮',
+       '在列表里找到「添加到主屏幕」',
+       '点「添加」—— 桌面图标即可直接进入游戏']
+    : ['打开浏览器菜单（右上角 ⋮ / ⋯）',
+       '选「安装应用」或「添加到主屏幕」',
+       '确认后桌面图标即可直接进入游戏'];
+
+  const wrap = el('div', 'menu-guide');
+  wrap.append(el('b', 'menu-guide-h', '添加到主屏幕'));
+  steps.forEach((t, i) => {
+    const row = el('div', 'menu-step');
+    row.append(el('i', null, String(i + 1)), el('span', null, t));
+    wrap.append(row);
+  });
+  btns.after(wrap);
+}
+
+/** 收掉菜单里的安装入口（按钮 ＋ 图文，幂等）。装好之后调用 —— 该做的事做完了。 */
+export function menuRemoveInstall() {
+  const box = document.querySelector('.menu-box');
+  if (!box) return;
+  const btn = box.querySelector('.menu-btns [data-menu="install"]');
+  const guide = box.querySelector('.menu-guide');
+  if (btn) btn.remove();
+  if (guide) guide.remove();
 }
 
 /* ═════════════════════════ 新手分步引导（本轮 ④） ═════════════════════════ */

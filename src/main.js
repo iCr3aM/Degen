@@ -21,7 +21,7 @@ import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
   renderReview, openNodeCard, openYearPick, openGuide,
-  menuAttachInstall, menuRemoveInstall, menuInstallNote,
+  isStandalone, menuInstallGuide, menuRemoveInstall,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -53,23 +53,22 @@ let menuTimer = 0;
 /* ── PWA（2026-10-01）────────────────────────────────────────────────
    `installEvt`：浏览器交出来的 `beforeinstallprompt` 事件，抓到后**拦下自带横幅**
    （`preventDefault`），改由主菜单里那枚「安装应用」触发（LESS IS MORE：入口收在一处）。
-   它**只用一次**：点完就置空，浏览器若还想让玩家装，会再发一次事件。
-   ⚠️ iOS Safari 从不发这个事件 ⇒ 那台机器上永远不出现「安装应用」按钮（同「没有的选项不显示」）。 */
+   它**只用一次**：`prompt()` 过就废了，浏览器若还想让玩家装会再发一次事件。
+   ⚠️ 这枚事件**只是快路，不是唯一的路**：iOS Safari 与多数国产内核压根不发它，而那些机器
+      一样能把游戏装到桌面（走浏览器自带的「安装应用 / 添加到主屏幕」）。所以菜单里那枚
+      按钮**不再等它**（见 `render.js` 的 `openMenu`），点了没事件就摊开图文 —— 详见 `onInstall`。 */
 let installEvt = null;
 
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
-  installEvt = e;
-  menuInstallNote('');             // 抹掉上一次「浏览器不给装」的兜底话术
-  menuAttachInstall();             // 菜单若已在屏上，现补一枚按钮（事件常在 boot 之后才到）
+  installEvt = e;                  // 菜单里的按钮常驻，不用现补
 });
 
-/* 装完（含玩家在浏览器自带的横幅里装的）就把入口收掉 —— 此时菜单多半还在屏上，
-   留着那枚按钮只会让人再点一次、再「没反应」一遍。 */
+/* 装完（含玩家在浏览器自带的横幅里装的）就把入口收掉 —— 该做的事做完了。
+   此时菜单多半还在屏上，留着按钮 ＋ 图文只会让人再走一遍已经走完的流程。 */
 window.addEventListener('appinstalled', () => {
   installEvt = null;
   menuRemoveInstall();
-  menuInstallNote('已安装到桌面 ｜ 下次从桌面图标直接打开');
 });
 
 /* Service Worker：**只生产环境注册** —— dev 下 vite 自己的模块热更与 SW 缓存打架。
@@ -232,7 +231,7 @@ async function boot() {
      ⚠️ 菜单期间**时钟不启动**（与开场叙事同一条）：玩家选完才真正开盘，
         否则停在这一屏时行情已经自己走了几十根。
      ⚠️ 「继续游戏」只在**这一局确实读到档**时出现（`isNewGame` 的反面）。 */
-  openMenu({ canContinue: !isNewGame, canInstall: !!installEvt });
+  openMenu({ canContinue: !isNewGame });
 }
 
 /** 保证某个币的数据已加载；失败只记一条日志，不让整个游戏崩掉 */
@@ -934,63 +933,56 @@ function onMenu(kind, node) {
   onWipe();                        // disableSave ＋ wipe ＋ reload ⇒ 回来后是无档的新局
 }
 
-/**
- * 手动安装路径的话术 —— 手机上一行放不下太长，压到 30 字以内。
- * 安卓 Chrome 的「⋮」里那一项叫「安装应用 / 添加到主屏幕」，**任何情况下都能装上**，
- * 是自动弹窗被拦时的唯一出路。
- * ⚠️ 写成**条件句**（「没弹框就…」）而不是断言：这一句是在按下那一刻就显示的，此时安装框
- *    可能正开着，说「没弹出」就成了误报。
- */
-const INSTALL_TIP = '没弹框就点 Chrome 右上角「⋮」→「添加到主屏幕」，一样装';
+/** iOS Safari 从不发 `beforeinstallprompt`（它走「分享 → 添加到主屏幕」）——
+ *  ⚠️ 必须排掉 `CriOS / FxiOS / EdgiOS`：那是 iOS 上的**其它**浏览器，引导的话术不一样。 */
+function isIosSafari() {
+  const ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua);
+}
 
 /**
  * PWA 安装（2026-10-01）
  * ===============================================================
- * 玩法：点一下 => 浏览器弹安装框。「点了没反应」这件事前后踩了两个坑，都在这儿记着。
+ * 玩家的目的只有一个：**把游戏存到桌面**。原生安装弹窗只是最快的那条路，不是唯一那条 ——
+ * 这是照着 `我创造的完美球员` 那套「保存至手机桌面」抄的：它一直好使，靠的**不是**原生弹窗
+ * （那边同样有 `prompt()` 静默失效的时候），而是「弹窗没成 → 立刻摊开图文，玩家照着自己点，
+ * 一样拿到桌面图标」。拿到图标才算完，弹窗只是最省事的那条捷径。
  *
- * ⚠️ 坑 ①（老代码）：`evt.prompt()` 的 Promise 与 `evt.userChoice` 一个都没接 —— 浏览器拒绝
- *    弹框时是**静默失败**，界面上零反馈；而 `installEvt` 又已置空，再点走 `if (!evt) return`。
- * ⚠️ 坑 ②（2026-10-01 第一版修复）：为了让按钮不变成「点了没反应」的死键，我在 `prompt()`
- *    **之前**就调了 `menuRemoveInstall()`。结果按钮先没了，而 `prompt()` 依然没弹框 ——
- *    玩家看到的就成了「按钮一按就没，什么也没发生」，比原来更糟。
- *    ⇒ **按钮的摘除必须挂在「真的装上了」上**（`accepted` / `appinstalled`），不能提前摘。
- * ⚠️ 坑 ③（本轮）：Chrome 拒绝弹框时 `prompt()` 返回的 Promise **既不 resolve 也不 reject**
- *    （实测，pending 不落定）。所以 `.then/.catch` 两条路都出不了声 —— 光等回调＝永远静默。
- *    ⇒ 解法**不是**超时兜底（那会在安装框正常开着、玩家还没点的时候误报），而是**按下那一刻
- *      就先显示 `INSTALL_TIP`**：它写的是条件句，弹框开着时是一句无害提示，没弹时就是答案。
- *    这三条叠起来才是完整的「点了没反应」。
+ * 这里前后踩过三个坑，都记着免得再踩：
+ * ⚠️ 坑 ①（老代码）：`evt.prompt()` 的 Promise 与 `evt.userChoice` 一个都没接 —— 静默失败时
+ *    界面上零反馈；`installEvt` 又已置空，再点走 `if (!evt) return`。
+ * ⚠️ 坑 ②：为了让按钮不变成死键，曾在 `prompt()` **之前**就调 `menuRemoveInstall()` ——
+ *    按钮先没了，弹窗依然不出现，成了「一按就消失，什么也没发生」，比原来更糟。
+ *    ⇒ **入口的摘除只挂在「真的装上了」上**（`accepted` / `appinstalled`），绝不提前摘。
+ * ⚠️ 坑 ③：Chrome 拒绝弹窗时 `prompt()` 返回的 Promise **既不 resolve 也不 reject**（实测，
+ *    一直 pending）。所以「等回调再决定显示什么」＝ 永远静默 —— **不能把图文押在回调上**。
+ *    ⇒ 现在就摊开图文，不等回调：弹窗若真出现，它是浏览器自己的界面、盖在本页之上，身后
+ *      这份图文不冲突 —— 装成 → `appinstalled` 把它收掉；取消 → 它正好是接下来要看的。
  *
- * ⚠️ `beforeinstallprompt` **只能 `prompt()` 一次**：消费掉之后这个事件就废了，所以不能指望
- *    「留着它下次再点」。浏览器想再给机会会**重发一次事件**（上面的 `beforeinstallprompt`
- *    监听会把按钮重挂回来）。
+ * ⚠️ `beforeinstallprompt` **只能 `prompt()` 一次**：消费掉之后这个事件就废了。浏览器若还想
+ *    让玩家装会**重发一次事件**（上面的监听接住即可，按钮是常驻的不必重挂）。
  * ⚠️ 老版 Chrome 的 `prompt()` 返回 `undefined`，结果只在 `evt.userChoice` 上；新版两者都返回
  *    `Promise<{outcome}>` —— 所以优先用 `prompt()` 的返回值，退到 `userChoice`。
  */
 function onInstall() {
+  if (isStandalone()) return;          // 已经在桌面上跑（菜单本不该给出这枚按钮）
+
   const evt = installEvt;
+  installEvt = null;                   // 同一个事件 prompt 不了第二次
 
-  /* ① 先出声（坑 ③）：不等任何回调。事件用完了、浏览器不发事件、Chrome 把 prompt() 挂住
-     不落定 —— 这三种「永远等不到结果」的情况下，这一句就是唯一的可见反馈。 */
-  menuInstallNote(INSTALL_TIP);
+  /* 先摊图文（坑 ③），再试着弹原生框 —— 两者不互斥：真装上了 `appinstalled` 会收走图文。 */
+  menuInstallGuide(isIosSafari() ? 'ios' : 'generic');
 
-  if (!evt) return;                     // 事件已用尽 / 这台机器压根不发 —— 手动路径已给出
-  installEvt = null;                    // 同一个事件 prompt 不了第二次
-
+  if (!evt) return;                    // 这台机器没有原生通道（iOS / 国产内核）—— 图文就是那条路
   try {
     const p = evt.prompt();
     /* 老版 Chrome 的 `prompt()` 返回 `undefined`，结果只在 `evt.userChoice` 上；新版两者都返回 Promise */
     const res = (p && typeof p.then === 'function') ? p : evt.userChoice;
     if (res && typeof res.then === 'function') {
-      res.then(c => {
-        if (c && c.outcome === 'accepted') {
-          menuRemoveInstall();          // ② 只有真装上了才摘按钮（坑 ②）
-          menuInstallNote('正在安装…');
-        } else {
-          menuInstallNote('已取消 ｜ 点 Chrome 右上角「⋮」→「添加到主屏幕」也一样装');
-        }
-      }).catch(() => { /* 保持第 ① 步那句话，它已经把出路说清了 */ });
+      res.then(c => { if (c && c.outcome === 'accepted') menuRemoveInstall(); })
+        .catch(() => {});              // 失败无所谓：图文已经在屏上
     }
-  } catch { /* 同步抛：同上，第 ① 步那句话兜着 */ }
+  } catch { /* 同步抛（被拦下）：同上，图文兜着 */ }
 }
 
 /** 撤销主菜单的武装：超时或重开前都要还原按钮，免得下次开局还是红的 */
@@ -1081,7 +1073,7 @@ function exitReview() {
   rv = null;
   rvAcc = 0;
   draw(true);                                    // `rv` 归 nil ⇒ `showPage` 自动切回交易页
-  openMenu({ canContinue: !isNewGame, canInstall: !!installEvt });
+  openMenu({ canContinue: !isNewGame });
 }
 
 /** 回顾日志（**加长那一栏**的内容源）：节点史实 ＋ 里程碑，只装回顾自己的东西 */

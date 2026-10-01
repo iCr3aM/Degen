@@ -1032,17 +1032,21 @@ canvas.curve {
   letter-spacing: .02em;
 }
 
-/* 安装入口的兜底说明（PWA · 2026-10-01 修复「点了没反应」）——
-   只在点过「安装应用」之后出现：自动安装被拦下 / 这台机器不发安装事件 / 已经装好，各给一句话。
-   与按钮列同宽（280px）换行，免得长句横着撑破开机画面。
-   ⚠️ 它也是 `.menu-box p`，会被那条「12px / 1.9 / 居中」逮住，所以这里逐条压回去。 */
-.menu-note {
-  margin-top: 0;                 /* 间距交给 `.menu-box` 的 gap:12px，与其余几块一个口径 */
+/* 安装图文引导（PWA · 2026-10-01）——点「安装应用」后替代按钮出现的那三步。
+   与按钮列同宽（280px），免得长句横着撑破开机画面。
+   ⚠️ 用 `div` 不用 `p`：上面 `.menu-box p` 那条「居中 + pre-line」是给副标题定的，
+      这段要**左对齐分步**读，绕开它比逐条压回去省事。 */
+.menu-guide {
+  width: 100%;
   max-width: 280px;
-  font-size: calc(11px * var(--ui));
-  line-height: 1.6;
-  color: var(--mut-2);
+  text-align: left;
+  font-size: calc(12px * var(--ui));
+  line-height: 1.7;
+  color: var(--mut);
 }
+.menu-guide-h { display: block; margin-bottom: 4px; color: var(--fg); }
+.menu-step { display: flex; gap: 8px; }
+.menu-step i { flex: none; width: 14px; color: var(--mut-2); font-style: normal; }
 
 /* B6-a（§7.9）：按钮上禁选文字（手机长按会弹出选择手柄，很碍事）。
    ⚠️ 用 `button` 兜底而不是逐个类名：全站可点的东西都是 `<button>`，一条覆盖完，
