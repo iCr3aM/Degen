@@ -115,6 +115,15 @@ export const TICK = {
  * `cdd` 是**归档 CSV**（CryptoDataDownload）的补充源，用来填官方 API 给不出的早期年份：
  *   - `quote: 'USDT'`：美元/稳定币计价的小时线 CSV，直接铺
  *   - `quote: 'BTC'` ：BTC 计价的小时线 CSV，脚本乘以同一时刻的 BTC/USD 换回美元
+ * `votes` 是**只投票、不定成交量**的额外小时源（`[{ exch, pair }]`，目前只有 Bitfinex）。
+ *   ⚠️ 它排在**整条优先级链的最末**（Kraken 之后），所以：
+ *     ① 永远不会成为该小时的「主源」⇒ **成交量口径与 `liq.bin` 逐位不变**；
+ *     ② 只在「该小时已经 ≥3 家报价」时才真正改变结果（`medoid` 取中位），
+ *        恰好 2 家时按优先级取前者 ⇒ 与加它之前逐位一致。
+ *   存在的理由：ETH 2015-08→2017-08 那两年只有 Poloniex ＋ Kraken 两家，
+ *   恰好 2 票时 `medoid` 恒取 Poloniex、Kraken 那票等于白投 —— Bitfinex 的
+ *   `tETHUSD`（2016-03-09 起）补上第三票，这两年才谈得上「投票」。
+ *   ⚠️ Bitfinex 的配对名有个坑：**DOGE 是 `tDOGE:USD`**（带冒号），不是 `tDOGEUSD`。
  * **日线插值与平线补齐已整块删除**：五个币全部有真小时线，脚本不再造任何一根 K 线。
  *
  * 实测起点（2026-09-28 逐文件复测，全部零成本、无需 key）：
@@ -136,12 +145,16 @@ export const COINS = [
      （实测可回溯到 2011-08-19 00:00；这里只取到 2012-09-27，够用又不冗余）。 */
   { sym: 'BTC',  name: '比特币',  unlock: Date.UTC(2012, 8, 27, 0),  otc: Date.UTC(2013, 0, 1),  src: { bitstamp: 'btcusd', bitfinex: 'tBTCUSD', binance: 'BTCUSDT',  binanceus: null } },
   { sym: 'DOGE', name: '狗狗币',  unlock: Date.UTC(2014, 0, 21, 22), otc: Date.UTC(2018, 0, 1),  src: { bitstamp: null,     bitfinex: null,      binance: 'DOGEUSDT', binanceus: null },
-    cdd: [{ file: 'Poloniex_DOGEUSDT_1h.csv', quote: 'USDT' }, { file: 'Poloniex_DOGEBTC_1h.csv', quote: 'BTC' }] },
+    cdd: [{ file: 'Poloniex_DOGEUSDT_1h.csv', quote: 'USDT' }, { file: 'Poloniex_DOGEBTC_1h.csv', quote: 'BTC' }],
+    votes: [{ exch: 'bitfinex', pair: 'tDOGE:USD' }] },
   { sym: 'XRP',  name: '瑞波币',  unlock: Date.UTC(2014, 7, 14, 3),  otc: Date.UTC(2018, 0, 1),  src: { bitstamp: 'xrpusd', bitfinex: null,      binance: 'XRPUSDT',  binanceus: null },
-    cdd: [{ file: 'Poloniex_XRPUSDT_1h.csv', quote: 'USDT' }, { file: 'Poloniex_XRPBTC_1h.csv', quote: 'BTC' }] },
+    cdd: [{ file: 'Poloniex_XRPUSDT_1h.csv', quote: 'USDT' }, { file: 'Poloniex_XRPBTC_1h.csv', quote: 'BTC' }],
+    votes: [{ exch: 'bitfinex', pair: 'tXRPUSD' }] },
   { sym: 'ETH',  name: '以太坊',  unlock: Date.UTC(2015, 7, 8, 6),   otc: Date.UTC(2016, 5, 1),  src: { bitstamp: 'ethusd', bitfinex: null,      binance: 'ETHUSDT',  binanceus: null },
-    cdd: [{ file: 'Poloniex_ETHUSDT_1h.csv', quote: 'USDT' }] },
-  { sym: 'SOL',  name: 'Solana',  unlock: Date.UTC(2020, 7, 11, 6),  otc: Date.UTC(2021, 0, 1),  src: { bitstamp: null,     bitfinex: null,      binance: 'SOLUSDT',  binanceus: 'SOLUSD' } },
+    cdd: [{ file: 'Poloniex_ETHUSDT_1h.csv', quote: 'USDT' }],
+    votes: [{ exch: 'bitfinex', pair: 'tETHUSD' }] },
+  { sym: 'SOL',  name: 'Solana',  unlock: Date.UTC(2020, 7, 11, 6),  otc: Date.UTC(2021, 0, 1),  src: { bitstamp: null,     bitfinex: null,      binance: 'SOLUSDT',  binanceus: 'SOLUSD' },
+    votes: [{ exch: 'bitfinex', pair: 'tSOLUSD' }] },
 ];
 
 /** 按符号取币种定义 */

@@ -679,7 +679,22 @@ async function buildCoin(coin) {
     }
   }
 
-  /* ── ④ 聚合：逐字段 medoid ＋ 不变量修正；成交量只认主源 ── */
+  /* ── ④ 额外投票源（`config.COINS[].votes`）—— **只投票、不定成交量** ──
+   * 排在整条优先级链的**最末**（Kraken 之后）⇒ 永远成不了「主源」（成交量仍归 ⑤ 里的 `list[0]`），
+   * 且只在「该小时已经 ≥3 家报价」时才真正改变 `medoid` 的结果。见 `config.js` 的 `votes` 段。
+   * 同样**只服务聚合模式**：补洞模式必须逐位不变。 */
+  if (cells) {
+    for (const v of coin.votes || []) {
+      if (v.exch !== 'bitfinex') continue;
+      try {
+        absorb(`votes bitfinex ${v.pair}`, (await fetchBitfinex(v.pair, tsOf(startI), tsOf(startI + count))).rows, nextTag());
+      } catch (err) {
+        log(`    votes bitfinex ${v.pair} 取数失败：${err.message}`);
+      }
+    }
+  }
+
+  /* ── ⑤ 聚合：逐字段 medoid ＋ 不变量修正；成交量只认主源 ── */
   if (cells) {
     let multi = 0, votes = 0;
     for (let k = 0; k < count; k++) {
@@ -699,10 +714,10 @@ async function buildCoin(coin) {
     log(`    聚合：${multi} 小时有 ≥2 家报价（合计 ${votes} 票）`);
   }
 
-  // 收尾统计：真正有数据的小时数（两种模式同口径；无成交小时要到第 ⑥ 步才标 255）
+  // 收尾统计：真正有数据的小时数（两种模式同口径；无成交小时要到第 ⑦ 步才标 255）
   for (let k = 0; k < count; k++) if (have[k]) stats.hourly++;
 
-  /* ── ⑤ 裁掉开头的空档：起点以「实测的第一根真 K 线」为准 ── */
+  /* ── ⑥ 裁掉开头的空档：起点以「实测的第一根真 K 线」为准 ── */
   let lead = 0;
   while (lead < count && !have[lead]) lead++;
   if (lead === count) throw new Error(`${coin.sym}: 一根数据都没有 —— 检查 config.unlock 与数据源`);
@@ -711,7 +726,7 @@ async function buildCoin(coin) {
       + ` 晚于配置的 ${new Date(coin.unlock).toISOString().slice(0, 16)}，裁掉前 ${lead} 小时`);
   }
 
-  /* ── ⑥ 中间的空档：不造数据，只在日志与 index.json 里逐段留痕 ── */
+  /* ── ⑦ 中间的空档：不造数据，只在日志与 index.json 里逐段留痕 ── */
   let lastKnown = held[lead * 5 + 3];
   let runStart = -1;
   const flushGap = end => {

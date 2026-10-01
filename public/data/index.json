@@ -60,11 +60,11 @@
       "count": 91029,
       "scale": 10000000,
       "vol": true,
-      "maxPrice": 3.317,
+      "maxPrice": 3.3,
       "first": 0.0053754,
-      "last": 2.08017,
+      "last": 2.0836,
       "bytes": 1547493,
-      "zipped": 879884,
+      "zipped": 860570,
       "sources": {
         "hourly": 91029,
         "gapHours": 0,
@@ -74,7 +74,8 @@
           "binance XRPUSDT": 58320,
           "Poloniex_XRPUSDT_1h.csv": 86450,
           "Poloniex_XRPBTC_1h.csv": 91027,
-          "kraken XRPUSD+XRPXBT": 73106
+          "kraken XRPUSD+XRPXBT": 73106,
+          "votes bitfinex tXRPUSD": 66737
         }
       }
     },
@@ -85,11 +86,11 @@
       "count": 82410,
       "scale": 10000,
       "vol": true,
-      "maxPrice": 4868,
+      "maxPrice": 4867,
       "first": 1.71,
       "last": 3337.78,
       "bytes": 1400970,
-      "zipped": 881686,
+      "zipped": 894722,
       "sources": {
         "hourly": 82410,
         "gapHours": 0,
@@ -98,7 +99,8 @@
           "bitstamp ethusd": 64664,
           "binance ETHUSDT": 64524,
           "Poloniex_ETHUSDT_1h.csv": 82408,
-          "kraken ETHUSD": 78939
+          "kraken ETHUSD": 78939,
+          "votes bitfinex tETHUSD": 76821
         }
       }
     },
