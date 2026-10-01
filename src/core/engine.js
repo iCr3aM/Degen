@@ -360,9 +360,11 @@ function absorbedImpact(s, sym, dir, impact) {
  * 与改动前逐字相同的部分：`dir × SHOCK.share × permImpactFor(…)`、以及
  * 「`addFlow` 返真才 `invalidateSigma()`」。新增的只有中间那道历史压力位吸收。
  * ⚠️ OTC 由各调用点自己在 `!otc` 分支里过滤（私下一口价不落公开盘口 —— 既有先例）。
+ * @param {number} give **回吐比例**（2026-10-02）：开仓 / 加仓传 1（满额），**平仓 / 强平 /
+ *   部分强平传 `SHOCK.closeGive`** —— 往返不再等量抵消，台阶永久留下 65%（见 `god.js`）。
  */
-function pushFlow(s, sym, dir, notional) {
-  const v = dir * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
+function pushFlow(s, sym, dir, notional, give = 1) {
+  const v = dir * give * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
   if (addFlow(s, sym, v)) invalidateSigma();
 }
 
@@ -712,6 +714,8 @@ export function openTrade(s, side, frac = 1) {
      ⚠️ 位移量走 `permImpactFor` 而**不是** `cost`：`cost` 带 10% 死区（成交代价用了它），
         拿它做位移会让小额单写进 0、池子里毫无痕迹 —— 见 `permImpactFor` 的注释。
      ⚠️ `SHOCK.share` 已由用户 2026-10-01 标定为 1：整笔位移都留在场上。
+     ⚠️ **开仓 / 加仓按满额写**（`pushFlow` 的 `give` 缺省 1）；只有平仓那一侧才回吐
+        `SHOCK.closeGive`（2026-10-02）—— 不对称只挂在「回吐」上。
      ⚠️ OTC 不写：私下一口价的大宗交易不落公开盘口（与它不消耗供应量同一口径）。
      ⚠️ 与上帝模式**无关**（2026-09-29 瘦身）：原来这里乘过一个「冲击倍率」`s.god.mult`，
         已删除 —— 上帝模式不再有任何价格能力。
@@ -794,18 +798,22 @@ export function closeTrade(s, why = '手动') {
     net >= 0 ? 'ok' : 'bad');
   delete s.positions[sym];
 
-  /* 订单冲击：**平仓写一笔与开仓对称的反向台阶**（用户 2026-10-01 拍板）。
+  /* 订单冲击：平仓写一笔**方向相反**的台阶（用户 2026-10-01 拍板），但**只回吐
+     `SHOCK.closeGive`**（2026-10-02 拍板）。
      公式与 `openTrade` 同一个：位移量 = `SHOCK.share × 本笔行情位移量`（`permImpactFor`，**无阈值死区**），
-     方向取**持仓方向的反面**
-     —— 平多 = 卖出 ⇒ 打压（−1），平空 = 买回 ⇒ 推高（+1）。
+     方向取**持仓方向的反面** —— 平多 = 卖出 ⇒ 打压（−1），平空 = 买回 ⇒ 推高（+1）。
+     ⚠️ 为什么不再写满额：等量反向会让**往返净值恒等于 0** ⇒ 右侧最新价永远回到原始路径 ⇒
+        玩家长单/短线做完一圈，图上一点痕迹都不剩（用户 2026-10-02 反馈的「完全没有记忆」）。
+        文献里 metaorder 的冲击在成交结束后按 `t^(−0.3)` 极慢衰减、交易者自己的反向操作抹不掉
+        市场已形成的新参考价 ⇒ 平仓只回吐 35%，**一次完整往返净留开仓冲击的 55.25%**。
      ⚠️ 它**不是**早先那个 A2「回填」（`giveBack`：平仓时反向写回开仓残存值的一半，已删除）——
-        那个会把开仓留下的台阶主动推回去，与「台阶永久保留」冲突；这里写的是**平仓这一笔自己**
-        该有的冲击，两者叠加的净值 = 开仓台阶（还挂在场上，按幂律衰到 `SHOCK.floor`）＋ 平仓台阶（反向）。
+        那个会把开仓留下的台阶主动推回去，与「台阶永久保留」冲突；这里写的仍是**平仓这一笔自己**
+        该有的冲击，只是按 `closeGive` 折了一档。
      ⚠️ 与开仓同口径：OTC 不写（私下一口价不落公开盘口，与它不计量柱同一个先例）；
         写完必须 `invalidateSigma()` —— 平仓从此**会**改动它之后的 K 线。 */
   if (!otc) {
     const dir = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, sym, dir, notional);
+    pushFlow(s, sym, dir, notional, SHOCK.closeGive);
     consumePool(s, sym, notional);        // 瞬时深度池（L1）：平仓同样是真实成交 ⇒ 也吃深度
   }
   /* 持仓抛压折价（v18 · 2026-10-01）：这一条仓位没了（`delete` 在上面）⇒ 折价随之归零。
@@ -836,12 +844,14 @@ function forceLiquidate(s, pos, atPrice) {
   /* 玩家自己的成交量（v17 · 2026-10-01）：强平也是一笔真实成交 ⇒ 记进当根 K 线的量柱。
      取 `size × atPrice`，与 `closeTrade` 同口径；产品线取**仓位自己**的那条（v20）。 */
   addPlayerVol(s, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
-  /* 订单冲击（2026-10-01 拍板）：强平同样是**卖出 / 买回**，写一笔与开仓对称的反向台阶 ——
-     与 `closeTrade` 完全同一公式与方向（平多打压 −1、平空推高 +1）。
+  /* 订单冲击（2026-10-01 拍板）：强平同样是**卖出 / 买回**，写一笔与开仓方向相反的台阶 ——
+     与 `closeTrade` 完全同一公式、同一方向（平多打压 −1、平空推高 +1），且同样**只回吐
+     `SHOCK.closeGive`**（2026-10-02）：强平是「被动平仓」，若按满额反向写，玩家爆一次仓就能把
+     自己此前所有买入留下的台阶一次性抹平。
      ⚠️ 强平多发生在**急跌那根**，这笔反向冲击会让兵败如山倒的 K 线更陡一档，是刻意的。 */
   {
     const dir = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, pos.sym, dir, notional);
+    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive);
     consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：强平也是真实成交 ⇒ 也吃深度
   }
 
@@ -1593,7 +1603,7 @@ function liquidateAll(s) {
  * 剩余部分继续持有。残余权益全部留在仓位里（见 `reducePosition`），于是强平价被推远。
  *
  * 与 `forceLiquidate` 共用全部副产物口径：**量柱**（真实成交 ⇒ 计入）、**订单冲击**
- * （平多打压 −1 / 平空推高 +1，同一公式）、**抛压折价刷新**（现货实物多头占比变了）。
+ * （平多打压 −1 / 平空推高 +1，同一公式、同样只回吐 `SHOCK.closeGive`）、**抛压折价刷新**。
  * 唯一的差别是：现金一分不动，只剩一笔已实现亏损记进 `s.realized`。
  */
 function partialLiquidate(s, pos, frac, atPrice) {
@@ -1602,7 +1612,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   addPlayerVol(s, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
   {
     const dir = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, pos.sym, dir, notional);
+    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive);
     consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：部分强平也是真实成交 ⇒ 也吃深度
   }
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）

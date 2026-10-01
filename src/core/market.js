@@ -137,11 +137,20 @@ function decodeAt(sym, i) {
 export function candleAt(sym, i) {
   const c = decodeAt(sym, i);
   if (!c) return null;
+  if (!factorSource) return c;
 
-  /* 价格位移：系数按**根**取（一笔单只影响它之后的行情），不是全局常数 —— 见 god.js 的文件头 */
-  const f = factorSource ? factorSource(sym, i) : 1;
-  if (f === 1) return c;
-  return { o: c.o * f, h: c.h * f, l: c.l * f, c: c.c * f };
+  /* 价格位移：系数按**根**取（一笔单只影响它之后的行情），不是全局常数 —— 见 god.js 的文件头。
+     ⚠️ 取**两个**系数（2026-10-02）：本根 `f` 与**上一根** `fp`。
+        原来 o/h/l/c 同乘一个 `f` ⇒ 成交那一根的**开盘价也一起被抬走**，与上一根之间凭空裂开一个
+        跳空缺口 —— 图上就是「一根悬浮的孤立 K 线」；而且整根平移 ⇒ 实体形状一个像素不变 ⇒
+        看不出「我的成交把这一根推上去了」。
+        改成 **开＝上一根的位移（仍接在上一根收盘上）／收＝本根的位移／高低把两者都包住** ⇒
+        成交那一刻是一段**连续价格路径**，那一根长出一段真实的实体 ＋ 影线（= 我把订单薄吃了）。
+     ⚠️ 没有位移的根 `fp === f`（绝大多数）⇒ `o*f`、`h*f`、`l*f`、`c*f`，与改动前**逐位相同**。 */
+  const f = factorSource(sym, i);
+  const fp = factorSource(sym, i - 1);
+  if (f === 1 && fp === 1) return c;
+  return { o: c.o * fp, h: c.h * Math.max(fp, f), l: c.l * Math.min(fp, f), c: c.c * f };
 }
 
 /**
