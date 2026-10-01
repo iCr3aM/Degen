@@ -80,6 +80,9 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
+  /* PWA 独立窗口（2026-10-01）：根节点**永不滚动**。整页布局本就由 `#app` 自己分配高度，
+    这里只是兜底 —— 任何残余的高度差都不许变成一条能拖的滚动条。 */
+  overflow: hidden;
   background: var(--bg);
   color: var(--fg);
   font-family: var(--mono);
@@ -97,6 +100,12 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100dvh;
+  /* PWA 独立窗口（2026-10-01）：`html, body` 是布局视口（100%），`#app` 是动态视口（dvh）。
+     两者在「添加到主屏幕」的独立窗口里**不等值** —— dvh 往往比父级高一截（iOS black-translucent
+     尤其明显），`#app` 溢出父级后底部 Tab 就被顶到折线以下、要滑一下才看得到。
+     加一道上限：dvh 若高于父级就按父级收，**只会变矮、不会变高**，因此不通往任何新滚动。
+     ⚠️ 不能只靠根节点的 `overflow: hidden` —— 那只把 Tab 裁掉、反而更糟；必须让 `#app` 真的够矮。 */
+  max-height: 100%;
   max-width: 620px;
   margin: 0 auto;
   padding: 0 12px calc(8px + env(safe-area-inset-bottom, 0px));

@@ -7529,3 +7529,55 @@ M1 已打点的 `s.stat`（`open/fut/maxLev/syms/move/loan/god`）上 —— 绝
 
 > 同 §三十五：以 `src/` 为准。
 
+---
+
+## 六十、PWA 独立窗口滚动修复（✅ 2026-10-01）
+
+「添加到主屏幕」后底部 **Tab 掉到折线以下，要滑一下才看得到** —— 普通浏览器标签页里正常，
+只有独立窗口复现。纯 CSS 修复，不动 JS、不动状态、不动 `STATE_VERSION`。
+
+### 60.1 根因：根节点 `100%` 与 `#app` 的 `100dvh` 不等值
+
+- `html, body` 是 `height: 100%` —— 解析到**布局视口 / ICB**。
+- `#app` 是 `height: 100dvh` —— **动态视口**。
+- 独立窗口里两者**不相等**（`viewport-fit=cover` ＋ iOS `black-translucent` 尤其明显，
+  动态视口会高出布局视口一截）⇒ `#app` 比父级高，`body` 被撑出一条滚动条 ⇒
+  末位子项 `.tabs`（`flex: none`，**非 `position: fixed`**）跟着盒高一起下沉。
+
+⚠️ **`.tabs` 不是 fixed** —— 它跟随 `#app` 盒高，所以修复必须落在「让 `#app` 够矮」，
+不能指望 Tab 自己贴底。
+
+### 60.2 修法（两条，缺一不可）
+
+```css
+html, body { height: 100%; overflow: hidden; }   /* ① 根节点永不滚动 */
+#app       { height: 100dvh; max-height: 100%; } /* ② dvh 高于父级时按父级收 */
+```
+
+- ① 只是**兜底**：单独用会把 Tab **裁掉**（看不到了）反而更糟。
+- ② 是**根治**：`max-height: 100%` 只在 `dvh > 父级` 时生效，**只会变矮、不会变高**，
+  因此不通往任何新滚动，也不会在 `dvh ≤ 父级` 时改变现状。
+- `#app` 是 `box-sizing: border-box`，`max-height` 含上下 `padding`（安全区）⇒ 内容区实测收在
+  可视高度内，Tab 回到首屏。
+
+### 60.3 落点清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/ui/style.css` | `html, body` 加 `overflow: hidden`；`#app` 加 `max-height: 100%`（各带一条注释） |
+
+### 60.4 验收（2026-10-01）
+
+- `npm run build` ✅ 通过：**25 modules**，`dist/assets/index.DbWbBc0w.js` 110.76 kB /
+  `index.xxdcpWuF.css` 22.61 kB。
+- ⚠️ **独立窗口滚动属真机确认项** —— 需在 iPhone / 安卓各装一次 PWA，确认首屏即可看到底部
+  Tab（无需滑动），且安全区（刘海 / 底部横条）未被遮挡。
+
+### 60.5 明确不做（本轮）
+
+- 不改 `.tabs` 为 `position: fixed`（会打乱 `#app` flex 列的高度分配，牵连 K 线区测量）。
+- 不动 `100dvh`（移动浏览器地址栏收起时仍需要它）。
+- 不加 JS 测量 / `visualViewport` 监听（CSS 两条已闭合，LESS IS MORE）。
+
+> 同 §三十五：以 `src/` 为准。
+
