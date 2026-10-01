@@ -621,10 +621,14 @@ function draw(force = false) {
   };
 
   try {
-    /* 回顾态走**另一条渲染线**：它只读 `rv`（模块级），一个字都不写 `s`，也绝不碰那几张遮罩 */
-    if (rv) { renderReview(refs, rv, view); return; }
+    /* 回顾态走**另一条渲染线**：它只读 `rv`（模块级），一个字都不写 `s`，也绝不碰那几张遮罩。
+       ⚠️ 进来先 `clearOver`（2026-10-02 审计修）：本局已结束时也能从结算遮罩「回主菜单」再进回顾，
+          那时 `#app` 里还挂着那张 `.over` —— 它是 `position:fixed`，不摘掉会直接盖住整页回顾。 */
+    if (rv) { clearOver(root); renderReview(refs, rv, view); return; }
     update(refs, s, view);
-    if (s.over) {
+    /* ⚠️ `!arch`（同上）：档案页是整屏只读页，本局结束时从结算遮罩进来也必须看得见 ——
+       让它落进最后的 `else` 去 `clearOver`，而不是被结算遮罩重新盖一遍。 */
+    if (s.over && !arch) {
       closePicker();
       renderOver(root, s);
       // 结束音只响一次（`overDrawn` 是「这一局结束的画面画过了没」）；震动与它同拍
