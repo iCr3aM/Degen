@@ -1212,7 +1212,11 @@ export function renderOver(root, s) {
     ? `你活到了 ${fmtDate(timeOf(s), false)}\n最终权益 ${fmtMoney(eq)}`
     : (quit
       ? `你主动收了摊\n最终权益 ${fmtMoney(eq)}`
-      : `保证金归零，账户清零\n倒在 ${fmtDate(timeOf(s))}`);
+      /* ⚠️ 文案与 `engine.endGame` 的「账户归零，游戏结束」、本函数下面那张遮罩的标题
+         「账户归零」**统一**（2026-10-02 审计修）：原来是孤例「账户清零」。
+         也**不再写「保证金归零」** —— 这一支同时接管挑战年代局的归零（`OVER.LIQUIDATED`
+         在 `isChallenge` 那条路也会落进来），那种归零未必出自保证金；标题已是「爆仓」。 */
+      : `账户归零\n倒在 ${fmtDate(timeOf(s))}`);
 
   box.append(el('b', win ? 'up' : 'down', title), el('p', null, body));
   const btn = el('button', null, '重新开始');

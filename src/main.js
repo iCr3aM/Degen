@@ -262,6 +262,12 @@ async function boot() {
      放到 `mount()` 之后也行，但那样第一次开机画面会闪一下默认色。动效档同理（同一刻落）。 */
   applyRedUp(redUp);
   applyFx(fx);
+  /* ⚠️ **点击接线必须最先挂**（2026-10-02 审计修）：下面 `loadManifest()` 失败会**提前 return**，
+     而 `mount()` / `bindActions()` 原来都排在它后面 —— 于是「行情数据加载失败」那张面板上
+     唯一的一枚「清除存档并重开」成了死键（玩家最后一条自救出口被 return 吞掉）。
+     ⚠️ 此刻屏上只有 boot 面板，它上面挂了动作的键只有 `data-wipe` → `onWipe()`，
+        而 `onWipe` 不读 `refs` / `clock`（只 disableSave ＋ 清两槽 ＋ reload），提前挂是安全的。 */
+  bindActions(document.body, dispatch);
   renderBoot('正在读取行情数据包…');
   try {
     await loadManifest();
@@ -322,7 +328,8 @@ async function boot() {
   clock = createClock(s, { onFrame: () => { dirty = true; preloadUpcoming(); draw(!!anchorAt(s.i)); } });
   draw();
 
-  bindActions(document.body, dispatch);
+  /* ⚠️ `bindActions` 已提前到本函数开头（见那里的注释）—— 这里不再挂第二遍，
+     否则同一个 `pointerdown` 会被派发两次（下单 / 平仓这类动作会真的做两笔）。 */
   /* K 线手势（Batch 3 · B13/B14）：三个回调都只动**视野**（`view.js`），
      不碰 `s`、不写存档，唯一副作用是立刻重画一帧（拖动不能被 80ms 节流吞掉）。
      复位只在**当前币**上生效；每帧的限位（`chart.js` 里夹）会把越界的视野拉回来。
@@ -428,8 +435,8 @@ const chartW = () => {
  *    （dev server 命中缓存时很常见），第一帧就被节流吞掉。平时无所谓 —— 一秒钟后
  *    时钟推进会有下一帧；但**读到的存档若是暂停态**，`step()` 因 `s.paused` 永不
  *    产生 `moved`，`onFrame` 一次都不来，界面就永久停在骨架状态（日期、HUD、
- *    K 线、杠杆档全空）。注意 `bindActions` 在 `draw()` 之后才挂，所以此时点击
- *    反而正常 —— 按钮一点就补上第一帧，掩盖了「开局一片空白」这个现象。
+ *    K 线、杠杆档全空）。注意 `bindActions` 在 `boot()` 开头就挂好了（2026-10-02 审计起），
+ *    所以此时点击反而正常 —— 按钮一点就走 `after()` 强制补上第一帧，掩盖了「开局一片空白」这个现象。
  */
 let lastDraw = -Infinity;
 /* ⚠️ 起手取 `!!s.over`：读档读到一个**已经结束**的档时，不该在开屏第一帧补响一声爆仓 / 结算。 */
@@ -1171,9 +1178,16 @@ function onSlot(slot) {
         玩家可能是从设置页回菜单再进来的（那时 `paused` 被置真），不这样点一下会「开盘了却不动」。 */
   if (saveSlotOf(s.scen) === slot && hasSave(slot)) {
     tab = 'trade';
-    s.paused = false;
-    s.speed = 1;
-    clock.start();
+    /* ⚠️ **待决态不许续跑**（2026-10-02 审计修）：自动存档可能正好落在「刚爆仓、还没决定领不领
+       救济金」那一拍（`s.pending` 与 `s.paused` 在 `engine` 里同时被置真，随后被落盘）。
+       原来这里无条件 `paused = false` ＋ `clock.start()` 会让时钟**空转** —— `advanceOneHour`
+       开首那条 `if (s.over || s.pending) return;` 一步都不走，但每 50ms 一次的 `step()` 仍把
+       `moved` 刷成真、`onFrame` 不停重画重存。保持暂停，恢复交给遮罩上那两枚按钮。 */
+    if (!s.over && !s.pending) {
+      s.paused = false;
+      s.speed = 1;
+      clock.start();
+    }
     after();
     return;
   }

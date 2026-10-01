@@ -13,7 +13,7 @@ function group(intStr) {
 
 /**
  * 价格：按量级选小数位，保证任何价位的币都读得出有效数字。
- *   108143.1 / 1234.56 / 3.1416 / 0.52341 / 0.00012345
+ *   108143.1 / 1234.56 / 3.1416 / 0.52341 / 0.000123
  */
 export function fmtPrice(p) {
   if (!Number.isFinite(p)) return '--';
@@ -118,6 +118,10 @@ function shortBody(a, tier) {
   if (Number(s) >= 1000) {                        // 进位兜底：`999,999` → `1000.0K` ⇒ 抬到 `$1.0M`
     if (tier === 1) return '$' + (a / 1e6).toFixed(1) + 'M';
     if (tier === 2) return '$' + (a / 1e9).toFixed(2) + 'B';
+    /* ⚠️ `tier === 3` 的兜底（2026-10-02 审计补）：`B` 是最后一档，原来没有这一行，
+       `9.99995e11 ~ 1e12` 这一段会印成 `$1000.00B`（而 `fmtCap` 在 `≥ 1e12` 时印 `$1.00T`）
+       —— 同一串数字在门槛两侧换了个写法。补上 T 之后 `fmtMoneyShort` / `fmtCap` 一致。 */
+    if (tier === 3) return '$' + (a / 1e12).toFixed(2) + 'T';
   }
   return '$' + s + suf;
 }
@@ -143,14 +147,17 @@ export function fmtMoneyShort(n, { sign = false, minTier = 0 } = {}) {
  *
  * 与 `fmtMoneyShort` 共用同一套后缀表（`TIER_UNIT`），只有两处不同：
  *   - 没有货币符号；
- *   - `< 1e4` 走**千分位整数**（`8,200`）—— 数量不需要小数，整数已经读得出来。
+ *   - `< 1e4` 走**千分位整数**（`8,200`）—— 数量到这个量级不需要小数；
+ *     但 **`< 1` 保留小数**（`0.0167`）：小额币量取整会印成「0」。
  * ⚠️ 单独一个函数而不是给 `fmtMoneyShort` 加个开关：那个的职责是**金额**，
  *    `$` 与 `sign` 都是它的语义；混进来会逼着每个调用点都多想一层。
  */
 export function fmtQty(n) {
   if (!Number.isFinite(n)) return '--';
   const a = Math.abs(n);
-  if (a < 1e4) return group(String(Math.round(a)));
+  /* ⚠️ `< 1` 必须留小数（2026-10-02 审计修）：$1,000 买 BTC 只买到 0.0167 枚，
+     取整会印成「0 枚」—— 那是把信息抹掉，不是省地方。这里直接借 `fmtPrice` 的量级小数位。 */
+  if (a < 1e4) return a >= 1 ? group(String(Math.round(a))) : fmtPrice(n);
   const tier = a < 1e6 ? 1 : a < 1e9 ? 2 : 3;
   const [base, suf, d] = TIER_UNIT[tier];
   const s = (a / base).toFixed(d);
@@ -164,10 +171,10 @@ export function fmtQty(n) {
 /**
  * **市值**（流通量 × 价格）：`$1.98T` / `$376.4B` / `$12.3M`。
  *
- * 只比 `fmtMoneyShort` 多一档 `T` —— BTC 在 2021 / 2024 的市值是 `$1.3e12` / `$1.98e12`，
- * 走 `B` 会印成 `$1300.0B`（四个数字位，撑爆 K 线头部那一行）。
- * ⚠️ **不改 `fmtMoneyShort`**：它是权益 / 盈亏用的金额格式，改它的档位等于改存档外的既有读数，
- *    而市值只有这一处消费 —— 各给各的档，互不影响。
+ * 比 `fmtMoneyShort` 多一档 `T`：BTC 在 2021 / 2024 的市值是 `$1.3e12` / `$1.98e12`，
+ * 只按 `B` 印会变成 `$1300.00B`（四个数字位，撑爆 K 线头部那一行）。
+ * ⚠️ **不动 `fmtMoneyShort` 的档位门槛**（`1e5 / 1e6 / 1e9`）：那是权益 / 盈亏用的金额格式，
+ *    改它等于改存档外的既有读数；市值只有这一处消费，各给各的档，互不影响。
  */
 export function fmtCap(n) {
   if (!Number.isFinite(n)) return '--';

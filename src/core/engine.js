@@ -1160,6 +1160,10 @@ export function takeLoan(s) {
   ensureBook(s)[cur] += amount;
   s.pending = null;
   s.paused = false;
+  /* ⚠️ 速度归 1x（2026-10-02 审计修）：与 `main.js` 的 `onWarn` / `onLoan` 后的续跑口径一致 ——
+     原来只把 `paused` 放开，玩家若在 50x 下被爆仓、点「领取救济金」，会在**自己没反应过来**时
+     又连飞几十个游戏小时。救命钱到账这一刻必须让玩家重新握回速度盘。 */
+  s.speed = 1;
   pushLog(s, `领取救济金 ${fmtMoney(amount)} ｜ 无需偿还`, 'info');
   return { ok: true };
 }
