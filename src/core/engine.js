@@ -14,13 +14,14 @@
 
 import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
-import { newsStartAt, warnAnchorAt } from './anchors.js';
+import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow } from './god.js';
 import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, maintRateOf, openPosition, pnlOf,
+  reduceFraction, reducePosition,
   FUNDING, fundingOf, fundingRateOf, canLiquidate, paysFunding, paysInterest,
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
@@ -29,6 +30,16 @@ import { hashStr, rand } from './rng.js';
 
 /** 交易所归零前多少毫秒给一条预警日志（7 天） */
 const WARN_LEAD = 7 * 24 * HOUR_MS;
+
+/* ── 逐步强平（2026-10-01 拍板 · Binance 口径） ──
+ * 触发时**只平一档**，把剩余仓位的保证金率拉回 `PARTIAL_TARGET` 倍维持线，而不是整条打掉。
+ * 参考：Binance 逐仓合约到维持线时下 IOC 单平掉一部分，直到保证金率回到 100% 之上；
+ * Bybit 则是减到「维持保证金率回到 90%」。本作取「1.5 倍维持线」—— 留一点垫子，
+ * 让玩家在暴跌里不是一次被打死，而是**被削一刀后还有翻本的机会**（GDD §10 的核心体验）。 */
+const PARTIAL_TARGET = 1.5;
+
+/** 同一根 K 线内最多连打几档（缓跌穿线 → 部分强平把强平价推远 → 继续跌 → 再穿）。 */
+const PARTIAL_STEPS = 6;
 
 /** OTC 通道**自动回退**时那句日志（§15.3）—— 文案单独提出来，因为它的「已播过」闩锁就是比对这句话（见 `advanceOneHour`） */
 const OTC_OFF = '场外通道关闭 ｜ 已自动切回盘口';
@@ -1058,6 +1069,12 @@ export function advanceOneHour(s) {
         更具体的事件（与 P2-C「新闻让位于更新的日志」同一条口径）。 */
   const news = newsStartAt(s.i);
   if (news) pushLog(s, news.title, 'news');
+  /* **第二条 · 结果**（2026-10-01 拍板）：第一条只讲事件、不带数字；数字全部由这里给，
+     且**必然在它真的发生之后 1 小时**才播（判定与窗口口径见 `anchors.resultNewsStartAt`）。
+     ⚠️ 同一个小时里两条都命中时，后 push 的结果条压在事件条上面 —— 那是对的：
+        「结果」永远比「起因」更值得占着日志条那一行。 */
+  const rnews = resultNewsStartAt(s.i);
+  if (rnews) pushLog(s, rnews.rt, 'news');
 
   for (const ex of EXCHANGES) {
     /* 开张：只报「开局之后才开」的所 —— Mt.Gox / Bitfinex 在 2013-01-01 就在，
@@ -1331,42 +1348,88 @@ function settleFunding(s) {
  *    而「借来的钱要还」⇒ **现货杠杆仓照样强平**，只有现货 1x 才是那个无强平的特例。
  * ⚠️ B18/B26：维持线本身也不再是常数 —— `maintRateOf(pos)` 按「所 × 工具 × 名义档」取
  *    （Binance 永续四档、现货保证金恒 15%），所以早期 3.3x 杠杆仓会明显比现在更容易爆。
+ * ⚠️ **2026-10-01 起不再是「一穿线就整条打掉」**：触线只走**部分强平**一档（`partialLiquidate`），
+ *    只有权益真跌到 ≤ 0（或剩余不足最小名义）才整条 `forceLiquidate`。见 `PARTIAL_TARGET`。
  * @returns {boolean} 是否因此结束了本局
  */
 function liquidateAll(s) {
   for (const sym of heldSyms(s)) {
-    const pos = s.positions[sym];
-    if (!canLiquidate(pos)) continue;
+    const pos0 = s.positions[sym];
+    if (!pos0 || !canLiquidate(pos0)) continue;
 
     const c = candleAt(sym, s.i);
     if (!c) continue;
 
-    const liq = liquidationPrice(pos);
-    const long = pos.side === 'long';
-    const hit = long ? c.l <= liq : c.h >= liq;
-    // 强平价一定是「可达」的：多头被砸到 liq（≤ 当根低点），空头被拉到 liq（≥ 当根高点）
-    // 兜底：即便没打穿强平价，保证金率也可能已经趴在维持线上（例如极端跳空或刚扣完资金费）
-    const mark = long ? c.l : c.h;
-    if (!hit && !isLiquidatable(pos, mark)) continue;
+    /* 便宜的闸：**当根高低点**没打穿强平价、保证金率也没趴在维持线上 ⇒ 这一小时不必建细路径。
+       （`pathOf` 是 121 个点的布朗桥，每根 K 线每个仓位都白建一次太浪费。） */
+    const long0 = pos0.side === 'long';
+    const liq0 = liquidationPrice(pos0);
+    if (!(long0 ? c.l <= liq0 : c.h >= liq0) && !isLiquidatable(pos0, long0 ? c.l : c.h)) continue;
 
     /* S3（ROADMAP §19.6.3）：爆仓落在**哪一 tick、什么价**由细路径决定。
        为什么这不会多爆仓：`simulate.pathOf` 保证 `min(p) ≡ L`、`max(p) ≡ H`（S1 红线 1）
-       ⇒「细路径穿越强平价」与「当根 l/h 穿越」**互为充要**，上面 `hit` 的判据一个字没改 ——
-       变的只是**时点与成交价**（改前是直接拿 `liq` 当成交价写日志）。
-       ⚠️ 兜底命中（路径并未穿越）时成交价仍按 `liq` 记（与改前逐位相同）。 */
+       ⇒「细路径穿越强平价」与「当根 l/h 穿越」**互为充要**。 */
     const p = pathOf(s.seed, sym, s.i, c);
     const last = p.length - 1;             // ＝ 该小时的 tick 段数 N
-    let at = liq;
-    if (hit) {
-      /* 全路径取「**第一个**穿越强平价的点」 */
-      for (let j = 0; j <= last; j++) {
-        if (long ? p[j] <= liq : p[j] >= liq) { at = p[j]; break; }
+    let from = 0;                          // 这一轮从路径的第几段开始找穿越
+
+    /* 逐步强平（2026-10-01 拍板）：同一根 K 线里可能被打**不止一档** ——
+       缓跌穿线 ⇒ 部分强平把强平价推远 ⇒ 继续跌 ⇒ 再穿。`PARTIAL_STEPS` 既是安全闸，
+       也符合交易所「一次只降到目标档」的收敛过程。 */
+    for (let step = 0; step < PARTIAL_STEPS; step++) {
+      const pos = s.positions[sym];
+      if (!pos || !canLiquidate(pos)) break;
+
+      const liq = liquidationPrice(pos);
+      const long = pos.side === 'long';
+      let at = liq;
+      let hit = false;
+      for (let j = from; j <= last; j++) {
+        if (long ? p[j] <= liq : p[j] >= liq) { at = p[j]; from = j + 1; hit = true; break; }
       }
+      if (!hit) {
+        /* 兜底：路径并未穿越，但保证金率可能已经趴在维持线上（极端跳空 / 刚扣完资金费）。
+           ⚠️ 这时成交价仍按 `liq` 记 —— 与改前逐位相同。 */
+        if (!isLiquidatable(pos, long ? c.l : c.h)) break;
+        at = liq;
+        from = last + 1;
+      }
+
+      const frac = reduceFraction(pos, at, PARTIAL_TARGET);
+      /* 没有可留的部分（权益已 ≤ 0），或剩下的不足最小名义（会留下尘埃仓）⇒ 整条打掉 */
+      if (!(frac < 1) || pos.notional * (1 - frac) < MIN_NOTIONAL) {
+        forceLiquidate(s, pos, at);
+        if (checkRuin(s)) return true;
+        break;
+      }
+
+      partialLiquidate(s, pos, frac, at);
+      if (from > last) break;              // 路径已走完，这一小时内不会再被打
     }
-    forceLiquidate(s, pos, at);
-    if (checkRuin(s)) return true;
   }
   return false;
+}
+
+/**
+ * **部分强平**：（2026-10-01 拍板 · 见 `PARTIAL_TARGET`）—— 把仓位按 `frac` 缩掉一档，
+ * 剩余部分继续持有。残余权益全部留在仓位里（见 `reducePosition`），于是强平价被推远。
+ *
+ * 与 `forceLiquidate` 共用全部副产物口径：**量柱**（真实成交 ⇒ 计入）、**订单冲击**
+ * （平多打压 −1 / 平空推高 +1，同一公式）、**抛压折价刷新**（现货实物多头占比变了）。
+ * 唯一的差别是：现金一分不动，只剩一笔已实现亏损记进 `s.realized`。
+ */
+function partialLiquidate(s, pos, frac, atPrice) {
+  const r = reducePosition(pos, frac, atPrice);
+  const notional = r.closedNotional;
+  addPlayerVol(s, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
+  {
+    const dir = pos.side === 'long' ? -1 : 1;
+    if (addFlow(s, pos.sym, dir * SHOCK.share * impactFor(s, pos.sym, s.i, notional))) invalidateSigma();
+  }
+  s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
+  s.positions[pos.sym] = r.pos;
+  pushLog(s, `部分强平 ${pos.sym} ${pos.lev}x｜平掉 ${fmtRate(frac, 1)} ｜ 保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad');
+  refreshOverhang(s, pos.sym);             // v18：爆掉的若是现货实物多头，折价随之归零
 }
 
 /**

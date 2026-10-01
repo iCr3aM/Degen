@@ -114,6 +114,60 @@ export function closePosition(pos, price, feeRate) {
   return { proceeds: pos.margin + pnl, fee, pnl, net };
 }
 
+/* ───────────────────────── 逐步强平（Binance 口径 · 2026-10-01 拍板） ───────────────────────── */
+
+/**
+ * 把仓位**缩掉一块**（部分强平）—— 返回新仓位 ＋ 这一块的已实现盈亏。
+ *
+ * ⚠️ **关键在「保证金不按比例缩」**：
+ *   强平掉 `frac` 之后，那一块的**保证金没有被退回现金**，而是**留在仓位里**给剩下的小仓位
+ *   当垫子（真实交易所的部分强平就是这个效果 —— 它要的是「降杠杆」，不是「结算离场」）。
+ *   于是：
+ *     剩余保证金 = 原保证金 ＋ 已平部分的实际盈亏（强平时必为负）
+ *     剩余数量   = 原数量 × (1 − frac)
+ *     剩余名义   = 原名义 × (1 − frac)
+ *   ⇒ 剩余仓位的**保证金率 = 原保证金率 ÷ (1 − frac)**，按 `frac` 的比例被抬回去，
+ *     强平价随之被**推远**。这正是「逐步强平」能救人的原因。
+ *   （若保证金也按比例缩，由 `liquidationPrice` 的公式可证强平价**原地不动** —— 白平。）
+ *
+ * ⚠️ 这一步**不动现金**：总权益 `margin + uPnL` 前后逐位相等，变的是「这笔权益有多少记在
+ *    仓位保证金里」。已平部分那笔亏损由调用方记进 `s.realized`（它已经「实现」了，
+ *    只是钱还押在仓位里）—— 这样「已实现盈亏」的累计值才始终等于这笔仓位的真实现金变动。
+ *
+ * @param {number} frac 平掉的比例（0–1）
+ * @returns {{ pos: object, pnl: number, closedNotional: number }}
+ *   `pnl` = 已平部分的已实现盈亏（强平时为负）；`closedNotional` = 已平部分按现价的名义额
+ */
+export function reducePosition(pos, frac, price) {
+  const f = Math.max(0, Math.min(1, frac));
+  const dir = pos.side === 'long' ? 1 : -1;
+  const closedSize = pos.size * f;
+  const pnl = (price - pos.entry) * closedSize * dir;
+  return {
+    pos: { ...pos, margin: pos.margin + pnl, size: pos.size - closedSize, notional: pos.notional * (1 - f) },
+    pnl,
+    closedNotional: closedSize * price,
+  };
+}
+
+/**
+ * 要让**保证金率回到 `target` 倍维持线**，这一笔该平掉多大比例（1 ＝ 全平）。
+ *
+ * 由 `保证金率' = 保证金率 ÷ (1 − frac)`（见 `reducePosition`）反解：
+ *   `frac = 1 − 保证金率 ÷ (target × 维持保证金率)`
+ *
+ * 触发强平时 `保证金率 ≤ 维持保证金率` ⇒ `frac ≥ 1 − 1/target`（默认 1.5 倍 ⇒ **至少平 1/3**）；
+ * 只有在权益已经跌到 ≤ 0 时才取到 1（那时必须全平，不能留一个负保证金率的口子）。
+ *
+ * @param {number} target 目标倍数（binance 官方式：拉到维持线的若干倍即止）
+ */
+export function reduceFraction(pos, price, target = 1.5) {
+  const goal = target * maintRateOf(pos);
+  if (!(goal > 0)) return 1;
+  const f = 1 - marginRateOf(pos, price) / goal;
+  return Math.max(0, Math.min(1, f));
+}
+
 /* ───────────────────────── 现货 / 合约（GDD §9.1） ───────────────────────── */
 
 /**
