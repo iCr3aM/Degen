@@ -16,6 +16,7 @@ import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct,
 import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
+import { levelsOf } from '../core/levels.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
@@ -1014,9 +1015,11 @@ export function update(refs, s, view) {
  *         （模块里那个 `playerVolSource` 注入的是**当前存档**的 `s.pvol`，不关掉就会串台）。
  *   `ns` 视野命名空间（2026-10-01）：交易页 `''`、回顾页 `'rv'` —— 两页的「当前根」不是一个东西
  *        （交易页看 `s.i`、回顾页看 `rv.i`），共用一格视野就会串台（见 `view.js` 的 `keyOf`）。
+ *   `levels` 历史压力位（ROADMAP §六十五）。⚠️ **只有回顾页传**，交易页恒 null ——
+ *        用户 2026-10-02 拍板「交易页只算不画」（那是手感，画出来只会干扰看盘）。
  * @returns {object} `windowFor` 的返回值（`mode` / `count` / `locked` / `right` 都要用）
  */
-function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true, ns = '' }) {
+function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true, ns = '', levels = null }) {
   const win = windowFor(sym, i, view.chartW, own, ns);
   /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
      日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
@@ -1048,6 +1051,8 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true, ns = '' 
           每帧 `getBoundingClientRect` 会白白强制一次布局。键 = 宽度 ＋ 那几段文案的总长。 */
     topInset: headInset(head, view.chartW),
     mark,
+    /* 历史压力位（ROADMAP §六十五）—— 只有回顾页会传进来（交易页恒 null，`chart.js` 自会跳过）。 */
+    levels,
     entry: cur ? cur.entry : null,
     side: cur ? cur.side : null,
     /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。现货 1x 没有强平价 ⇒ 传 null。 */
@@ -1941,6 +1946,9 @@ export function renderReview(refs, rv, view) {
     canvas: refs.rvCanvas, head: refs.rvHead, sym, i: rv.i, view, mark, cur: null, own: false,
     /* 视野命名空间（2026-10-01）：回顾页自己一套，绝不与交易页那格串味 —— 见 `view.js` 的 `keyOf`。 */
     ns: 'rv',
+    /* 历史压力位（ROADMAP §六十五）：按 `rv.i` 算「那一刻之前 30 天堆过货的价位」，画成一组横虚线。
+       它是 `(sym, i)` 的纯函数（只吃原始行情）⇒ 回顾页不用新增任何状态、也不碰 `s`。 */
+    levels: levelsOf(sym, rv.i),
   });
   refs.rvModeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
 

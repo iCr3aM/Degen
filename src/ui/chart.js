@@ -118,6 +118,9 @@ function axisLabel(p) {
  *   anchors  Array<{d:number}>  历史锚点刻度（P2-C）：`d` = **显示单位**下的序号，
  *                              `1h` 模式是小时序号、`1d` 模式是天序号。
  *   right    number            视野**最右那根**的显示单位序号 —— 把 `d` 换算成槽位要用它。
+ *   levels   Array<{p,w}>|null 历史压力位（ROADMAP §六十五）：`p` 价位、`w` 权重 0~1（越重越亮）。
+ *                              一组横虚线，画在 K 线之后、开仓线之前；只画**落在本帧价格带内**的。
+ *                              ⚠️ **只有回顾页传**（交易页恒 null）—— 见 `render.js` 的 `chartOpts`。
  *   cacheKey string            量柱 P90 的缓存键（`sym|mode|right|count`，见 `p90Cache`）。不给就不缓存。
  *   topInset number            顶部留白 = 左上角遮罩的实测高度（B27）。不传则退回 `PAD_TOP`。
  *   cssW/cssH number           容器尺寸（CSS 像素）
@@ -126,7 +129,7 @@ function axisLabel(p) {
  *                   否则玩家一直往同一边拖时状态里的值会越滚越大，松手再按就从远处跳回来。
  */
 export function drawChart(canvas, o) {
-  const { candles, vols, pvols, mark, entry, side, liq, anchors, right } = o;
+  const { candles, vols, pvols, mark, entry, side, liq, anchors, right, levels } = o;
   const T = theme();
   const dpr = Math.min(3, (typeof devicePixelRatio === 'number' ? devicePixelRatio : 1) || 1);
   const W = Math.max(1, Math.round(o.cssW));
@@ -345,6 +348,31 @@ export function drawChart(canvas, o) {
       ctx.beginPath();
       ctx.moveTo(x, top);
       ctx.lineTo(x, bot);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /* ── 历史压力位（ROADMAP §六十五 · 回顾页专供，2026-10-02 用户拍板「画横虚线」）──
+     一组横虚线，**越重越亮**（权重 → 透明度）。画在 K 线之后、开仓线之前：
+     它在语义上是背景（那个价位堆过货），不该盖住 K 线，但也不能被 K 线埋掉。
+     ⚠️ 只画**落在本帧价格带内**的：压力位窗口是 30 天，日线视野的价格带比它宽得多，
+        越界的线画到画布外没有意义。
+     ⚠️ **不写价签** —— 一屏最多 6 条，右端挤 6 个数字必糊；线自己的位置对得上右侧价格刻度。
+     颜色取 `--mut`（中性次级色），不借用红绿（那是涨跌的语义）。 */
+  if (levels && levels.length) {
+    ctx.save();
+    ctx.strokeStyle = T.MUT;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 3]);
+    for (const L of levels) {
+      if (!(L.p > 0)) continue;
+      const y = Math.round(yOf(L.p)) + .5;
+      if (y < top || y > bot) continue;
+      ctx.globalAlpha = 0.25 + 0.35 * clamp(L.w, 0, 1);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(plotW, y);
       ctx.stroke();
     }
     ctx.restore();
