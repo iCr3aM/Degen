@@ -18,6 +18,7 @@ import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
 import { SHOCK, addFlow } from './god.js';
+import { absorbOf, levelsOf } from './levels.js';
 import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, maintRateOf, openPosition, pnlOf,
@@ -330,6 +331,39 @@ function permImpactFor(s, sym, i, notional) {
   const liq = hourLiqOf(s, sym, i);
   if (!(liq > 0) || !(notional > 0)) return 0;
   return permImpactOf(notional / liq, dailySigma(sym, i));
+}
+
+/**
+ * 这一笔成交**实际能推动多少价** —— 原始冲击先被沿途的**历史压力位**吸掉一部分
+ * （ROADMAP §六十四，2026-10-02 用户拍板「接入行情、不画线」）。
+ *
+ * 被扫到的位 = 落在 `(现价, 成交后价]` 这一段里的那些（卖单镜像）。撞上去推不动，
+ * 就是「那个价位真的堆着货」；权重和越大吸得越狠，上限 `LEVELS.absorb`。
+ *
+ * ⚠️ **只吸位移，不吸代价**（红线 A · 不双重计价）：`impactFor` 那条线一个字节都不动 ——
+ *    这一笔该付多少滑点照付，这里只决定**成交之后价格停在哪**。
+ * ⚠️ 现价取**标记价**（含玩家已造成的位移）而不是原始收盘：压力位是「相对当前价」的位置，
+ *    玩家把价推上去之后再撞的应该是上面那一条。撞穿后位落到现价下方 ⇒ 自然不再被扫到。
+ * ⚠️ 没扫到位时返回**恰好 `impact`**（乘 1，IEEE754 精确）⇒ 开局头两天、无行情、
+ *    或价格在两条位之间的那些情况，与改动前**逐位相同**。
+ */
+function absorbedImpact(s, sym, dir, impact) {
+  if (!(impact > 0)) return impact;
+  const p = markPrice(s, sym);
+  if (!(p > 0)) return impact;
+  return impact * absorbOf(levelsOf(sym, s.i), p, dir, impact);
+}
+
+/**
+ * 写一笔**行情位移** —— 开仓 / 平仓 / 强平 / 部分强平**四处共用**（改一处等于改四处）。
+ *
+ * 与改动前逐字相同的部分：`dir × SHOCK.share × permImpactFor(…)`、以及
+ * 「`addFlow` 返真才 `invalidateSigma()`」。新增的只有中间那道历史压力位吸收。
+ * ⚠️ OTC 由各调用点自己在 `!otc` 分支里过滤（私下一口价不落公开盘口 —— 既有先例）。
+ */
+function pushFlow(s, sym, dir, notional) {
+  const v = dir * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
+  if (addFlow(s, sym, v)) invalidateSigma();
 }
 
 /**
@@ -685,7 +719,7 @@ export function openTrade(s, side, frac = 1) {
         字段一并删掉 —— 它不再是选项，而是基础玩法的一部分。 */
   if (!otc) {
     const dir = side === 'long' ? 1 : -1;
-    if (addFlow(s, s.sym, dir * SHOCK.share * permImpactFor(s, s.sym, s.i, notional))) invalidateSigma();
+    pushFlow(s, s.sym, dir, notional);
     /* 玩家自己的成交量（v17 · 2026-10-01）：这一笔从此在量柱上看得见，
        也进这家所**这条产品线**的 30 天量（v19 按所 / v20 按产品线） */
     addPlayerVol(s, notional, s.ex, kind);
@@ -771,7 +805,7 @@ export function closeTrade(s, why = '手动') {
         写完必须 `invalidateSigma()` —— 平仓从此**会**改动它之后的 K 线。 */
   if (!otc) {
     const dir = pos.side === 'long' ? -1 : 1;
-    if (addFlow(s, sym, dir * SHOCK.share * permImpactFor(s, sym, s.i, notional))) invalidateSigma();
+    pushFlow(s, sym, dir, notional);
     consumePool(s, sym, notional);        // 瞬时深度池（L1）：平仓同样是真实成交 ⇒ 也吃深度
   }
   /* 持仓抛压折价（v18 · 2026-10-01）：这一条仓位没了（`delete` 在上面）⇒ 折价随之归零。
@@ -807,7 +841,7 @@ function forceLiquidate(s, pos, atPrice) {
      ⚠️ 强平多发生在**急跌那根**，这笔反向冲击会让兵败如山倒的 K 线更陡一档，是刻意的。 */
   {
     const dir = pos.side === 'long' ? -1 : 1;
-    if (addFlow(s, pos.sym, dir * SHOCK.share * permImpactFor(s, pos.sym, s.i, notional))) invalidateSigma();
+    pushFlow(s, pos.sym, dir, notional);
     consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：强平也是真实成交 ⇒ 也吃深度
   }
 
@@ -1564,7 +1598,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   addPlayerVol(s, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
   {
     const dir = pos.side === 'long' ? -1 : 1;
-    if (addFlow(s, pos.sym, dir * SHOCK.share * permImpactFor(s, pos.sym, s.i, notional))) invalidateSigma();
+    pushFlow(s, pos.sym, dir, notional);
     consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：部分强平也是真实成交 ⇒ 也吃深度
   }
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
