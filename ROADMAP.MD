@@ -8124,6 +8124,8 @@ F2 的不对称构成**单向棘轮**：买→卖会让价格净抬一档。它�
 - **结束遮罩**（`render.renderOver`）原来只有「重新开始」，`onHome` 又对 `s.over` 早退 ⇒ 一局打完
   **回不了菜单、也看不了刚写进档案的记录**。新增第二枚 **「回主菜单」**（`.over-btns` ＋ `.flat`），
   `onHome` 撤掉 `if (s.over) return`。
+  ⚠️ 随之而来的连带修：结算遮罩是 `position:fixed` 常驻 `#app` 的，从它回菜单再进**回顾页 / 档案页**
+  会被它整页盖住 ⇒ `draw()` 里 `rv` 分支先 `clearOver(root)`，结算分支改 `if (s.over && !arch)`。
 - **分层豁免**（`createClock` 用 `setInterval` / `performance.now`、`careers.addCareer` 用 `localStorage`）
   判定为**豁免而不是搬走**，两处补注释写明理由（时钟与 `advanceOneHour` 同源、两个 API 在 Node 里也在；
   档案带 `try/catch` ＋ 内存兜底）。
