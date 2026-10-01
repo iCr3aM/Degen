@@ -13,17 +13,20 @@
       "count": 107496,
       "scale": 100,
       "vol": true,
-      "maxPrice": 108364,
+      "maxPrice": 108353,
       "first": 12.2,
       "last": 93381,
       "bytes": 1827432,
-      "zipped": 1065176,
+      "zipped": 1088369,
       "sources": {
         "hourly": 107496,
         "gapHours": 0,
         "gapRanges": [],
         "detail": {
-          "bitstamp btcusd": 107496
+          "bitstamp btcusd": 107496,
+          "bitfinex tBTCUSD": 102693,
+          "binance BTCUSDT": 64524,
+          "kraken XBTUSD": 87633
         }
       }
     },
@@ -38,7 +41,7 @@
       "first": 0.00188943,
       "last": 0.316,
       "bytes": 1630810,
-      "zipped": 771139,
+      "zipped": 771191,
       "sources": {
         "hourly": 95930,
         "gapHours": 0,
@@ -61,7 +64,7 @@
       "first": 0.0053754,
       "last": 2.07924,
       "bytes": 1547493,
-      "zipped": 777515,
+      "zipped": 777587,
       "sources": {
         "hourly": 91029,
         "gapHours": 0,
@@ -171,7 +174,7 @@
       "SOL": 2779
     },
     "bytes": 89580,
-    "zipped": 65322
+    "zipped": 65340
   },
   "circulating": {
     "BTC": {

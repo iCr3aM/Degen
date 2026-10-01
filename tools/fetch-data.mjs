@@ -18,6 +18,24 @@
  *   ⑤ CryptoDataDownload 静态 CSV 归档 —— 补 ①–④ 都给不出的早期年份。
  *      Poloniex 的 `DOGE/BTC`、`XRP/BTC` 小时档能回到 2014；
  *      BTC 计价的那几档乘同一时刻的 BTC/USD 即换回美元。
+ *   ⑥ Kraken 官方 OHLCVT 归档（本地 CSV，`Kraken_OHLCVT_Full_2026Q2/`）—— 小时线。
+ *      它存在的**唯一**理由是多所聚合（见下面的「多所聚合」段）：同一小时要有**几家报价**
+ *      才谈得上把单所的「针」投出去，而 Kraken 是免费可得里覆盖最全的第二票来源。
+ *      ⚠️ Kraken 的配对名不是通用写法：BTC 是 `XBT`、**DOGE 是 `XDG`**。
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * 多所聚合（2026-10-01，K 线全市场校准 K1）
+ * ─────────────────────────────────────────────────────────────────────────
+ * 在此之前，同一小时**只保留优先级最高的那一家**（后来的只补洞、绝不覆盖）。后果是：
+ * 某一家某一小时的坏价（薄盘错价、satoshi 量化跳变）会**原样**进包，在图上就是一根针。
+ *
+ * 现在 `AGG_COINS` 里的币改成「每一家都覆盖整条窗口 → 逐小时逐字段投票」：
+ *   - 取价：`medoid()`（到其余各值对数距离最小的那**一家**）。**不做加权、不做合成** ——
+ *     每一根 K 线仍然是某家交易所真实报过的价，平均则会把坏源摊进价格里。
+ *   - 兜底：不变量修正 `H ≥ max(O,C)`、`L ≤ min(O,C)`。
+ *   - 成交量：**只认主源**（优先级最高的那家）。改成跨所求和会同时动 `liq.bin`、
+ *     滑点分母与拥堵脉冲阈值 —— 本轮刻意不动，单开一批再议。
+ * 未列入 `AGG_COINS` 的币走原路（按优先级补洞），输出**逐位不变** —— 分批推进的隔离保证。
  *
  * ⚠️ **本管线不造 K 线。** 「日线插值」与「平线补齐」已整块删除（含 FLAT_TAG）：
  *    - **开头的空档**（配置里 `unlock` 写早了）→ 直接**裁掉**，数据包的起点
@@ -62,6 +80,8 @@ import { GAME, COINS, HOUR_MS, DATA_DIR } from '../src/core/config.js';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, 'public', DATA_DIR);
 const CACHE_DIR = join(ROOT, '.cache');
+/** Kraken 官方 OHLCVT 归档（本地，不进 git）。见文件头数据源 ⑥ */
+const KRAKEN_DIR = join(ROOT, 'Kraken_OHLCVT_Full_2026Q2');
 
 /* ═══════════════════ 代理自举（Windows 上的第一道坎） ═══════════════════
  * Node 的 `fetch` **不看系统代理**。开发机若挂着 Clash / 加速器（Windows 的
@@ -445,11 +465,83 @@ async function fetchCDDHourly(file, quote, btcAt) {
   return { rows: out };
 }
 
+/* ══════════════ 数据源 ⑥：Kraken 官方 OHLCVT 归档（本地 CSV，小时线） ══════════════
+ * 文件 `{PAIR}_60.csv`，无表头，列 = `unixtime(s), open, high, low, close, volume, trades`。
+ * 实测覆盖（2026-06-30 收官）：XBTUSD 2013-10-06 起、ETHUSD 2015-08-07 起、
+ * XRPUSD 2017-05-18 起、SOLUSD 2021-06-17 起、**XDGUSD 2019-12-19 起**。
+ *
+ * ⚠️ 归档里的 `volume` 是**标的数量**，与 ①–④ 的计价币成交额不同口径 ⇒
+ *    **只当价格票**，第 5 列恒填 0（成交量只认主源，见文件头「多所聚合」）。
+ */
+const KRAKEN_PAIRS = { BTC: 'XBTUSD', ETH: 'ETHUSD', XRP: 'XRPUSD', DOGE: 'XDGUSD', SOL: 'SOLUSD' };
+
+function fetchKraken(pair, fromMs, toMs) {
+  const out = new Map();
+  const p = join(KRAKEN_DIR, `${pair}_60.csv`);
+  if (!existsSync(p)) return { rows: out, pages: 0 };
+  for (const line of readFileSync(p, 'utf8').split('\n')) {
+    if (!line) continue;
+    const c = line.split(',');
+    const ts = Number(c[0]) * 1000;
+    if (!(ts >= fromMs) || ts >= toMs) continue;
+    const o = +c[1], h = +c[2], l = +c[3], cl = +c[4];
+    if (!(o > 0 && h > 0 && l > 0 && cl > 0)) continue;
+    const i = idxOf(ts);
+    if (!Number.isInteger(i)) continue;
+    out.set(i, [o, h, l, cl, 0]);
+  }
+  return { rows: out, pages: 0 };
+}
+
+/* ═══════════════════════ 多所聚合（文件头「多所聚合」段） ═══════════════════════ */
+
+/**
+ * 走多所聚合的币。**分批推进**（K 线全市场校准，2026-10-01）：
+ *   K1 = BTC → K2 = ETH/XRP → K3 = DOGE/SOL。没列入的币走原来的「按优先级补洞」，
+ *   输出逐位不变 ⇒ 每一批都能单独验收。
+ */
+const AGG_COINS = new Set(['BTC']);
+
+/**
+ * 逐字段鲁棒中位：从各源**真实报过的值**里挑一个（medoid = 到其余各值对数距离之和最小者）。
+ *
+ * 为什么不是「取平均」：平均会把一家的坏价**摊进**价格里（Bitstamp 301 / Kraken 4000
+ * 平均出 2150，比原来还糟）。medoid 只会把孤立的那家**丢掉**，且结果永远等于某家的真值。
+ * 平局按**传入顺序**（＝数据源优先级）取前者：
+ *   1 家 → 就是它；2 家 → 平局 ⇒ 取主源（与改造前逐位一致）；3 家 → 恰是中位数；4+ 家 → 离群者出局。
+ */
+function medoid(vals) {
+  if (vals.length === 1) return vals[0];
+  let best = 0, bestScore = Infinity;
+  for (let a = 0; a < vals.length; a++) {
+    let s = 0;
+    for (let b = 0; b < vals.length; b++) s += Math.abs(Math.log(vals[a] / vals[b]));
+    if (s < bestScore - 1e-12) { bestScore = s; best = a; }
+  }
+  return vals[best];
+}
+
+/** 一小时的多源报价 → 一根 K 线：逐字段 medoid ＋ 不变量修正 */
+function aggregateHour(list) {
+  const o = medoid(list.map(r => r[0]));
+  const c = medoid(list.map(r => r[3]));
+  let h = medoid(list.map(r => r[1]));
+  let l = medoid(list.map(r => r[2]));
+  if (h < o) h = o;
+  if (h < c) h = c;
+  if (l > o) l = o;
+  if (l > c) l = c;
+  return [o, h, l, c];
+}
+
 /* ══════════════════════════ 组装单个币种 ══════════════════════════ */
 
 /**
  * 组装单个币种的完整小时序列。
- * 四级数据源依次上，**后来的只补前面的空洞**，绝不覆盖已有数据。
+ *
+ * 两种模式（由 `AGG_COINS` 决定，见文件头「多所聚合」段）：
+ *   - **聚合**：每一家源都覆盖整条窗口，逐小时逐字段投票（`aggregateHour`），单所的「针」被其余几票投出去；
+ *   - **补洞**（未列入的币）：源依次上，**后来的只补前面的空洞**，绝不覆盖 —— 与改造前逐位一致。
  *
  * 每根存 **5 列**：`[o, h, l, c, usd]` —— `usd` 是那一小时的真实美元成交额
  * （第 5 列只用于聚合日流动性，不进 K 线包）。
@@ -462,16 +554,21 @@ async function fetchCDDHourly(file, quote, btcAt) {
  * @returns {{ startI, count, held, dayUsd, stats }}
  */
 async function buildCoin(coin) {
+  const AGG = AGG_COINS.has(coin.sym);
   const startI = idxOf(coin.unlock);
   const count = DATA_HOURS - startI;
   const held = new Float64Array(count * 5);       // [o,h,l,c,usd] × count
   const have = new Uint8Array(count);             // 0 = 还是空的
   // 逐小时成交额按日累加 —— 日流动性（liq.bin）的唯一原料。
-  // 这里累加的是**最终留在 held 里的那一份**（absorb 只在空洞落子），所以多源拼接后的
-  // 日成交额天然连续，不会出现「同一小时被两家源各记一次」。
+  // 这里累加的是**最终留在 held 里的那一份**，所以多源拼接后的日成交额天然连续，
+  // 不会出现「同一小时被两家源各记一次」。
   const dayUsd = new Float64Array(TOTAL_DAYS);
   const stats = { hourly: 0, gapHours: 0, gapRanges: [], bySource: [] };
 
+  /** 聚合模式：`k → 那一小时各源的 [o,h,l,c,usd]`，**按数据源优先级顺序**进来（`medoid` 靠它裁平局） */
+  const cells = AGG ? new Array(count) : null;
+
+  /** 补洞模式：还没落子的小时 */
   const holeList = () => {
     const a = [];
     for (let k = 0; k < count; k++) if (!have[k]) a.push(k);
@@ -488,22 +585,36 @@ async function buildCoin(coin) {
     for (const [i, v] of rows) {
       if (i < startI) continue;
       const k = i - startI;
-      if (have[k]) continue;
-      held[k * 5] = v[0]; held[k * 5 + 1] = v[1]; held[k * 5 + 2] = v[2]; held[k * 5 + 3] = v[3];
-      held[k * 5 + 4] = v[4] > 0 ? v[4] : 0;
-      have[k] = tag;
-      dayUsd[Math.floor(i / 24)] += held[k * 5 + 4];
-      added++;
+      if (cells) {
+        let c = cells[k];
+        if (!c) { c = cells[k] = []; have[k] = tag; }
+        c.push(v);
+        added++;                   // 聚合模式：added = 这家**投出的票数**（＝它覆盖到的小时数）
+      } else {
+        if (have[k]) continue;
+        held[k * 5] = v[0]; held[k * 5 + 1] = v[1]; held[k * 5 + 2] = v[2]; held[k * 5 + 3] = v[3];
+        held[k * 5 + 4] = v[4] > 0 ? v[4] : 0;
+        have[k] = tag;
+        dayUsd[Math.floor(i / 24)] += held[k * 5 + 4];
+        added++;
+      }
     }
-    stats.hourly += added;
     stats.bySource.push([label, added]);
-    log(`    ${label}: 补入 ${added} 根`);
+    log(`    ${label}: ${cells ? `覆盖 ${added} 根` : `补入 ${added} 根`}`);
   };
 
-  /* ── ① 小时级 USD/USDT 源：官方 API，按「先后顺序」依次补洞 ── */
-  // 每家都只抓「还有洞」的那一段：缺口常常只是早期几年，窗口若不收窄，
+  /** 这一趟该抓多长：聚合模式每家都得覆盖**整条窗口**（否则它没有投票资格）；补洞模式只抓还有洞的那一段 */
+  const spanOf = () => {
+    if (cells) return [tsOf(startI), tsOf(startI + count)];
+    const holes = holeList();
+    if (!holes.length) return null;
+    return [tsOf(startI + holes[0]), tsOf(startI + holes[holes.length - 1]) + HOUR_MS];
+  };
+
+  /* ── ① 小时级 USD/USDT 源：官方 API ── */
+  // 补洞模式下每家只抓「还有洞」的那一段：缺口常常只是早期几年，窗口若不收窄，
   // 就得把整条 12 年时间轴重新捞一遍，而其中九成上一家已经给过了 —— 纯属白打。
-  // 顺序即优先级：后面的只在前面留下的空洞里落子，绝不覆盖。
+  // 顺序即优先级（聚合模式裁平局也按它）。
   const API = [
     ['bitstamp', fetchBitstamp, coin.src.bitstamp],
     ['bitfinex', fetchBitfinex, coin.src.bitfinex],
@@ -511,13 +622,11 @@ async function buildCoin(coin) {
     ['binanceus', fetchBinanceUS, coin.src.binanceus],
   ];
   for (const [key, fetcher, pair] of API) {
-    const holes = holeList();
-    if (!holes.length) { log(`    ${key}：已无空缺，跳过`); break; }
+    const span = spanOf();
+    if (!span) { log(`    ${key}：已无空缺，跳过`); break; }
     if (!pair) { log(`    ${key}：该币无此交易对`); continue; }
-    const fromMs = tsOf(startI + holes[0]);
-    const toMs = tsOf(startI + holes[holes.length - 1]) + HOUR_MS;
     try {
-      absorb(`${key} ${pair}`, (await fetcher(pair, fromMs, toMs)).rows, nextTag());
+      absorb(`${key} ${pair}`, (await fetcher(pair, span[0], span[1])).rows, nextTag());
     } catch (err) {
       log(`    ${key} ${pair} 取数失败：${err.message}`);
     }
@@ -525,7 +634,7 @@ async function buildCoin(coin) {
 
   /* ── ② 小时级归档 CSV（CryptoDataDownload）—— USDT 直铺 / BTC 计价换算 ── */
   for (const src of coin.cdd || []) {
-    if (!holeList().length) { log(`    ${src.file}：已无空缺，跳过`); break; }
+    if (!spanOf()) { log(`    ${src.file}：已无空缺，跳过`); break; }
     try {
       absorb(src.file, (await fetchCDDHourly(src.file, src.quote, PRICE.get('BTC'))).rows, nextTag());
     } catch (err) {
@@ -533,7 +642,42 @@ async function buildCoin(coin) {
     }
   }
 
-  /* ── ③ 裁掉开头的空档：起点以「实测的第一根真 K 线」为准 ── */
+  /* ── ③ Kraken 官方归档（本地 CSV）—— **只服务聚合模式**；补洞模式必须逐位不变 ── */
+  if (cells) {
+    const kp = KRAKEN_PAIRS[coin.sym];
+    if (kp) {
+      try {
+        absorb(`kraken ${kp}`, (await fetchKraken(kp, tsOf(startI), tsOf(startI + count))).rows, nextTag());
+      } catch (err) {
+        log(`    kraken ${kp} 读取失败：${err.message}`);
+      }
+    }
+  }
+
+  /* ── ④ 聚合：逐字段 medoid ＋ 不变量修正；成交量只认主源 ── */
+  if (cells) {
+    let multi = 0, votes = 0;
+    for (let k = 0; k < count; k++) {
+      const list = cells[k];
+      if (!list) continue;
+      const [o, h, l, c] = aggregateHour(list);
+      held[k * 5] = o; held[k * 5 + 1] = h; held[k * 5 + 2] = l; held[k * 5 + 3] = c;
+      // 主源 = 优先级最高、**且这一小时确实报了价**的那家（`absorb` 按优先级顺序 push，故是 `list[0]`）。
+      // 成交量改成跨所求和会同时动 liq.bin、滑点分母与拥堵脉冲阈值 —— 本轮刻意不动。
+      held[k * 5 + 4] = list[0][4] > 0 ? list[0][4] : 0;
+      dayUsd[Math.floor((startI + k) / 24)] += held[k * 5 + 4];
+      votes += list.length;
+      if (list.length > 1) multi++;
+    }
+    stats.votes = votes;
+    stats.multi = multi;
+    log(`    聚合：${multi} 小时有 ≥2 家报价（合计 ${votes} 票）`);
+  }
+
+  // 收尾统计：真正有数据的小时数（两种模式同口径；无成交小时要到第 ⑥ 步才标 255）
+  for (let k = 0; k < count; k++) if (have[k]) stats.hourly++;
+
+  /* ── ⑤ 裁掉开头的空档：起点以「实测的第一根真 K 线」为准 ── */
   let lead = 0;
   while (lead < count && !have[lead]) lead++;
   if (lead === count) throw new Error(`${coin.sym}: 一根数据都没有 —— 检查 config.unlock 与数据源`);
@@ -542,7 +686,7 @@ async function buildCoin(coin) {
       + ` 晚于配置的 ${new Date(coin.unlock).toISOString().slice(0, 16)}，裁掉前 ${lead} 小时`);
   }
 
-  /* ── ④ 中间的空档：不造数据，只在日志与 index.json 里逐段留痕 ── */
+  /* ── ⑥ 中间的空档：不造数据，只在日志与 index.json 里逐段留痕 ── */
   let lastKnown = held[lead * 5 + 3];
   let runStart = -1;
   const flushGap = end => {
