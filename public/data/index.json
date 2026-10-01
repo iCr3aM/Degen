@@ -39,17 +39,19 @@
       "vol": true,
       "maxPrice": 0.73995,
       "first": 0.00188943,
-      "last": 0.316,
+      "last": 0.316025,
       "bytes": 1630810,
-      "zipped": 771191,
+      "zipped": 892392,
       "sources": {
         "hourly": 95930,
         "gapHours": 0,
         "gapRanges": [],
         "detail": {
           "binance DOGEUSDT": 48112,
-          "Poloniex_DOGEUSDT_1h.csv": 7432,
-          "Poloniex_DOGEBTC_1h.csv": 40386
+          "Poloniex_DOGEUSDT_1h.csv": 55542,
+          "Poloniex_DOGEBTC_1h.csv": 95928,
+          "kraken XDGUSD+XDGXBT": 66607,
+          "votes bitfinex tDOGE:USD": 32379
         }
       }
     },
@@ -115,14 +117,16 @@
       "first": 2.9515,
       "last": 189.31,
       "bytes": 654330,
-      "zipped": 356640,
+      "zipped": 398433,
       "sources": {
         "hourly": 38490,
         "gapHours": 0,
         "gapRanges": [],
         "detail": {
           "binance SOLUSDT": 38470,
-          "binanceus SOLUSD": 20
+          "binanceus SOLUSD": 24670,
+          "kraken SOLUSD": 31018,
+          "votes bitfinex tSOLUSD": 33704
         }
       }
     }
