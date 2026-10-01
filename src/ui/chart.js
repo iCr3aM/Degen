@@ -428,11 +428,11 @@ const SIDE_RESERVE = 56;
 const SIDE_SHIFT = 22;
 
 /* ═════════════════════ 资金曲线（v13 · 方案 §4；区间＋高低点 2026-10-01） ═════════════════════
- * 把 `s.eq`（每个游戏日一个权益点）画成一条折线 ＋ 一条 $3,000 基准虚线。
+ * 把 `s.eq`（每个游戏日一个权益点）画成一条折线 ＋ 一条 $1,000 基准虚线。
  *
  * ⚠️ 它**住在本文件**的原因只有一个：K 线那套「读 `:root` 变量（`theme()`）＋ dpr 缩放」
  *    的地基在这里，另起一个模块只会把这两件事抄第二遍。
- * ⚠️ **对数纵轴**：$3,000 → $1,000 万跨三个半数量级，线性轴会把前两年压成贴着底边的一条线，
+ * ⚠️ **对数纵轴**：$1,000 → $1,000 万跨四个数量级，线性轴会把前两年压成贴着底边的一条线，
  *    而那正是玩家最需要看清「有没有在慢慢往上爬」的一段。
  * ⚠️ 它是**复盘图**：不画轴、不画网格、不做任何手势 —— 资产页上点它什么也不会发生。
  *    「区间切换」由上方那排 `.opt` 键（`main.js` 分派 `eqrange`）驱动，图上依旧没有手势。
@@ -450,7 +450,7 @@ const CURVE_PAD_RATIO = 0.06;
  * @param {object} o
  *   `eq`   Array<number>  每游戏日收盘的权益（升序，最后一个 = 今天）
  *   `range` number        只看最近多少个游戏日（`0` / 缺省 = 全部）
- *   `base` number         基准线（开局资金 $3,000）—— 也是「赚了还是亏了」那条分界
+ *   `base` number         基准线（开局资金 $1,000）—— 也是「赚了还是亏了」那条分界
  *   `cssW` / `cssH`       画布尺寸（CSS 像素）
  */
 export function drawEquityCurve(canvas, o) {
@@ -502,7 +502,7 @@ export function drawEquityCurve(canvas, o) {
   const yOf = v => padY + plotH * (1 - (lg(v) - lo) / (hi - lo));
   const xOf = k => (eq.length === 1 ? padX + plotW / 2 : padX + plotW * k / (eq.length - 1));
 
-  // ── 基准虚线（$3,000）──
+  // ── 基准虚线（$1,000）──
   ctx.save();
   ctx.setLineDash([4, 4]);
   ctx.strokeStyle = T.LINE;

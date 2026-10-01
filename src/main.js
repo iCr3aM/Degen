@@ -71,12 +71,26 @@ window.addEventListener('appinstalled', () => {
   menuRemoveInstall();
 });
 
-/* Service Worker：**只生产环境注册** —— dev 下 vite 自己的模块热更与 SW 缓存打架。
-   注册脚本是 `public/sw.js`，`base: './'` ⇒ 相对路径在子目录部署下同样成立。
-   策略见 sw.js：`/data/` 走 cache-first（行情包大且不变），其余 network-first（上了新版立刻拿新版）。 */
+/* Service Worker（2026-10-01 重做，目标：**上传后手机下一次打开就是新版**）
+   ===============================================================
+   ⚠️ **只生产环境注册** —— dev 下 vite 自己的模块热更与 SW 缓存打架。
+   ⚠️ **脚本 URL 带构建指纹**（`sw.js?v=<BUILD_ID>`）：浏览器判断「要不要更新 SW」靠的是
+      **脚本字节比对**，而大多数发版我们根本没改 `sw.js` —— 那就永远不更新，玩家卡在旧策略上。
+      换一个 query 就足以让它当成新脚本，立刻装载（`sw.js` 里 `skipWaiting` ＋ `clients.claim`）。
+   ⚠️ **装完自动刷一次**：SW 的固有行为 —— 新 SW 接管的那一刻，当前这一屏**仍是旧 JS 渲染的**，
+      不主动刷新就等于「上传后要手动开两次」。
+      只在**本来就已经被旧 SW 控制**时才刷（`controlled`），首次安装不刷 —— 免得开局白闪一下。
+      策略见 `public/sw.js`：`/data/` 走 stale-while-revalidate，其余同源请求 network-first ＋ `no-store`。 */
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  const controlled = !!navigator.serviceWorker.controller;   // ⚠️ 必须在 register 之前取，装完它就非空了
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!controlled || reloaded) return;   // 首次安装 / 已经刷过：不重复
+    reloaded = true;
+    window.location.reload();
+  });
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => {});
+    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js?v=${__BUILD_ID__}`).catch(() => {});
   });
 }
 

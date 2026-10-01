@@ -497,7 +497,7 @@ export function openTrade(s, side, frac = 1) {
   const feeRate = feeRateOf(s.ex, timeOf(s), kind, vol30Of(s, s.ex, s.i, kind));
   /* 这一单能动用多少钱（v13 · 方案 §9.2 ②）：**合约只认 USDT**（USDT 本位永续，
      保证金必须是 U），现货 / OTC 是两格之和（扣的时候先扣 U、不足补美元）。
-     所以 2013 年那 $3,000 美元可以买现货，但要玩合约得先在资产页「买 U」。 */
+     所以 2013 年那 $1,000 美元可以买现货，但要玩合约得先在资产页「买 U」。 */
   const mustUsdt = !isSpotOrder;
   const cash = spendableOf(s, mustUsdt);
 
@@ -571,7 +571,7 @@ export function openTrade(s, side, frac = 1) {
      **买入 / 卖出**，日志若还写「做多 / 做空」，就与玩家刚按下的那枚键对不上了。 */
   const verb = spot ? (side === 'long' ? '买入' : '卖出') : (side === 'long' ? '做多' : '做空');
   /* 手续费必须**写进日志**（本轮 ② · 用户拍板）：它已经真的从余额里扣掉了（上面那两行），
-     玩家却只看到「保证金 $3,000.0」——账对不上。`fee` 就是本笔按名义价值收的那一次。
+     玩家却只看到「保证金 $1,000.0」——账对不上。`fee` 就是本笔按名义价值收的那一次。
      ★ 加仓（B4）：字面换成「加仓 ＋ 追加保证金」，并补一个**加权后的均价** ——
        否则玩家只能看到「这笔按 $13.5 成的」，看不到自己整条仓位现在的成本在哪。 */
   const qty = notional / fill;                 // 本次成交拿到的币量（加仓时是这一笔的量）

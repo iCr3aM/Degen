@@ -4,7 +4,10 @@ import { defineConfig } from 'vite';
  * 构建配置
  * ===============================================================
  * 1. `base: './'` —— 产物用相对路径，传到任意子目录（或本地双击打开）都不会白屏。
- * 2. 文件名不带哈希 —— 覆盖上传方便，缓存由 `?v=` 那套另说（P4 再加）。
+ * 2. 文件名**带内容哈希**（2026-10-01 改）—— 原来是不带哈希的 `assets/[name].js`，图的是「覆盖上传方便」，
+ *    但代价是：同名文件最容易被浏览器与 CDN 判成「没变」直接给旧的 —— 这正是「上传后手机拿不到新版」的头号原因。
+ *    现在每次构建 `index.js` / `index.css` 都换一个新名字，`index.html` 只要刷新一次，新版就一定跟着来。
+ *    （旧文件会留在服务器上，不碍事；要清就整个 `assets/` 覆盖。）
  * 3. `assetsInlineLimit: 0` —— 行情数据包（public/data/*.bin）本来就不走打包，
  *    这里只是保证 JS/CSS 不被内联成 base64。
  *
@@ -27,12 +30,26 @@ const BUILD_DATE = (() => {
   return `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC+8`;
 })();
 
+/**
+ * 构建指纹（2026-10-01）—— **给缓存用的**，与 `BUILD_DATE` 是两件事。
+ *
+ * `main.js` 拿它拼 Service Worker 的脚本 URL：`sw.js?v=<BUILD_ID>`。
+ * 浏览器只在「脚本内容变了」时才更新 SW，而多数发版我们**根本没改 `sw.js`** ——
+ * 换个 query 就足以让它当成新脚本，立刻装载、立刻清掉旧缓存（见 `public/sw.js` 顶部注释）。
+ *
+ * ⚠️ 不能用 `BUILD_DATE` 顶替：它精确到**分钟**、还带空格与冒号；同一分钟内连发两版会撞成同一个值。
+ *    这里用毫秒时间戳的 36 进制（短且天然递增）。
+ */
+const BUILD_ID = Date.now().toString(36);
+
 export default defineConfig({
   base: './',
 
   define: {
     /* `render.js` 的主菜单底部那行「构建 …」读它。dev 与 build 都生效（esbuild 的 define）。 */
     __BUILD_DATE__: JSON.stringify(BUILD_DATE),
+    /* `main.js` 的 SW 注册读它，见上。 */
+    __BUILD_ID__: JSON.stringify(BUILD_ID),
   },
 
   build: {
@@ -45,9 +62,9 @@ export default defineConfig({
     modulePreload: { polyfill: false },
     rollupOptions: {
       output: {
-        entryFileNames: 'assets/[name].js',
-        chunkFileNames: 'assets/[name].js',
-        assetFileNames: 'assets/[name].[ext]',
+        entryFileNames: 'assets/[name].[hash].js',
+        chunkFileNames: 'assets/[name].[hash].js',
+        assetFileNames: 'assets/[name].[hash].[ext]',
       },
     },
   },

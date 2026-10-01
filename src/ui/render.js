@@ -261,7 +261,7 @@ export function mount(root) {
   /* 通道切换键（P2-B3 · GDD §15.3）：铺在底行最左。字面是**当前**通道，点一下切到另一种 ——
      与 K 线左上角那枚粒度小字同一约定，全屏只有一套「字面即现状」的切法。
      它是四枚里唯一的**方框**（其余三枚是实心块）：它不是「一次成交」，是「换一条成交路径」。
-     未解锁（权益 ≤ $500 万）时 `hidden` —— 一个 $3,000 开局的玩家不该看见自己用不了的东西。
+     未解锁（权益 ≤ $500 万）时 `hidden` —— 一个 $1,000 开局的玩家不该看见自己用不了的东西。
      权益够但当前币还没开通 OTC 时**禁用而不隐藏**（三级状态，见 `update()` 里那段注释）。 */
   const chanBtn = el('button', 'act chan', '盘口');
   chanBtn.dataset.chan = 'toggle';
@@ -588,7 +588,7 @@ export function update(refs, s, view) {
   refs.eqSub.className = 'num sign ' + (s.realized >= 0 ? 'up' : 'down');
 
   refs.cashVal.textContent = moneySlot('cash', available(s));
-  /* 副行优先级：有持仓时显示未实现盈亏，否则回落到「初始 $3,000」这个死常量。
+  /* 副行优先级：有持仓时显示未实现盈亏，否则回落到「初始 $1,000」这个死常量。
      （原来「有贷款时优先显示负债」，已随 2026-10-01 的一次性救济金改造整体移除 —— 那笔钱不用还。） */
   if (anyHeld(s)) {
     const u = totalUnrealized(s);
@@ -843,7 +843,7 @@ export function update(refs, s, view) {
   refs.exBtn.disabled = frozen;
 
   /* 通道切换键**三级状态**（P2-B 修订 · GDD §15.3）：
-       ① 权益 ≤ $500 万 ⇒ `hidden` —— 一个 $3,000 开局的玩家不该看见自己用不了的东西
+       ① 权益 ≤ $500 万 ⇒ `hidden` —— 一个 $1,000 开局的玩家不该看见自己用不了的东西
        ② 权益够、但**当前币**还没开通 OTC ⇒ 可见但禁用（灰框）——
           这一级存在的意义就是「切币时按钮不再忽隐忽现」，所以不能藏
        ③ 两者都满足 ⇒ 可用
@@ -909,7 +909,7 @@ export function update(refs, s, view) {
     refs.asOnway.textContent = moneySlot('onway', s.transfer ? s.transfer.amount : 0);
 
     /* ② 资金曲线（方案 §4）：与 K 线同一个坑 —— 它是 canvas，容器一隐藏就量成 0，
-       所以只在资产页（此刻必然可见）画。基准线恒取**开局资金**（$3,000）：
+       所以只在资产页（此刻必然可见）画。基准线恒取**开局资金**（$1,000）：
        它不是「成本」，是「到此为止赚了还是亏了」那条分界。
        `range` = 玩家那排区间键选的天数（`view.eqRange`，`0` = 全部）—— 高低点也随之只看该区间。 */
     for (const [k, b] of refs.eqRangeBtns) b.classList.toggle('on', Number(k) === view.eqRange);
@@ -1417,7 +1417,7 @@ export function openIntro() {
   const box = el('div', 'confirm intro');
   box.append(el('h3', null, 'Degen · 加密交易员'));
   box.append(el('p', null,
-    '2013 年 1 月，你带着 $3,000 走进门头沟。\n'
+    `2013 年 1 月，你带着 $${GAME.cash.toLocaleString('en-US')} 走进门头沟。\n`
     + '这里没有救世主：行情 24 小时不睡，交易所会说没就没。\n'
     + '从门头沟活到币安，撑到 2024 年底 —— 那就叫赢。'));
   /* 两枚入口（v11 · ③）：**叙事对两者完全一致** —— 世界观不分新手老手，差别只在 `s.hintOn`。
