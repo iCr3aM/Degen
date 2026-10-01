@@ -32,11 +32,24 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 /** 视野记录：`right` 是**浮点**（拖动按像素累积，只在出窗口时取整），其余都是整数 */
 const views = new Map();
 
-export function viewOf(sym) {
-  let v = views.get(sym);
+/**
+ * 记录键 = `命名空间|币种`。**两种页面各用一套视野**（2026-10-01 修）：
+ *   交易页传 `''`（缺省）· 历史回顾页传 `'rv'`。
+ *
+ * ⚠️ 为什么要分家（这是「K 线柱体与现价签错开」的真凶）：原来只按 `sym` 索引 ⇒
+ *    回顾页和交易页**共用同一格** —— 在回顾里拖了 BTC 的图，退回交易页时 BTC 的视野
+ *    还停在 2018 年那一段；而 `mark`（标记价）永远是**当前**那一根，`chart.js` 把它
+ *    `clamp` 到视窗上下沿 ⇒ 现价签写的价位和屏幕上的柱体根本不是一个时刻 ⇒ 看起来「完全错开」。
+ *    回顾页的「当前」在 `rv.i` 里、交易页的在 `s.i` 里，两者本来就该各看各的。
+ */
+const keyOf = (sym, ns) => (ns ? `${ns}|${sym}` : sym);
+
+export function viewOf(sym, ns = '') {
+  const key = keyOf(sym, ns);
+  let v = views.get(key);
   if (!v) {
     v = { mode: '1h', count: 0, right: 0, yPx: 0, locked: false };   // count 0 = 还没算过，用默认值
-    views.set(sym, v);
+    views.set(key, v);
   }
   return v;
 }
@@ -60,8 +73,8 @@ function bounds(sym, mode) {
  * ⚠️ 右端的下界是「数据首根 ＋ 根数 − 1」而不是「数据首根」—— 12.4 的规则是
  *    **最左一根** ≥ 数据首根，否则窗口会滑到数据左边，屏幕右半边全是空白。
  */
-function norm(sym, i, cssW) {
-  const v = viewOf(sym);
+function norm(sym, i, cssW, ns = '') {
+  const v = viewOf(sym, ns);
   const b = bounds(sym, v.mode);
   const start = b ? b.start : 0;
   const total = b ? b.end - b.start + 1 : MAX_BARS;
@@ -135,8 +148,8 @@ function dayBar(sym, d, upto, own = true) {
  * @param {boolean} own 是否把**玩家自己的成交额**并进量柱（v20）。交易页传真；
  *   **历史回顾页必须传假** —— 那一屏讲的是市场史，玩家自己这一局的成交不该混进 2013 年的柱子。
  */
-export function windowFor(sym, i, cssW, own = true) {
-  const { v } = norm(sym, i, cssW);
+export function windowFor(sym, i, cssW, own = true, ns = '') {
+  const { v } = norm(sym, i, cssW, ns);
   const right = Math.round(v.right);
   const from = right - v.count + 1;
   const candles = [];
@@ -173,14 +186,20 @@ export function windowFor(sym, i, cssW, own = true) {
 
 /**
  * 单指拖动：水平改「看第几根」，垂直改价格轴。
- * **一旦拖动就锁视野**（12.4）—— 否则拖到一半会被时间推进拽回去。
+ *
+ * **只有动了时间轴才锁视野**（2026-10-01 修 · 12.4）：
+ *   原来无条件 `v.locked = true` ⇒ 只想调一下价格轴（纯垂直拖动）也会把时间轴钉死 ——
+ *   视野从此不再跟随当前根，而 `mark` 仍是当前那一根，`chart.js` 只把它 `clamp` 到视窗上下沿
+ *   ⇒ 现价签与屏幕上的柱体**不再是同一时刻**，看起来就是「完全错开」。
+ *   垂直拖动只改价格轴、一个字都没动时间 ⇒ 没有理由锁它。
+ *
  * @param {number} dxPx 手指水平位移（右为正 ⇒ 看更早的行情）
  * @param {number} dyPx 手指垂直位移（下为正）
  */
-export function panBy(sym, dxPx, dyPx, i, cssW) {
-  const { v, start, maxRight } = norm(sym, i, cssW);
-  v.locked = true;
+export function panBy(sym, dxPx, dyPx, i, cssW, ns = '') {
+  const { v, start, maxRight } = norm(sym, i, cssW, ns);
   if (dxPx) {
+    v.locked = true;                                   // 只有沿时间轴拖动才锁（否则拖到一半被时间拽回去）
     const bw = Math.max(1, cssW - PAD_R) / v.count;    // 一像素等于多少根
     v.right -= dxPx / bw;
     clampRight(v, start, maxRight);
@@ -196,17 +215,19 @@ export function panBy(sym, dxPx, dyPx, i, cssW) {
  *
  * ⚠️ 缩到最细就是 12 根（`MIN_BARS`），**不再换档** —— 细刻度档已于 2026-10-01 移除（ROADMAP §四十）。
  */
-export function zoomBy(sym, factor, i, cssW) {
-  const { v } = norm(sym, i, cssW);
-  v.locked = true;
+export function zoomBy(sym, factor, i, cssW, ns = '') {
+  const { v } = norm(sym, i, cssW, ns);
+  /* ⚠️ **不再强制锁视野**（2026-10-01 修）：缩放只是「看近一点」，右端本来就锚在当前根上
+     ⇒ 没理由让它冻结。留着 `locked` 原状 —— 玩家先拖到历史里再缩放，锁仍然在（`norm` 会保住位置）；
+     玩家本来就是跟随姿态，缩放后继续跟随。原来无条件置真会把这两者都冻住，症状与垂直拖动那条一样。 */
   v.count = clamp(Math.round(v.count * factor), MIN_BARS, MAX_BARS);
-  norm(sym, i, cssW);      // 缩放后按边界再夹一次（`locked` 已置真 ⇒ 不会抢走玩家选的位置）
+  norm(sym, i, cssW, ns);      // 缩放后按边界再夹一次
   return v;
 }
 
 /** 双击复位：回到最新根 ＋ 恢复默认根数 ＋ 价格轴归零（**只复位当前币**） */
-export function resetView(sym) {
-  const v = viewOf(sym);
+export function resetView(sym, ns = '') {
+  const v = viewOf(sym, ns);
   v.count = 0;
   v.yPx = 0;
   v.locked = false;
@@ -219,8 +240,8 @@ export function resetView(sym) {
  *   ② 根数回默认 —— **密度不跨粒度沿用**（「60 根小时线」和「60 天」完全是两码事）
  *   ③ 价格轴归零 —— 两种粒度的价格幅度差几个数量级，不归零会整片空白
  */
-export function setMode(sym, mode, i, cssW) {
-  const v = viewOf(sym);
+export function setMode(sym, mode, i, cssW, ns = '') {
+  const v = viewOf(sym, ns);
   if (v.mode === mode) return v;
   /* 右端先统一换算成**小时序号**（两档口径不同），再落到目标档 */
   const hour = v.mode === '1d' ? v.right * HOURS_PER_DAY + HOURS_PER_DAY - 1 : v.right;
@@ -228,7 +249,7 @@ export function setMode(sym, mode, i, cssW) {
   v.mode = mode;
   v.count = 0;
   v.yPx = 0;
-  norm(sym, i, cssW);
+  norm(sym, i, cssW, ns);
   return v;
 }
 
@@ -236,6 +257,6 @@ export function setMode(sym, mode, i, cssW) {
  * 写回**实际生效的**价格轴平移。限位夹在 `chart.js` 里（换算的唯一真源在那边），
  * 所以这里只负责把结果存下来 —— 见 `drawChart` 的返回值说明。
  */
-export function setYPx(sym, yPx) {
-  viewOf(sym).yPx = yPx;
+export function setYPx(sym, yPx, ns = '') {
+  viewOf(sym, ns).yPx = yPx;
 }

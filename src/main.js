@@ -7,9 +7,9 @@
  *   main.js 是唯一把两边连起来的地方（也是唯一允许读时钟的地方）
  */
 
-import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, cashCurAt, exchangeOf, hasFinancingAt, maxLeverageAt, scenarioOf, scenarioStartIndex } from './core/config.js';
+import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, cashCurAt, exchangeOf, hasFinancingAt, isChallenge, maxLeverageAt, scenarioOf, scenarioStartIndex } from './core/config.js';
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
-import { load, save, wipe, disableSave } from './core/save.js';
+import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
 import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
@@ -22,7 +22,7 @@ import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
   renderReview, openNodeCard, openYearPick, openGuide, renderCareers,
-  isStandalone, toggleInstallGuide, menuRemoveInstall, toggleScenarioList,
+  isStandalone, toggleInstallGuide, menuRemoveInstall, toggleScenarioList, toggleSlotList,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -55,15 +55,38 @@ function stashScen(id) {
   try { localStorage.setItem(SCEN_KEY, id); } catch { /* 隐私模式：存不下就退回经典全程 */ }
 }
 
-/* ⚠️ `load()` 返回 null 就是**全新一局** —— 开场叙事弹窗只在这一次出现（Batch 4 · B19）。
-   读档续玩（哪怕是暂停在 2015 年的档）不该再看一遍开场白。 */
-const saved = load();
-/* ⚠️ 走 reload 而不是原地重建 `s`（M1）：`createClock(s)` 闭包捕获的是**开局那一份** `s`，
-   原地换对象会让时钟继续推那份旧状态 —— 重开 / 删档本来也一直是 reload，同一条路。 */
+/* ── 存档槽信箱（2026-10-01 用户拍板：普通 / 挑战各一槽）──────────────
+   「下一趟开机读哪一个槽」的一次性信箱，与上面 `SCEN_KEY` 同一副骨架。
+   ⚠️ 为什么不能只靠 `load()`：`load()` 缺省「先普通、再挑战」，玩家在挑战局里点
+      「开始游戏」想开一局普通时，reload 回来 `load()` 又会把挑战档捞回来 —— 必须有
+      一个明确的「这一趟读哪个槽」把它压过。读优先于 `load()`，消费即清。 */
+const SLOT_KEY = 'degen_next_slot';
+
+function takePendingSlot() {
+  try {
+    const v = localStorage.getItem(SLOT_KEY);
+    if (v !== null) localStorage.removeItem(SLOT_KEY);
+    return v || null;
+  } catch { return null; }
+}
+
+function stashSlot(slot) {
+  try { localStorage.setItem(SLOT_KEY, slot); } catch { /* 隐私模式：存不下就退回 load() */ }
+}
+
+/* 这一趟开机是**开新局**（信箱里有年代）还是**读档**（信箱里有槽 / 缺省读）：
+   ⚠️ 有年代信箱 ⇒ 一律开新局，**不读档** —— 否则「挑战档还在时想开一局普通」会被它捞回去。
+   ⚠️ `loadSlot(slot)` / `load()` 返回 null 就是**全新一局** —— 开场叙事弹窗只在这一次出现
+      （Batch 4 · B19）。读档续玩（哪怕是暂停在 2015 年的档）不该再看一遍开场白。
+   ⚠️ 走 reload 而不是原地重建 `s`（M1）：`createClock(s)` 闭包捕获的是**开局那一份** `s`，
+      原地换对象会让时钟继续推那份旧状态 —— 重开 / 删档本来也一直是 reload，同一条路。 */
 const pendingScen = takePendingScen();
+const pendingSlot = takePendingSlot();
+const saved = pendingScen ? null : (pendingSlot ? loadSlot(pendingSlot) : load());
 let s = saved || createState(pendingScen || DEFAULT_SCENARIO);
 const isNewGame = !saved;
-/* 刚在主菜单挑完年代 ⇒ 这一趟开机**跳过主菜单**，直接进开场白（否则会弹回菜单，等于白点）。 */
+/* 刚在主菜单挑完年代（或点「开始游戏」）⇒ 这一趟开机**跳过主菜单**，直接进开场白
+   （否则会弹回菜单，等于白点）。 */
 const fromScenarioPick = isNewGame && !!pendingScen;
 
 let refs = null;
@@ -139,6 +162,14 @@ let rv = null;
 let rvTimer = 0;
 let rvLast = 0;
 let rvAcc = 0;
+
+/**
+ * 回顾页的**视野命名空间**（2026-10-01 修）。回顾与交易页各有自己的「当前根」
+ * （回顾 = `rv.i`、交易页 = `s.i`），视野必须分家 —— 否则在回顾里拖过 BTC 的图，
+ * 退回交易页时 BTC 的视野还停在若干年前那一段，而现价签总是当前那一根 ⇒
+ * 「柱体与现价签完全错开」。见 `ui/view.js` 的 `keyOf`。
+ */
+const RV_NS = 'rv';
 
 /* ── 交易档案页（M2 · 2026-10-01）──────────────────────────────────
    `arch` 真 = 正处在档案页。与 `rv` 同一口径：**模块级变量、不进 `s`、不进存档**。
@@ -299,9 +330,9 @@ async function boot() {
   /* 回顾页那块 K 线的同一套手势（方案 §3.2「复用 `simulate.js` / `view.js`」）——
      唯一区别是它推的是 `rv.i` 而不是 `s.i`（回顾的「当前」在 `rv` 里）。 */
   bindChart(refs.rvCanvas, {
-    pan: (dx, dy) => { if (!rv) return; panBy(rv.sym, dx, dy, rv.i, chartW()); draw(true); },
-    zoom: f => { if (!rv) return; zoomBy(rv.sym, f, rv.i, chartW()); draw(true); },
-    reset: () => { if (!rv) return; snd.tap(); resetView(rv.sym); draw(true); },
+    pan: (dx, dy) => { if (!rv) return; panBy(rv.sym, dx, dy, rv.i, chartW(), RV_NS); draw(true); },
+    zoom: f => { if (!rv) return; zoomBy(rv.sym, f, rv.i, chartW(), RV_NS); draw(true); },
+    reset: () => { if (!rv) return; snd.tap(); resetView(rv.sym, RV_NS); draw(true); },
   });
   /* 存档：玩家每次动作走 `after()` 即时落盘；这个定时器只给「时间自己走」兜底 ——
      `dirty` 由 `onFrame`（推进过才回调）置真，没动过就跳过这次全量序列化与写盘。 */
@@ -311,17 +342,20 @@ async function boot() {
      数值没变就什么都不做，所以这个监听不会让 resize 变成重绘风暴）。 */
   window.addEventListener('resize', applyUi);
 
-  /* 主菜单（需求 4 · 方案 §2）：**一律先弹它**，三个入口决定后续走向 ——
-       开始游戏 → （有档先二次确认）开新局 → 开场叙事
-       继续游戏 → 直接 `clock.start()`（读档续玩，不弹开场白）
-       历史回顾 → 只读回顾模式
+  /* 主菜单（需求 4 · 方案 §2）：**一律先弹它**，几个入口决定后续走向 ——
+       读取存档 → 摊开「普通模式 / 挑战模式」两行（有档才有），点了续玩
+       开始游戏 → 开一局新的经典全程（已有普通档先二次确认）
+       挑战模式 → 摊开五张年代卡
+       历史回顾 / 交易档案 / 安装应用 → 各走各的
      ⚠️ 菜单期间**时钟不启动**（与开场叙事同一条）：玩家选完才真正开盘，
         否则停在这一屏时行情已经自己走了几十根。
-     ⚠️ 「继续游戏」只在**这一局确实读到档**时出现（`isNewGame` 的反面）。
      ⚠️ **刚挑完年代的那一趟跳过菜单**（`fromScenarioPick`）：玩家上一步才点的「10u 战神」，
-        再把菜单弹回来等于让他白点一次 —— 直接进那一局的开场白。 */
-  if (fromScenarioPick) openIntro(s.scen);
-  else openMenu({ canContinue: !isNewGame });
+        再把菜单弹回来等于让他白点一次。⚠️ **挑战局不走开场白**（2026-10-01 用户拍板：
+        挑战默认老手、没有新手/老手按钮）—— 直接开盘。 */
+  if (fromScenarioPick) {
+    if (isChallenge(s.scen)) beginGame();
+    else openIntro(s.scen);
+  } else openMenu({ slots: menuSlots() });
 }
 
 /** 保证某个币的数据已加载；失败只记一条日志，不让整个游戏崩掉 */
@@ -620,8 +654,10 @@ function dispatch(node) {
      ⚠️ 它**不能**被上面那条暂停闸门拦下 —— 引导期间 `s.paused` 恒为真，而它正是走完引导的唯一出口。 */
   if (d.guide !== undefined) return nextGuide();
 
-  /* 主菜单三入口（需求 4 · 方案 §2）：`start` / `continue` / `review`。 */
+  /* 主菜单入口（需求 4 · 方案 §2）：`load` / `start` / `scen` / `review` / `careers` / `install`。 */
   if (d.menu !== undefined) return onMenu(d.menu, node);
+  /* 「读取存档」摊开的那两行（2026-10-01 用户拍板）：值是槽位键（`normal` / `challenge`）。 */
+  if (d.slot !== undefined) return onSlot(d.slot);
   /* 年代开局（M1）：主菜单「挑战模式」里那五张卡，值是年代 id，见 `onScenario`。 */
   if (d.scen !== undefined) return onScenario(d.scen, node);
   /* 回顾页的全部动作（需求 4 · 方案 §3）：值即子命令，见 `onReview`。 */
@@ -656,6 +692,8 @@ function dispatch(node) {
   if (d.fx !== undefined) return onFx(Number(d.fx));
   if (d.colors !== undefined) return onColorToggle();
   if (d.reset !== undefined) return onReset(node);
+  /* 设置页「返回主菜单」（2026-10-01 用户要求）：停钟 ＋ 弹菜单，本局状态一个字不动。 */
+  if (d.home !== undefined) return onHome();
   if (d.sclose !== undefined) return onClosePanel();
 
   /* ── 上帝模式（隐藏入口 · 方案 §2）──
@@ -743,7 +781,7 @@ function dispatch(node) {
   if (d.mode !== undefined) {
     /* ⚠️ 回顾页那枚粒度小字走 `rv.i` / `rv.sym` —— 回顾的「现在」不在 `s` 里（方案 §3.3）。 */
     if (rv) {
-      setMode(rv.sym, viewOf(rv.sym).mode === '1h' ? '1d' : '1h', rv.i, chartW());
+      setMode(rv.sym, viewOf(rv.sym, RV_NS).mode === '1h' ? '1d' : '1h', rv.i, chartW(), RV_NS);
       draw(true);
       return;
     }
@@ -862,6 +900,10 @@ function onChan() {
  * 「隐藏入口」这层语义因此没有被削弱。
  */
 function onGodTap() {
+  /* ⚠️ **挑战模式没有上帝模式**（2026-10-01 用户拍板）：挑战是「速通」，填资金 / 跳日期都会
+     把难度归零。连点入口直接吞掉，连计数都不起 —— 免得玩家点了五次以为坏了。
+     与「新手提示整行不出现」同一条口径：挑战局是**有限制**的，限制在状态机里拦，不靠 UI。 */
+  if (isChallenge(s.scen)) return;
   if (s.god) {
     /* 与下面那条同一个理由：本局已结束 / 正停在救济金遮罩上，时间不再前进，开面板没有意义 */
     if (s.over || s.pending) return;
@@ -1019,62 +1061,108 @@ function onGodOff() {
 /** 上帝面板里输入框的值 —— 输入框没有动作键，只能从同一个面板里按类名找（两个框各有一个唯一类） */
 const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.value ?? null;
 
-/* ── 主菜单（需求 4 · 方案 §2）────────────────────────────────────
-   三个入口。菜单期间时钟是停的（见 `boot`），选完才真正开盘。
+/* ── 主菜单（需求 4 · 方案 §2；存档拆两槽 2026-10-01）────────────────
+   菜单期间时钟是停的（见 `boot`），选完才真正开盘。
 
-   · `continue`：读档续玩 —— 直接开盘，**不弹开场白**（世界观只在开新局时讲一遍）。
-   · `start`   ：无档 ⇒ 直接转开场叙事；**有档 ⇒ 先「武装」**（按钮变红，3 秒内再点一次才重开），
-                 走既有 `onWipe()`（`disableSave` ＋ `wipe` ＋ reload）——**不新写重开逻辑**。
-   · `review`  ：只读回顾模式（`enterReview`）。
-   · `install` ：PWA 安装（2026-10-01）—— 见 `onInstall()`。
+   · `load`    ：读取存档开 / 关（有档才出现）—— 摊开「普通模式 / 挑战模式」两行，见 `onSlot`。
+   · `start`   ：开一局新的**经典全程**；已有普通档 ⇒ 先「武装」（按钮变红，3 秒内再点一次才重开）。
    · `scen`    ：挑战模式的年代卡列表开 / 关（M1）—— 它本身不开局，见 `onScenario`。
-   · `careers` ：交易档案页（M2 · 2026-10-01）—— 见 `enterCareers()`。 */
+   · `review`  ：只读回顾模式（`enterReview`）。
+   · `careers` ：交易档案页（M2 · 2026-10-01）—— 见 `enterCareers()`。
+   · `install` ：PWA 安装（2026-10-01）—— 见 `onInstall()`。 */
 function onMenu(kind, node) {
-  if (kind === 'continue') {
-    closePicker();
-    clock.start();
-    after();
-    return;
-  }
+  if (kind === 'load') { toggleSlotList(); return; }
   if (kind === 'review') return enterReview();
   if (kind === 'careers') return enterCareers();
   if (kind === 'install') return onInstall();
   if (kind === 'scen') { toggleScenarioList(); return; }
-  /* kind === 'start' */
-  if (isNewGame) {                 // 无档：直接进开场叙事（新手 / 老手）
-    closePicker();
-    openIntro(s.scen);             // 新局的年代就是 `createState` 用的那一个（无档时恒为经典全程）
+  /* kind === 'start'：开一局新的经典全程（普通槽）。已有普通档才需要二次确认。 */
+  if (hasSave('normal')) {
+    if (!armedOn(node)) { armMenu(node); return; }
+    cancelMenuArm();
+  }
+  startNewGame(DEFAULT_SCENARIO);
+}
+
+/**
+ * 主菜单「读取存档」列哪些行（2026-10-01 用户拍板）——
+ * **真有档的槽** ∪ **当前这一局所在的槽**（后者是为了给「回到菜单又接着玩」一个入口）。
+ * 顺序取自 `SAVE_SLOTS`（普通在前、挑战在后）。
+ * ⚠️ 全新一局（`isNewGame`）时 `s.scen` 只是个缺省值，**不算当前槽** —— 否则会在没有档的
+ *    情况下凭空列出「普通模式」这一行。
+ */
+function menuSlots() {
+  const cur = saveSlotOf(s.scen);
+  /* 第二项：**当前这一局的槽**（给「回菜单又接着玩」留一个入口）—— 但全新一局且**还没落盘**时
+     不算（`!isNewGame` 或该槽已有档），否则会在没有任何档的情况下凭空列出「普通模式」。 */
+  return SAVE_SLOTS
+    .filter(k => hasSave(k) || (k === cur && !isNewGame))
+    .map(key => ({ key, name: slotName(key) }));
+}
+
+/**
+ * 开一局新的（经典全程 / 某张年代卡共用）—— 投年代信箱 ＋ 清掉该槽的档 ＋ reload。
+ * ⚠️ 清的是**这一局将要占用的那个槽**（`saveSlotOf(scenId)`），另半边的档一个字不动 ——
+ *    这正是「普通 / 挑战各一槽、互不覆盖」的落点。`disableSave` 必须在 `wipe` 之前：
+ *    否则 reload 的 `beforeunload` 会把刚删掉的档原样写回来。
+ */
+function startNewGame(scenId) {
+  closePicker();
+  stashScen(scenId);
+  disableSave();
+  wipe(saveSlotOf(scenId));
+  location.reload();
+}
+
+/** 挑一个存档槽（主菜单「读取存档」那两行，`data-slot`）。 */
+function onSlot(slot) {
+  closePicker();
+  /* 点的就是当前这一局 ⇒ 直接开盘续跑，不必绕一趟 reload。
+     ⚠️ 顺手 `paused = false` ＋ `speed = 1`：与 `onTab` 的「切回交易页 ⇒ 自动续跑」同一条口径 ——
+        玩家可能是从设置页回菜单再进来的（那时 `paused` 被置真），不这样点一下会「开盘了却不动」。 */
+  if (saveSlotOf(s.scen) === slot && hasSave(slot)) {
+    tab = 'trade';
+    s.paused = false;
+    s.speed = 1;
+    clock.start();
+    after();
     return;
   }
-  /* 有档：双重确认（与设置页那套 `onReset` 同一手法，状态各自独立） */
-  if (!armedOn(node)) { armMenu(node); return; }
-  cancelMenuArm();
-  onWipe();                        // disableSave ＋ wipe ＋ reload ⇒ 回来后是无档的新局
+  /* 换一槽：投信箱后 reload（新一槽的档由开机那趟读进 `s`）。
+     ⚠️ 不调 `disableSave` —— 当前这一局的进度要照常落回**它自己的槽**。 */
+  stashSlot(slot);
+  location.reload();
+}
+
+/**
+ * 设置页那枚「返回主菜单」（2026-10-01 用户要求）—— 停钟 ＋ 弹菜单，**本局状态一个字不动**
+ * （与 `exitReview` / `exitCareers` 同一走法：菜单期间时钟本来就该停）。
+ * ⚠️ 本局已结束时不给出口：那时时钟已停、屏上是结算遮罩，回菜单只会看到一屏无处可去的界面。
+ */
+function onHome() {
+  if (s.over) return;
+  closePicker();
+  clock.stop();
+  after();                       // 先落一次盘：菜单里「读取存档」靠这份档才列得出当前这一局
+  openMenu({ slots: menuSlots() });
 }
 
 /**
  * 挑一个年代局开局（M1 · 2026-10-01）—— 主菜单「挑战模式」里那五张卡（`data-scen`）。
  *
- * 两条路都与「开始游戏」**共用同一套状态机**：
- *   ① **无档**：直接把 id 投进信箱 ＋ `reload()` —— 开机那一趟 `createState(id)` 就是这一局；
- *   ② **有档**：先「武装」这张卡（3 秒内再点一次才真重开），确认后走既有的 `onWipe()`
- *      （`disableSave` ＋ `wipe` ＋ `reload`），**不新写重开逻辑**。
- *      ⚠️ 必须把 id 投进信箱再 `onWipe()`，否则 reload 回来会按 `DEFAULT_SCENARIO` 开经典全程。
+ * 与「开始游戏」共用同一套状态机：已有挑战档 ⇒ 先「武装」这张卡（3 秒内再点一次才真重开），
+ * 确认后走 `startNewGame()`（投信箱 ＋ 清挑战槽 ＋ reload）。
  *
  * ⚠️ 卡片颜色只标到 `challenge` 的那些（非挑战的经典全程不在列表里，这里再挡一次，
  *    免得将来有人把 classic 也加进列表后出现「点了开始、却又被当成重开」的怪状态）。
  */
 function onScenario(id, node) {
   if (!scenarioOf(id).challenge) return;
-  if (isNewGame) {                 // 无档：没有东西可重开，投信箱后直接换一局
-    stashScen(id);
-    location.reload();
-    return;
+  if (hasSave('challenge')) {
+    if (!armedOn(node)) { armMenu(node); return; }
+    cancelMenuArm();
   }
-  if (!armedOn(node)) { armMenu(node); return; }
-  cancelMenuArm();
-  stashScen(id);
-  onWipe();
+  startNewGame(id);
 }
 
 /** 这一枚键是不是**就是**当前被武装的那一枚。
@@ -1225,7 +1313,7 @@ function enterReview() {
   clock.stop();                                  // 双保险：主菜单期间它本来就没启动
   rv = { i: 0, sym: 'BTC', speed: 100, paused: false, seen: new Set(), log: [], auto: false, autoMode: null };
   rvAcc = 0;
-  resetView('BTC');                              // 视野回默认（上次回顾留下的姿势不带到这一次）
+  resetView('BTC', RV_NS);                       // 视野回默认（上次回顾留下的姿势不带到这一次）
   pushRv('开盘 · 2013 年 1 月，门头沟', 'info', 0);
   syncRvMode(true);                              // ⑧：起手就是 1 日线（巡航段看日线才看得完 12 年）
   rvStart();
@@ -1264,7 +1352,7 @@ function syncRvMode(force = false) {
   const want = speedAt(rv.i, rvSeen()) > 24 ? '1d' : '1h';
   if (!force && rv.autoMode === want) return;
   rv.autoMode = want;
-  setMode(rv.sym, want, rv.i, chartW());
+  setMode(rv.sym, want, rv.i, chartW(), RV_NS);
 }
 
 /**
@@ -1279,7 +1367,7 @@ function reviewFocus(node) {
     const c = COINS.find(x => x.sym === sym);
     if (c && GAME.start + rv.i * HOUR_MS >= c.unlock) {
       rv.sym = sym;
-      resetView(sym);
+      resetView(sym, RV_NS);
       if (!isLoaded(sym)) ensureCoin(sym).then(() => draw(true));
     }
   }
@@ -1291,8 +1379,11 @@ function exitReview() {
   rvStop();
   rv = null;
   rvAcc = 0;
-  draw(true);                                    // `rv` 归 nil ⇒ `showPage` 自动切回交易页
-  openMenu({ canContinue: !isNewGame });
+  /* 退出整屏页一律落回**交易页**：菜单可能是在设置页上打开的（`onHome`），
+     不归位的话「回顾 → 退出」会停在一屏没头没尾的设置页上。 */
+  tab = 'trade';
+  draw(true);                                    // `rv` 归 nil ⇒ `showPage` 按 `tab` 切回交易页
+  openMenu({ slots: menuSlots() });
 }
 
 /* ── 交易档案页（M2 · 2026-10-01）────────────────────────────────
@@ -1311,8 +1402,9 @@ function enterCareers() {
 /** 退出档案页：回主菜单（与 `exitReview` 一字不差的走法） */
 function exitCareers() {
   arch = false;
-  draw(true);                                    // `arch` 归 falsy ⇒ `showPage` 自动切回交易页
-  openMenu({ canContinue: !isNewGame });
+  tab = 'trade';                                 // 与 `exitReview` 同一条：退出整屏页落回交易页
+  draw(true);                                    // `arch` 归 falsy ⇒ `showPage` 按 `tab` 切回交易页
+  openMenu({ slots: menuSlots() });
 }
 
 /**
@@ -1459,7 +1551,7 @@ function jumpYear(y) {
   const at = Math.round((Date.UTC(y, 0, 1) - GAME.start) / HOUR_MS);
   rv.i = Math.max(0, Math.min(at, GAME.candles - 1));
   rvAcc = 0;
-  resetView(rv.sym);                               // 跳完视野跟到新的「当前」
+  resetView(rv.sym, RV_NS);                        // 跳完视野跟到新的「当前」
   rv.log.length = 0;                               // ③ 清空（就地清，别换数组 —— 渲染层持有的就是它）
   pushRv(`跳到 ${y} 年`, 'info', rv.i);
   syncRvMode(true);                                // ⑧：跳回巡航段 ⇒ 粒度跟着回日线
@@ -1472,7 +1564,7 @@ function switchRvSym(sym) {
   const c = COINS.find(x => x.sym === sym);
   if (c && GAME.start + rv.i * HOUR_MS < c.unlock) return;
   rv.sym = sym;
-  resetView(sym);
+  resetView(sym, RV_NS);
   syncRvMode(true);                                // ⑧：切币不改变速度，但档位要按新币的边界重新夹一次
   draw(true);
   if (!isLoaded(sym)) ensureCoin(sym).then(() => draw(true));
@@ -1480,20 +1572,30 @@ function switchRvSym(sym) {
 
 /* ── 开场叙事（Batch 4 · B19）─────────────────────────────────────
    弹窗期间时钟是停的（见 `boot`），点了「我是新手 / 我是老手」才真正开盘并放一声起手音。
-   `kind`（v11 · ③）只决定 `s.hintOn`：新手 ⇒ 开提示，老手 ⇒ 关提示；叙事文案两者一致。 */
+   `kind`（v11 · ③）只决定 `s.hintOn`：新手 ⇒ 开提示，老手 ⇒ 关提示；叙事文案两者一致。
+   ⚠️ **挑战局不走这里**（2026-10-01 用户拍板：挑战恒为老手）—— 由 `boot` 直接 `beginGame()`。 */
 function onIntro(kind) {
-  closePicker();
   s.hintOn = kind !== 'old';
-  /* 开局写一条**真实发生的事**（Batch 5 · B24）：日志条原来是写死的「等待开盘…」兜底，
-     可此刻行情其实已经在跑 —— 文案与实况自相矛盾。这条日志把空态填掉，
-     时间戳取 `s.i = 0`（`pushLog` 自己取），语义正确。读档续玩不补（与开场弹窗同一判据）。
-     ⚠️ 年月与交易所必须跟着**本局年代**走（M1）：2021 年的局里写「2013 年 1 月，门头沟」，
-        就是在第一行日志上自相矛盾。 */
+  beginGame();
+}
+
+/**
+ * 真正开盘（开场弹窗确认后 / 挑战局跳过弹窗时共用）—— 收弹层、写开局日志、起钟、起手音。
+ *
+ * 开局写一条**真实发生的事**（Batch 5 · B24）：日志条原来是写死的「等待开盘…」兜底，
+ * 可此刻行情其实已经在跑 —— 文案与实况自相矛盾。这条日志把空态填掉，
+ * 时间戳取 `s.i = 0`（`pushLog` 自己取），语义正确。读档续玩不补（与开场弹窗同一判据）。
+ * ⚠️ 年月与交易所必须跟着**本局年代**走（M1）：2021 年的局里写「2013 年 1 月，门头沟」，
+ *    就是在第一行日志上自相矛盾。
+ */
+function beginGame() {
+  closePicker();
   pushLog(s, openLogText(), 'info');
   clock.start();
   snd.begin();
   /* 新手 ＋ 新局 ⇒ 接一段分步引导（本轮 ④）。⚠️ 排在 `clock.start()` 之后、`after()` 之前：
-     引导自己会把时钟压回暂停，`after()` 顺手把「暂停」也落盘（关掉标签页再回来仍是暂停态）。 */
+     引导自己会把时钟压回暂停，`after()` 顺手把「暂停」也落盘（关掉标签页再回来仍是暂停态）。
+     ⚠️ 挑战局的 `s.hintOn` 恒为假（`createState`），这里天然不会起引导。 */
   if (isNewGame && s.hintOn) startGuide();
   after();
 }
@@ -1759,22 +1861,18 @@ function cancelReset() {
 }
 
 function doRestart() {
-  /* ⚠️ 「重开本局」＝ **重开这一局的那个年代**（M1 · 2026-10-01）。
-     原来这里先 `createState()` 再设 `sym` / `speed`，可紧接着就 `location.reload()` ——
-     那份新状态根本没机会被用上（`disableSave` ＋ `wipe` 之后 reload 读到的是「无档」）。
-     现在把年代投进信箱，reload 回来才是**同一年代**的新局；否则 2021 年开的那局一重开
-     就掉回 2013 年。
-     ⚠️ **经典全程不投信箱**（`scenarioOf` 的 `challenge` 为假时跳过）：它原来的行为是
-     「reload 回来先看到主菜单」，那条路一个字都不该动 —— 年代局才需要这一趟直通。 */
-  if (scenarioOf(s.scen).challenge) stashScen(s.scen);
-  disableSave();
-  wipe();
-  location.reload();
+  /* ⚠️ 「重开本局」＝ **重开这一局的那个年代**（M1）＋ **只清这一局落在的那个槽**（2026-10-01）。
+     走 `startNewGame()` 这条统一的路（投年代信箱 ＋ 清对应槽 ＋ reload），另半边的档一个字不动。
+     原来「经典全程重开完先回菜单」那条分叉一并取消：一是那条路上 reload 后 `load()` 缺省
+     会掉进**挑战档**（普通槽刚被清空），反而把玩家带到另一局去；二是「重开本局」本来就该
+     直接开这一局新的（开场白或直接开盘），弹回菜单等于让玩家再点一次。 */
+  startNewGame(s.scen);
 }
 
+/** 开机面板上那枚「清除存档并重开」（`render.js` 的 `renderBoot`）—— 两个槽一起清。 */
 function onWipe() {
   disableSave();
-  wipe();
+  for (const slot of SAVE_SLOTS) wipe(slot);
   location.reload();
 }
 

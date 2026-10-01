@@ -70,17 +70,43 @@ export function sigmaOf(closes) {
   return Math.sqrt(va);
 }
 
+/** 冲击的核心式 `A × σ × sqrt(min(q, cap))` ＋ `hard` 上夹。两个入口共用，保证同形。 */
+function impactCore(q, sigma) {
+  const s = Number.isFinite(sigma) && sigma > 0 ? sigma : SLIP.sigmaDefault;
+  const raw = SLIP.A * s * Math.sqrt(Math.min(q, SLIP.cap));
+  return Math.max(0, Math.min(SLIP.hard, raw));
+}
+
 /**
- * 冲击 = 价格上抬 / 下压的比例。
+ * **成交代价**用的冲击 = 价格上抬 / 下压的比例（买单变贵、卖单变便宜的那一份）。
+ *
+ * ⚠️ `q ≤ threshold`（当日流动量的 10%）⇒ **记为零**：小额单子按盘口价成交，不额外收代价。
+ *    这条死区**只属于「代价」**，别拿去算行情位移 —— 见下面的 `permImpactOf`。
  * @param {number} q     本次成交名义价值 ÷ 当日流动性
  * @param {number} sigma 日收盘收益率标准差（`sigmaOf` 的结果）
  * @returns {number} 0 ~ `SLIP.hard`
  */
 export function impactOf(q, sigma) {
   if (!(q > SLIP.threshold)) return 0;           // 含 NaN / 0 / 负值
-  const s = Number.isFinite(sigma) && sigma > 0 ? sigma : SLIP.sigmaDefault;
-  const raw = SLIP.A * s * Math.sqrt(Math.min(q, SLIP.cap));
-  return Math.max(0, Math.min(SLIP.hard, raw));
+  return impactCore(q, sigma);
+}
+
+/**
+ * **行情位移**用的冲击 —— 与 `impactOf` 同形，但**没有阈值死区**（用户 2026-10-01 拍板）。
+ *
+ * 为什么必须分开（这是「大额买入不影响 K 线」的病根）：
+ *   `threshold` 是**代价模型**的护栏（小额单不该被收滑点），但 `engine` 把 **同一个 0**
+ *   又拿去当永久位移的幅度 ⇒ `god.addFlow(…, 0)` 当场早退，`s.flow` 里**一个字节都没写**。
+ *   实测：2015 年后 BTC 单小时要 ≥ $8.5 万、2021 年要 ≥ $1.76 亿才触发 ⇒ 玩家的单子
+ *   在图上完全不留痕迹。位移是**市场影响**（任何成交都有），代价是**收费**（小额免收），
+ *   两件事本来就不该共用一条死区。
+ *
+ * ⚠️ 与 `impactOf` 一起构成「红线 A · 不双重计价」的两半：`impactOf` 只决定**这次成交付多贵**
+ *    （`fillPrice`），`permImpactOf` 只决定**成交之后价格停在哪**（`SHOCK.share ×` 它）。
+ */
+export function permImpactOf(q, sigma) {
+  if (!(q > 0)) return 0;                        // 含 NaN / 0 / 负值
+  return impactCore(q, sigma);
 }
 
 /**

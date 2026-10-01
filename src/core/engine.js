@@ -16,7 +16,7 @@ import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC,
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
-import { SLIP, bookFills, fillPrice, hourShareK, impactOf, sigmaOf } from './impact.js';
+import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, sigmaOf } from './impact.js';
 import { SHOCK, addFlow } from './god.js';
 import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -264,6 +264,21 @@ function impactFor(s, sym, i, notional) {
   const liq = hourLiqOf(s, sym, i);
   if (!(liq > 0) || !(notional > 0)) return 0;
   return impactOf(notional / liq, dailySigma(sym, i));
+}
+
+/**
+ * 一次成交的**行情位移量**（0 = 不触发）—— 与 `impactFor` 同形，但走**无死区**的 `permImpactOf`。
+ *
+ * ⚠️ 为什么必须另开一个入口（这是「大额买入不影响 K 线」的病根）：`impactFor` 走 `impactOf`，
+ *    它带 `threshold = 10%` 的**代价**死区 —— 单笔不到当日流动量的 10% 就返回 0。那个 0 若被
+ *    拿去当永久位移，`god.addFlow(…, 0)` 当场早退，`s.flow` 里**一个字节都写不进去**。实测
+ *    2015 年后 BTC 单小时要 ≥ $8.5 万、2021 年要 ≥ $1.76 亿才触发 ⇒ 玩家的单子在图上毫无痕迹。
+ *    位移是**市场影响**（任何成交都有），代价是**收费**（小额免收），两件事不该共用一条死区。
+ */
+function permImpactFor(s, sym, i, notional) {
+  const liq = hourLiqOf(s, sym, i);
+  if (!(liq > 0) || !(notional > 0)) return 0;
+  return permImpactOf(notional / liq, dailySigma(sym, i));
 }
 
 /**
@@ -607,10 +622,11 @@ export function openTrade(s, side, frac = 1) {
   pushLog(s, `${head}｜${line} @ ${fmtLogPrice(fill)}${avg}｜手续费 ${fmtMoneyShort(fee)}${tag}`,
     side === 'long' ? 'long' : 'short');
 
-  /* 订单冲击（方案 §2.6）：把这次成交代价的**永久部分**（Almgren–Chriss 的 γQ，实证 35%）
-     沉淀成行情位移 —— 从此处起价格上/下一个台阶，再按 Bouchaud 幂律慢慢回爬。
-     ⚠️ 这不是重复收惩罚：`cost` 是本次成交付出的**全部**代价，这里只把其中一部分留在地上，
-        剩下的就是 AC 里的「暂时冲击」（随成交结束而消失，已由成交价本身承担）。
+  /* 订单冲击（方案 §2.6）：把这一笔的行情位移（`permImpactFor`，**无阈值死区**）沉淀成台阶
+     —— 从此处起价格上/下一个台阶，再按 Bouchaud 幂律慢慢回爬到 `SHOCK.floor` 地板。
+     ⚠️ 位移量走 `permImpactFor` 而**不是** `cost`：`cost` 带 10% 死区（成交代价用了它），
+        拿它做位移会让小额单写进 0、池子里毫无痕迹 —— 见 `permImpactFor` 的注释。
+     ⚠️ `SHOCK.share` 已由用户 2026-10-01 标定为 1：整笔位移都留在场上。
      ⚠️ OTC 不写：私下一口价的大宗交易不落公开盘口（与它不消耗供应量同一口径）。
      ⚠️ 与上帝模式**无关**（2026-09-29 瘦身）：原来这里乘过一个「冲击倍率」`s.god.mult`，
         已删除 —— 上帝模式不再有任何价格能力。
@@ -618,7 +634,7 @@ export function openTrade(s, side, frac = 1) {
         字段一并删掉 —— 它不再是选项，而是基础玩法的一部分。 */
   if (!otc) {
     const dir = side === 'long' ? 1 : -1;
-    if (addFlow(s, s.sym, dir * SHOCK.share * cost)) invalidateSigma();
+    if (addFlow(s, s.sym, dir * SHOCK.share * permImpactFor(s, s.sym, s.i, notional))) invalidateSigma();
     /* 玩家自己的成交量（v17 · 2026-10-01）：这一笔从此在量柱上看得见，
        也进这家所**这条产品线**的 30 天量（v19 按所 / v20 按产品线） */
     addPlayerVol(s, notional, s.ex, kind);
@@ -691,7 +707,8 @@ export function closeTrade(s, why = '手动') {
   delete s.positions[sym];
 
   /* 订单冲击：**平仓写一笔与开仓对称的反向台阶**（用户 2026-10-01 拍板）。
-     公式与 `openTrade` 同一个：位移量 = `SHOCK.share × 本笔成交代价`，方向取**持仓方向的反面**
+     公式与 `openTrade` 同一个：位移量 = `SHOCK.share × 本笔行情位移量`（`permImpactFor`，**无阈值死区**），
+     方向取**持仓方向的反面**
      —— 平多 = 卖出 ⇒ 打压（−1），平空 = 买回 ⇒ 推高（+1）。
      ⚠️ 它**不是**早先那个 A2「回填」（`giveBack`：平仓时反向写回开仓残存值的一半，已删除）——
         那个会把开仓留下的台阶主动推回去，与「台阶永久保留」冲突；这里写的是**平仓这一笔自己**
@@ -700,7 +717,7 @@ export function closeTrade(s, why = '手动') {
         写完必须 `invalidateSigma()` —— 平仓从此**会**改动它之后的 K 线。 */
   if (!otc) {
     const dir = pos.side === 'long' ? -1 : 1;
-    if (addFlow(s, sym, dir * SHOCK.share * cost)) invalidateSigma();
+    if (addFlow(s, sym, dir * SHOCK.share * permImpactFor(s, sym, s.i, notional))) invalidateSigma();
   }
   /* 持仓抛压折价（v18 · 2026-10-01）：这一条仓位没了（`delete` 在上面）⇒ 折价随之归零。
      走上一步的**只有现货实物多头** —— 平掉一张合约仓时 `capturedOf` 本来就没变，函数内部会跳过。 */
@@ -735,7 +752,7 @@ function forceLiquidate(s, pos, atPrice) {
      ⚠️ 强平多发生在**急跌那根**，这笔反向冲击会让兵败如山倒的 K 线更陡一档，是刻意的。 */
   {
     const dir = pos.side === 'long' ? -1 : 1;
-    if (addFlow(s, pos.sym, dir * SHOCK.share * impactFor(s, pos.sym, s.i, notional))) invalidateSigma();
+    if (addFlow(s, pos.sym, dir * SHOCK.share * permImpactFor(s, pos.sym, s.i, notional))) invalidateSigma();
   }
 
   /* 串形与开仓 / 平仓对齐（2026-09-29）：`｜` 两侧不留白、金额走 `fmtMoneyShort`、
@@ -1490,7 +1507,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   addPlayerVol(s, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
   {
     const dir = pos.side === 'long' ? -1 : 1;
-    if (addFlow(s, pos.sym, dir * SHOCK.share * impactFor(s, pos.sym, s.i, notional))) invalidateSigma();
+    if (addFlow(s, pos.sym, dir * SHOCK.share * permImpactFor(s, pos.sym, s.i, notional))) invalidateSigma();
   }
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
   s.positions[pos.sym] = r.pos;

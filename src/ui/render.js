@@ -11,7 +11,7 @@
  * 所有会变的数字都挂在 `refs` 上，`update()` 是唯一的写入口。
  */
 
-import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
+import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
@@ -418,9 +418,14 @@ export function mount(root) {
   setCard.append(fxRow, hintRow, colRow);
   const resetBtn = el('button', 'act flat', '重开本局');
   resetBtn.dataset.reset = '';
+  /* 返回主菜单（2026-10-01 用户要求）：设置页原来是**没有出口**的 —— 底部 Tab 只在交易 /
+     资产 / 设置三页之间切，玩家想回菜单只能刷新页面。这枚键停在原地（不 reload、不丢档），
+     `main.js` 的 `onHome` 把时钟停住再弹菜单，本局状态一个字不动。 */
+  const homeBtn = el('button', 'act flat', '返回主菜单');
+  homeBtn.dataset.home = '';
   /* 按钮必须包在 `.row` 里：`.act` 自己带 `flex: 1`，直接放进纵向 flex 的 `.page` 会被拉满整屏 */
   const resetRow = el('div', 'row');
-  resetRow.append(resetBtn);
+  resetRow.append(resetBtn, homeBtn);
   const settingsPage = el('div', 'page settings-page');
   settingsPage.append(setCard, resetRow);
 
@@ -538,7 +543,7 @@ export function mount(root) {
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asList,
     asCurve, eqRangeBtns, asBusy, asOnway, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
-    volBtns, vibBtns, fxBtns, mktBtn, hintBtn, colBtn,
+    volBtns, vibBtns, fxBtns, mktBtn, hintBtn, hintRow, colBtn,
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
     rvWrap, rvCanvas, rvHead, rvSym, rvMcap, rvSupp, rvChg, rvModeBtn, rvLogs,
@@ -623,6 +628,10 @@ export function update(refs, s, view) {
   refs.mktBtn.classList.toggle('on', view.marketSound);
   for (const [v, b] of refs.vibBtns) b.classList.toggle('on', Number(v) === view.vib);
   for (const [v, b] of refs.fxBtns) b.classList.toggle('on', Number(v) === view.fx);
+  /* 挑战模式**整行不出现**（2026-10-01 用户拍板）：那一局恒为「老手」（`createState` 里
+     `hintOn: !isChallenge`），没有任何入口能把它打开 —— 留一枚点了没反应的开关等于骗人。
+     ⚠️ 用 `hidden` 而不是删节点：`refs.hintRow` 是 `mount()` 建好的静态 DOM，藏起来即可。 */
+  refs.hintRow.hidden = isChallenge(s.scen);
   refs.hintBtn.textContent = s.hintOn ? '开' : '关';
   refs.hintBtn.classList.toggle('on', s.hintOn);
   refs.colBtn.textContent = view.redUp ? '红涨' : '绿涨';
@@ -1003,10 +1012,12 @@ export function update(refs, s, view) {
  *   `own` 是否把**玩家自己的成交额**并进量柱（v20）。交易页默认真；
  *         **回顾页必须传假** —— 那一屏讲市场史，玩家这一局的成交不该混进 2013 年的柱子
  *         （模块里那个 `playerVolSource` 注入的是**当前存档**的 `s.pvol`，不关掉就会串台）。
+ *   `ns` 视野命名空间（2026-10-01）：交易页 `''`、回顾页 `'rv'` —— 两页的「当前根」不是一个东西
+ *        （交易页看 `s.i`、回顾页看 `rv.i`），共用一格视野就会串台（见 `view.js` 的 `keyOf`）。
  * @returns {object} `windowFor` 的返回值（`mode` / `count` / `locked` / `right` 都要用）
  */
-function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true }) {
-  const win = windowFor(sym, i, view.chartW, own);
+function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true, ns = '' }) {
+  const win = windowFor(sym, i, view.chartW, own, ns);
   /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
      日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
      （`count` 可能大于可用根数，这里的下界会算成负数）。 */
@@ -1045,7 +1056,7 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true }) {
     cssH: view.chartH,
     yPx: win.yPx,
   });
-  if (effY !== win.yPx) setYPx(sym, effY);
+  if (effY !== win.yPx) setYPx(sym, effY, ns);
   return win;
 }
 
@@ -1532,7 +1543,7 @@ export function openIntro(scenId) {
  * ⚠️ 底部那行构建日期由 `vite.config.js` 的 `define` 注入（`__BUILD_DATE__`，UTC+8）——
  *    上传服务器后一眼能看出拿到的是不是最新版。
  */
-export function openMenu({ canContinue = false } = {}) {
+export function openMenu({ slots = [] } = {}) {
   closePicker();
   const ov = document.getElementById('overlay');
   if (!ov) return;
@@ -1546,15 +1557,18 @@ export function openMenu({ canContinue = false } = {}) {
     '2013 年 1 月 → 2024 年 12 月。\n'
     + '行情就是真实历史，没人替你兜底。'));
 
+  /* 有档时「读取存档」**置首**（2026-10-01 用户拍板）：这一趟开机的目的多半是接着玩，
+     它才是主入口 ⇒ 给 `.act long`（主色实底），「开始游戏」顺势退成 `.act chan`。 */
+  const has = slots.length > 0;
   const btns = el('div', 'menu-btns');
-  const start = el('button', 'act long', '开始游戏');
+  if (has) {
+    const load = el('button', 'act long', '读取存档');
+    load.dataset.menu = 'load';               // 值即子命令，见 `main.js` 的 `onMenu`
+    btns.append(load);
+  }
+  const start = el('button', has ? 'act chan' : 'act long', '开始游戏');
   start.dataset.menu = 'start';
   btns.append(start);
-  if (canContinue) {
-    const cont = el('button', 'act flat', '继续游戏');
-    cont.dataset.menu = 'continue';
-    btns.append(cont);
-  }
   /* 挑战模式（M1 · 2026-10-01）—— 年代局列表的**开关**（值 `'scen'`，见 `main.js` 的 `onMenu`）。
      它自己不开始游戏：点开先摊出那五张年代卡，玩家再在里面挑一张。 */
   const scen = el('button', 'act chan', '挑战模式');
@@ -1570,6 +1584,8 @@ export function openMenu({ canContinue = false } = {}) {
   btns.append(careers);
   if (!isStandalone()) menuInstallBtn(btns);
   box.append(btns);
+  /* 读取存档摊开的那两行（有档才有）—— 排在年代卡**之前**：它对应的是置首那枚主入口。 */
+  if (has) box.append(slotList(slots));
   box.append(scenarioList());
 
   /* 构建日期（UTC+8）——`__BUILD_DATE__` 由构建期替换成字面量字符串 */
@@ -1623,6 +1639,35 @@ function scenarioList() {
 export function toggleScenarioList() {
   const box = document.querySelector('.menu-box');
   const wrap = box && box.querySelector('.menu-scens');
+  if (!wrap) return false;
+  wrap.hidden = !wrap.hidden;
+  return !wrap.hidden;
+}
+
+/**
+ * 「读取存档」摊开的那几行（2026-10-01 用户拍板）—— `slots` = `[{ key, name }]`，
+ * 由 `main.js` 的 `menuSlots()` 现算（只列**真有档**的槽 ＋ 当前这一局那个槽）。
+ *
+ * 行是 `<button>` 而**不是** `div`：整行都得能点。动作键是 `data-slot`（值 = 槽位键
+ * `normal` / `challenge`），必须登记在 `bind.js` 的 `ACTION_KEYS` 里，否则点了没反应。
+ * 视觉与年代卡同一副（复用 `.scen` 的底 / 边 / 高亮），只是只有一行名字。
+ */
+function slotList(slots) {
+  const wrap = el('div', 'menu-slots');
+  wrap.hidden = true;
+  for (const it of slots) {
+    const row = el('button', 'scen');
+    row.dataset.slot = it.key;                // ⚠️ 动作键：`main.js` 的 `onSlot`
+    row.append(el('b', null, it.name));
+    wrap.append(row);
+  }
+  return wrap;
+}
+
+/** 开 / 关读取存档列表（「读取存档」那枚按钮调它）。签名与 `toggleScenarioList` 一字不差。 */
+export function toggleSlotList() {
+  const box = document.querySelector('.menu-box');
+  const wrap = box && box.querySelector('.menu-slots');
   if (!wrap) return false;
   wrap.hidden = !wrap.hidden;
   return !wrap.hidden;
@@ -1842,6 +1887,8 @@ export function renderReview(refs, rv, view) {
        `playerVolSource` 注入的是当前存档的 `pvol`，不关掉就会把「你这一局在 2015 年买的那一笔」
        画进 2015 年的历史柱子里。 */
     canvas: refs.rvCanvas, head: refs.rvHead, sym, i: rv.i, view, mark, cur: null, own: false,
+    /* 视野命名空间（2026-10-01）：回顾页自己一套，绝不与交易页那格串味 —— 见 `view.js` 的 `keyOf`。 */
+    ns: 'rv',
   });
   refs.rvModeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
 

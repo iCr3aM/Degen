@@ -38,8 +38,8 @@ export const ACTION_KEYS = [
      ⚠️ 漏进这张表 = 「点了没反应」—— `findActionEl` 只认 `ACTION_SELECTOR` 里出现过的键
      （本轮实测就是这个 bug：引导第一步之后再点「下一步」不走）。 */
   'guide',
-  /* 需求 4（《主菜单与历史回顾模式方案》§2 / §3）：`menu` ＝ 主菜单三入口
-     （`start` 开始 / `continue` 继续 / `review` 回顾）；
+  /* 需求 4（《主菜单与历史回顾模式方案》§2 / §3）：`menu` ＝ 主菜单各入口
+     （`load` 读取存档 / `start` 开始 / `scen` 挑战 / `review` 回顾 / `careers` 档案 / `install` 安装）；
      `review` ＝ 回顾页的**全部**动作 —— 值是子命令（`exit` / `pause` / `spd:100` / `sym:BTC`
      / `years` / `year:2017` / `go` / `skip` / `all`），分派见 `main.js` 的 `onReview`。 */
   'menu', 'review',
@@ -61,6 +61,10 @@ export const ACTION_KEYS = [
      `vol`（音量：0 关 / 1 小 / 2 中 / 3 大）／`vib`（震动：0 关 / 1 弱 / 2 强）／
      `fx`（动效：0 关 / 1 减弱 / 2 全）。 */
   'vol', 'vib', 'fx',
+  /* 存档拆两槽（2026-10-01 用户要求）：
+     `home` ＝ 设置页那枚「返回主菜单」（不 reload、不丢档，只把时钟停住再弹菜单）；
+     `slot` ＝ 主菜单「读取存档」摊开后那几行，值是槽位键（`normal` / `challenge`）。 */
+  'home', 'slot',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');

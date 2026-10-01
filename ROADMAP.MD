@@ -7581,3 +7581,92 @@ html, body { height: 100%; overflow: hidden; }   /* ① 根节点永不滚动 */
 
 > 同 §三十五：以 `src/` 为准。
 
+---
+
+## 六十一、订单冲击病根 ＋ 视野分家 ＋ 挑战限制 ＋ 存档拆槽（✅ 2026-10-01 · 用户拍板）
+
+本轮一次性落地六件事，逐条对应。
+
+### 61.1 「大额买入不影响 K 线」—— 四个根因（A/B/C/D）
+
+| # | 根因 | 处置 |
+| --- | --- | --- |
+| A | `impactOf` 的 `threshold = 0.10` **死区**被 `engine` 拿去算**永久位移** ⇒ `addFlow(…, 0)` 早退，`s.flow` 一个字节都没写 | 新增无死区的 `permImpactOf`（`impact.js`）；`engine` 新增 `permImpactFor`，**四处**写池全部改用它（开仓 / 平仓 / `forceLiquidate` / `partialLiquidate`） |
+| B | 平仓 / 强平写**逐位对称**的反向台阶 ⇒ 同量买卖净位移 ≈ 0 | **保留对称**（用户拍板）：平仓那一笔是它自己的冲击，与开仓台阶叠加，物理上就该这样 |
+| C | 永久位移 = `0.35 × 代价`，一屏 60 根上只有约 2px | `SHOCK.share` **0.35 → 1**（用户拍板）：成交之后价格**就停在**那笔冲击的位置，再按幂律衰到 `floor = 0.3` |
+| D | 视野被锁在历史某根之后 ⇒ 最新柱与现价签**不是同一时刻** ⇒ 现价签被 `clamp` 到上下沿 | 视野**命名空间分家**（`view.js` 的 `keyOf`，交易页 `''` / 回顾页 `'rv'`）；`panBy` 只在 `dxPx ≠ 0` 时锁时间轴；`zoomBy` 不再强制锁；`mark` 落在价格带外时现价线**改虚线** |
+
+**实测（改动前的触发门槛，说明 A 有多致命）**：各年代 BTC 单小时要 ≥ $320（2013-01）/
+$84,881（2015-01）/ $3.38M（2017-09）/ $38.2M（2020-02）/ $175.7M（2021-01）/
+$310.9M（2022-05）才在图上留痕。
+
+⚠️ **红线 A（不双重计价）仍然成立**：`impactOf` 只决定**这次成交付多贵**（`fillPrice`），
+`permImpactOf` 只决定**成交之后价格停在哪**（`SHOCK.share ×` 它）。两者同形、同 `impactCore`，
+但**不共用死区**。
+
+### 61.2 挑战模式的开局资金 —— 全部维持现状（用户裁决）
+
+真数据实测「满仓买入并持有 BTC 到 2024-12-31」基线：经典全程 ×7,053 / 门头沟寒冬 ×292 /
+ICO 狂潮 ×19.6 / 312 前夜 ×9.7 / 10u 战神 ×3.21 / LUNA 归零周 ×2.48。
+已知两处（用户决定不改）：① `10u 战神` 的 $10 对上 Binance 现货 $10 最小名义 ⇒ 整局只能下 1 笔单；
+② 后半段倍数只有 ×2.5 ~ ×3.2。
+
+### 61.3 挑战模式的三处闸门
+
+挑战局是**有限制**的，限制一律拦在**状态机**里，不靠 UI 兜底：
+
+1. **不弹「我是新手 / 老手」**：`boot` 走 `beginGame()` 直通（`createState` 里 `hintOn: !isChallenge`）。
+2. **设置页「新手提示」整行不出现**：`render.js` 的 `update()` 里 `refs.hintRow.hidden = isChallenge(s.scen)`。
+3. **不能开上帝模式**：`onGodTap()` 顶部 `if (isChallenge(s.scen)) return;`（连计数都不起）。
+
+救济金闸门（`engine.js`）此前已有，不在本轮。
+
+### 61.4 设置页「返回主菜单」
+
+`render.js` 的 `resetRow` 里加第二枚键（`data-home`），`main.js` 的 `onHome()`：停钟 ＋ 先落一次盘 ＋
+`openMenu({ slots: menuSlots() })` —— **本局状态一个字不动**。
+⚠️ 先落盘是必须的：菜单里「读取存档」靠这份档才列得出当前这一局。
+
+### 61.5 存档拆两槽（`STATE_VERSION` 21 → 22）
+
+- 键：`degen_save_normal` / `degen_save_challenge`（`save.js`），一局普通、一局挑战**同时存在**。
+- 槽位由 `s.scen` 推导（`saveSlotOf`，**不新增持久字段**）；⚠️ 名字**不叫** `slotOf` ——
+  `state.js` 已有一个同名的账本读取函数。
+- 一次性信箱 `degen_next_slot`（与 `degen_next_scen` 同一副骨架）：`load()` 缺省「先普通、再挑战」，
+  玩家在挑战局里点「开始游戏」时会被它捞回去 ⇒ 必须有明确的「这一趟读哪个槽」压过它。
+- 主菜单：**有档时第一枚为「读取存档」**（`.act long`，「开始游戏」退成 `.act chan`），
+  点开摊出「普通模式 / 挑战模式」两行（`data-slot`，`.menu-slots`，复用 `.scen` 的视觉）。
+- 「重开本局」改走 `startNewGame(s.scen)`（投年代信箱 ＋ 清**本局所在的槽** ＋ reload），
+  取消「经典全程重开完先回菜单」那条分叉 —— 那条路上 reload 后 `load()` 会掉进挑战档。
+- 开机报错面板的「清除存档并重开」＝ **两个槽一起清**。
+- ⚠️ 旧键 `degen_save` 里的档读不到 ⇒ 语义上等同弃档，故一并升版本号。
+
+### 61.6 落点清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/core/impact.js` | 抽 `impactCore`；新增无死区 `permImpactOf` |
+| `src/core/god.js` | `SHOCK.share` 0.35 → 1（重写该字段注释） |
+| `src/core/engine.js` | 新增 `permImpactFor`；开 / 平 / 强平 / 部分强平四处写池改用它 |
+| `src/core/state.js` | `STATE_VERSION = 22`；`hintOn: !isChallenge(sc.id)` |
+| `src/core/save.js` | 重写为两槽（`SAVE_SLOTS` / `slotName` / `saveSlotOf` / `loadSlot` / `hasSave` / `load` / `wipe(slot)`） |
+| `src/ui/view.js` | 视野按「命名空间 ＋ 币」分家；垂直拖动不锁时间轴；`zoomBy` 不锁 |
+| `src/ui/chart.js` | `mark` 出带时现价线改虚线 |
+| `src/ui/render.js` | `openMenu({ slots })` ＋ `slotList` / `toggleSlotList`；设置页「返回主菜单」；`hintRow` 挑战隐藏 |
+| `src/ui/bind.js` | `ACTION_KEYS` 加 `home` / `slot` |
+| `src/ui/style.css` | `.menu-slots` 与 `.menu-scens` 共用一段视觉 |
+| `src/main.js` | 槽位信箱；`menuSlots` / `startNewGame` / `onSlot` / `onHome` / `beginGame`；`onMenu` / `onScenario` / `doRestart` / `onWipe` 重写；`onGodTap` 挑战闸门 |
+
+### 61.7 验收（2026-10-01）
+
+- 离线断言 **43/43 全绿**（临时脚本 `tools/_slots_check.mjs`，跑完即删）：覆盖
+  `permImpactOf` 无死区 / 单调 / 与 `impactOf` 在阈值以上逐位同值 / `cap` ＋ `hard` 上夹 /
+  非正值归零，以及两槽的 `save` / `loadSlot` / `hasSave` / `load` / `wipe` / 版本与形状弃档 /
+  `disableSave` 闸门。
+- `npm run build` ✅ 通过：**25 modules**，`dist/assets/index.DtyUjIlZ.js` 112.49 kB /
+  `index.Cl4SCh4g.css` 22.64 kB。
+- ⚠️ **真机确认项**：买一笔大额单看小时线 / 日线的台阶是否真的留在图上；主菜单有档时
+  「读取存档」是否置首且能分别读到普通 / 挑战两槽。
+
+> 同 §三十五：以 `src/` 为准。
+

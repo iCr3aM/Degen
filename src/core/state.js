@@ -7,10 +7,15 @@
  * 日期、行情、解锁币种全部由它派生（`format.fmtDate` / `market`），谁都不许另存一份时间。
  */
 
-import { cashCurAt, DEFAULT_SCENARIO, GAME, scenarioOf, scenarioStartIndex } from './config.js';
+import { cashCurAt, DEFAULT_SCENARIO, GAME, isChallenge, scenarioOf, scenarioStartIndex } from './config.js';
 import { isSpot } from './positions.js';
 
-/* ⚠️ v21（2026-10-01）：**年代开局（挑战模式）** ＋ **交易统计**。
+/* ⚠️ v22（2026-10-01）：**存档拆两槽** —— 普通模式 `degen_save_normal` / 挑战模式
+   `degen_save_challenge`（`save.js`），一局普通与一局挑战可以**同时存在**、互不覆盖。
+   形状本身一个字段都没改（槽位由 `s.scen` 推导）；但旧档存在**老键 `degen_save`** 里，
+   读档一律读不到 ⇒ 语义上等同弃档，故一并升版本号，让「旧键里的档」也走同一条丢弃路径。
+
+   ⚠️ v21（2026-10-01）：**年代开局（挑战模式）** ＋ **交易统计**。
    新增 4 个持久字段：
      · `s.scen`  —— 本局是哪个年代（`config.SCENARIOS[].id`）。**必须入存档**：`s.i` 的起点、
                     `day0` 的分母、救济金闸门都靠它，读档时上一局的年代得认出来。
@@ -44,7 +49,7 @@ import { isSpot } from './positions.js';
    ① **限价挂单 `s.orders` 整体移除**（C8-B2 回滚）—— 改动前它是 v15 新增的键。
    ② **场外配资改版为「一次性救济金」**—— 删除 `s.loan`（在贷）字段与全部利息/到期/违约逻辑。
    两处都动了状态形状，旧档对不上 ⇒ **弃档重开**（既有规范，不写迁移）。 */
-export const STATE_VERSION = 21;
+export const STATE_VERSION = 22;
 
 /**
  * 开一局新的。
@@ -281,8 +286,11 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      * ⚠️ **开场叙事不受它管**（老手新首都该看一遍）—— 那是 `openIntro` 无条件弹的。
      * ❗ 它落在**主状态**里：预警遮罩会暂停游戏、改变时间推进的节奏，
      *    不是纯 UI 偏好，放进 `degen_settings` 会让同一份档在不同机器上跑出不同结果。
+     * ⚠️ **挑战局恒为关**（2026-10-01 用户拍板「挑战模式默认为老手」）：挑战模式不弹开场弹窗
+     *    （`main.js` 的 `beginGame`），也就没有那两枚「我是新手 / 老手」可点 ⇒ 默认值必须是关，
+     *    否则挑战局会带着一套玩家从没选择过的引导开局。
      */
-    hintOn: true,
+    hintOn: !isChallenge(sc.id),
 
     /** 上帝模式下「已归零」的一次性提示标志 —— 避免每根 K 线刷一条日志；填入资金后清掉 */
     godRuined: false,

@@ -402,16 +402,22 @@ export function drawChart(canvas, o) {
   // ── 当前价（实线 + 右端高亮标签） ──
   // **总是画**：平移到过去之后当前价可能整条落在视野之外，那就把它夹到价格区边缘 ——
   // 贴边的标签仍然报着真价，玩家不会「以为没在持仓」。原来是越界就整条消失，反而更容易误读。
+  // ⚠️ **被夹住时改画虚线**（2026-10-01 修）：`mark` 落在本帧价格带之外，说明视野里根本没有
+  //    当前那一根（玩家翻到了历史里）。实线贴边看着就像「现价就在这里」，而那根柱子不是当前根
+  //    —— 虚线是「这条线不在本视野内」的标记，与实线一眼可分。
   if (Number.isFinite(mark)) {
+    const out = mark > hi || mark < lo;
     const y = Math.round(clamp(yOf(mark), top, bot)) + .5;
     const last = candles[n - 1];
     const col = last && last.c >= last.o ? T.UP : T.DOWN;
     ctx.strokeStyle = col;
     ctx.lineWidth = 1;
+    if (out) ctx.setLineDash([4, 4]);
     ctx.beginPath();
     ctx.moveTo(0, y);
     ctx.lineTo(plotW, y);
     ctx.stroke();
+    ctx.setLineDash([]);
 
     const tag = axisLabel(mark);
     ctx.font = '12px ui-monospace, monospace';

@@ -1077,14 +1077,16 @@ canvas.curve {
    所以内部三行全部 `display: block`，不再继承按钮的居中。
    ⚠️ `[hidden]` 那条**必须写**：上面那条 `display: flex` 的优先级高过浏览器默认的
       `[hidden] { display: none }`，漏掉它 `wrap.hidden = true` 就关不上了。 */
-.menu-scens {
+.menu-scens,
+.menu-slots {
   width: 100%;
   max-width: 280px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.menu-scens[hidden] { display: none; }
+.menu-scens[hidden],
+.menu-slots[hidden] { display: none; }
 .scen {
   display: block;
   width: 100%;
