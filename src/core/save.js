@@ -53,11 +53,11 @@ export function save(s) {
  * 容器形状（正式版 · 存档健壮性）：这几个字段**缺了就会在开机首帧抛异常** ——
  *   `heldSyms` 迭代 `s.positions`、`pushLog` 用 `s.log.unshift`、
  *   资金曲线用 `s.eq`、拥堵脉冲用 `s.pulse`、订单冲击用 `s.flow`、持仓抛压折价用 `s.overhang`、
- *   账本用 `s.books`。
+ *   瞬时深度池用 `s.pool`、账本用 `s.books`。
  * 版本号对得上、字段却被改坏（手动编辑 / 半截写入）的档**同样按「丢弃重开」处理**，
  * 总好过让玩家卡在一个「界面可见、却完全点不动、也没有任何提示」的死局里。
  */
-const SHAPE = { books: 'obj', positions: 'obj', flow: 'obj', overhang: 'obj', pvol: 'obj', stat: 'obj', pulse: 'arr', log: 'arr', eq: 'arr' };
+const SHAPE = { books: 'obj', positions: 'obj', flow: 'obj', overhang: 'obj', pool: 'obj', pvol: 'obj', stat: 'obj', pulse: 'arr', log: 'arr', eq: 'arr' };
 
 function shaped(s) {
   if (typeof s.i !== 'number' || typeof s.sym !== 'string') return false;

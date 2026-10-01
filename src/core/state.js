@@ -10,7 +10,13 @@
 import { cashCurAt, DEFAULT_SCENARIO, GAME, isChallenge, scenarioOf, scenarioStartIndex } from './config.js';
 import { isSpot } from './positions.js';
 
-/* ⚠️ v22（2026-10-01）：**存档拆两槽** —— 普通模式 `degen_save_normal` / 挑战模式
+/* ⚠️ v23（2026-10-01）：新增 `s.pool` —— **瞬时深度池**（L1 · 用户拍板「落地 L1」）。
+   病根：`hourLiqOf` 每笔都按满盘口现算 ⇒ 边际难度恒定，「不停买入」吃不光盘口。
+   新增 `sym -> { v, at }`：`v` = 尚未回补的已消耗名义额，按游戏小时回补（半衰期 4h）；
+   `hourLiqOf` 的分母乘 `max(POOL.floor, 1 − v ÷ (POOL.capK × 基准深度))`。
+   动了状态形状 ⇒ 一并升版本号，旧档走既有的「丢弃重开」路径。
+
+   ⚠️ v22（2026-10-01）：**存档拆两槽** —— 普通模式 `degen_save_normal` / 挑战模式
    `degen_save_challenge`（`save.js`），一局普通与一局挑战可以**同时存在**、互不覆盖。
    形状本身一个字段都没改（槽位由 `s.scen` 推导）；但旧档存在**老键 `degen_save`** 里，
    读档一律读不到 ⇒ 语义上等同弃档，故一并升版本号，让「旧键里的档」也走同一条丢弃路径。
@@ -49,7 +55,7 @@ import { isSpot } from './positions.js';
    ① **限价挂单 `s.orders` 整体移除**（C8-B2 回滚）—— 改动前它是 v15 新增的键。
    ② **场外配资改版为「一次性救济金」**—— 删除 `s.loan`（在贷）字段与全部利息/到期/违约逻辑。
    两处都动了状态形状，旧档对不上 ⇒ **弃档重开**（既有规范，不写迁移）。 */
-export const STATE_VERSION = 22;
+export const STATE_VERSION = 23;
 
 /**
  * 开一局新的。
@@ -159,6 +165,17 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      * ⚠️ 与 `FLOAT.frac` 是一对：口径与量级见 `config.FLOAT` 的长注释。
      */
     overhang: {},
+
+    /**
+     * **瞬时深度池**（v23 · 2026-10-01 拍板「落地 L1」）—— `sym -> { v, at }`。
+     *   `v`  = 尚未回补的**已消耗名义额**（美元）：成交吃掉的盘口深度（开 / 平 / 强平都算，OTC 不算）
+     *   `at` = 上次消耗所在的 `s.i`
+     * 该币此刻的消耗量 = `v × poolRefill(s.i − at)`（半衰期 4 游戏小时），容量 = `POOL.capK × 基准深度`，
+     * 于是 `hourLiqOf` 的分母乘 `max(POOL.floor, 1 − 消耗 ÷ 容量)` —— 连点买入的边际难度递增、
+     * 停手几小时后盘口自动长回来。**它只改滑点 / 笔数的分母，不改价格**（价格位移唯一来源是 `s.flow`）。
+     * ⚠️ 与 `FLOAT`（结构性持仓折减）是两件事：那个是「你囤着不卖」，这个是「你刚把它吃掉了」。
+     */
+    pool: {},
 
     /**
      * **玩家自己的成交量**（v17 新增 · v19 按所分账 · v20 按产品线分账）——

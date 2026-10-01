@@ -16,7 +16,7 @@ import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC,
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
-import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, sigmaOf } from './impact.js';
+import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
 import { SHOCK, addFlow } from './god.js';
 import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -232,7 +232,9 @@ function floatShareOf(s, sym, i) {
 }
 
 /**
- * 该小时的流动性分母 ＝ `liqOf(当天) × hourShareK(该小时份额, …) × 持仓折减`。
+ * 该小时的**基准深度分母** ＝ `liqOf(当天) × hourShareK(该小时份额, …) × 持仓折减`
+ * —— **不含**瞬时深度池（池容量要拿它当基数 ⇒ 不能在它里面自洽引用，见 `poolFactorOf`）。
+ * 口径与改动前的 `hourLiqOf` 逐字相同。
  *
  * 分母口径（C2，2026-09-29 拍板）：完整交易日里系数 = 24 × share，其**当日均值恰为 1**
  * ⇒ 一天下来的平均行为与「只用日流动性」**完全一致**（`A` / `threshold` / `cap` 无需重校），
@@ -242,18 +244,67 @@ function floatShareOf(s, sym, i) {
  * 市场能承接的深度越薄，同一笔单子的 `q` 越大、滑点越痛。下夹 `FLOAT.depthFloor` 是为了在
  * `share → 1` 时不把分母压到 0（否则 `q` 无穷大，滑点与拆单笔数都会失控）。
  *
- * ⚠️ 抽成独立函数是因为 **C8-B1 数子单笔数也要用它**（`q = 名义 ÷ 本值`）——
- *    笔数与滑点必须共用同一处口径，否则两者会各说各话。
- * ⚠️ 只有**滑点 / 笔数**走它；**量柱显示不走**（历史成交量不该被玩家改写，那里直接读 `liqOf`）。
  * @returns {number} 分母；取不到当日流动性时返回 0
  */
-function hourLiqOf(s, sym, i) {
+function hourLiqBase(s, sym, i) {
   const day = dayIndexOf(i);
   const liq = liqOf(sym, day);
   if (!(liq > 0)) return 0;
   const { sum, n } = dayVolShare(sym, day);
   const shrink = Math.max(FLOAT.depthFloor, 1 - floatShareOf(s, sym, i));
   return liq * hourShareK(volumeAt(sym, i), sum, n) * shrink;
+}
+
+/**
+ * 某币此刻**尚未回补的已消耗深度**（美元名义额）—— 纯派生，不改状态。
+ * `e = i − at` 按回补曲线折掉一部分；`e ≤ 0`（同一根 K 线内连点）⇒ 一分不回补。
+ */
+function poolConsumedAt(s, sym, i) {
+  const p = s.pool && s.pool[sym];
+  if (!p || !(p.v > 0)) return 0;
+  const e = i - p.at;
+  return e > 0 ? p.v * poolRefill(e) : p.v;
+}
+
+/**
+ * **瞬时深度池**对分母的乘数（L1 · 2026-10-01 用户拍板「落地 L1」）—— `max(POOL.floor, 1 − v ÷ 容量)`。
+ *
+ * 病根：改动前 `hourLiqBase` 只随小时 / 年代 / 持仓变，每笔都按**满盘口**现算 ⇒ 边际难度恒定，
+ * 「不停买入」也吃不光。池子把「这一小时已经被吃掉多少」也记上，吃得越狠、后续越薄。
+ * 空池 ⇒ 返回**恰好 1**（`base × 1 ≡ base`，IEEE754 精确）⇒ 未消耗路径与改动前**逐位相同**。
+ * @param {number} base 该小时基准深度（`hourLiqBase`，恒 > 0）
+ */
+function poolFactorOf(s, sym, i, base) {
+  const consumed = poolConsumedAt(s, sym, i);
+  if (!(consumed > 0)) return 1;
+  return Math.max(POOL.floor, 1 - consumed / (POOL.capK * base));
+}
+
+/**
+ * 把这一笔**吃掉的深度**记进池子（L1）—— 与 `addFlow` 同级，在成交落账之后调用。
+ * 先按 `poolConsumedAt` 把旧值折到此刻（回补），再累加本笔 ⇒ 池子永远只有 `{v, at}` 一条。
+ *
+ * ⚠️ **不调 `invalidateSigma()`**：池子只改后续成交的分母（代价 / 笔数），不动价格 ⇒ σ 不受影响。
+ * ⚠️ OTC 由调用点过滤（私下一口价不落公开盘口 —— 与「不写冲击池 / 不记量柱」同一先例）。
+ */
+function consumePool(s, sym, notional) {
+  if (!(notional > 0)) return;
+  if (!s.pool) s.pool = {};
+  s.pool[sym] = { v: poolConsumedAt(s, sym, s.i) + notional, at: s.i };
+}
+
+/**
+ * 该小时的流动性分母 ＝ `hourLiqBase × 瞬时深度池乘数`。
+ *
+ * ⚠️ 抽成独立函数是因为 **C8-B1 数子单笔数也要用它**（`q = 名义 ÷ 本值`）——
+ *    笔数与滑点必须共用同一处口径，否则两者会各说各话。
+ * ⚠️ 只有**滑点 / 笔数**走它；**量柱显示不走**（历史成交量不该被玩家改写，那里直接读 `liqOf`）。
+ * @returns {number} 分母；取不到当日流动性时返回 0
+ */
+function hourLiqOf(s, sym, i) {
+  const base = hourLiqBase(s, sym, i);
+  if (!(base > 0)) return 0;
+  return base * poolFactorOf(s, sym, i, base);
 }
 
 /**
@@ -638,6 +689,9 @@ export function openTrade(s, side, frac = 1) {
     /* 玩家自己的成交量（v17 · 2026-10-01）：这一笔从此在量柱上看得见，
        也进这家所**这条产品线**的 30 天量（v19 按所 / v20 按产品线） */
     addPlayerVol(s, notional, s.ex, kind);
+    /* 瞬时深度池（L1 · 2026-10-01）：这一笔吃掉的深度从池子里扣 —— 连点买入的边际难度递增。
+       与上面 `addFlow` 同步过滤 OTC（此处就在 `!otc` 分支内）。 */
+    consumePool(s, s.sym, notional);
   }
   /* 持仓抛压折价（v18 · 2026-10-01）：这一单若**加厚了现货实物多头**，市场对你的忌惮随之变重。
      合约 / OTC 不改变 `capturedOf` ⇒ 值没变时函数内部自己会跳过（不写、不冲 σ 缓存）。 */
@@ -718,6 +772,7 @@ export function closeTrade(s, why = '手动') {
   if (!otc) {
     const dir = pos.side === 'long' ? -1 : 1;
     if (addFlow(s, sym, dir * SHOCK.share * permImpactFor(s, sym, s.i, notional))) invalidateSigma();
+    consumePool(s, sym, notional);        // 瞬时深度池（L1）：平仓同样是真实成交 ⇒ 也吃深度
   }
   /* 持仓抛压折价（v18 · 2026-10-01）：这一条仓位没了（`delete` 在上面）⇒ 折价随之归零。
      走上一步的**只有现货实物多头** —— 平掉一张合约仓时 `capturedOf` 本来就没变，函数内部会跳过。 */
@@ -753,6 +808,7 @@ function forceLiquidate(s, pos, atPrice) {
   {
     const dir = pos.side === 'long' ? -1 : 1;
     if (addFlow(s, pos.sym, dir * SHOCK.share * permImpactFor(s, pos.sym, s.i, notional))) invalidateSigma();
+    consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：强平也是真实成交 ⇒ 也吃深度
   }
 
   /* 串形与开仓 / 平仓对齐（2026-09-29）：`｜` 两侧不留白、金额走 `fmtMoneyShort`、
@@ -1270,6 +1326,7 @@ export function rewindTo(s, to) {
   s.transfer = null;
   s.pulse = [];
   s.flow = {};
+  s.pool = {};          // 瞬时深度池（v23）同样是「进度」⇒ 回退时一并抹掉（与 s.flow 同口径）
   s.pvol = {};          // 玩家自己的成交量（v17）也是「进度」，回退时一并抹掉 —— 与 s.flow 同口径
   s.realized = 0;
   /* 交易统计（v21）也属于「进度」⇒ 一并清空。唯独 `god`（是否开过上帝模式）留着 ——
@@ -1508,6 +1565,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   {
     const dir = pos.side === 'long' ? -1 : 1;
     if (addFlow(s, pos.sym, dir * SHOCK.share * permImpactFor(s, pos.sym, s.i, notional))) invalidateSigma();
+    consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：部分强平也是真实成交 ⇒ 也吃深度
   }
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
   s.positions[pos.sym] = r.pos;
