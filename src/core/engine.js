@@ -403,15 +403,20 @@ function refreshOverhang(s, sym) {
  *    （私下一口价不落公开盘口，与「不写冲击池」同一先例）—— OTC 的过滤放在调用点。
  * ⚠️ v19 起**按所分账**（`pvol[i][exId]`）：成交量阶梯手续费算的是「你在**这家所**近 30 天做了多少」，
  *    跨所搬钱后要重新攒量 —— 与真实交易所的 VIP 档按所计算一致。
- * ⚠️ v20 起再按**产品线**分账（`pvol[i][exId][kind]`，`kind` = `'spot'` / `'fut'`）：
+ * ⚠️ v20 起再按**产品线**分账（`pvol[sym][i][exId][kind]`，`kind` = `'spot'` / `'fut'`）：
  *    现货与合约是两张费率表（`config.fees.spot` / `fut`），30 天量当然也得各算各的 ——
  *    混在一起会出现「靠现货刷量把合约费率刷低」这种现实里不存在的事。
- *    量柱读的是**全所 × 两条产品线的 `u` 之和**。
+ *    量柱读的是**当前币 × 全所 × 两条产品线的 `u` 之和**。
+ * ⚠️ v24（2026-10-02）**最外层补 `sym`**：`s.i` 是全币种共用的小时序号，只按它记账会让
+ *     「在 BTC 买的这一笔」同时出现在 ETH / XRP / DOGE / SOL 的同一根量柱上（用户反馈的 K 线污染）。
+ *     形状与 `s.flow[sym]` / `s.pool[sym]` / `s.overhang[sym]` 三条对齐 —— 玩家留下的痕迹一律以币为作用域。
+ * @param {string} sym 这一笔成交的币种（量柱按它隔离；费率阶梯那一路反过来跨币汇总，见 `vol30Of`）
  */
-function addPlayerVol(s, notional, exId, kind) {
-  if (!(notional > 0) || !exId) return;
+function addPlayerVol(s, sym, notional, exId, kind) {
+  if (!(notional > 0) || !exId || !sym) return;
   if (!s.pvol) s.pvol = {};
-  const cell = s.pvol[s.i] || (s.pvol[s.i] = {});
+  const bySym = s.pvol[sym] || (s.pvol[sym] = {});
+  const cell = bySym[s.i] || (bySym[s.i] = {});
   const byKind = cell[exId] || (cell[exId] = {});
   const e = byKind[kind] || (byKind[kind] = { u: 0, b: 0 });
   e.u += notional;
@@ -424,8 +429,9 @@ function addPlayerVol(s, notional, exId, kind) {
  * 某家交易所**某条产品线、近 30 天（720 根）**的成交量 —— 成交量阶梯手续费的分档依据
  * （v19 · 2026-10-01；v20 加 `kind` 维度）。
  *
- * 与真实交易所的「30 天滚动成交量」同口径：**含窗口两端、按小时求和**。
- * 复杂度 O(720)、与局长度无关（只扫窗口，不扫全程）。
+ * 与真实交易所的「30 天滚动成交量」同口径：**含窗口两端、按小时求和**，
+ * 且**跨币汇总** —— VIP 档算的是「你在**这家所**做了多少」，不分币对（BTC 的量与 ETH 的量一起进档）。
+ * 复杂度 O(币数 × 720)、与局长度无关（只扫窗口，不扫全程）。
  * ⚠️ `kind` 默认 `'spot'` 只为「旧调用点忘改也能跑」兜底，四个调用点全都显式传。
  * @param {'spot'|'fut'} kind 这一单自己的产品线（与 `feeRateOf` 的 `kind` 同源）
  * @returns {{u:number,b:number}} 两个口径的合计（美元名义额 / BTC 等值）
@@ -434,11 +440,16 @@ export function vol30Of(s, exId, i, kind = 'spot') {
   let u = 0, b = 0;
   if (!s.pvol) return { u, b };
   const from = Math.max(0, i - 30 * HOURS_PER_DAY + 1);
-  for (let k = from; k <= i; k++) {
-    const cell = s.pvol[k];
-    const e = cell && cell[exId] && cell[exId][kind];
-    if (!e) continue;
-    u += e.u; b += e.b;
+  /* v24：`pvol` 最外层是币种 ⇒ 这一层必须**遍历所有币**（费率档按所算、不分币对）。 */
+  for (const sym in s.pvol) {
+    const bySym = s.pvol[sym];
+    if (!bySym) continue;
+    for (let k = from; k <= i; k++) {
+      const cell = bySym[k];
+      const e = cell && cell[exId] && cell[exId][kind];
+      if (!e) continue;
+      u += e.u; b += e.b;
+    }
   }
   return { u, b };
 }
@@ -725,8 +736,8 @@ export function openTrade(s, side, frac = 1) {
     const dir = side === 'long' ? 1 : -1;
     pushFlow(s, s.sym, dir, notional);
     /* 玩家自己的成交量（v17 · 2026-10-01）：这一笔从此在量柱上看得见，
-       也进这家所**这条产品线**的 30 天量（v19 按所 / v20 按产品线） */
-    addPlayerVol(s, notional, s.ex, kind);
+       也进这家所**这条产品线**的 30 天量（v19 按所 / v20 按产品线 / v24 按币） */
+    addPlayerVol(s, s.sym, notional, s.ex, kind);
     /* 瞬时深度池（L1 · 2026-10-01）：这一笔吃掉的深度从池子里扣 —— 连点买入的边际难度递增。
        与上面 `addFlow` 同步过滤 OTC（此处就在 `!otc` 分支内）。 */
     consumePool(s, s.sym, notional);
@@ -781,7 +792,7 @@ export function closeTrade(s, why = '手动') {
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(s, sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
   /* 玩家自己的成交量（v17 · 2026-10-01）：平仓同样是成交 ⇒ 记进当根 K 线的量柱。
      OTC 不落公开盘口（与「不写冲击池」同一先例）⇒ 不计。 */
-  if (!otc) addPlayerVol(s, notional, pos.ex, pk);
+  if (!otc) addPlayerVol(s, sym, notional, pos.ex, pk);
   const tag = otc ? `｜OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
   /* 盈亏 ＋ 手续费（本轮 ② · 用户拍板）：
      - **回合净额** = 毛盈亏 − 开仓费 − 平仓费。开仓费在开仓那一刻已经从余额扣过一次
@@ -843,7 +854,7 @@ function forceLiquidate(s, pos, atPrice) {
   const notional = pos.size * atPrice;                // 实际成交名义（强平价上的那笔量）
   /* 玩家自己的成交量（v17 · 2026-10-01）：强平也是一笔真实成交 ⇒ 记进当根 K 线的量柱。
      取 `size × atPrice`，与 `closeTrade` 同口径；产品线取**仓位自己**的那条（v20）。 */
-  addPlayerVol(s, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
+  addPlayerVol(s, pos.sym, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
   /* 订单冲击（2026-10-01 拍板）：强平同样是**卖出 / 买回**，写一笔与开仓方向相反的台阶 ——
      与 `closeTrade` 完全同一公式、同一方向（平多打压 −1、平空推高 +1），且同样**只回吐
      `SHOCK.closeGive`**（2026-10-02）：强平是「被动平仓」，若按满额反向写，玩家爆一次仓就能把
@@ -1609,7 +1620,7 @@ function liquidateAll(s) {
 function partialLiquidate(s, pos, frac, atPrice) {
   const r = reducePosition(pos, frac, atPrice);
   const notional = r.closedNotional;
-  addPlayerVol(s, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
+  addPlayerVol(s, pos.sym, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
   {
     const dir = pos.side === 'long' ? -1 : 1;
     pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive);

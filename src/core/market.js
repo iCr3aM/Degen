@@ -184,22 +184,25 @@ export function volumeAt(sym, i) {
  *    「数据包逐位相同」—— 离线断言靠这一条。
  * ⚠️ v20 起**按产品线分开返回**（现货 / 合约两段，画布上分色叠画）—— 高度合计仍与
  *    改动前**逐位相同**（= 两条线之和），只有颜色分开了。
+ * ⚠️ v24（2026-10-02）起**再要一个 `sym`**：`s.pvol` 的最外层是币种 ⇒ 同一根小时序号
+ *    在五个币上各有一格，不按币取就会把「BTC 那一笔」画到 ETH 的量柱上（K 线污染）。
  */
 let playerVolSource = null;
 
-/** 注入玩家成交量源；不传 = 解除（回到只有数据包份额的量柱） */
+/** 注入玩家成交量源 `(sym, i) => {spot, fut}`；不传 = 解除（回到只有数据包份额的量柱） */
 export function bindPlayerVolSource(fn) { playerVolSource = fn || null; }
 
 /** 空样本：**共用一个冻结对象**，免得每帧给没成交的小时都造一个临时对象（热路径） */
 const NO_PV = Object.freeze({ spot: 0, fut: 0 });
 
 /**
- * 第 i 根 K 线上**玩家自己**贡献的成交额（美元），按产品线分开 —— 加在包内份额折算出的
- * 市场成交额之上。未注入 / 该小时没成交 ⇒ `{ spot: 0, fut: 0 }`。
+ * `sym` 这个币第 i 根 K 线上**玩家自己**贡献的成交额（美元），按产品线分开 ——
+ * 加在包内份额折算出的市场成交额之上。未注入 / 该小时没成交 ⇒ `{ spot: 0, fut: 0 }`。
+ * @param {string} sym 正在画的那个币 —— 玩家在别的币上的成交**不进**这一格
  */
-export function playerVolOf(i) {
+export function playerVolOf(sym, i) {
   if (!playerVolSource) return NO_PV;
-  return playerVolSource(i) || NO_PV;
+  return playerVolSource(sym, i) || NO_PV;
 }
 
 /** 只取收盘价 —— 标记价用这个 */

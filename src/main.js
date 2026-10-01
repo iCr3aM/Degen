@@ -307,10 +307,14 @@ async function boot() {
   /* 玩家自己的成交量（v17 · 2026-10-01）：同样走**注入**，让 `view.windowFor` 不必认识 `s`。
      没成交的小时恒返回 0 ⇒ 量柱与「只有数据包份额」的那一版**逐位相同**（离线断言靠这条）。 */
   /* ⚠️ v19 起 `pvol[i]` 是**按所分账**的对象（`{ exId: … }`），v20 起再按**产品线**分账
-     （`pvol[i][exId][kind] = { u, b }`）。量柱要的是**全所 × 两条产品线各自合计的 `u`**
-     —— 现货一段、合约一段，画布上分色叠画；两段之和与 v19 的单一数字**逐位相同**。 */
-  bindPlayerVolSource(i => {
-    const cell = s.pvol && s.pvol[i];
+     （`pvol[i][exId][kind] = { u, b }`），v24（2026-10-02）**最外层再套一层币种**
+     （`pvol[sym][i][exId][kind]`）。量柱要的是**当前这个币 × 全所 × 两条产品线各自合计的 `u`**
+     —— 现货一段、合约一段，画布上分色叠画；两段之和与 v19 的单一数字**逐位相同**。
+     ⚠️ `sym` 这一层是必须的：`s.i` 是全币种共用的小时序号，不按币隔离的话
+        「你在 BTC 买的这一笔」会在 ETH / XRP / DOGE / SOL 的同一根柱子上一起冒出来。 */
+  bindPlayerVolSource((sym, i) => {
+    const bySym = s.pvol && s.pvol[sym];
+    const cell = bySym && bySym[i];
     if (!cell) return null;
     let spot = 0, fut = 0;
     for (const id in cell) {

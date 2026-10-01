@@ -126,9 +126,10 @@ function dayBar(sym, d, upto, own = true) {
     if (cc.l < l) l = cc.l;
     c = cc.c;
     share += volumeAt(sym, k);
-    /* 玩家自己那一份（v17）也按**同一批已过小时**聚合；v20 起两条产品线各聚各的 */
+    /* 玩家自己那一份（v17）也按**同一批已过小时**聚合；v20 起两条产品线各聚各的，
+       v24 起还要认币（`pvol` 按币分账 —— 别把别的币的成交并进这一根） */
     if (pv) {
-      const p = playerVolOf(k);
+      const p = playerVolOf(sym, k);
       if (p.spot) pv.spot += p.spot;
       if (p.fut) pv.fut += p.fut;
     }
@@ -175,8 +176,9 @@ export function windowFor(sym, i, cssW, own = true, ns = '') {
       candles.push(c);
       /* 包里的份额是「占当日成交额的比例」，乘回当日总量才是可跨天比较的绝对美元量 */
       const share = volumeAt(sym, k);
-      /* 市场那一份 ＋ **玩家自己那一份**（v17）—— 玩家砸出的天量从此在图上看得到 */
-      const pv = own ? playerVolOf(k) : null;
+      /* 市场那一份 ＋ **玩家自己那一份**（v17）—— 玩家砸出的天量从此在图上看得到。
+         v24：这一份**只认本币**（`pvol[sym]`）—— 在 BTC 买的量不该出现在 ETH 的柱子上。 */
+      const pv = own ? playerVolOf(sym, k) : null;
       vols.push((share > 0 ? share * (liqOf(sym, dayIndexOf(k)) || 0) : 0) + (pv ? pv.spot + pv.fut : 0));
       pvols.push(pv);
     }
