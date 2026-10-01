@@ -468,27 +468,51 @@ async function fetchCDDHourly(file, quote, btcAt) {
 /* ══════════════ 数据源 ⑥：Kraken 官方 OHLCVT 归档（本地 CSV，小时线） ══════════════
  * 文件 `{PAIR}_60.csv`，无表头，列 = `unixtime(s), open, high, low, close, volume, trades`。
  * 实测覆盖（2026-06-30 收官）：XBTUSD 2013-10-06 起、ETHUSD 2015-08-07 起、
- * XRPUSD 2017-05-18 起、SOLUSD 2021-06-17 起、**XDGUSD 2019-12-19 起**。
+ * **XRPXBT / XDGXBT / ETHXBT 2016-07-19 起**、XRPUSD 2017-05-18 起、
+ * **XDGUSD 2019-12-19 起**、SOLUSD 2021-06-17 起。
  *
  * ⚠️ 归档里的 `volume` 是**标的数量**，与 ①–④ 的计价币成交额不同口径 ⇒
  *    **只当价格票**，第 5 列恒填 0（成交量只认主源，见文件头「多所聚合」）。
+ *
+ * **一家只投一票**：`KRAKEN_PAIRS` 是**按优先级排列的档位表**，同一小时取第一个有报价的档
+ * （USD 档优先，未上线时才退到 XBT 档）。这样 Kraken 每小时至多一票，不会因为 USD/XBT
+ * 两个订单簿都覆盖同一小时而把票数灌成两票、在 `medoid` 里过度加权。
+ * XBT 计价档（`XRPXBT` / `XDGXBT`）要乘**同一时刻的 BTC/USD** 才换回美元 ——
+ * 与 ⑤ 的 Poloniex BTC 档同理、同乘数（价与量同比例，但本档量不采）。
  */
-const KRAKEN_PAIRS = { BTC: 'XBTUSD', ETH: 'ETHUSD', XRP: 'XRPUSD', DOGE: 'XDGUSD', SOL: 'SOLUSD' };
+const KRAKEN_PAIRS = {
+  BTC: [['XBTUSD', 'USD']],
+  ETH: [['ETHUSD', 'USD']],
+  XRP: [['XRPUSD', 'USD'], ['XRPXBT', 'BTC']],
+  DOGE: [['XDGUSD', 'USD'], ['XDGXBT', 'BTC']],
+  SOL: [['SOLUSD', 'USD']],
+};
 
-function fetchKraken(pair, fromMs, toMs) {
+/** Kraken 归档 -> `hourIndex → [o,h,l,c,usd]`。多档按优先级合并，一家只投一票。 */
+function fetchKraken(sym, fromMs, toMs, btcAt) {
   const out = new Map();
-  const p = join(KRAKEN_DIR, `${pair}_60.csv`);
-  if (!existsSync(p)) return { rows: out, pages: 0 };
-  for (const line of readFileSync(p, 'utf8').split('\n')) {
-    if (!line) continue;
-    const c = line.split(',');
-    const ts = Number(c[0]) * 1000;
-    if (!(ts >= fromMs) || ts >= toMs) continue;
-    const o = +c[1], h = +c[2], l = +c[3], cl = +c[4];
-    if (!(o > 0 && h > 0 && l > 0 && cl > 0)) continue;
-    const i = idxOf(ts);
-    if (!Number.isInteger(i)) continue;
-    out.set(i, [o, h, l, cl, 0]);
+  for (const [pair, quote] of KRAKEN_PAIRS[sym] || []) {
+    const p = join(KRAKEN_DIR, `${pair}_60.csv`);
+    if (!existsSync(p)) continue;
+    const needBTC = quote === 'BTC';
+    if (needBTC && !btcAt) continue;
+    for (const line of readFileSync(p, 'utf8').split('\n')) {
+      if (!line) continue;
+      const c = line.split(',');
+      const ts = Number(c[0]) * 1000;
+      if (!(ts >= fromMs) || ts >= toMs) continue;
+      let o = +c[1], h = +c[2], l = +c[3], cl = +c[4];
+      if (!(o > 0 && h > 0 && l > 0 && cl > 0)) continue;
+      const i = idxOf(ts);
+      if (!Number.isInteger(i)) continue;
+      if (out.has(i)) continue;                    // 前面的档优先，一家一票
+      if (needBTC) {
+        const bp = btcAt(ts);
+        if (!(bp > 0)) continue;
+        o *= bp; h *= bp; l *= bp; cl *= bp;
+      }
+      out.set(i, [o, h, l, cl, 0]);
+    }
   }
   return { rows: out, pages: 0 };
 }
@@ -500,7 +524,7 @@ function fetchKraken(pair, fromMs, toMs) {
  *   K1 = BTC → K2 = ETH/XRP → K3 = DOGE/SOL。没列入的币走原来的「按优先级补洞」，
  *   输出逐位不变 ⇒ 每一批都能单独验收。
  */
-const AGG_COINS = new Set(['BTC']);
+const AGG_COINS = new Set(['BTC', 'ETH', 'XRP']);
 
 /**
  * 逐字段鲁棒中位：从各源**真实报过的值**里挑一个（medoid = 到其余各值对数距离之和最小者）。
@@ -644,12 +668,13 @@ async function buildCoin(coin) {
 
   /* ── ③ Kraken 官方归档（本地 CSV）—— **只服务聚合模式**；补洞模式必须逐位不变 ── */
   if (cells) {
-    const kp = KRAKEN_PAIRS[coin.sym];
-    if (kp) {
+    const pairs = KRAKEN_PAIRS[coin.sym];
+    if (pairs) {
+      const label = `kraken ${pairs.map(x => x[0]).join('+')}`;
       try {
-        absorb(`kraken ${kp}`, (await fetchKraken(kp, tsOf(startI), tsOf(startI + count))).rows, nextTag());
+        absorb(label, (await fetchKraken(coin.sym, tsOf(startI), tsOf(startI + count), PRICE.get('BTC'))).rows, nextTag());
       } catch (err) {
-        log(`    kraken ${kp} 读取失败：${err.message}`);
+        log(`    ${label} 读取失败：${err.message}`);
       }
     }
   }
