@@ -1236,19 +1236,24 @@ button { user-select: none; -webkit-user-select: none; }
 }
 
 @media (min-width: 900px) {
-  /* 桌面端「适度放大」（用户 2026-10-01 拍板）：把总旋钮推高一档，全站字号 / 行高 / 控件高度
-     一起等比放大（见 `:root` 的 `--ui`）。放在 `:root` 上而不是 `#app` 上，是为了让
+  /* 桌面端「适度放大」的**总旋钮** `--ui` 不再在这里写死（用户 2026-10-01 拍板 · 方案 B）：
+     改由 `main.js` 的 `applyUi()` **连续写**（1180px → 1.15 与旧桌面档逐位一致，再宽才继续
+     放大、1385px 起封顶 1.35）。放在 `<html>` 的内联样式上而不是 `#app` 上，是为了让
      `#overlay` 里的那些弹层（它是 `body` 的子节点、不在 `#app` 内）**跟着一起放大** ——
      否则一进主菜单就会「小字弹层压在大字界面上」。
-     ⚠️ 1.15 是**保守**值：实测 390px 手机上那些恰好塞满的计算（HUD 66px、顶栏 48px）在这个
-        倍率下仍有余量；再往上调要重新核对每一处「固定高度装字」的预算。 */
-  :root { --ui: 1.15; }
+     ⚠️ `<900px` 时 `applyUi()` 会 `removeProperty` 把控制权还给 `:root { --ui: 1 }`
+        ⇒ 手机段与平板段**逐位不变**（T-1 那条回归红线）。CSS 写不出这种斜坡，所以只能走 JS。 */
 
   /* 容器**收窄**再居中：原来 1440px 会让左列 K 线拉到一千多像素、右列却还是手机宽度，
      整页读起来像「被拉长的手机」。1180px 下左列 ≈ 711px（K 线宽高比终于正常）、
      右列 = 380 × 1.15 ≈ 437px（仍是手机上那个操作区的等宽放大版，9 档杠杆照样不挤）。 */
   #app { max-width: 1180px; }
 
+  /* ── 交易页：左列行情（HUD / 币种 / K 线），右列「操作 ＋ 复盘」（操作区 / 持仓条 / 日志条）
+     C1（2026-10-01 拍板）：持仓条与日志条**移到右列**，K 线跨到左列最后一行
+     （`3 / 1 / 6 / 2` 把第 3–5 行整段吃掉）⇒ K 线净增「持仓条 ＋ 日志条」那两行的高度。
+     ⚠️ 行数仍是 5 行 —— 第 4、5 行的高度由**右列**的持仓条 / 日志条撑出来，
+        左列那两格里没有内容，所以 K 线必须**跨行**才能吃到，而不是把它们删掉。 */
   .page.trade-page.on {
     display: grid;
     grid-template-columns: minmax(0, 1fr) calc(380px * var(--ui));
@@ -1257,14 +1262,60 @@ button { user-select: none; -webkit-user-select: none; }
   }
   .page.trade-page.on > .hud        { grid-area: 1 / 1; }
   .page.trade-page.on > .symbols    { grid-area: 2 / 1; }
-  .page.trade-page.on > .chart-wrap { grid-area: 3 / 1; }
-  .page.trade-page.on > .posbar     { grid-area: 4 / 1; }
-  .page.trade-page.on > .logline    { grid-area: 5 / 1; }
+  .page.trade-page.on > .chart-wrap { grid-area: 3 / 1 / 6 / 2; }
   .page.trade-page.on > .trade {
-    grid-area: 1 / 2 / 6 / 3;
+    grid-area: 1 / 2 / 4 / 3;
     align-self: start;
     padding: 8px;
     background: var(--panel);
     border: 1px solid var(--line);
   }
+  .page.trade-page.on > .posbar  { grid-area: 4 / 2; }
+  .page.trade-page.on > .logline { grid-area: 5 / 2; }
+
+  /* ── 资产页双栏（C2 · 2026-10-01 拍板）：左列「有多少 / 走势」，右列「去哪了 / 操作 / 持仓」。
+     ⚠️ `align-content: start` 必写：默认 `stretch` 会把行拉高，两块内容被撑到满屏。 */
+  .page.assets-page.on {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) calc(380px * var(--ui));
+    column-gap: 8px;
+    align-content: start;
+  }
+  .page.assets-page.on > .as-head       { grid-area: 1 / 1; }
+  .page.assets-page.on > .hud:not(.one) { grid-area: 2 / 1; }
+  .page.assets-page.on > .hud.one       { grid-area: 3 / 1; }
+  .page.assets-page.on > .curve-box     { grid-area: 4 / 1; }
+  .page.assets-page.on > .eq-break      { grid-area: 1 / 2; }
+  .page.assets-page.on > .set-card      { grid-area: 2 / 2; }
+  .page.assets-page.on > .plist         { grid-area: 3 / 2; }
+
+  /* ── 设置页双栏（C2）：那几行偏好拆成两列，列内行距仍是 8（既有的 `.set-row + .set-row`）。
+     ⚠️ 用**列流向**而不是行流向：行流向会把「音量 / 行情音」并成一行，语义上应该
+        「音频一组、显示一组」竖着读下来。震动那一行在桌面不存在（`vibSupported()` 为假），
+        所以是 5 项时左列 3 项、右列 2 项 —— `grid-auto-flow: column` 自动处理。 */
+  .page.settings-page.on .set-card {
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-rows: repeat(3, auto);
+    column-gap: 32px;
+    row-gap: 8px;
+    align-content: start;
+  }
+  .page.settings-page.on .set-card .set-row + .set-row { margin-top: 0; }
+
+  /* ── 弹层限宽居中（C3 · 2026-10-01 拍板）：宽屏下不再是一条横贯 1180px 的窄条。
+     `.logs` / `.confirm` 原本是 `left/right: 12px` 撑满；这里改成左右同时归零 ＋ 定宽 ＋
+     `margin: auto` 居中（绝对定位下 left/right/width 三者共存时，`margin:auto` 就是居中）。 */
+  .logs, .confirm {
+    left: 0;
+    right: 0;
+    width: min(460px, calc(100% - 24px));
+    margin: 0 auto;
+  }
+}
+
+@media (min-width: 1440px) {
+  /* 超宽屏再放宽一档容器（用户 2026-10-01 拍板）：`--ui` 到 1385px 就已封顶 1.35，
+     剩下的空间只应该喂给 K 线左列，而不是继续放大字号。1360 − 513（右列） − 8 ≈ 839px。 */
+  #app { max-width: 1360px; }
 }

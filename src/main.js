@@ -158,6 +158,32 @@ const GUIDE = [
   { at: () => refs.tabBtns.get('trade'), text: '底部三个页：交易 / 资产 / 设置。随时切回来看盘。' },
 ];
 
+/* ── 桌面端连续自适应（用户 2026-10-01 拍板 · 方案 B）────────────────────────────
+   把 `--ui` 那段斜坡交给 JS：**1180px 下恰好 1.15**（与旧桌面档逐位一致），
+   900–1180px 之间线性爬到 1.15，再宽继续放大、1385px 起封顶 1.35。
+   ⚠️ CSS 写不出这种斜坡（media query 只有离散档），所以必须走 JS。
+   ⚠️ **只动 ≥900px**：窄于 900px 时 `removeProperty` 把 `--ui` 还给样式表那条
+      `:root { --ui: 1 }` ⇒ 手机段与平板段逐位不变（T-1 那条回归红线）。
+   ⚠️ 写的是 `<html>` 的**内联样式**：既盖住样式表，也让 `#overlay` 里的弹层跟着缩放
+      （弹层是 `body` 的子节点，不在 `#app` 内）。 */
+const UI_CAP = 1.35;
+let uiLast = null;
+
+function applyUi() {
+  const el = document.documentElement;
+  const w = el.clientWidth;
+  if (w < 900) {
+    /* 手机段 / 平板段：把控制权还给 CSS（只在「从桌面缩回来」时做一次） */
+    if (uiLast !== null) { el.style.removeProperty('--ui'); uiLast = null; draw(true); }
+    return;
+  }
+  const q = Math.round(Math.max(1, Math.min(UI_CAP, (1.15 * w) / 1180)) * 1000) / 1000;
+  if (q === uiLast) return;
+  uiLast = q;
+  el.style.setProperty('--ui', String(q));
+  draw(true);   // 字号变了 ⇒ 立刻重画一帧（canvas 的 CSS 尺寸与像素缓冲要重新对齐）
+}
+
 /* ───────────────────────────── 启动 ───────────────────────────── */
 
 async function boot() {
@@ -204,6 +230,9 @@ async function boot() {
 
   refs = mount(root);
   hideBoot();
+  /* 桌面自适应的第一笔（用户 2026-10-01 拍板）：必须在**首次 `draw()` 之前**落，
+     否则第一帧量到的是默认 `--ui: 1` 的尺寸。 */
+  applyUi();
 
   // 数据到位后把杠杆夹到当前年份允许的范围内（读档时年份可能已经变了）
   normalizeLeverage(s);
@@ -238,6 +267,9 @@ async function boot() {
      `dirty` 由 `onFrame`（推进过才回调）置真，没动过就跳过这次全量序列化与写盘。 */
   setInterval(() => { if (dirty) { save(s); dirty = false; } }, 10000);
   window.addEventListener('beforeunload', () => save(s));
+  /* 桌面自适应的第二笔：窗口被拖动/旋屏/分屏时重算 `--ui`（内部自带去重，
+     数值没变就什么都不做，所以这个监听不会让 resize 变成重绘风暴）。 */
+  window.addEventListener('resize', applyUi);
 
   /* 主菜单（需求 4 · 方案 §2）：**一律先弹它**，三个入口决定后续走向 ——
        开始游戏 → （有档先二次确认）开新局 → 开场叙事
