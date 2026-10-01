@@ -6601,7 +6601,7 @@ BTC 2013-01-31、盘口 **$19.46**、**真行情 ＋ 真引擎** `openTrade`（�
 
 | 文件 | 内容 |
 | --- | --- |
-| `public/manifest.webmanifest` | `name / short_name / start_url "./" / scope "./" / display standalone / portrait`，`theme_color = background_color = #0d0f12`；图标 192 与 512（512 兼作 `maskable`） |
+| `public/manifest.json` | `name / short_name / start_url "./" / scope "./" / display standalone / portrait`，`theme_color = background_color = #0d0f12`；图标 192 与 512（512 兼作 `maskable`）。⚠️ 原名 `.webmanifest`，2026-10-01 因线上 MIME 不合法改名，见 §五十五 |
 | `public/icon-192.png` · `icon-512.png` | 与 favicon 同一副图案（深底 ＋ 一根绿烛）等比放大，一次性 Node 脚本生成后**即删** |
 | `public/sw.js` | 两条策略，见下 |
 | `index.html` | 加 `manifest` / `theme-color` / `apple-touch-icon` / `apple-mobile-web-app-*`（iOS 不读 manifest 的 display 与图标，只认 `apple-*`，两条路都要走） |
@@ -6633,7 +6633,7 @@ BTC 2013-01-31、盘口 **$19.46**、**真行情 ＋ 真引擎** `openTrade`（�
 | `vite.config.js` | `BUILD_DATE` ＋ `define` |
 
 - `npm run build` ✅ 通过：22 modules，`dist/assets/index.js` **92.45 kB**
-  （`__BUILD_DATE__` 已逐字替换，产物内无裸 token）；`dist/` 内 `manifest.webmanifest` / `sw.js` /
+  （`__BUILD_DATE__` 已逐字替换，产物内无裸 token）；`dist/` 内 `manifest.json` / `sw.js` /
   `icon-192.png` / `icon-512.png` 均已随 `public/` 拷出。
 - 离线断言 ✅ **19/19 全绿**（临时脚本 `tools/_v20_check.mjs`，跑完已删）：
   ① `vol30Of` 的 kind 分离 ＋ 30 天窗口切边 ＋ 默认 `'spot'` ＋ 按所隔离；
@@ -6667,7 +6667,7 @@ BTC 2013-01-31、盘口 **$19.46**、**真行情 ＋ 真引擎** `openTrade`（�
 - **③ 单次自动接管刷新**：`sw.js` 内 `skipWaiting()` ＋ 客户端 `controllerchange` 监听，**只 reload 一次**（用标志位防循环）⇒ 用户刷新后**立刻**是新版。
 - **④ 保持 SWR**：行情包不改为 network-first —— 它体积大、更新频率低，SWR 是正确取舍；本轮**不动**。
 - **⑤ 部署侧缓存头**（2026-10-01 补齐）：新增 **`public/_headers`**（Netlify / Cloudflare Pages 自动读取，构建时原样复制到 `dist/_headers`）——
-  `index.html` / `sw.js` / `manifest.webmanifest` / `data/*` 回 **`no-cache`**（每次回源校验），
+  `index.html` / `sw.js` / `manifest.json` / `data/*` 回 **`no-cache`**（每次回源校验），
   `assets/*` 回 **`immutable, max-age=31536000`**，图标回 `max-age=604800`。
   规则**互不重叠**，不依赖各家「多条命中时谁赢」的差异。
   ⚠️ 换 Nginx / Apache / 对象存储本文件**不生效** —— 文件头注释里给了等价的 Nginx `location` 写法，照抄即可。
@@ -6676,7 +6676,7 @@ BTC 2013-01-31、盘口 **$19.46**、**真行情 ＋ 真引擎** `openTrade`（�
 
 1. `public/data/` 的 `.bin` **禁止**加哈希 —— `index.json` 里的文件名是运行时读的固定值，改名会全线断链。
 2. `sw.js` 的 `CACHE` 版本号**不再手改** —— 由 `sw.js?v=<构建指纹>` 自动派生（见下）。
-3. `manifest.webmanifest` 的 `start_url` 保持 `/`，不追加查询串（避免装到桌面后进不去）。
+3. `manifest.json` 的 `start_url` 保持 `/`，不追加查询串（避免装到桌面后进不去）。
 
 **推翻 §48.4 / §48.5 的旧结论**：
 
@@ -7010,6 +7010,89 @@ BTC 2013-01-31、盘口 **$19.46**、**真行情 ＋ 真引擎** `openTrade`（�
   部分强平后保证金率恰为 **1.5× 维持线**、新强平价处仍落在维持线上、权益 ≤ 0 时 `frac` 夹到 1、margin 档（15% 维持线）同样成立。
 - `npm run build` ✅ 通过：22 modules，`dist/assets/index.BQcWEZEf.js` **96.41 kB**。
 - **`STATE_VERSION` 不变**（无持久字段形状变化）。
+
+> 同 §三十五：以 `src/` 为准。
+
+---
+
+## 五十五、PWA 安装彻底失效 · 双根因与修复（✅ 2026-10-01 · 线上实测）
+
+> **用户原话**：「安装应用的功能**完全不起作用**，请你详细搜索相关内容与 pwa 的实现方式，完整修复这个情况：
+> `https://icr3am.com/degen/`」
+> —— 线上站点实测后确认是**两个**独立根因叠加，此前从没定位准过。
+
+### 55.1 线上实测证据链（打的是真站，不是本地 preview）
+
+| 检查项 | 结果 |
+| --- | --- |
+| `/degen/` | 200 `text/html` ✅ |
+| `manifest.webmanifest` | 200 但 **`Content-Type: application/octet-stream`** ❌ |
+| `data/index.json` | 200 `application/json` ✅（证明托管**认 `.json`**） |
+| `sw.js` | 200 `application/javascript` ✅ |
+| `icon-192/512.png` | 200 `image/png`，实读 192×192 / 512×512 深底绿烛 ✅ |
+| SW 注册 | 已注册且**正在接管**：`controller = …/degen/sw.js?v=mupfbjkb` ✅ |
+| `<link rel="manifest">` | `href` 解析正确 ✅ |
+| 响应头 | 有 `x-content-type-options: nosniff` ＋ CSP（`default-src 'self'`，无 `manifest-src` ⇒ 回落 `'self'` 允许）；**无任何 `Cache-Control`** |
+| `GET /degen/_headers` | **200 ＋ `application/octet-stream`（回的是文件本身）** ❌ |
+
+### 55.2 根因 ①：清单 MIME 不合法 ⇒ `beforeinstallprompt` 永不触发
+
+托管方的 MIME 表里**没有 `.webmanifest`**，于是把清单回成 `application/octet-stream`；
+再叠上同站那条 `X-Content-Type-Options: nosniff`，浏览器**据此不把该响应当清单解析** ⇒
+「站点可安装」判定直接失败 ⇒ **`beforeinstallprompt` 从头到尾不会触发**。
+主菜单那句「安装应用」于是退化成一句**永远走不通的无效指引** —— 观感正是「完全不起作用」。
+
+**修复**：`public/manifest.webmanifest` → **`public/manifest.json`**（`index.html` 的 `<link rel="manifest">`、
+`sw.js` 的 `SHELL` 预缓存列表同步改名）。
+- 依据就是同一张表里 `data/index.json` 被正确回成 `application/json` —— **同一台托管认 `.json`**，改名即可，零成本。
+
+### 55.3 根因 ②：引导文案不分环境，内置 WebView 里指向不存在的菜单项
+
+旧逻辑对所有环境念同一句「打开浏览器菜单 ⋮ → 选『安装应用』」。
+但**微信 / QQ / 抖音 / 小红书 / 支付宝的内置 WebView 里根本没有这一项**，玩家照做就是死路 ——
+即便清单修好、`beforeinstallprompt` 触发，这一步仍然会把玩家送进死胡同。
+
+**修复**：`render.js` 的 `menuInstallGuide()` 换成 **`toggleInstallGuide(env)`** ＋ `installSteps(env)`
+（返回 `true` = 展开 / `false` = 收起），按环境五分支给步骤：
+
+| `env.kind` | 文案要点 |
+| --- | --- |
+| `inapp`（微信/QQ/抖音/小红书/支付宝） | **先点右上角「⋯」→ 用浏览器打开**，再谈安装（内置 WebView 装不了） |
+| `ios`（Safari） | 分享 → 添加到主屏幕 |
+| `ios-other`（iOS 非 Safari） | **先用 Safari 打开** |
+| `android` / `desktop` | 地址栏安装图标 或 浏览器菜单；无 `installEvt` 时补一句「本机浏览器没给一键通道，按上面走同样能装」 |
+
+`main.js` 新增 `isIos()` / `inAppName()` / `installEnv()` 供其判定；`onInstall()` 重写为
+「**先切图文 → 有原生事件再尝试弹框**」，并处理 `prompt()` 的 Promise 与 `userChoice`
+（踩过同步抛 / 返回 Promise 两种实现）；按钮**常驻**，再点一次即收起（此前点完按钮被换掉、回不去）。
+
+### 55.4 顺带定性：`_headers` 在 icr3am.com 上**根本不生效**
+
+`GET /degen/_headers` 回的是**文件本身**（200 ＋ octet-stream）。
+真正消费 `_headers` 的托管（Netlify / Cloudflare Pages）只会把它当构建期配置吃掉、**回 404**。
+⇒ 那边是**普通静态服务器 ＋ Cloudflare** 前置，**Cache-Control 必须在主机侧配**。
+本文件里已给出 Nginx 等价写法（含 `/degen/` 子路径变体）；在主机配上之前，
+「上传后拿不到新版」仍靠 `assets/[name].[hash].js` ＋ SW network-first 兜住。
+
+### 55.5 落点与验收
+
+| 文件 | 改动 |
+| --- | --- |
+| `public/manifest.webmanifest` | **删除** → 新建 `public/manifest.json` |
+| `index.html` | `<link rel="manifest" href="./manifest.json" />`；注释记录 MIME 实测根因 |
+| `public/sw.js` | `SHELL` 预缓存列表改 `./manifest.json` |
+| `public/_headers` | 记录「线上不读本文件」＋ 全部规则补 `/degen/` 子路径变体 |
+| `src/ui/render.js` | `menuInstallGuide` → `toggleInstallGuide` ＋ `installSteps`（五分支） |
+| `src/main.js` | 新增 `isIos` / `inAppName` / `installEnv`；`onInstall` 重写 |
+| `src/ui/style.css` | 新增 `.menu-note` |
+
+- `npm run build` ✅ 通过：22 modules，`dist/assets/index.Dsy9oNym.js` **99.87 kB**；
+  `dist/` 内为 `manifest.json`（不再是 `.webmanifest`），`dist/index.html` 指向 `./manifest.json`。
+- `npm run preview`（localhost:4174）浏览器实测：控制台**零报错**；
+  首次点「安装应用」→ 图文展开（`guide:true`，按钮仍在）；第二次点 → 收起（`guide:false`，
+  `menu-btns` 恢复 `["开始游戏","历史回顾","安装应用"]`）⇒ 开/关切换正确、按钮常驻。
+- ⚠️ **本机浏览器是 Electron 内核**（`Chrome/142 Electron/39`），**不触发 `beforeinstallprompt`**，
+  安装通道无法在此复现 —— 最终以**真机**（手机 Safari / Chrome / 微信内置）验证为准。
 
 > 同 §三十五：以 `src/` 为准。
 

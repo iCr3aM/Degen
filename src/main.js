@@ -21,7 +21,7 @@ import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
   renderReview, openNodeCard, openYearPick, openGuide,
-  isStandalone, menuInstallGuide, menuRemoveInstall,
+  isStandalone, toggleInstallGuide, menuRemoveInstall,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -996,7 +996,44 @@ function onMenu(kind, node) {
  *  ⚠️ 必须排掉 `CriOS / FxiOS / EdgiOS`：那是 iOS 上的**其它**浏览器，引导的话术不一样。 */
 function isIosSafari() {
   const ua = navigator.userAgent || '';
-  return /iPad|iPhone|iPod/.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua);
+  return isIos() && !/CriOS|FxiOS|EdgiOS/.test(ua);
+}
+
+/** 是不是 iOS / iPadOS 设备。
+ *  ⚠️ iPadOS 13 起 UA 自称 `MacIntel`（与真 Mac 一模一样），只认 `iPad` 会漏掉整个 iPad 线 ——
+ *    所以补一条「MacIntel ＋ 多点触控」，那是 iPad 唯一与 Mac 的分野。 */
+function isIos() {
+  const ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+/** 内置 WebView 的应用名（装不了的那一类环境），不是就返回 null。
+ *  ⚠️ 这些内核的共同点是**没有「安装应用 / 添加到主屏幕」这一项** —— 引导必须先把玩家赶到浏览器，
+ *     否则就是让人去菜单里找一个不存在的按钮（这正是「点了完全没反应」的现场）。
+ *  ⚠️ 只认「应用里的 WebView」标志，**不认浏览器**：`MQQBrowser`（QQ 浏览器）是独立浏览器、
+ *     装得了，别误伤；`QQ/` 才是 QQ 里那个 WebView。 */
+function inAppName() {
+  const ua = navigator.userAgent || '';
+  if (/MicroMessenger/i.test(ua)) return '微信';
+  if (/QQ\//i.test(ua)) return 'QQ';
+  if (/aweme|BytedanceWebview|Douyin/i.test(ua)) return '抖音';
+  if (/XiaoHongShu|xhsc/i.test(ua)) return '小红书';
+  if (/AlipayClient/i.test(ua)) return '支付宝';
+  if (/Weibo/i.test(ua)) return '微博';
+  return null;
+}
+
+/** 当前这台机器的安装环境。`render.js` 的 `installSteps()` 按它挑那唯一一条走得通的路。
+ *  `native` ＝ 浏览器是否真的交出过一键安装通道（`beforeinstallprompt`）。 */
+function installEnv() {
+  const app = inAppName();
+  if (app) return { kind: 'inapp', app, native: false };
+  if (isIos()) return { kind: isIosSafari() ? 'ios' : 'ios-other', native: false };
+  return {
+    kind: /Android/i.test(navigator.userAgent || '') ? 'android' : 'desktop',
+    native: !!installEvt,
+  };
 }
 
 /**
@@ -1022,15 +1059,25 @@ function isIosSafari() {
  *    让玩家装会**重发一次事件**（上面的监听接住即可，按钮是常驻的不必重挂）。
  * ⚠️ 老版 Chrome 的 `prompt()` 返回 `undefined`，结果只在 `evt.userChoice` 上；新版两者都返回
  *    `Promise<{outcome}>` —— 所以优先用 `prompt()` 的返回值，退到 `userChoice`。
+ *
+ * ── 2026-10-01 二次重做（线上实测后）──────────────────────────────
+ * ⚠️ 坑 ④（真正让线上「完全不起作用」的那一条）：**文案不能一视同仁**。旧版对谁都说
+ *    「打开浏览器菜单 ⋮ → 选『安装应用』」，而在微信 / QQ / 抖音这些**内置 WebView** 里
+ *    菜单里**没有这一项** —— 玩家照着走就是死路，「点了没反应」由此而来。
+ *    ⇒ 现在 `installEnv()` 先判环境，`toggleInstallGuide()` 只给那台机器上真存在的那条路；
+ *      内置 WebView 直接明说「这里装不了，先换浏览器」。
+ * ⚠️ 坑 ⑤：旧版点一次就把按钮**换成**图文，玩家再也回不到菜单。现在按钮常驻，
+ *    图文是它下面可开可关的一段（`toggleInstallGuide` 返回 true＝展开 / false＝收起）。
+ * ⚠️ 收起时**不消费** `installEvt` —— 收起来只是先不看，那枚事件还要留着给真正想装的那一下。
  */
 function onInstall() {
   if (isStandalone()) return;          // 已经在桌面上跑（菜单本不该给出这枚按钮）
 
+  /* 先摊图文（坑 ③），再试着弹原生框 —— 两者不互斥：真装上了 `appinstalled` 会收走图文。 */
+  if (!toggleInstallGuide(installEnv())) return;   // 这次是「收起」：到此为止
+
   const evt = installEvt;
   installEvt = null;                   // 同一个事件 prompt 不了第二次
-
-  /* 先摊图文（坑 ③），再试着弹原生框 —— 两者不互斥：真装上了 `appinstalled` 会收走图文。 */
-  menuInstallGuide(isIosSafari() ? 'ios' : 'generic');
 
   if (!evt) return;                    // 这台机器没有原生通道（iOS / 国产内核）—— 图文就是那条路
   try {

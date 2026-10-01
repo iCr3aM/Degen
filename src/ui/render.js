@@ -1544,44 +1544,94 @@ function menuInstallBtn(btns) {
 }
 
 /**
- * 把「安装应用」换成三步图文引导（PWA · 2026-10-01）。
+ * 安装图文引导（PWA · 2026-10-01，同日二次重做）。
  *
- * 这是照 `我创造的完美球员` 那套抄的 —— 它「保存至手机桌面」一直好使，靠的不是原生弹窗
- * （那边同样有 `prompt()` 静默失效的时候），而是**弹窗没确认就立刻摊开图文**：
- * 玩家照着点浏览器自带的「安装应用 / 添加到主屏幕」，一样能拿到桌面图标。
- * 拿到图标才是玩家的目的，原生弹窗只是最快的那条路，不是唯一那条。
+ * **为什么要按环境分岔**：2026-10-01 线上实测判明，`beforeinstallprompt` 在那边压根没触发过，
+ * 而旧版引导对谁都念同一句「打开浏览器菜单（右上角 ⋮）→ 选『安装应用』」——
+ * 在**应用内浏览器**（微信 / QQ / 抖音 / 小红书 / 支付宝）里，那个菜单**根本没有这一项**，
+ * 玩家照着走就是死路一条，这就是「安装应用完全不起作用」的直接观感。
+ * 现在按 `env.kind` 给**那台机器上真的存在**的那条路；应用内浏览器还会明说
+ * 「这里装不了，先换浏览器」，而不是让玩家去菜单里找一个不存在的按钮。
  *
- * `kind = 'ios'` 走「分享 → 添加到主屏幕」（iOS Safari 从不发 `beforeinstallprompt`）；
- * 其余一律走浏览器菜单那条路（Chrome / Edge / 国产内核都在这儿）。
+ * 这是照 `我创造的完美球员` 那套「保存至手机桌面」的思路来的：拿到桌面图标才是目的，
+ * 原生弹窗只是最快的那条路 —— 弹窗没成，图文立刻顶上。
  *
- * 幂等：已在则不动 —— 连点两下不会叠出两份。
+ * 行为：**同一个按钮开 / 关**。展开返回 `true`，收起返回 `false`。
+ * ⚠️ 旧版是「点一次就把按钮换成图文」，于是玩家**再也回不到菜单**（按钮没了、没有关闭口）——
+ *    装不成的时候连「开始游戏」都少了一行。现在按钮常驻，图文是它下面可开可关的一段。
  */
-export function menuInstallGuide(kind) {
+export function toggleInstallGuide(env) {
   const box = document.querySelector('.menu-box');
-  if (!box) return;
+  if (!box) return false;
   const btns = box.querySelector('.menu-btns');
-  if (!btns) return;
+  if (!btns) return false;
 
-  const btn = btns.querySelector('[data-menu="install"]');
-  if (btn) btn.remove();                    // 按钮换成图文，不并排（点是它触发的）
-  if (box.querySelector('.menu-guide')) return;
+  const old = box.querySelector('.menu-guide');
+  if (old) { old.remove(); return false; }     // 再点一次＝收起
 
-  const steps = kind === 'ios'
-    ? ['点浏览器底部工具栏的「分享」按钮',
-       '在列表里找到「添加到主屏幕」',
-       '点「添加」—— 桌面图标即可直接进入游戏']
-    : ['打开浏览器菜单（右上角 ⋮ / ⋯）',
-       '选「安装应用」或「添加到主屏幕」',
-       '确认后桌面图标即可直接进入游戏'];
-
+  const { title, steps, note } = installSteps(env);
   const wrap = el('div', 'menu-guide');
-  wrap.append(el('b', 'menu-guide-h', '添加到主屏幕'));
+  wrap.append(el('b', 'menu-guide-h', title));
   steps.forEach((t, i) => {
     const row = el('div', 'menu-step');
     row.append(el('i', null, String(i + 1)), el('span', null, t));
     wrap.append(row);
   });
+  if (note) wrap.append(el('div', 'menu-note', note));
   btns.after(wrap);
+  return true;
+}
+
+/** 各环境的三步文案。`env` 由 `main.js` 的 `installEnv()` 判定（UA 是那边唯一的信息源）。 */
+function installSteps(env) {
+  const nativeMiss = '本机浏览器没给出一键安装通道，按上面走同样能装。';
+  switch (env.kind) {
+    /* 应用内浏览器：装不了，先教换浏览器 —— 这是最常见的「点了没反应」现场 */
+    case 'inapp':
+      return {
+        title: '先换到浏览器打开',
+        steps: ['点右上角「···」打开菜单',
+          '选「在浏览器打开」（微信里是「在默认浏览器打开」）',
+          '到浏览器里再点一次「安装应用」'],
+        note: `当前是${env.app}的内置浏览器，它不能把游戏装到桌面。`,
+      };
+    /* iOS Safari：从不发 beforeinstallprompt，只走分享面板 */
+    case 'ios':
+      return {
+        title: '添加到主屏幕',
+        steps: ['点浏览器**底部**工具栏的「分享」按钮',
+          '在列表里找到「添加到主屏幕」',
+          '点「添加」—— 桌面图标即可直接进入游戏'],
+        note: null,
+      };
+    /* iOS 上的其它浏览器（Chrome / Edge / Firefox for iOS）：全被苹果锁死，装不了 */
+    case 'ios-other':
+      return {
+        title: '用 Safari 打开',
+        steps: ['iOS 上只有 Safari 能把网页装到桌面',
+          '复制本页地址，改用 Safari 打开',
+          '在 Safari 里点「分享」→「添加到主屏幕」'],
+        note: '当前这个浏览器不支持添加到主屏幕。',
+      };
+    /* 安卓：原生弹窗若已给出，第 1 步就是点「安装」；否则退到浏览器菜单 */
+    case 'android':
+      return {
+        title: '安装到桌面',
+        steps: ['浏览器应已弹出安装确认 —— 点「安装」',
+          '没弹出来：点右上角菜单 ⋮ →「安装应用」',
+          '或选「添加到主屏幕」，确认后即可直接进入游戏'],
+        note: env.native ? null : nativeMiss,
+      };
+    /* 桌面：地址栏右侧的安装图标是主路，浏览器菜单是备路 */
+    default:
+      return {
+        title: '安装到本机',
+        steps: ['点地址栏右侧的安装图标（⊕ / ⤓）',
+          '或在浏览器菜单里选「安装 Degen」',
+          '装好后从桌面 / 开始菜单直接进入游戏'],
+        note: env.native ? null : nativeMiss,
+      };
+  }
 }
 
 /** 收掉菜单里的安装入口（按钮 ＋ 图文，幂等）。装好之后调用 —— 该做的事做完了。 */

@@ -24,7 +24,7 @@
 const CACHE = 'degen-' + (new URL(self.location.href).searchParams.get('v') || 'dev');
 
 /** 预缓存的应用外壳 —— 断网首次进入也能开出菜单（其余资源按需缓存） */
-const SHELL = ['./', './index.html', './manifest.webmanifest'];
+const SHELL = ['./', './index.html', './manifest.json'];
 
 self.addEventListener('install', e => {
   e.waitUntil(

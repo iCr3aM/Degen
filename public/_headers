@@ -7,6 +7,16 @@
 # ⚠️ 换别的托管（Nginx / Apache / 对象存储）本文件**不生效**，请照抄下面
 #    注释里的等价写法。
 #
+# ⚠️⚠️ **2026-10-01 线上实测：icr3am.com 根本不读本文件。**
+#    表现：`GET https://icr3am.com/degen/_headers` 回的是**文件本身**（200 +
+#    `application/octet-stream`）。真正读 `_headers` 的托管（Netlify / Cloudflare Pages）
+#    会把这条请求回成 404 —— 它只在构建期消费这个文件、绝不把文件本身发出去。
+#    ⇒ 那边是一台普通静态服务器 + Cloudflare 在前面，Cache-Control 要在**主机侧**配。
+#    下面同时给出**根路径**与 **/degen/ 子路径**两套规则：站点当前挂在子目录，
+#    而各家对「路径相对谁」的解释不一致，两套都写上才算真的覆盖。
+#    在那台主机配上之前，「上传后拿不到新版」是靠 `assets/[name].[hash].js`（改名即失效）
+#    与 SW 的 network-first 兜住的 —— 本文件不是那条链上的一环。
+#
 # 规则只有三类，且**互不重叠**（A 的路径永远不会命中 B 的路径）—— 这样就不必
 # 依赖各家「多条命中时谁赢」的差异：
 #   A. 名字固定、内容会变的（外壳）        → no-cache：每次回源校验，必拿新版
@@ -16,7 +26,7 @@
 # Nginx 等价写法（放进 server{} 里）：
 #   location = /index.html          { add_header Cache-Control "no-cache" always; }
 #   location = /sw.js               { add_header Cache-Control "no-cache" always; }
-#   location = /manifest.webmanifest{ add_header Cache-Control "no-cache" always; }
+#   location = /manifest.json       { add_header Cache-Control "no-cache" always; }
 #   location   /assets/             { add_header Cache-Control "public, max-age=31536000, immutable" always; }
 #   location   /data/               { add_header Cache-Control "no-cache" always; }
 #
@@ -24,30 +34,54 @@
 #    `data/index.json` 里写死了文件名，运行时按名读。所以它只能靠 A/C 这
 #    两条「老实回源」的规则，不能靠改名绕缓存。
 
-# ── 外壳：名字固定，必须每次校验 ──
+# ── 外壳：名字固定，必须每次校验（根路径 ＋ /degen/ 子路径两套）──
 /
+  Cache-Control: no-cache
+
+/degen/
   Cache-Control: no-cache
 
 /index.html
   Cache-Control: no-cache
 
+/degen/index.html
+  Cache-Control: no-cache
+
 /sw.js
   Cache-Control: no-cache
 
-/manifest.webmanifest
+/degen/sw.js
+  Cache-Control: no-cache
+
+/manifest.json
+  Cache-Control: no-cache
+
+/degen/manifest.json
   Cache-Control: no-cache
 
 # ── 产物：名字带 [hash]，内容与名字一一对应，可以永久缓存 ──
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 
+/degen/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
 # ── 行情包：SW 自己走 stale-while-revalidate，这一层只负责「别挡道」 ──
 /data/*
+  Cache-Control: no-cache
+
+/degen/data/*
   Cache-Control: no-cache
 
 # ── 图标：名字固定、内容几乎不变，一周足够 ──
 /icon-192.png
   Cache-Control: public, max-age=604800
 
+/degen/icon-192.png
+  Cache-Control: public, max-age=604800
+
 /icon-512.png
+  Cache-Control: public, max-age=604800
+
+/degen/icon-512.png
   Cache-Control: public, max-age=604800
