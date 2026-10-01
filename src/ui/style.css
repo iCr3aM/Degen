@@ -1191,11 +1191,22 @@ button { user-select: none; -webkit-user-select: none; }
   padding-bottom: 8px;
 }
 .careers-empty { padding: 24px 0; text-align: center; font-size: calc(12px * var(--ui)); color: var(--mut-2); }
-/* 一条生涯记录：三代信息（年代 ＋ 结局 / 起止 ＋ 天数 / 终值 ＋ 倍数） */
+/* 一条生涯记录：四代信息（年代 ＋ 称号 ＋ 结局 / 起止 ＋ 天数 / 终值 ＋ 倍数 / 徽章） */
 .career { background: var(--panel); border: 1px solid var(--line); padding: 8px 10px; }
 .career-head { display: flex; align-items: baseline; gap: 8px; }
 .career-head b { font-size: calc(13px * var(--ui)); font-weight: 600; }
 .career-head u { margin-left: auto; text-decoration: none; font-size: calc(12px * var(--ui)); }
+/* 主称号（M3）—— 局名右边一枚，比局名轻、比副行重；`u` 仍由 `margin-left:auto` 顶到最右 */
+.career-title { font-style: normal; font-size: calc(11px * var(--ui)); color: var(--mut); }
+/* 徽章排（M3）—— 无徽章时整条不渲染（`careerRow` 里判 `length`） */
+.career-badges { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+.badge {
+  font-size: calc(10px * var(--ui));
+  line-height: 1;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  color: var(--mut-2);
+}
 .career-sub {
   margin-top: 4px;
   font-size: calc(11px * var(--ui));

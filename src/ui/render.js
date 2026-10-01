@@ -20,6 +20,7 @@ import { confirmationsOf, congestionLabel, congestionOf } from '../core/congesti
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { anyHeld, heldSyms, posOf, slotOf } from '../core/state.js';
+import { badgesOf, multOf, titleOf } from '../core/titles.js';
 import { drawChart, drawEquityCurve } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 import { vibSupported } from './sound.js';
@@ -1890,12 +1891,13 @@ export function renderCareers(refs, list) {
   for (const r of list) refs.careersList.append(careerRow(r));
 }
 
-/** 一条生涯记录 —— 三代信息：**年代 ＋ 结局** / **起止与天数** / **终值 ＋ 倍数** */
+/** 一条生涯记录 —— 四代信息：**年代 ＋ 称号 ＋ 结局** / **起止与天数** / **终值 ＋ 倍数** / **徽章** */
 function careerRow(r) {
   const row = el('div', 'career');
 
   const head = el('div', 'career-head');
   head.append(el('b', null, scenarioOf(r.scen).name));
+  head.append(el('em', 'career-title', titleOf(r)));
   head.append(el('u', OVER_TONE[r.reason] || 'mut', OVER_LABEL[r.reason] || '结束'));
   row.append(head);
 
@@ -1905,9 +1907,16 @@ function careerRow(r) {
   const num = el('div', 'career-num');
   const tone = r.final >= r.cash0 ? 'up' : 'down';
   num.append(el('b', 'num ' + tone, fmtMoneyShort(r.final)));
-  const mult = r.cash0 > 0 ? r.final / r.cash0 : 0;
+  const mult = multOf(r);
   num.append(el('u', tone, `×${mult.toFixed(mult < 10 ? 2 : 1)}`));
   row.append(num);
+
+  const badges = badgesOf(r);
+  if (badges.length) {
+    const bar = el('div', 'career-badges');
+    for (const b of badges) bar.append(el('span', 'badge', b));
+    row.append(bar);
+  }
 
   return row;
 }
