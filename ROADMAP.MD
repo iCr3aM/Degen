@@ -7733,3 +7733,47 @@ ICO 狂潮 ×19.6 / 312 前夜 ×9.7 / 10u 战神 ×3.21 / LUNA 归零周 ×2.48
 
 > 同 §三十五：以 `src/` 为准。
 
+## 六十三、主菜单两入口改弹窗 ＋ 存档行三要素（✅ 2026-10-02 · 用户拍板）
+
+### 63.1 病根
+
+「读取存档」与「挑战模式」原来是在按钮列**下面摊开**一段列表（`.menu-slots` / `.menu-scens`）。
+一进那个状态，后面几枚按钮就被推上推下 —— 同一枚键在不同开机状态下落在不同位置，
+**手指记忆失效**（用户原话：「移动了会造成操作变化，不符合使用记忆」）。
+
+### 63.2 方案
+
+- 五枚入口**位置永不移动**（读取存档 / 开始游戏 / 挑战模式 / 历史回顾 / 交易档案）；
+  没有档时「读取存档」只**置灰常驻**、不隐藏 —— 隐藏会让后面四枚整体上移一格。
+- 选择一律发生在新开的**一层弹窗**里（`openSavePick` / `openScenPick`），共用骨架 `openMenuDlg`
+  （居中确认盒 ＋ 暗底 ＋ 一枚「返回」）。开合弹窗时主菜单按钮 y 坐标**逐像素不变**。
+- 存档行三要素：
+  · **名称**：普通槽 =「普通模式」；挑战槽 = **那一局到底是哪个年代**（`scenarioOf(sv.scen).name`，
+    如「10u 战神」）——「挑战模式」四个字认不出手里是哪一局；
+  · **时间**：`fmtDate(timeOf(sv), false)`，到天；
+  · **金额**：**实时权益**口径 —— 该槽持仓币都已加载时 `equity(sv)` 现算，未加载退回 `s.eq` 末点，
+    统一走 `fmtMoneyShort`。
+
+### 63.3 落点清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/ui/render.js` | `openMenu` 参数 `slots` → `canLoad`；删 `slotList` / `toggleSlotList` / `scenarioList` / `toggleScenarioList`；新增 `menuDlg` ＋ `closeMenuDlg` ＋ `openMenuDlg` ＋ `dlgRows` ＋ `openSavePick` ＋ `openScenPick`；`closePicker()` 开头捎带 `closeMenuDlg()` |
+| `src/main.js` | `onMenu` 的 `load` / `scen` 改为「弹一层」；`menuSlots()` 返回 `{ key, name, date, money }`；新增 `slotMoney()`；`dispatch` 加 `menuback` 分支；四处 `openMenu({ canLoad: … })` |
+| `src/ui/bind.js` | `ACTION_KEYS` 存档组加 `menuback` |
+| `src/ui/style.css` | 删 `.menu-scens` / `.menu-slots` 两组；新增 `.menu-dlg` / `.dlg-rows`（`max-height: 60dvh` 内部滚动，「返回」在滚区之外永远够得着） |
+
+⚠️ **不能登记成 `picker`**：`closePicker()` 清的是整个 `#overlay`（`textContent = ''`），
+主菜单就住在里面 —— 一关弹窗菜单跟着没。所以主菜单弹窗另存 `menuDlg`，只 `remove()` 自己那一层。
+
+### 63.4 验收（2026-10-02 · 浏览器实机）
+
+- 无档时五枚按钮常驻、「读取存档」置灰不可点。
+- 开弹窗前后菜单按钮 y 坐标**逐像素一致**（292 / 340 / 388 / 436 / 484 / 532）。
+- 「读取存档」弹窗两行：`普通模式 $1,000.0 2013-01-01` ／ `10u 战神 $10.0 2021-01-04`。
+- 「挑战模式」弹窗五张年代卡；「返回」与**点暗底**都能回菜单，且主菜单**不被清空**；
+  点当前槽那一行能直接续跑（不 reload）。
+- `npm run build` ✅ 通过。
+
+> 同 §三十五：以 `src/` 为准。
+

@@ -39,14 +39,16 @@ export const ACTION_KEYS = [
      （本轮实测就是这个 bug：引导第一步之后再点「下一步」不走）。 */
   'guide',
   /* 需求 4（《主菜单与历史回顾模式方案》§2 / §3）：`menu` ＝ 主菜单各入口
-     （`load` 读取存档 / `start` 开始 / `scen` 挑战 / `review` 回顾 / `careers` 档案 / `install` 安装）；
+     （`load` 读取存档 / `start` 开始 / `scen` 挑战 / `review` 回顾 / `careers` 档案 / `install` 安装）。
+     2026-10-02 起 `load` / `scen` 只负责**弹一层**（`render.openSavePick` / `openScenPick`），
+     选择在弹窗里发生 —— 菜单按钮不再随选择摊开而位移；
      `review` ＝ 回顾页的**全部**动作 —— 值是子命令（`exit` / `pause` / `spd:100` / `sym:BTC`
      / `years` / `year:2017` / `go` / `skip` / `all`），分派见 `main.js` 的 `onReview`。 */
   'menu', 'review',
   /* M2 交易档案（2026-10-01）：`careers` ＝ 档案页的动作 —— `exit`（顶栏「返回」）／
      `share:<id>`（每条生涯那枚「分享」，M4）。分派见 `main.js` 的 `dispatch`。 */
   'careers',
-  /* M1 年代开局（2026-10-01）：`scen` ＝ 主菜单「挑战模式」里那五张年代卡，
+  /* M1 年代开局（2026-10-01）：`scen` ＝ 「挑战模式」弹窗里那五张年代卡，
      值是 `config.SCENARIOS[].id`（`winter` / `ico` / `pre312` / `degen` / `luna`），
      分派见 `main.js` 的 `onScenario`。 */
   'scen',
@@ -63,8 +65,9 @@ export const ACTION_KEYS = [
   'vol', 'vib', 'fx',
   /* 存档拆两槽（2026-10-01 用户要求）：
      `home` ＝ 设置页那枚「返回主菜单」（不 reload、不丢档，只把时钟停住再弹菜单）；
-     `slot` ＝ 主菜单「读取存档」摊开后那几行，值是槽位键（`normal` / `challenge`）。 */
-  'home', 'slot',
+     `slot` ＝ 主菜单「读取存档」**弹窗**里那几行，值是槽位键（`normal` / `challenge`）。
+     2026-10-02：`menuback` ＝ 那两枚主菜单弹窗（读取存档 / 挑战模式）底部的「返回」。 */
+  'home', 'slot', 'menuback',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');

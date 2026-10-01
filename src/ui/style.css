@@ -1028,7 +1028,7 @@ canvas.curve {
 
 /* ══════════════ 主菜单 ＋ 历史回顾（需求 4 · 方案 §2 / §3） ══════════════ */
 
-/* 主菜单三入口**纵向**排（开始 / 继续 / 历史回顾）——
+/* 主菜单五入口**纵向**排（读取存档 / 开始 / 挑战 / 历史回顾 / 交易档案）——
    `.confirm-btns` 是横排（那是「二选一」），这里是「选一条路」，竖排读起来更像菜单。 */
 /* ⚠️ 宽度**必须收窄**（本轮 ①）：`.act` 在横排时靠 `flex:1` 等分，竖排下会**撑满整屏宽** ——
    开机画面上一条 366px 的实心长条读起来像「横幅」，不像一枚按钮。280px 与整屏形成一个边框感。 */
@@ -1072,21 +1072,28 @@ canvas.curve {
   color: var(--mut-2);
 }
 
-/* 挑战模式的年代卡（M1 · 2026-10-01）—— 点「挑战模式」后在按钮列下面摊开的五张卡。
-   每张卡三行：名字 / 年代区间 / 一句话。整张卡是一枚 `<button>`（动作键 `data-scen`），
-   所以内部三行全部 `display: block`，不再继承按钮的居中。
-   ⚠️ `[hidden]` 那条**必须写**：上面那条 `display: flex` 的优先级高过浏览器默认的
-      `[hidden] { display: none }`，漏掉它 `wrap.hidden = true` 就关不上了。 */
-.menu-scens,
-.menu-slots {
-  width: 100%;
-  max-width: 280px;
+/* ══════════════ 主菜单弹窗（2026-10-02 · 用户要求） ══════════════
+   「读取存档」「挑战模式」从「在按钮列下面摊开」改成「弹一层」，菜单那五枚从此一动不动。
+   骨架全部复用现成零件：`.pick-back` 暗底 ＋ `.confirm` 居中盒 ＋ `.pick-row` 的两行结构。
+   ⚠️ `.menu-dlg` 这层 wrapper 是**定位上下文**：里面的暗底与面板都吃 `inset: 0` / 绝对定位，
+      不给它 `position` 的话两者会去贴 `#overlay`（结果一样，但一旦以后要加内边距就错位）。 */
+.menu-dlg { position: absolute; inset: 0; }
+
+/* 弹窗里的行容器 —— 5 张年代卡在矮屏上会撑破居中盒，所以给个上限内部滚动。
+   ⚠️ 「返回」在**滚区之外**（`.confirm-btns` 是 `.confirm` 的直接子元素）—— 滚到底也够得着。 */
+.dlg-rows {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  margin-top: 12px;
+  max-height: 60dvh;
+  overflow-y: auto;
 }
-.menu-scens[hidden],
-.menu-slots[hidden] { display: none; }
+/* 存档行：`<button>` 直接吃 `.pick-row` 的底 / 边 / 44px 高，只是四边都有边（不是贴边的竖表） */
+.dlg-rows .pick-row { border: 1px solid var(--line); }
+/* 挑战模式的年代卡（M1 · 2026-10-01）—— 每张三行：名字 / 年代区间 / 一句话。
+   整张卡是一枚 `<button>`（动作键 `data-scen`），所以内部三行全部 `display: block`，
+   不再继承按钮的居中。 */
 .scen {
   display: block;
   width: 100%;

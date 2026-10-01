@@ -1414,6 +1414,11 @@ export function confirmExchange(s, id) {
 }
 
 export function closePicker() {
+  /* 主菜单弹窗（读取存档 / 挑战模式）挂在同一个 `#overlay` 上，却**不登记** `picker`
+     —— 登记进去的话，关弹窗会把背后的主菜单一起清掉（见 `openMenuDlg` 那段注释）。
+     所以这里显式捎带关一层：下面那句 `textContent = ''` 本来就会连它一起抹掉，
+     但 `menuDlg` 那个引用得跟着清干净，否则下次 `closeMenuDlg()` 会去删一个已经不在树上的节点。 */
+  closeMenuDlg();
   if (!picker) return;
   picker.textContent = '';
   picker.hidden = true;
@@ -1525,15 +1530,19 @@ export function openIntro(scenId) {
 
 /**
  * 主菜单（需求 4 ·《主菜单与历史回顾模式方案》§2，2026-09-29）。`boot()` 走完**一律先弹它**，
- * 三个入口决定后续：开始游戏 / 继续游戏（仅在有档时出现）/ 历史回顾。
+ * 五枚入口决定后续：读取存档 / 开始游戏 / 挑战模式 / 历史回顾 / 交易档案。
  *
- * ⚠️ **整屏**（本轮 ① · 用户拍板）：铺满全屏的暗底 ＋ 居中一列（图标 / 标题 / 副标题 / 三入口）。
+ * ⚠️ **整屏**（本轮 ① · 用户拍板）：铺满全屏的暗底 ＋ 居中一列（图标 / 标题 / 副标题 / 五入口）。
  *    之前它沿用 `.confirm`（`left/right:12px` 的一张小卡、且不铺暗底）—— 那副样子读起来像
  *    「页面中间弹了个提示」，不像**开机画面**。现在背后那层 `.menu-back` 把这个游戏彻底盖住。
  *    但它**仍然不是「点外面能关掉的菜单」**：`.menu-back` 不带 `pointerdown` 回调，点了不会关。
  * ⚠️ 弹窗期间时钟不启动（`main.js` 的 `clock.start()` 排在 `onMenu` 之后）。
- * ⚠️ 「继续游戏」在**没有存档**时整枚不出现（LESS IS MORE：没有的选项不显示）；
- *    「开始游戏」在有档时会先变「确认重开」（双重确认的状态机在 `main.js`，理由同 `onReset`）。
+ * ⚠️ **五枚入口的位置永不移动**（2026-10-02 · 用户拍板）：原来「读取存档」只在有档时出现、
+ *    点开还会在按钮列下面**摊开**列表（`toggleScenarioList` / `slotList`），两种情况都会把
+ *    其余几枚推上推下 —— 同一枚键在不同开机状态下落在不同位置，手指记忆就废了。
+ *    现在没有档时「读取存档」**置灰常驻**，选择一律发生在新开的**弹窗**里
+ *    （`openSavePick` / `openScenPick` / `openMenuDlg`），按钮列本身一个像素都不动。
+ * ⚠️ 「开始游戏」在有档时会先变「确认重开」（双重确认的状态机在 `main.js`，理由同 `onReset`）。
  *
  * ⚠️ 「安装应用」（PWA）**只要不在桌面上跑就一律出现**（2026-10-01 改）。
  *    原来是「只有浏览器交出 `beforeinstallprompt` 才出现」—— 那条规矩在**能感知到失败**时才成立：
@@ -1543,7 +1552,7 @@ export function openIntro(scenId) {
  * ⚠️ 底部那行构建日期由 `vite.config.js` 的 `define` 注入（`__BUILD_DATE__`，UTC+8）——
  *    上传服务器后一眼能看出拿到的是不是最新版。
  */
-export function openMenu({ slots = [] } = {}) {
+export function openMenu({ canLoad = false } = {}) {
   closePicker();
   const ov = document.getElementById('overlay');
   if (!ov) return;
@@ -1557,20 +1566,20 @@ export function openMenu({ slots = [] } = {}) {
     '2013 年 1 月 → 2024 年 12 月。\n'
     + '行情就是真实历史，没人替你兜底。'));
 
-  /* 有档时「读取存档」**置首**（2026-10-01 用户拍板）：这一趟开机的目的多半是接着玩，
-     它才是主入口 ⇒ 给 `.act long`（主色实底），「开始游戏」顺势退成 `.act chan`。 */
-  const has = slots.length > 0;
+  /* 有档时「读取存档」是主入口（2026-10-01 用户拍板）：这一趟开机的目的多半是接着玩，
+     它才给 `.act long`（主色实底），「开始游戏」顺势退成 `.act chan`。
+     ⚠️ 但**位置永远在第一格**（2026-10-02 用户拍板）：没有档时只**置灰**、不隐藏 ——
+        藏起来会让后面四枚整体上移一格，那正是本轮要修的东西。 */
   const btns = el('div', 'menu-btns');
-  if (has) {
-    const load = el('button', 'act long', '读取存档');
-    load.dataset.menu = 'load';               // 值即子命令，见 `main.js` 的 `onMenu`
-    btns.append(load);
-  }
-  const start = el('button', has ? 'act chan' : 'act long', '开始游戏');
+  const load = el('button', canLoad ? 'act long' : 'act chan', '读取存档');
+  load.dataset.menu = 'load';                 // 值即子命令，见 `main.js` 的 `onMenu`
+  load.disabled = !canLoad;
+  btns.append(load);
+  const start = el('button', canLoad ? 'act chan' : 'act long', '开始游戏');
   start.dataset.menu = 'start';
   btns.append(start);
-  /* 挑战模式（M1 · 2026-10-01）—— 年代局列表的**开关**（值 `'scen'`，见 `main.js` 的 `onMenu`）。
-     它自己不开始游戏：点开先摊出那五张年代卡，玩家再在里面挑一张。 */
+  /* 挑战模式（M1 · 2026-10-01）—— 年代局的**入口**（值 `'scen'`，见 `main.js` 的 `onMenu`）。
+     它自己不开始游戏：点开先弹出那五张年代卡（`openScenPick`），玩家再在里面挑一张。 */
   const scen = el('button', 'act chan', '挑战模式');
   scen.dataset.menu = 'scen';
   btns.append(scen);
@@ -1584,9 +1593,8 @@ export function openMenu({ slots = [] } = {}) {
   btns.append(careers);
   if (!isStandalone()) menuInstallBtn(btns);
   box.append(btns);
-  /* 读取存档摊开的那两行（有档才有）—— 排在年代卡**之前**：它对应的是置首那枚主入口。 */
-  if (has) box.append(slotList(slots));
-  box.append(scenarioList());
+  /* ⚠️ 菜单本身**只有这一列按钮**（2026-10-02）：原来读档那两行与五张年代卡是摊在它下面的，
+     现在都收进弹窗（`openSavePick` / `openScenPick`）—— 菜单高度从此恒定。 */
 
   /* 构建日期（UTC+8）——`__BUILD_DATE__` 由构建期替换成字面量字符串 */
   box.append(el('p', 'menu-build', `构建 ${__BUILD_DATE__}`));
@@ -1609,68 +1617,112 @@ export function isStandalone() {
   } catch { return false; }
 }
 
+/* ══════════════ 主菜单弹窗（2026-10-02 · 用户要求） ══════════════
+   「读取存档」与「挑战模式」原来是在按钮列**下面摊开**一段列表（`.menu-slots` / `.menu-scens`）——
+   一切进那个状态，菜单按钮就被推上推下，同一枚键在不同开机状态下落在不同位置，
+   玩家的手指记忆直接失效。现在两处都改成**弹一层**：菜单那五枚永远不动。
+
+   两条硬约束：
+     ① **不能登记成 `picker`** —— `closePicker()` 清的是整个 `#overlay`（`textContent = ''`），
+        而主菜单就住在里面；一关弹窗，菜单跟着一起没。所以这里另存 `menuDlg`，
+        `closeMenuDlg()` 只摘自己那一层（主菜单原样留在背后）。
+     ② 出口给**两个**：面板底部那枚「返回」（`data-menuback`，见 `bind.js` 的 `ACTION_KEYS`）
+        ＋ 点暗底（沿用全站「点外面关掉」的既有惯例）—— 这是从开机画面走出去的路上的一层，
+        不能让人找不到出口。 */
+
+/** 当前打开的主菜单弹窗（整层 wrapper，含暗底与面板）。同一时刻只允许一个。 */
+let menuDlg = null;
+
+/** 关掉主菜单弹窗 —— 只摘自己那一层，**不动背后的主菜单**。 */
+export function closeMenuDlg() {
+  if (!menuDlg) return;
+  menuDlg.remove();
+  menuDlg = null;
+}
+
 /**
- * 挑战模式的年代卡列表（M1 · 2026-10-01）—— 主菜单里「挑战模式」下面那一段。
+ * 弹一层的**公共骨架**（读取存档 / 挑战模式共用）：暗底 ＋ 居中确认盒 ＋ 一枚「返回」。
+ * @param {string} title 面板抬头
+ * @param {(box:HTMLElement)=>void} build 往盒子里填内容（抬头之下、「返回」之上）
+ */
+function openMenuDlg(title, build) {
+  closeMenuDlg();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const wrap = el('div', 'menu-dlg');
+  const back = el('div', 'pick-back');
+  const box = el('div', 'confirm');
+  box.append(el('h3', null, title));
+  build(box);
+  const btns = el('div', 'confirm-btns');
+  const ret = el('button', 'act flat', '返回');
+  ret.dataset.menuback = '';
+  btns.append(ret);
+  box.append(btns);
+
+  back.addEventListener('pointerdown', () => closeMenuDlg());
+  wrap.append(back, box);
+  ov.append(wrap);          // ⚠️ 排在 `.menu-box` 之后 ⇒ 天然盖在菜单之上
+  ov.hidden = false;
+  menuDlg = wrap;
+}
+
+/** 弹窗里的行容器 —— 高度上限兜住「五张年代卡 ＋ 抬头 ＋ 返回」在矮屏上的溢出（内部滚动，
+ *  「返回」在滚区之外，永远够得着）。 */
+function dlgRows() {
+  return el('div', 'dlg-rows');
+}
+
+/**
+ * 「读取存档」弹窗 —— `slots` = `[{ key, name, date, money }]`，由 `main.js` 的 `menuSlots()` 现算。
+ *
+ * 每行两行结构（与选所弹层同一副）：**上行 = 名称 ＋ 金额，下行 = 停在哪一天**。
+ * 普通槽的名称就是「普通模式」，挑战槽写**那一局到底是哪个年代**（用户 2026-10-02：
+ * 「挑战模式存档则显示挑战模式名称 时间 金额」）。
+ *
+ * ⚠️ 行是 `<button>` 而**不是** `div`：整行都得能点。动作键 `data-slot`（值 = 槽位键
+ *    `normal` / `challenge`）已在 `bind.js` 的 `ACTION_KEYS` 里 —— 漏登记就是「点了没反应」。
+ */
+export function openSavePick(slots) {
+  openMenuDlg('读取存档', box => {
+    const list = dlgRows();
+    for (const it of slots) {
+      const row = el('button', 'pick-row');
+      row.dataset.slot = it.key;              // ⚠️ 动作键：`main.js` 的 `onSlot`
+      const l1 = el('div', 'pick-l1');
+      l1.append(el('b', null, it.name), el('span', 'num', it.money));
+      row.append(l1, el('div', 'pick-note num', it.date));
+      list.append(row);
+    }
+    box.append(list);
+  });
+}
+
+/**
+ * 「挑战模式」弹窗（M1 的时代卡，2026-10-02 从摊开改为弹出）。
  *
  * **为什么把「经典全程」排除在外**：它就是上面那枚「开始游戏」，列在这里等于同一个入口出现两次
  * （LESS IS MORE）。这里的五张卡全部是 `challenge: true` 的年代局。
  *
- * ⚠️ 卡片是 `<button>` 而**不是** `div` ＋ 内部若干行：整张卡都得能点。动作键是 `data-scen`
- *    （值 = `SCENARIOS[].id`），必须登记在 `bind.js` 的 `ACTION_KEYS` 里，否则点了没反应。
- * ⚠️ 默认 `hidden`：菜单打开时只露那几枚入口，玩家点了「挑战模式」才摊开。
+ * ⚠️ 卡片是 `<button>`：整张卡都得能点。动作键 `data-scen`（值 = `SCENARIOS[].id`），
+ *    已在 `bind.js` 的 `ACTION_KEYS` 里。有挑战档时「先变红、再点一次」那套武装状态机
+ *    照旧（`main.js` 的 `onScenario`），卡片节点在武装窗口内一直留在 DOM 里。
  */
-function scenarioList() {
-  const wrap = el('div', 'menu-scens');
-  wrap.hidden = true;
-  for (const sc of SCENARIOS) {
-    if (!sc.challenge) continue;
-    const row = el('button', 'scen');
-    row.dataset.scen = sc.id;                 // ⚠️ 动作键：`main.js` 的 `onScenario`
-    row.append(el('b', null, sc.name));
-    row.append(el('u', null, `${sc.from} → ${sc.to}`));
-    row.append(el('span', null, sc.blurb));
-    wrap.append(row);
-  }
-  return wrap;
-}
-
-/** 开 / 关年代卡列表（「挑战模式」那枚按钮调它）。展开返回 `true`，收起返回 `false` ——
- *  与上面 `toggleInstallGuide` 同一副签名（都是「同一个按钮开与关」）。 */
-export function toggleScenarioList() {
-  const box = document.querySelector('.menu-box');
-  const wrap = box && box.querySelector('.menu-scens');
-  if (!wrap) return false;
-  wrap.hidden = !wrap.hidden;
-  return !wrap.hidden;
-}
-
-/**
- * 「读取存档」摊开的那几行（2026-10-01 用户拍板）—— `slots` = `[{ key, name }]`，
- * 由 `main.js` 的 `menuSlots()` 现算（只列**真有档**的槽 ＋ 当前这一局那个槽）。
- *
- * 行是 `<button>` 而**不是** `div`：整行都得能点。动作键是 `data-slot`（值 = 槽位键
- * `normal` / `challenge`），必须登记在 `bind.js` 的 `ACTION_KEYS` 里，否则点了没反应。
- * 视觉与年代卡同一副（复用 `.scen` 的底 / 边 / 高亮），只是只有一行名字。
- */
-function slotList(slots) {
-  const wrap = el('div', 'menu-slots');
-  wrap.hidden = true;
-  for (const it of slots) {
-    const row = el('button', 'scen');
-    row.dataset.slot = it.key;                // ⚠️ 动作键：`main.js` 的 `onSlot`
-    row.append(el('b', null, it.name));
-    wrap.append(row);
-  }
-  return wrap;
-}
-
-/** 开 / 关读取存档列表（「读取存档」那枚按钮调它）。签名与 `toggleScenarioList` 一字不差。 */
-export function toggleSlotList() {
-  const box = document.querySelector('.menu-box');
-  const wrap = box && box.querySelector('.menu-slots');
-  if (!wrap) return false;
-  wrap.hidden = !wrap.hidden;
-  return !wrap.hidden;
+export function openScenPick() {
+  openMenuDlg('挑战模式', box => {
+    const list = dlgRows();
+    for (const sc of SCENARIOS) {
+      if (!sc.challenge) continue;
+      const row = el('button', 'scen');
+      row.dataset.scen = sc.id;               // ⚠️ 动作键：`main.js` 的 `onScenario`
+      row.append(el('b', null, sc.name));
+      row.append(el('u', null, `${sc.from} → ${sc.to}`));
+      row.append(el('span', null, sc.blurb));
+      list.append(row);
+    }
+    box.append(list);
+  });
 }
 
 /** 菜单里的「安装应用」按钮（PWA） */

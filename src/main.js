@@ -11,18 +11,18 @@ import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, cashCurAt, exchangeOf, hasFinan
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma } from './core/engine.js';
+import { createClock, chanOf, equity, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers } from './core/careers.js';
 import { enableGod, factorFor } from './core/god.js';
-import { fmtDate, fmtMoney } from './core/format.js';
+import { fmtDate, fmtMoney, fmtMoneyShort } from './core/format.js';
 import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
   renderReview, openNodeCard, openYearPick, openGuide, renderCareers,
-  isStandalone, toggleInstallGuide, menuRemoveInstall, toggleScenarioList, toggleSlotList,
+  isStandalone, toggleInstallGuide, menuRemoveInstall, closeMenuDlg, openSavePick, openScenPick,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -342,20 +342,22 @@ async function boot() {
      数值没变就什么都不做，所以这个监听不会让 resize 变成重绘风暴）。 */
   window.addEventListener('resize', applyUi);
 
-  /* 主菜单（需求 4 · 方案 §2）：**一律先弹它**，几个入口决定后续走向 ——
-       读取存档 → 摊开「普通模式 / 挑战模式」两行（有档才有），点了续玩
+  /* 主菜单（需求 4 · 方案 §2）：**一律先弹它**，五枚入口决定后续走向 ——
+       读取存档 → 弹一层，列出有档的槽（名称 / 日期 / 金额），点了续玩
        开始游戏 → 开一局新的经典全程（已有普通档先二次确认）
-       挑战模式 → 摊开五张年代卡
+       挑战模式 → 弹一层，列出五张年代卡
        历史回顾 / 交易档案 / 安装应用 → 各走各的
      ⚠️ 菜单期间**时钟不启动**（与开场叙事同一条）：玩家选完才真正开盘，
         否则停在这一屏时行情已经自己走了几十根。
      ⚠️ **刚挑完年代的那一趟跳过菜单**（`fromScenarioPick`）：玩家上一步才点的「10u 战神」，
         再把菜单弹回来等于让他白点一次。⚠️ **挑战局不走开场白**（2026-10-01 用户拍板：
-        挑战默认老手、没有新手/老手按钮）—— 直接开盘。 */
+        挑战默认老手、没有新手/老手按钮）—— 直接开盘。
+     ⚠️ 菜单**只吃一个布尔**（`canLoad`，2026-10-02）：两段摊开的列表已收进弹窗，
+        菜单不再需要那份槽位清单 —— 真正的清单在**点「读取存档」那一刻**才现算。 */
   if (fromScenarioPick) {
     if (isChallenge(s.scen)) beginGame();
     else openIntro(s.scen);
-  } else openMenu({ slots: menuSlots() });
+  } else openMenu({ canLoad: menuSlots().length > 0 });
 }
 
 /** 保证某个币的数据已加载；失败只记一条日志，不让整个游戏崩掉 */
@@ -656,10 +658,14 @@ function dispatch(node) {
 
   /* 主菜单入口（需求 4 · 方案 §2）：`load` / `start` / `scen` / `review` / `careers` / `install`。 */
   if (d.menu !== undefined) return onMenu(d.menu, node);
-  /* 「读取存档」摊开的那两行（2026-10-01 用户拍板）：值是槽位键（`normal` / `challenge`）。 */
+  /* 「读取存档」弹窗里那两行（2026-10-01 用户拍板；2026-10-02 由摊开改为弹出）：
+     值是槽位键（`normal` / `challenge`）。 */
   if (d.slot !== undefined) return onSlot(d.slot);
   /* 年代开局（M1）：主菜单「挑战模式」里那五张卡，值是年代 id，见 `onScenario`。 */
   if (d.scen !== undefined) return onScenario(d.scen, node);
+  /* 主菜单弹窗的「返回」（2026-10-02）：只摘掉那一层，背后那屏主菜单原样留着 ——
+     ⚠️ 不能用 `closePicker()`，它清的是整个 `#overlay`（菜单也在里面）。 */
+  if (d.menuback !== undefined) return closeMenuDlg();
   /* 回顾页的全部动作（需求 4 · 方案 §3）：值即子命令，见 `onReview`。 */
   if (d.review !== undefined) return onReview(d.review);
   /* 交易档案页（M2）：`exit` 返回；`share:<id>` 把那一条生涯画成分享图（M4）。 */
@@ -1061,21 +1067,24 @@ function onGodOff() {
 /** 上帝面板里输入框的值 —— 输入框没有动作键，只能从同一个面板里按类名找（两个框各有一个唯一类） */
 const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.value ?? null;
 
-/* ── 主菜单（需求 4 · 方案 §2；存档拆两槽 2026-10-01）────────────────
+/* ── 主菜单（需求 4 · 方案 §2；存档拆两槽 2026-10-01；改弹窗 2026-10-02）────────
    菜单期间时钟是停的（见 `boot`），选完才真正开盘。
 
-   · `load`    ：读取存档开 / 关（有档才出现）—— 摊开「普通模式 / 挑战模式」两行，见 `onSlot`。
+   · `load`    ：弹一层「读取存档」（`openSavePick`），列出有档的槽，见 `onSlot`。
    · `start`   ：开一局新的**经典全程**；已有普通档 ⇒ 先「武装」（按钮变红，3 秒内再点一次才重开）。
-   · `scen`    ：挑战模式的年代卡列表开 / 关（M1）—— 它本身不开局，见 `onScenario`。
+   · `scen`    ：弹一层「挑战模式」（`openScenPick`）—— 它本身不开局，见 `onScenario`。
    · `review`  ：只读回顾模式（`enterReview`）。
    · `careers` ：交易档案页（M2 · 2026-10-01）—— 见 `enterCareers()`。
-   · `install` ：PWA 安装（2026-10-01）—— 见 `onInstall()`。 */
+   · `install` ：PWA 安装（2026-10-01）—— 见 `onInstall()`。
+
+   ⚠️ 2026-10-02（用户要求）：`load` / `scen` 从「在按钮列下面摊开一段列表」改成「弹一层」。
+      摊开会把菜单按钮推上推下，同一枚键在不同状态下落在不同位置 —— 手指记忆失效。 */
 function onMenu(kind, node) {
-  if (kind === 'load') { toggleSlotList(); return; }
+  if (kind === 'load') { openSavePick(menuSlots()); return; }
   if (kind === 'review') return enterReview();
   if (kind === 'careers') return enterCareers();
   if (kind === 'install') return onInstall();
-  if (kind === 'scen') { toggleScenarioList(); return; }
+  if (kind === 'scen') { openScenPick(); return; }
   /* kind === 'start'：开一局新的经典全程（普通槽）。已有普通档才需要二次确认。 */
   if (hasSave('normal')) {
     if (!armedOn(node)) { armMenu(node); return; }
@@ -1090,6 +1099,14 @@ function onMenu(kind, node) {
  * 顺序取自 `SAVE_SLOTS`（普通在前、挑战在后）。
  * ⚠️ 全新一局（`isNewGame`）时 `s.scen` 只是个缺省值，**不算当前槽** —— 否则会在没有档的
  *    情况下凭空列出「普通模式」这一行。
+ *
+ * 每行三样（2026-10-02 用户要求）：**名称 / 时间 / 金额**。
+ *   · 名称：普通槽写「普通模式」；挑战槽写**那一局到底是哪个年代**（如「10u 战神」）——
+ *     「挑战模式」四个字认不出手里这一局是哪一局。
+ *   · 时间：存档停在哪一天（`fmtDate(…, false)`，到天；小时太细，顶栏已经有）。
+ *   · 金额：见 `slotMoney()`。
+ * ⚠️ 现算而不是开机时算一次：玩家可能刚从设置页回菜单（`onHome` 会先落盘），
+ *    那时候手上这个槽的进度才是最新的。代价只是几次 `JSON.parse`，可忽略。
  */
 function menuSlots() {
   const cur = saveSlotOf(s.scen);
@@ -1097,7 +1114,34 @@ function menuSlots() {
      不算（`!isNewGame` 或该槽已有档），否则会在没有任何档的情况下凭空列出「普通模式」。 */
   return SAVE_SLOTS
     .filter(k => hasSave(k) || (k === cur && !isNewGame))
-    .map(key => ({ key, name: slotName(key) }));
+    .map(key => {
+      /* 当前这一局的槽读**内存里那份** `s`（比盘上那份多一次 `boot` 里的权益采样），
+         另一个槽只能读盘。 */
+      const sv = key === cur ? s : loadSlot(key);
+      return {
+        key,
+        name: key === 'challenge' ? scenarioOf(sv.scen).name : slotName(key),
+        date: fmtDate(timeOf(sv), false),
+        money: slotMoney(sv),
+      };
+    });
+}
+
+/**
+ * 存档行那笔「金额」= **总资产**（2026-10-02 用户拍板：用实时权益口径）。
+ *
+ * 该槽的持仓币行情**都已经在内存里**时，直接 `equity()` 现算 —— 与 HUD 那格「总资产」
+ * 同源同口径，玩家在那局里看到多少，这一行就是多少。
+ * 没加载（另一个槽握着本趟没读的那些币）则退回存档里**资金曲线的末点**：那个数是玩家
+ * 上次关档时资产页曲线的终点，量级对得上，而且不必为了看一行字再下一次行情包。
+ * ⚠️ 这里是**只读**的：`equity()` 只算不写，不会污染另一个槽的状态。
+ * @returns {string} 已格式化好的金额（`$12.3k` 这类），算不出来给 `—`
+ */
+function slotMoney(sv) {
+  const v = heldSyms(sv).every(isLoaded)
+    ? equity(sv)
+    : (sv.eq && sv.eq.length ? sv.eq[sv.eq.length - 1] : null);
+  return Number.isFinite(v) ? fmtMoneyShort(v) : '—';
 }
 
 /**
@@ -1144,7 +1188,7 @@ function onHome() {
   closePicker();
   clock.stop();
   after();                       // 先落一次盘：菜单里「读取存档」靠这份档才列得出当前这一局
-  openMenu({ slots: menuSlots() });
+  openMenu({ canLoad: menuSlots().length > 0 });
 }
 
 /**
@@ -1383,7 +1427,7 @@ function exitReview() {
      不归位的话「回顾 → 退出」会停在一屏没头没尾的设置页上。 */
   tab = 'trade';
   draw(true);                                    // `rv` 归 nil ⇒ `showPage` 按 `tab` 切回交易页
-  openMenu({ slots: menuSlots() });
+  openMenu({ canLoad: menuSlots().length > 0 });
 }
 
 /* ── 交易档案页（M2 · 2026-10-01）────────────────────────────────
@@ -1404,7 +1448,7 @@ function exitCareers() {
   arch = false;
   tab = 'trade';                                 // 与 `exitReview` 同一条：退出整屏页落回交易页
   draw(true);                                    // `arch` 归 falsy ⇒ `showPage` 按 `tab` 切回交易页
-  openMenu({ slots: menuSlots() });
+  openMenu({ canLoad: menuSlots().length > 0 });
 }
 
 /**
