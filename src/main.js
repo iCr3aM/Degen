@@ -14,13 +14,14 @@ import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayer
 import { createClock, chanOf, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
+import { loadCareers } from './core/careers.js';
 import { enableGod, factorFor } from './core/god.js';
 import { fmtDate, fmtMoney } from './core/format.js';
 import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
-  renderReview, openNodeCard, openYearPick, openGuide,
+  renderReview, openNodeCard, openYearPick, openGuide, renderCareers,
   isStandalone, toggleInstallGuide, menuRemoveInstall, toggleScenarioList,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
@@ -137,6 +138,12 @@ let rv = null;
 let rvTimer = 0;
 let rvLast = 0;
 let rvAcc = 0;
+
+/* ── 交易档案页（M2 · 2026-10-01）──────────────────────────────────
+   `arch` 真 = 正处在档案页。与 `rv` 同一口径：**模块级变量、不进 `s`、不进存档**。
+   档案页是**纯只读**的一屏（读 `loadCareers()` 铺列表），没有自己的时钟 —— 进页时把
+   主时钟停住即可（与主菜单期间同一条：停在菜单上时行情不该自己走）。 */
+let arch = false;
 
 /* 上帝模式的隐藏入口（方案 §2.1）：**1.5 秒内连点顶栏「Degen」5 次**解锁；
    ⚠️ **解锁之后不用再连点** —— `s.god` 非空即「这一局已经开了」，单击标题直接重开面板（2026-10-01）。
@@ -515,7 +522,10 @@ function draw(force = false) {
   /* ⚠️ **先切页，再量尺寸**（A6 · 方案 §6）：隐藏的 `.trade-page` 是 `display:none`，
      量出来是 0×0；顺序反了的话第一帧拿到的是上一页的尺寸（切回交易页就会画成一张空图，
      而且暂停态下**不会再有任何一帧**把它救回来）。 */
-  showPage(refs, rv ? 'review' : tab);
+  showPage(refs, rv ? 'review' : arch ? 'careers' : tab);
+  /* 档案页是**纯只读**的一屏（没有 K 线、不量尺寸）⇒ 铺完列表就地返回。
+     ⚠️ 铺列表放在 `showPage` 之后：`.careers-list` 所在的那页此刻才刚被点亮。 */
+  if (arch) { renderCareers(refs, loadCareers()); return; }
   /* 回顾页量的是它自己那块 K 线区（两页的 DOM 各有一套，方案 §3.2） */
   const rect = (rv ? refs.rvWrap : refs.chartWrap).getBoundingClientRect();
   const view = {
@@ -615,6 +625,8 @@ function dispatch(node) {
   if (d.scen !== undefined) return onScenario(d.scen, node);
   /* 回顾页的全部动作（需求 4 · 方案 §3）：值即子命令，见 `onReview`。 */
   if (d.review !== undefined) return onReview(d.review);
+  /* 交易档案页（M2）：只有一枚「返回」（值固定 `'exit'`）。 */
+  if (d.careers !== undefined) return exitCareers();
   /* 开场的两枚入口（v11 · ③）：`d.intro` 是 `'new'`（我是新手）或 `'old'`（我是老手）——
      它只决定 `s.hintOn`，叙事文案两者一样。 */
   if (d.intro !== undefined) return onIntro(d.intro);
@@ -1011,7 +1023,8 @@ const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.v
                  走既有 `onWipe()`（`disableSave` ＋ `wipe` ＋ reload）——**不新写重开逻辑**。
    · `review`  ：只读回顾模式（`enterReview`）。
    · `install` ：PWA 安装（2026-10-01）—— 见 `onInstall()`。
-   · `scen`    ：挑战模式的年代卡列表开 / 关（M1）—— 它本身不开局，见 `onScenario`。 */
+   · `scen`    ：挑战模式的年代卡列表开 / 关（M1）—— 它本身不开局，见 `onScenario`。
+   · `careers` ：交易档案页（M2 · 2026-10-01）—— 见 `enterCareers()`。 */
 function onMenu(kind, node) {
   if (kind === 'continue') {
     closePicker();
@@ -1020,6 +1033,7 @@ function onMenu(kind, node) {
     return;
   }
   if (kind === 'review') return enterReview();
+  if (kind === 'careers') return enterCareers();
   if (kind === 'install') return onInstall();
   if (kind === 'scen') { toggleScenarioList(); return; }
   /* kind === 'start' */
@@ -1274,6 +1288,26 @@ function exitReview() {
   rv = null;
   rvAcc = 0;
   draw(true);                                    // `rv` 归 nil ⇒ `showPage` 自动切回交易页
+  openMenu({ canContinue: !isNewGame });
+}
+
+/* ── 交易档案页（M2 · 2026-10-01）────────────────────────────────
+   与回顾模式同一副骨架：进页把主时钟停住（纯只读，行情不该继续走），退出回主菜单。
+   ⚠️ **不进存档、不写 `s`** —— 档案是跨局的独立 localStorage 键（`core/careers.js`），
+      在 `draw()` 那一支里现读现铺。 */
+
+/** 进档案页：主菜单点「交易档案」 */
+function enterCareers() {
+  closePicker();
+  clock.stop();                                  // 双保险：主菜单期间它本来就没启动
+  arch = true;
+  draw(true);
+}
+
+/** 退出档案页：回主菜单（与 `exitReview` 一字不差的走法） */
+function exitCareers() {
+  arch = false;
+  draw(true);                                    // `arch` 归 falsy ⇒ `showPage` 自动切回交易页
   openMenu({ canContinue: !isNewGame });
 }
 

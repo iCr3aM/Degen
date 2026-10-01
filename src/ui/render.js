@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of } from '../core/engine.js';
+import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
@@ -489,6 +489,21 @@ export function mount(root) {
   const reviewPage = el('div', 'page review-page');
   reviewPage.append(rvTop, rvBar, rvSymbols, rvWrap, rvLogs);
 
+  /* ── 交易档案页（M2 · 2026-10-01）──
+     与回顾页**同一副骨架**：整屏页（`#app.rv` 把常驻顶栏与 Tab 藏掉）＋ 页内自己一枚「返回」。
+     列表内容由 `renderCareers()` 铺（`mount` 只建一个空容器），与回顾日志栏同一套写法。 */
+  const careersTop = el('div', 'top');
+  const careersWho = el('div', 'who');
+  careersWho.append(el('b', null, '交易档案'));
+  const careersExit = el('button', 'ic', '返回');
+  careersExit.dataset.careers = 'exit';
+  const careersTools = el('div', 'tools');
+  careersTools.append(careersExit);
+  careersTop.append(careersWho, careersTools);
+  const careersList = el('div', 'careers-list');
+  const careersPage = el('div', 'page careers-page');
+  careersPage.append(careersTop, careersList);
+
   /* ── 底部 Tab（44px · §6.1）──
      ⚠️ 这 44px **全部从 K 线区扣**：固定块合计 431 → 475px，K 线区 405 → 361px（390×844）。
         实机若觉得挤，先把 Tab 降到 40px —— **不动 HUD / 持仓条**。 */
@@ -504,9 +519,11 @@ export function mount(root) {
     ['trade', tradePage], ['assets', assetsPage], ['settings', settingsPage],
     /* 回顾页也进这张表 —— `showPage` 的可见性开关只认它（方案 §3.2） */
     ['review', reviewPage],
+    /* 交易档案页（M2）—— 与回顾页同样是**整屏页**，`#app.rv` 把常驻顶栏与 Tab 藏掉 */
+    ['careers', careersPage],
   ]);
 
-  root.append(top, tradePage, assetsPage, settingsPage, reviewPage, tabs);
+  root.append(top, tradePage, assetsPage, settingsPage, reviewPage, careersPage, tabs);
 
   return {
     root, dateEl, titleEl, pauseBtn,
@@ -524,9 +541,12 @@ export function mount(root) {
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
     rvWrap, rvCanvas, rvHead, rvSym, rvMcap, rvSupp, rvChg, rvModeBtn, rvLogs,
+    /* 交易档案页（M2 · 2026-10-01） */
+    careersPage, careersList,
     _levSignature: '',
     _posListSig: null,
     _rvLogSig: '',
+    _careersSig: null,
   };
 }
 
@@ -536,14 +556,14 @@ export function mount(root) {
  * ⚠️ 它由 `main.js` 的 `draw()` 在**量 K 线尺寸之前**调用，而不是放在 `update()` 里：
  *    隐藏的 `.trade-page` 是 `display:none`，量出来是 0×0 —— 先切页、再量，尺寸才是真的。
  * @param {object} refs `mount()` 的返回值
- * @param {'trade'|'assets'|'settings'|'review'} name
+ * @param {'trade'|'assets'|'settings'|'review'|'careers'} name
  */
 export function showPage(refs, name) {
   for (const [k, n] of refs.pages) n.classList.toggle('on', k === name);
   for (const [k, b] of refs.tabBtns) b.classList.toggle('on', k === name);
-  /* 回顾页要把**三页常驻**的顶栏与 Tab 藏掉（`.page` 之外的节点，靠 `#app.rv` 这个开关）——
-     不藏的话回顾页会顶着两套顶栏（一套交易页的交易所键、一套回顾自己的）。 */
-  refs.root.classList.toggle('rv', name === 'review');
+  /* 回顾页 / 交易档案页要把**三页常驻**的顶栏与 Tab 藏掉（`.page` 之外的节点，靠 `#app.rv`
+     这个开关）—— 不藏的话它们会顶着两套顶栏（一套交易页的交易所键、一套自己的）。 */
+  refs.root.classList.toggle('rv', name === 'review' || name === 'careers');
 }
 
 function cell(label, valueEl, subEl) {
@@ -1542,6 +1562,11 @@ export function openMenu({ canContinue = false } = {}) {
   const review = el('button', 'act chan', '历史回顾');
   review.dataset.menu = 'review';
   btns.append(review);
+  /* 交易档案（M2 · 2026-10-01）—— 走进「玩过的每一局」那一页（`main.js` 的 `onMenu`）。
+     与「历史回顾」同档：都是**看**的入口，都不是开新局。 */
+  const careers = el('button', 'act chan', '交易档案');
+  careers.dataset.menu = 'careers';
+  btns.append(careers);
   if (!isStandalone()) menuInstallBtn(btns);
   box.append(btns);
   box.append(scenarioList());
@@ -1839,6 +1864,52 @@ export function renderReview(refs, rv, view) {
     }
     if (!refs.rvLogs.childElementCount) refs.rvLogs.append(el('div', 'log-row mut', '—'));
   }
+}
+
+/* ══════════════ 交易档案页（M2 · 2026-10-01） ══════════════ */
+
+/** 结局的显示名与配色 —— 键就是 `engine.OVER` 的那三个值 */
+const OVER_LABEL = { [OVER.LIQUIDATED]: '爆仓', [OVER.SETTLED]: '结算', [OVER.GAVEUP]: '收摊' };
+const OVER_TONE = { [OVER.LIQUIDATED]: 'down', [OVER.SETTLED]: 'up', [OVER.GAVEUP]: 'mut' };
+
+/**
+ * 交易档案页的写入口（与 `renderReview` 同一套写法：**只在签名变了时重建**）。
+ * 数据是静态的（进页那一刻读一次），但 `draw()` 可能因别的理由被调到，签名能挡掉无谓重建。
+ * @param {object} refs  `mount()` 的返回值
+ * @param {Array<object>} list  `core/careers.js` 的记录（新的在前）
+ */
+export function renderCareers(refs, list) {
+  const sig = list.map(r => r.id).join(',');
+  if (sig === refs._careersSig) return;
+  refs._careersSig = sig;
+  refs.careersList.textContent = '';
+  if (!list.length) {
+    refs.careersList.append(el('div', 'careers-empty', '还没有已结束的对局'));
+    return;
+  }
+  for (const r of list) refs.careersList.append(careerRow(r));
+}
+
+/** 一条生涯记录 —— 三代信息：**年代 ＋ 结局** / **起止与天数** / **终值 ＋ 倍数** */
+function careerRow(r) {
+  const row = el('div', 'career');
+
+  const head = el('div', 'career-head');
+  head.append(el('b', null, scenarioOf(r.scen).name));
+  head.append(el('u', OVER_TONE[r.reason] || 'mut', OVER_LABEL[r.reason] || '结束'));
+  row.append(head);
+
+  row.append(el('div', 'career-sub',
+    `${fmtDate(r.start, false)} → ${fmtDate(r.end, false)} · ${r.days} 天`));
+
+  const num = el('div', 'career-num');
+  const tone = r.final >= r.cash0 ? 'up' : 'down';
+  num.append(el('b', 'num ' + tone, fmtMoneyShort(r.final)));
+  const mult = r.cash0 > 0 ? r.final / r.cash0 : 0;
+  num.append(el('u', tone, `×${mult.toFixed(mult < 10 ? 2 : 1)}`));
+  row.append(num);
+
+  return row;
 }
 
 /**

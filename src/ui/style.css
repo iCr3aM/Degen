@@ -1168,12 +1168,43 @@ button { user-select: none; -webkit-user-select: none; }
    带箭头、带槽、带圆角，与全局「中性 + 直角」的配色完全不是一套。这里换成 4px 的细条：
    槽透明、滑块走 `--line`（悬停提亮到 `--mut`）。
    ⚠️ 两处日志栏共用（回顾页的 `.rv-logs` 与浮层的 `.log-list`）—— 它们是一套东西。 */
-.rv-logs, .log-list { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
-.rv-logs::-webkit-scrollbar, .log-list::-webkit-scrollbar { width: 4px; }
-.rv-logs::-webkit-scrollbar-track, .log-list::-webkit-scrollbar-track { background: transparent; }
-.rv-logs::-webkit-scrollbar-thumb, .log-list::-webkit-scrollbar-thumb { background: var(--line); }
-.rv-logs::-webkit-scrollbar-thumb:hover, .log-list::-webkit-scrollbar-thumb:hover { background: var(--mut); }
-.rv-logs::-webkit-scrollbar-button, .log-list::-webkit-scrollbar-button { display: none; }
+.rv-logs, .log-list, .careers-list { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.rv-logs::-webkit-scrollbar, .log-list::-webkit-scrollbar, .careers-list::-webkit-scrollbar { width: 4px; }
+.rv-logs::-webkit-scrollbar-track, .log-list::-webkit-scrollbar-track, .careers-list::-webkit-scrollbar-track { background: transparent; }
+.rv-logs::-webkit-scrollbar-thumb, .log-list::-webkit-scrollbar-thumb, .careers-list::-webkit-scrollbar-thumb { background: var(--line); }
+.rv-logs::-webkit-scrollbar-thumb:hover, .log-list::-webkit-scrollbar-thumb:hover, .careers-list::-webkit-scrollbar-thumb:hover { background: var(--mut); }
+.rv-logs::-webkit-scrollbar-button, .log-list::-webkit-scrollbar-button, .careers-list::-webkit-scrollbar-button { display: none; }
+
+/* ══════════════ 交易档案页（M2 · 2026-10-01） ══════════════
+   与回顾页**同一副骨架**：整屏页（`#app.rv` 藏掉常驻顶栏与 Tab）＋ 页内自己一枚「返回」。
+   ⚠️ 滚动收在**列表自己**身上（不是整页）：`.top` 那枚「返回」必须常驻 —— 50 条记录滚下去
+      就点不到返回，等于把玩家关在页里。`.page:not(.trade-page)` 那条 `overflow-y: auto`
+      在这里按同优先级 ＋ 更靠后压回 `hidden`。 */
+.page.careers-page { overflow: hidden; gap: 8px; }
+.careers-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+.careers-empty { padding: 24px 0; text-align: center; font-size: calc(12px * var(--ui)); color: var(--mut-2); }
+/* 一条生涯记录：三代信息（年代 ＋ 结局 / 起止 ＋ 天数 / 终值 ＋ 倍数） */
+.career { background: var(--panel); border: 1px solid var(--line); padding: 8px 10px; }
+.career-head { display: flex; align-items: baseline; gap: 8px; }
+.career-head b { font-size: calc(13px * var(--ui)); font-weight: 600; }
+.career-head u { margin-left: auto; text-decoration: none; font-size: calc(12px * var(--ui)); }
+.career-sub {
+  margin-top: 4px;
+  font-size: calc(11px * var(--ui));
+  color: var(--mut-2);
+  font-feature-settings: "tnum";
+}
+.career-num { margin-top: 6px; display: flex; align-items: baseline; gap: 8px; font-feature-settings: "tnum"; }
+.career-num b { font-size: calc(14px * var(--ui)); }
+.career-num u { margin-left: auto; text-decoration: none; font-size: calc(12px * var(--ui)); }
 
 /* ══════════════ B6-b：触摸命中区 ＋ 窄屏（§7.4 / §7.7） ══════════════ */
 

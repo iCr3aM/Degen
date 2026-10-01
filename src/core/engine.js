@@ -27,6 +27,7 @@ import {
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
 import { hashStr, rand } from './rng.js';
+import { addCareer } from './careers.js';
 
 /** 交易所归零前多少毫秒给一条预警日志（7 天） */
 const WARN_LEAD = 7 * 24 * HOUR_MS;
@@ -753,7 +754,38 @@ function forceLiquidate(s, pos, atPrice) {
   refreshOverhang(s, pos.sym);                         // v18：爆掉的若是现货实物多头，折价随之归零
 }
 
+/**
+ * 把这一局写进**交易档案**（M2 · 2026-10-01）。
+ *
+ * ⚠️ **幂等**：由 `endGame` 用 `!s.over` 把门 —— 本局只写一条。`rewindTo`（上帝跳日期）
+ *    会把 `s.over` 清回 `null`，所以「结束 → 回退 → 再结束」会各写一条，这是对的：
+ *    那是两次不同的结局，档案本来就该各记一笔。
+ * ⚠️ 记录是**自洽的**（把展示要用的数都摊平存进去）—— 档案页因此不必回头翻那一局的存档，
+ *    而存档在重开时已经没了。
+ */
+function recordCareer(s, reason) {
+  let peak = equity(s);
+  for (const v of s.eq) if (v > peak) peak = v;
+  addCareer({
+    scen: s.scen,
+    reason,
+    start: GAME.start + s.day0 * 24 * HOUR_MS,
+    end: timeOf(s),
+    days: Math.max(1, Math.round((s.i - s.day0 * 24) / 24)),
+    cash0: s.cash0,
+    final: equity(s),
+    peak,
+    realized: s.realized,
+    open: s.stat.open, win: s.stat.win, loss: s.stat.loss, liq: s.stat.liq,
+    spot: s.stat.spot, fut: s.stat.fut, maxLev: s.stat.maxLev,
+    move: s.stat.move, god: s.stat.god, loan: s.stat.loan,
+    syms: Object.keys(s.stat.syms),
+  });
+}
+
 function endGame(s, reason) {
+  /* 交易档案（M2）：**本局只写一条** —— `s.over` 空着的时候才写，写完它才有值。 */
+  if (!s.over) recordCareer(s, reason);
   s.over = { reason, at: s.i };
   s.paused = true;
   const text = reason === OVER.SETTLED ? '活到了 2024-12-31，结算'

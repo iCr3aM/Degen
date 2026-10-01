@@ -7281,3 +7281,94 @@ if (isChallenge(s.scen)) { endGame(s, OVER.LIQUIDATED); return true; }
 
 > 同 §三十五：以 `src/` 为准。
 
+---
+
+## 五十七、交易档案 · M2（✅ 2026-10-01 · 用户拍板「全做」）
+
+M1 那一章的「四段里程碑」之二：**玩家每结束一局，就留一条记录**，主菜单「交易档案」里能翻。
+本章只记 M2；M3（称号）/ M4（分享图）另起章节。
+
+### 57.1 存哪 —— 独立键 `degen_careers`（不进存档）
+
+档案是**跨局**数据，与 `s`（单局状态）**生命周期不同**：`onWipe` / 换年代 / 弃档都不能动它。
+所以走独立 localStorage 键 `degen_careers`（与 `degen_settings` / `degen_colors` / `degen_fx` /
+`degen_next_scen` 同一惯例），**不进 `degen_save`**，`STATE_VERSION` 不因它变动。
+
+- `{ v: 1, list: [...] }`，`v` 不符即**整体回空**（同存档口径，不写迁移）。
+- **上限 50 条**，新记录 `unshift` 到表头 ⇒ 翻车局第一眼就能看到。
+- localStorage 不可用（Node 断言 / 隐私模式）⇒ 回落到**模块级内存 `mem`**，读写在 `try/catch` 里，
+  静默失败**不崩**（与 `stashScen` 同处理）。
+
+### 57.2 写哪 —— `endGame` 幂等写入
+
+`engine.endGame(s, reason)` 是**唯一**终局出口（爆仓 / 结算 / 收摊三条路都汇到这）。
+在它开头加一行：
+
+```js
+if (!s.over) recordCareer(s, reason);   // 幂等：本局只写一条
+```
+
+先写档案、再置 `s.over` ⇒ 同一局即使被重复调到 `endGame` 也只落一条。
+
+`recordCareer(s, reason)` 采到的字段（**全部来自既有状态，不打新点**）：
+
+| 字段 | 来源 | 说明 |
+| --- | --- | --- |
+| `scen` | `s.scen` | 年代 id ⇒ 档案页显示局名 |
+| `reason` | 入参 | `OVER.LIQUIDATED` / `SETTLED` / `GAVEUP` |
+| `start` | `GAME.start + s.day0 * 24 * HOUR_MS` | 本局开局**真实**时刻（`rewindTo` 不重置 `day0`/`scen`，安全） |
+| `end` | `timeOf(s)` | 终局时刻 |
+| `days` | `(s.i - s.day0 * 24) / 24` 取整 | 本局存活天数 |
+| `cash0` | `s.cash0` | 本金 ⇒ 档案页算倍数 |
+| `final` | `equity(s)` | 终局权益 |
+| `peak` | `max(s.eq)`（映到 `equity`） | 峰值 —— **不入 `s.stat`，由 `s.eq` 现算**（同 §56.8 口径） |
+| `realized` | `s.realized` | 已实现盈亏 |
+| `open/win/loss/liq` | `s.stat.*` | 交易统计（M1 打的点） |
+| `spot/fut/maxLev` | `s.stat.*` | 现货/合约笔数、最大杠杆 |
+| `move/god/loan` | `s.stat.*` | 换所次数 / 上帝 / 借贷 |
+| `syms` | `Object.keys(s.stat.syms)` | 碰过的币种 |
+
+### 57.3 看哪 —— 沿用回顾页骨架（滚动收在列表里）
+
+档案页 `careers-page` **与历史回顾页共用 `#app.rv`** 整屏开关（`showPage` 里把 rv 判据扩成
+`name === 'review' || name === 'careers'`）⇒ 顶栏与底部 Tab 一并藏掉，页面自己画一个「返回」。
+
+- 骨架：`top`（标题「交易档案」＋ 返回键 `data-careers=exit`）＋ `careers-list`（滚动容器）。
+- `.page.careers-page { overflow: hidden; gap: 8px; }` —— ⚠️ 靠**源码更靠后**压回
+  `.page:not(.trade-page) { overflow-y: auto }`（两者同优先级 0,2,0）⇒ 把滚动**收在列表自身**，
+  让「返回」常驻、不跟着内容滚走。
+- `renderCareers(refs, list)` 用 `_careersSig`（`list.map(r => r.id).join(',')`）挡重复重绘。
+- 空态：`careers-empty` —— 「还没有已结束的对局」。
+
+单条 `careerRow`：局名 ＋ 结局标签（`爆仓`/`结算`/`收摊`，按 `OVER_TONE` 上色）
+／时间区间 ＋ 天数 ／ 终局权益 ＋ 倍数（`final / cash0`，<10 保留两位，否则一位）。
+
+### 57.4 落点清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/core/careers.js` | **新增**：`loadCareers` / `addCareer`，独立键 ＋ 内存兜底 |
+| `src/core/engine.js` | `import { addCareer }`；新增 `recordCareer(s, reason)`；`endGame` 开头幂等写入 |
+| `src/ui/render.js` | import 追加 `OVER`；档案页骨架；`pages` 加 `careers`；`showPage` rv 判据；菜单「交易档案」入口；`renderCareers` / `careerRow` |
+| `src/main.js` | import `loadCareers` / `renderCareers`；模块级 `arch`；`draw()` 分支；`onMenu` 接 `careers`；`enterCareers` / `exitCareers`；`dispatch` 接 `d.careers` |
+| `src/ui/bind.js` | `ACTION_KEYS` 登记 `'careers'` |
+| `src/ui/style.css` | 日志滚动条那一组追加 `.careers-list`；档案页 `.career*` 全族 |
+
+### 57.5 验收（2026-10-01）
+
+- 临时脚本 `tools/_m2_check.mjs`（**跑完即删**）**40/40 全绿**，覆盖：
+  独立键形状与 `v` 校验；50 条上限；`unshift` 顺序；内存兜底；`endGame` 幂等（重复调用只落一条）；
+  三种 `reason` 各落一条；`start` 由 `day0` 反推正确；`days` 取整；峰值取 `s.eq` 最大值；
+  `syms` 与 `s.stat.syms` 同集。
+- `npm run build` ✅ 通过：**23 modules**，`dist/assets/index.CHe7yiRs.js` **105.49 kB** /
+  `index.ZLUVaua.css` 22.03 kB。
+
+### 57.6 明确不做（本轮）
+
+- 不做档案**删除 / 编辑 / 排序** —— 只读，LESS IS MORE。
+- 不做**跨局排行榜 / 对比**（M2 只保证「留得下、翻得到」）。
+- 档案**不入存档**、不动 `STATE_VERSION` —— 它与单局状态不同生命周期。
+- 不做称号 / 分享图（M3 / M4）。
+
+> 同 §三十五：以 `src/` 为准。
+
