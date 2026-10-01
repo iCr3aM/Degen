@@ -1269,6 +1269,45 @@ button { user-select: none; -webkit-user-select: none; }
 }
 .career-share:active { background: var(--accent-soft); color: var(--fg); }
 .career-share:disabled { opacity: .45; }
+/* 删除键（M5）—— 与「生成海报」同一副样子，只在**武装之后**变红。
+   ⚠️ 变红走 `.warn` 类（`main.js` 的 `armDelete` 加上去、3 秒后摘掉），不是 `:active` ——
+      武装是个**持续**状态，`pointerdown` 一松手 `:active` 就没了，玩家看不清自己在确认什么。
+      与 `.scen.warn`（年代卡武装）同一枚下跌色。 */
+.career-del {
+  font-family: inherit;
+  font-size: calc(11px * var(--ui));
+  line-height: 1;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--mut);
+  cursor: pointer;
+}
+.career-del:active { background: var(--accent-soft); color: var(--fg); }
+.career-del.warn { border-color: var(--down); color: var(--down); }
+
+/* ══════════════ 生涯海报预览（M5 · 2026-10-02） ══════════════
+   挂在同一个 `#overlay` 上、居中 —— 与日志浮层 / 换所二次确认同一副骨架。
+   图**限高**是这套设计的前提：上下留出可点的暗底，才敢**不画「关闭」键**
+   （沿用日志浮层那条拍板：点暗底关闭，多一枚按钮就多一处要读的字）。 */
+.poster {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.poster-img {
+  display: block;
+  width: 100%;
+  max-height: calc(70dvh - 56px);   /* 扣掉下面那排键 ＋ gap，整盒仍在 70dvh 内 */
+  object-fit: contain;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
 
 /* ══════════════ B6-b：触摸命中区 ＋ 窄屏（§7.4 / §7.7） ══════════════ */
 
@@ -1324,7 +1363,7 @@ button { user-select: none; -webkit-user-select: none; }
       「每次打开都淡入」，不存在纪律 ② 的每帧重建问题。
    ⚠️ 不挂 `#overlay` 本身 —— 它是 `index.html` 里常驻的空容器，只在开机那一帧插进去，
       挂它等于永不播放。 */
-.pick-back, .logs, .confirm, .over, .menu-back { animation: fadeIn var(--dur) var(--ease); }
+.pick-back, .logs, .confirm, .poster, .over, .menu-back { animation: fadeIn var(--dur) var(--ease); }
 @keyframes fadeIn { from { opacity: 0; } }
 
 /* 落点 5：资产页「总资产」换值 —— **只这一格**（§7.12 ⑤）。

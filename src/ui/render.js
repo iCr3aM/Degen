@@ -21,7 +21,7 @@ import { confirmationsOf, congestionLabel, congestionOf } from '../core/congesti
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { anyHeld, heldSyms, posOf, slotOf } from '../core/state.js';
-import { badgesOf, multOf, titleOf } from '../core/titles.js';
+import { OVER_LABEL, badgesOf, multOf, titleOf } from '../core/titles.js';
 import { drawChart, drawEquityCurve } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 import { vibSupported } from './sound.js';
@@ -2017,8 +2017,8 @@ export function renderReview(refs, rv, view) {
 
 /* ══════════════ 交易档案页（M2 · 2026-10-01） ══════════════ */
 
-/** 结局的显示名与配色 —— 键就是 `engine.OVER` 的那三个值 */
-const OVER_LABEL = { [OVER.LIQUIDATED]: '爆仓', [OVER.SETTLED]: '结算', [OVER.GAVEUP]: '收摊' };
+/* 结局的显示名走 `core/titles.js` 的 `OVER_LABEL`（与生涯海报同一份字）；
+   这里只留**配色** —— 它要的是 CSS 类名，是 UI 层自己的事。 */
 const OVER_TONE = { [OVER.LIQUIDATED]: 'down', [OVER.SETTLED]: 'up', [OVER.GAVEUP]: 'mut' };
 
 /**
@@ -2039,7 +2039,15 @@ export function renderCareers(refs, list) {
   for (const r of list) refs.careersList.append(careerRow(r));
 }
 
-/** 一条生涯记录 —— 四代信息：**年代 ＋ 称号 ＋ 结局** / **起止与天数** / **终值 ＋ 倍数** / **徽章** */
+/**
+ * 一条生涯记录 —— 四代信息：**年代 ＋ 称号 ＋ 结局** / **起止与天数** / **终值 ＋ 倍数** / **徽章**
+ *
+ * 头行末位两枚键（`u` 的 `margin-left:auto` 把它们一起顶到最右）：
+ *   - **生成海报**（M5）：值带记录 id ⇒ `main.js` 按 id 取回那一条去画图（见 `onPoster`）；
+ *   - **删除**（M5）：值同样带 id，走**武装式双重确认**（`main.js` 的 `armDelete`）——
+ *     点一次只把这枚键改成红字「确认删除」，3 秒无后续自动还原；再点一次才真删。
+ *     删除键排在左边、「生成海报」留在原来的最右位 —— 老玩家的手感不动。
+ */
 function careerRow(r) {
   const row = el('div', 'career');
 
@@ -2047,10 +2055,11 @@ function careerRow(r) {
   head.append(el('b', null, scenarioOf(r.scen).name));
   head.append(el('em', 'career-title', titleOf(r)));
   head.append(el('u', OVER_TONE[r.reason] || 'mut', OVER_LABEL[r.reason] || '结束'));
-  /* 分享（M4）：值带记录 id ⇒ `main.js` 按 id 取回那一条去画图（见 `onShareCareer`） */
-  const share = el('button', 'career-share', '分享');
-  share.dataset.careers = 'share:' + r.id;
-  head.append(share);
+  const del = el('button', 'career-del', '删除');
+  del.dataset.careers = 'del:' + r.id;
+  const poster = el('button', 'career-share', '生成海报');
+  poster.dataset.careers = 'poster:' + r.id;
+  head.append(del, poster);
   row.append(head);
 
   row.append(el('div', 'career-sub',
@@ -2071,6 +2080,52 @@ function careerRow(r) {
   }
 
   return row;
+}
+
+/**
+ * 生涯海报的预览层（M5 · 2026-10-02）—— 把 `ui/shareCard.js` 画好的那张 PNG 摊开给玩家看一眼。
+ *
+ * 与参考项目（`我创造的完美球员`）一致的三点：**先预览、再决定存不存**、图占主体、
+ * 底下两枚键（保存 / 分享）。两点按本项目的规矩改：
+ *   ⚠️ **不给「关闭」键** —— 沿用日志浮层那条拍板（点暗底关闭，多一枚按钮就多一处要读的字）；
+ *      盒子高度只到 `70dvh`，上下留白足够点。
+ *   ⚠️ **没有原生分享面板就不画那枚「分享」** —— 留一枚注定回「不支持」的键只会让人以为坏了。
+ *
+ * 与 `openLog` 同一条：关闭走**回调**而不是光调 `closePicker` —— 那张图是 blob URL，
+ * 得由 `main.js` 负责 `revokeObjectURL`（渲染层不碰这类资源的生命周期）。
+ *
+ * @param {string} url      海报的 blob URL
+ * @param {object} [opts]
+ * @param {Function} [opts.onClose]  关闭后回调（`main.js` 在那里回收 URL）
+ * @param {boolean} [opts.canShare]  这台机器有没有原生分享面板
+ */
+export function openPoster(url, { onClose, canShare = false } = {}) {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+
+  const back = el('div', 'pick-back');
+  const box = el('div', 'poster');
+  const img = el('img', 'poster-img');
+  img.src = url;
+  img.alt = '生涯海报';
+  box.append(img);
+
+  const save = el('button', 'act long', '保存图片');
+  save.dataset.careers = 'psave';
+  const btns = el('div', 'confirm-btns');
+  btns.append(save);
+  if (canShare) {
+    const share = el('button', 'act flat', '分享');
+    share.dataset.careers = 'pshare';
+    btns.append(share);
+  }
+  box.append(btns);
+
+  back.addEventListener('pointerdown', () => { closePicker(); if (onClose) onClose(); });
+  ov.append(back, box);
+  ov.hidden = false;
+  picker = ov;
 }
 
 /**

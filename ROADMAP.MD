@@ -8150,3 +8150,108 @@ F2 的不对称构成**单向棘轮**：买→卖会让价格净抬一档。它�
   ④ 结算遮罩上「回主菜单」可用。
 
 > 同 §三十五：以 `src/` 为准。
+
+---
+
+## 六十九 · 交易档案：删除（双重确认）＋ 分享改为「生成海报」（2026-10-02）
+
+### 69.1 起因（用户原话）
+
+> 「交易档案要能够删除（双重确认），并且分享应该为生成海报，请你参考：`F:\Cr3aM\Desktop\我创造的完美球员`。
+> 这个游戏是如何实现分享海报的，并将必要内容添加至海报内。」
+
+三件事：① 档案记录**可删**、且要**双重确认**；② 那枚「分享」改成**生成海报**（参考项目走的是
+「离屏画好 → 全屏预览 → 再决定存不存」，而本项目原来是「点一下直接下载 / 弹原生分享面板」，
+**没有任何预览**）；③ 把**必要内容**补进海报。
+
+**动手前先问过用户**（用户要求「实施方案前详细审核，不擅自加没沟通过的内容」），三处据此拍板：
+
+| 待定 | 用户裁决 | 落点 |
+| --- | --- | --- |
+| 双重确认的形式 | **武装式点两次**（复用主菜单「重开」的既有惯例），不另起确认弹层 | `main.js` 的 `armDelete` |
+| 海报补哪些内容 | **结局 / 本金＋峰值 / 交易统计 / 最高杠杆＋交易币种** —— 四组全要 | `shareCard.js` 的 `drawCard` |
+| 「生成海报」的交互 | **弹预览层**（同参考项目） | `render.js` 的 `openPoster` |
+
+### 69.2 删除：武装式双重确认
+
+与主菜单「重开」**同一副骨架**，但不复用那支函数 —— `armMenu` 写死「确认重开」，
+且它的 undo 会去改 `b` 子节点（档案行那枚是纯按钮，没有 `b`）。
+
+| 环节 | 行为 |
+| --- | --- |
+| 第一下 | 只把该键改成红字 **「确认删除」**（`.career-del.warn`），**不删任何东西**；3 秒无后续自动还原 |
+| 第二下 | 才真删（`core/careers.js` 新增的 `removeCareer(id)`，写回 localStorage ＋ 同步内存镜像） |
+| 换一条点 | `delArmedOn(node)` 判「是不是**就是**那一枚」⇒ 改点别条 = 重新武装，不是确认（同 `armedOn`） |
+| 离开档案页 | `exitCareers()` 里 `cancelDeleteArm()` —— 停在「确认删除」上就走人不会留下红键 |
+| 删完 | `draw(true)` 一帧；列表按 `refs._careersSig`（id 串）自动重建，不需要额外失效 |
+
+> ⚠️ 武装状态放**模块级**（`delArmed / delNode / delUndo / delTimer`），不放节点上 ——
+> 档案列表是**重建**的，挂节点上会在下一次重建时丢掉。
+
+### 69.3 「分享」→「生成海报」
+
+`ui/shareCard.js` 从「一个 `shareCareer(rec)` 走完三级兜底」拆成**四个导出**，
+让预览层与保存 / 分享各拿各的东西：
+
+| 导出 | 职责 |
+| --- | --- |
+| `posterBlob(rec)` | 画一张 1080×1350 的 PNG（预览与保存 / 分享**共用同一份像素**，不重复画） |
+| `posterName(rec)` | 文件名 `degen-<scen>-<id>.png` |
+| `savePoster(blob, name)` | ① `<a download>` 下载 ② iOS 老 Safari 无 `download` ⇒ 新窗口打开长按保存 |
+| `sharePoster(blob, name)` | 原生分享面板；`canSharePoster()` 为假时**连那枚键都不画** |
+
+流程：档案行「生成海报」→ 键上写「生成中…」并 `disabled`（画一张要几十毫秒，防连点堆 canvas）
+→ `posterBlob` → 记进模块级 `poster = { rec, blob, name, url }` → `openPoster(url, { onClose, canShare })`。
+
+| 落点 | 说明 |
+| --- | --- |
+| `render.openPoster(url, {onClose, canShare})` | 复用 `#overlay` ＋ `.pick-back` ＋ `.confirm-btns`；图限高 `calc(70dvh - 56px)` |
+| 关闭 | **点暗底**（沿用日志浮层那条拍板：「多一枚按钮 = 多一处要读的字」）；图限高就是「不画关闭键」的前提 |
+| blob URL 回收 | 走 `onClose` 回调 → `main.js` 的 `closePoster()`；`ui/*` 不碰资源生命周期（同 `openLog`） |
+| 动作键 | 预览层两枚挂 `data-careers="psave"` / `"pshare"` —— 复用 `careers` 这个动作键，**不动 `bind.js` 的动作表** |
+
+### 69.4 海报版面（补的四组内容）
+
+`drawCard` 版面从上到下：① DEGEN ＋ 副题 ② 局名 ＋ **结局**（右上，按爆仓/结算/收摊上色）
+③ 主称号 ④ 徽章 ⑤ **账本三格**（本金 · 峰值 · 最高杠杆）＋ **交易币种**一整行
+⑥ 资金曲线（由 470 压缩到 290）⑦ 终值 ＋ 倍数 ⑧ 起止 ＋ 天数 ⑨ **交易统计** ⑩ 水印。
+
+- **结局名走 `core/titles.js` 新导出的 `OVER_LABEL`** —— 与档案页同一份字；档案页原来的本地
+  `OVER_LABEL` 删掉、`OVER_TONE`（CSS 类名）留下（配色是 UI 层自己的事，core 不该知道类名）。
+- 币种名可能很长 ⇒ `fitFont()` **只降字号、不截断**；账本三格各 304px 宽，`fitFont` 兜底。
+- ⚠️ 版面上的纵向坐标是**算过不重叠**的（曲线 740–1030 → 终值 1140 → 起止 1196 → 统计 1246 → 水印 1300）。
+
+### 69.5 连带修：档案页仍被结算遮罩盖住（§68.7 的守卫是死的）
+
+§68.7 写的修法是「`draw()` 的 `rv` 分支先 `clearOver`，结算分支改 `if (s.over && !arch)`」——
+但档案页那一支（`if (arch) { renderCareers(...); return; }`）**在 `try` 之前就 return 了**，
+根本走不到最后那个 `else` 的 `clearOver`：那句 `!arch` 是**永远为真**的死守卫。
+
+⇒ 实际后果：一局打完 →「回主菜单」→「交易档案」，那张 `position:fixed` 的 `.over` 会把整页档案盖住。
+修法：把 `clearOver(root)` 挪进**档案页自己那一支**（与 `rv` 分支一字不差的走法），
+并把结算分支那句 `&& !arch` 撤回 `if (s.over)`（它守的那件事已由上面这一支接管）。
+
+### 69.6 落点清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/core/titles.js` | 导出 `OVER_LABEL`（档案页与海报共用同一份结局名） |
+| `src/core/careers.js` | 新增 `removeCareer(id)` |
+| `src/ui/shareCard.js` | 重写为「生成海报」：补四组内容 ＋ `posterBlob` / `posterName` / `savePoster` / `sharePoster` / `canSharePoster` |
+| `src/ui/render.js` | `careerRow` 改「生成海报」＋ 新增「删除」键；新增 `openPoster` 预览层；`OVER_LABEL` 改从 `titles.js` 取 |
+| `src/main.js` | `onPoster` / `onPosterSave` / `onPosterShare` / `closePoster`；`armDelete` / `cancelDeleteArm` / `onDeleteCareer`；档案页分支补 `clearOver` |
+| `src/ui/style.css` | `.career-del`（＋`.warn` 武装态）／`.poster` ＋ `.poster-img`；`.poster` 加进淡入那条 |
+
+### 69.7 验收
+
+- `npm run build` ✅ 通过（26 modules，`index.css` 24.32 kB / gzip 5.09 kB，
+  `index.js` 119.51 kB / gzip 49.94 kB）。
+- ⚠️ **实机确认项**（需用户自起 dev server 按手机尺寸看）：
+  ① 档案行「删除」第一下只变红字「确认删除」、3 秒自还原，第二下才真删；
+  ② 删完列表当场少一条（只剩一条时落到「还没有已结束的对局」）；
+  ③ 「生成海报」→ 预览层出图，暗底一点即关；
+  ④ 海报上四组新内容都在、彼此不重叠；
+  ⑤ 手机上有原生分享面板时才出现「分享」那枚键。
+- 同时请复核 §68.9 ④（「结算遮罩 → 回主菜单 → 交易档案」现在真的看得见档案页了）。
+
+> 同 §三十五：以 `src/` 为准。

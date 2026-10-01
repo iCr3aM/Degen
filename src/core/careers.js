@@ -68,6 +68,22 @@ export function addCareer(rec) {
 }
 
 /**
+ * 删掉一条记录（M5 · 2026-10-02）。
+ * 档案页那枚「删除」走**武装式双重确认**（`main.js` 的 `armDelete`：点两次才真删）——
+ * 确认已经在 UI 层问过了，这一层不再问第二遍，删就是删。
+ * @param {number|string} id
+ * @returns {boolean} 真删掉了一条才 `true`（id 对不上时原样返回，一个字节都不写）
+ */
+export function removeCareer(id) {
+  const list = read();
+  const key = String(id);
+  const next = list.filter(r => String(r.id) !== key);
+  if (next.length === list.length) return false;
+  write(next);
+  return true;
+}
+
+/**
  * 资金曲线抽稀（M4）—— **等距取点，首尾必留**。
  * `s.eq` 是「本局第几个游戏日」的权益序列（升序），最长 ~4380 点；
  * 这里把它压到 `n` 点存进档案，供分享卡画线。点数不足 `n` 时原样返回（不插值、不造假点）。

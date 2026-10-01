@@ -14,20 +14,20 @@ import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayer
 import { createClock, chanOf, equity, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
-import { loadCareers } from './core/careers.js';
+import { loadCareers, removeCareer } from './core/careers.js';
 import { enableGod, factorFor } from './core/god.js';
 import { fmtDate, fmtMoney, fmtMoneyShort } from './core/format.js';
 import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
-  renderReview, openNodeCard, openYearPick, openGuide, renderCareers,
+  renderReview, openNodeCard, openYearPick, openGuide, renderCareers, openPoster,
   isStandalone, toggleInstallGuide, menuRemoveInstall, closeMenuDlg, openSavePick, openScenPick,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
 import { resetTheme } from './ui/chart.js';
-import { shareCareer } from './ui/shareCard.js';
+import { canSharePoster, posterBlob, posterName, savePoster, sharePoster } from './ui/shareCard.js';
 import * as snd from './ui/sound.js';
 
 const root = document.getElementById('app');
@@ -182,6 +182,11 @@ const RV_NS = 'rv';
    档案页是**纯只读**的一屏（读 `loadCareers()` 铺列表），没有自己的时钟 —— 进页时把
    主时钟停住即可（与主菜单期间同一条：停在菜单上时行情不该自己走）。 */
 let arch = false;
+
+/* 生涯海报的**当前那一张**（M5 · 2026-10-02）：`{ rec, blob, name, url }` 或 `null`。
+   ⚠️ 与 `arch` 同一个口径：纯界面状态（预览层里那张图），**不进 `s`、不进存档**。
+      blob URL 的回收也归这里管 —— `ui/*` 不碰资源生命周期（见 `render.openPoster` 的注释）。 */
+let poster = null;
 
 /* 上帝模式的隐藏入口（方案 §2.1）：**1.5 秒内连点顶栏「Degen」5 次**解锁；
    ⚠️ **解锁之后不用再连点** —— `s.god` 非空即「这一局已经开了」，单击标题直接重开面板（2026-10-01）。
@@ -595,8 +600,12 @@ function draw(force = false) {
      而且暂停态下**不会再有任何一帧**把它救回来）。 */
   showPage(refs, rv ? 'review' : arch ? 'careers' : tab);
   /* 档案页是**纯只读**的一屏（没有 K 线、不量尺寸）⇒ 铺完列表就地返回。
-     ⚠️ 铺列表放在 `showPage` 之后：`.careers-list` 所在的那页此刻才刚被点亮。 */
-  if (arch) { renderCareers(refs, loadCareers()); return; }
+     ⚠️ 铺列表放在 `showPage` 之后：`.careers-list` 所在的那页此刻才刚被点亮。
+     ⚠️ **进来先 `clearOver`**（2026-10-02 修）：与下面 `rv` 分支同一条 —— 本局已结束时也能
+        从结算遮罩「回主菜单」再进档案页，那时 `#app` 里还挂着那张 `position:fixed` 的 `.over`；
+        这一支**在 `try` 之前就 return 了**，落不到最后那个 `else` 的 `clearOver` 上 ——
+        原来那句 `if (s.over && !arch)` 里的 `!arch` 因此管不到这里（是一处死守卫）。 */
+  if (arch) { clearOver(root); renderCareers(refs, loadCareers()); return; }
   /* 回顾页量的是它自己那块 K 线区（两页的 DOM 各有一套，方案 §3.2） */
   const rect = (rv ? refs.rvWrap : refs.chartWrap).getBoundingClientRect();
   const view = {
@@ -626,9 +635,10 @@ function draw(force = false) {
           那时 `#app` 里还挂着那张 `.over` —— 它是 `position:fixed`，不摘掉会直接盖住整页回顾。 */
     if (rv) { clearOver(root); renderReview(refs, rv, view); return; }
     update(refs, s, view);
-    /* ⚠️ `!arch`（同上）：档案页是整屏只读页，本局结束时从结算遮罩进来也必须看得见 ——
-       让它落进最后的 `else` 去 `clearOver`，而不是被结算遮罩重新盖一遍。 */
-    if (s.over && !arch) {
+    /* ⚠️ 这里**不再需要** `&& !arch`（2026-10-02 修）：档案页在上面就 `return` 了，
+       走不到这一行 —— 该防的那件事改成在它自己那一支里 `clearOver`（见上）。
+       原来那句 `!arch` 是一处**永远为真**的死守卫，只会让人以为档案页的覆盖问题已解决。 */
+    if (s.over) {
       closePicker();
       renderOver(root, s);
       // 结束音只响一次（`overDrawn` 是「这一局结束的画面画过了没」）；震动与它同拍
@@ -717,10 +727,15 @@ function dispatch(node) {
   if (d.menuback !== undefined) return closeMenuDlg();
   /* 回顾页的全部动作（需求 4 · 方案 §3）：值即子命令，见 `onReview`。 */
   if (d.review !== undefined) return onReview(d.review);
-  /* 交易档案页（M2）：`exit` 返回；`share:<id>` 把那一条生涯画成分享图（M4）。 */
+  /* 交易档案页（M2 / M5）：`exit` 返回；`poster:<id>` 生成海报摊进预览层；
+     `del:<id>` 删一条（**武装式双重确认**，见 `armDelete`）；
+     `psave` / `pshare` 是**预览层里**那两枚键（同挂 `careers`，不改 `bind.js` 的动作表）。 */
   if (d.careers === 'exit') return exitCareers();
-  if (typeof d.careers === 'string' && d.careers.startsWith('share:')) {
-    return onShareCareer(d.careers.slice(6), node);
+  if (d.careers === 'psave') return onPosterSave(node);
+  if (d.careers === 'pshare') return onPosterShare(node);
+  if (typeof d.careers === 'string') {
+    if (d.careers.startsWith('poster:')) return onPoster(d.careers.slice(7), node);
+    if (d.careers.startsWith('del:')) return onDeleteCareer(d.careers.slice(4), node);
   }
   /* 开场的两枚入口（v11 · ③）：`d.intro` 是 `'new'`（我是新手）或 `'old'`（我是老手）——
      它只决定 `s.hintOn`，叙事文案两者一样。 */
@@ -1535,32 +1550,111 @@ function enterCareers() {
 
 /** 退出档案页：回主菜单（与 `exitReview` 一字不差的走法） */
 function exitCareers() {
+  cancelDeleteArm();                             // 停在「确认删除」上就走人：把那枚键恢复原样
   arch = false;
   tab = 'trade';                                 // 与 `exitReview` 同一条：退出整屏页落回交易页
   draw(true);                                    // `arch` 归 falsy ⇒ `showPage` 按 `tab` 切回交易页
   openMenu({ canLoad: menuSlots().length > 0 });
 }
 
-/**
- * 分享一条生涯（M4）—— 见 `ui/shareCard.js`。
- * ⚠️ **反馈只落在那枚键自己身上**（生成中… → 已分享 / 已保存 / 失败，1.6 秒后复原）：
- *    档案页是整屏页、**没有日志栏**，`pushLog` 玩家根本看不见；再起一套 toast 又是新 UI
- *    （LESS IS MORE）。原生分享面板 / 浏览器下载本身也各有反馈。
- */
-async function onShareCareer(id, node) {
+/* ── 生涯海报（M5 · 2026-10-02）────────────────────────────────────
+   原来是「点一下直接下载 / 弹原生分享面板」，**没有预览**；现在改成参考项目
+   （`我创造的完美球员`）那条路：先画好 → 摊在预览层里看一眼 → 再决定保存 / 分享。
+   ⚠️ 反馈只落在那枚键自己身上（生成中… → 恢复，或失败 1.6 秒后恢复）：档案页是整屏页、
+      **没有日志栏**，`pushLog` 玩家根本看不见；再起一套 toast 又是新 UI（LESS IS MORE）。
+   ⚠️ 画一张 1080×1350 要几十毫秒，期间那枚键 `disabled` —— 免得连点堆出好几张 canvas。 */
+
+/** 回收当前那张海报的 blob URL（关掉预览层 / 换一张时都走它） */
+function closePoster() {
+  if (poster && poster.url) URL.revokeObjectURL(poster.url);
+  poster = null;
+}
+
+/** 「生成海报」：按 id 取回那一条生涯 → 画成 PNG → 摊开预览层 */
+async function onPoster(id, node) {
   const rec = loadCareers().find(r => String(r.id) === id);
   if (!rec) return;
   const label = node.textContent;
   node.disabled = true;
   node.textContent = '生成中…';
-  let status = 'failed';
-  try { status = await shareCareer(rec); } catch { /* 落到「失败」 */ }
-  node.textContent = status === 'failed' ? '失败'
-    : status === 'shared' ? '已分享'
-      : status === 'opened' ? '长按保存' : '已保存';
+  let blob = null;
+  try { blob = await posterBlob(rec); } catch { /* 落到失败 */ }
+  if (node.isConnected) { node.textContent = blob ? label : '失败'; node.disabled = false; }
+  if (!blob) {
+    setTimeout(() => { if (node.isConnected) node.textContent = label; }, 1600);
+    return;
+  }
+  closePoster();                                  // 上一张还开着的话先回收，别漏 URL
+  poster = { rec, blob, name: posterName(rec), url: URL.createObjectURL(blob) };
+  openPoster(poster.url, { onClose: closePoster, canShare: canSharePoster() });
+}
+
+/** 预览层「保存图片」—— 下载 / 新窗口长按保存（两级兜底都在 `ui/shareCard.js` 里） */
+async function onPosterSave(node) {
+  if (!poster) return;
+  const label = node.textContent;
+  node.disabled = true;
+  node.textContent = '保存中…';
+  let st = 'failed';
+  try { st = await savePoster(poster.blob, poster.name); } catch { /* 落到失败 */ }
+  node.textContent = st === 'downloaded' ? '已保存' : st === 'opened' ? '长按保存' : '失败';
   setTimeout(() => {
     if (node.isConnected) { node.textContent = label; node.disabled = false; }
   }, 1600);
+}
+
+/** 预览层「分享」—— 只有这台机器真有原生分享面板时那枚键才画出来（见 `render.openPoster`） */
+async function onPosterShare(node) {
+  if (!poster) return;
+  const label = node.textContent;
+  node.disabled = true;
+  node.textContent = '分享中…';
+  let st = 'failed';
+  try { st = await sharePoster(poster.blob, poster.name); } catch { /* 落到失败 */ }
+  node.textContent = st === 'shared' ? '已分享' : '失败';
+  setTimeout(() => {
+    if (node.isConnected) { node.textContent = label; node.disabled = false; }
+  }, 1600);
+}
+
+/* ── 档案删除的武装（M5 · 2026-10-02）──────────────────────────────
+   用户要求的「双重确认」。**不复用主菜单那套 `armMenu`**：它写死「确认重开」，
+   且它的 undo 会去改 `b` 子节点（档案行那枚是纯按钮，没有 `b`）。骨架照抄：
+   点一次只改文案 ＋ 变红，3 秒无后续自动还原；点第二下才真删。
+   ⚠️ 与主菜单那套同一个理由放在模块级 —— 档案列表是重建的，武装状态不能挂在节点上。 */
+let delArmed = false;
+let delNode = null;
+let delUndo = null;
+let delTimer = 0;
+
+/** 这一枚键是不是**就是**当前被武装的那一枚（同 `armedOn`：换一条点 = 重新武装，不是确认） */
+const delArmedOn = node => delArmed && delNode === node;
+
+function armDelete(node) {
+  if (delUndo) { delUndo(); delUndo = null; }     // 改点另一条 ⇒ 先把上一条的红字收回去
+  delArmed = true;
+  delNode = node;
+  const old = node.textContent;
+  node.textContent = '确认删除';
+  node.classList.add('warn');
+  delUndo = () => { node.textContent = old; node.classList.remove('warn'); };
+  clearTimeout(delTimer);
+  delTimer = setTimeout(cancelDeleteArm, 3000);
+}
+
+function cancelDeleteArm() {
+  clearTimeout(delTimer);
+  delArmed = false;
+  if (delUndo) { delUndo(); delUndo = null; }
+  delNode = null;
+}
+
+/** 删掉一条档案 —— 第二下才真删；删完 `draw()` 一帧，列表按新签名重建 */
+function onDeleteCareer(id, node) {
+  if (!delArmedOn(node)) { armDelete(node); return; }
+  cancelDeleteArm();
+  if (!removeCareer(id)) return;
+  draw(true);
 }
 
 /** 回顾日志（**加长那一栏**的内容源）：节点史实 ＋ 里程碑，只装回顾自己的东西 */

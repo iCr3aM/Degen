@@ -25,6 +25,19 @@ const CRASH_312 = Date.UTC(2020, 2, 12);
 export const multOf = rec => (rec.cash0 > 0 ? rec.final / rec.cash0 : 0);
 
 /**
+ * 结局的显示名 —— 键就是 `engine.OVER` 的那三个值。
+ * ⚠️ 档案页（`render.js` 的 `careerRow`）与生涯海报（`ui/shareCard.js`）**共用这里**：
+ *    同一局在哪儿看都写同一个词（与 `titleOf` 同一条 LESS IS MORE 的理由）。
+ * ⚠️ 配色**不在这里** —— 档案页要的是 CSS 类名、海报要的是 canvas 色值，
+ *    同一条语义在两处的写法本来就不同，硬凑一张表反而两处都得绕。
+ */
+export const OVER_LABEL = {
+  [OVER.LIQUIDATED]: '爆仓',
+  [OVER.SETTLED]: '结算',
+  [OVER.GAVEUP]: '收摊',
+};
+
+/**
  * 主称号 —— **结局 × 倍数**。混合风格：低档写实（陪跑 / 活下来），高档用梗（钻石手 / 百倍战神）。
  * ⚠️ 结算那条链的**末档用 `else` 兜底** —— 倍数再离谱也一定落到「百倍战神」，绝不返回空串。
  */
