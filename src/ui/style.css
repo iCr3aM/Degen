@@ -551,8 +551,10 @@ b, strong { font-weight: 600; }
 .opt.risk { color: var(--down); }
 .opt.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .opt:active { background: var(--line); }
-.opt:disabled { opacity: .45; }
-/* 「有、但此刻点不动」的档位（v10 · ②，用户定稿）：比通用禁用（.45，含义是「条件没到」）
+/* 不可用（`disabled`）：**压得更暗 ＋ 灰字**（2026-10-02 审计修）——
+   原来 .45 与可按的那一档（`.opt` 的 `--fg` 正文色）差得太小，一排小方格里看不出哪一格能按。 */
+.opt:disabled { opacity: .32; color: var(--mut); }
+/* 「有、但此刻点不动」的档位（v10 · ②，用户定稿）：比通用禁用（.32，含义是「条件没到」）
    再暗一档（.28），并额外加**虚线边框** —— 它是「这个功能在此刻根本不存在」，
    与小方块那种「明暗差」相比，多一道形状线索才够一眼分得开。
    ⚠️ 它**不用 `disabled` 属性**（那一档仍挂 `aria-disabled`）：`disabled` 会把
@@ -593,7 +595,21 @@ b, strong { font-weight: 600; }
 .act.chan.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 /* 主按钮是实心块，按压态不能用 `background` 顶掉语义色 ⇒ 压暗一档 ＋ 轻微缩小（B6-c） */
 .act:active { filter: brightness(.88); transform: scale(.985); }
-.act:disabled { opacity: .45; }
+/* 不可用（`disabled`）—— **抽掉实心底、只剩一圈虚线轮廓 ＋ 灰字**（2026-10-02 审计修 · 用户拍板）。
+   原来只是压到 .45 透明度：绿 / 红实心块变暗之后**仍然是一块能按的色块**，与旁边可按的那几枚
+   拉不开距离（用户实机反馈「置灰按钮一定要和可按的按钮区别大一些」）。现在直接换成另一种**形状**：
+   可按的是实心色块、不可用的是空心虚线 —— 扫一眼就知道该按哪一枚。
+   ⚠️ 用 `outline` 而不是 `border`：`.act` 的边框本来就是 0、高度写死 40px，加边框会挤掉文字；
+      `outline` 不参与布局。
+   ⚠️ 与下一档 `.act.off`（「有、但此刻点不动」）不冲突：那一档**仍然可点**，只是更暗＋去色。 */
+.act:disabled {
+  background: none;
+  color: var(--mut);
+  outline: 1px dashed var(--line);
+  outline-offset: -1px;
+  opacity: .55;
+  cursor: default;
+}
 /* 同上（v10 · ②）：「有、但此刻点不动」的主操作键（现货空单借不到币时的「卖出」）。
    实心色块没有边框可虚，改用**压暗 ＋ 去色**——把红/绿压成灰，一眼看出它不是一枚能按的键。
    ⚠️ 规则写在 `.act:active` 之后，同优先级下由源码顺序取胜，按压态不会把去色顶掉。 */
@@ -805,7 +821,10 @@ canvas.curve {
 .pick-note { font-style: normal; font-size: calc(12px * var(--ui)); line-height: calc(16px * var(--ui)); color: var(--mut); white-space: nowrap; }
 .pick-row.on, .pick-row.on u { color: var(--accent); }
 .pick-row:active:not(:disabled) { background: var(--line); }
-.pick-row:disabled { opacity: .4; cursor: default; }
+/* 不可用（`disabled`）：压暗到 .32（2026-10-02 审计修）—— 选所 / 读取存档这类整行可点的列表，
+   原来只压到 .4，四行排在一起时「哪几行真的能点」几乎看不出来。行本身的行高不动，
+   避免列表高度随禁用状态跳动。 */
+.pick-row:disabled { opacity: .32; cursor: default; }
 
 /* ══════════════ 日志浮层（⑤ · 方案 §20.2.1） ══════════════
    日志条那 24px 槽位只放得下一句被截尾的话；回看历史时把它**撑开**成 30 条。
@@ -1136,14 +1155,17 @@ button { user-select: none; -webkit-user-select: none; }
   }
 }
 
-/* 节点卡：复用 `.confirm` 骨架，正文用 `.intro p` 那一副（可折行、`pre-line` 认 `\n`） */
+/* 节点卡：复用 `.confirm` 骨架。
+   ⚠️ 标题与史实说明**是两个段落**（2026-10-02 审计修）：标题加重、说明退成素色 —— 原来两者
+      同字号同颜色拼在一个 `<p>` 里，读起来像把同一句话说两遍。 */
 .nodecard p {
-  margin: 12px 0 0;
+  margin: 8px 0 0;
   font-size: calc(12px * var(--ui));
   line-height: 1.9;
   color: var(--mut);
   white-space: pre-line;
 }
+.nodecard-title { margin-top: 12px; color: var(--fg); font-weight: 600; }
 
 /* 年份跳转：12 格 3 列（2013–2024），跳过去落在那一年的 1 月 1 日 */
 .year-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }

@@ -860,7 +860,7 @@ function forceLiquidate(s, pos, atPrice) {
      ⚠️ 返还 > 0 时不能再说「全部损失」（B20）：那一格日志条是一行 nowrap，字数要省，
         所以只在真的有退款时才多带一段。 */
   pushLog(s, back > 1e-9
-    ? `爆仓 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)} ｜退回 ${fmtMoneyShort(back)} @ ${fmtLogPrice(atPrice)}`
+    ? `爆仓 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)}｜退回 ${fmtMoneyShort(back)} @ ${fmtLogPrice(atPrice)}`
     : `爆仓 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)} 全部损失 @ ${fmtLogPrice(atPrice)}`,
     'bad');
 
@@ -950,7 +950,7 @@ function checkRuin(s) {
   if (!s.loaned) {
     s.pending = 'loan';
     s.paused = true;
-    pushLog(s, `账户归零 ｜ 可领 ${fmtMoney(loanAmountAt(timeOf(s)))} 救济金`, 'bad');
+    pushLog(s, `账户归零 ｜ 可领 ${fmtMoney(loanAmountAt())} 救济金`, 'bad');
     return false;
   }
   endGame(s, OVER.LIQUIDATED);
@@ -1161,7 +1161,7 @@ export function takeLoan(s) {
      只判 `!s.pending` 的话，一个「预警遮罩」能被领成一笔救命钱。 */
   if (s.pending !== 'loan' || s.loaned) return { ok: false, why: '现在没有可领的救济金' };
 
-  const amount = loanAmountAt(timeOf(s));
+  const amount = loanAmountAt();
   s.loaned = true;
   s.stat.loan += 1;                                    // 统计（v21）：称号「续命者」读它
   /* 救济金打**这个年代的那一格**（v13 · 方案 §9.2 ④）：2013–2014 给的是美元，
@@ -1617,7 +1617,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   }
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
   s.positions[pos.sym] = r.pos;
-  pushLog(s, `部分强平 ${pos.sym} ${pos.lev}x｜平掉 ${fmtRate(frac, 1)} ｜ 保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad');
+  pushLog(s, `部分强平 ${pos.sym} ${pos.lev}x｜平掉 ${fmtRate(frac, 1)}｜保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad');
   refreshOverhang(s, pos.sym);             // v18：爆掉的若是现货实物多头，折价随之归零
 }
 
@@ -1635,6 +1635,15 @@ function partialLiquidate(s, pos, frac, atPrice) {
  *
  *    渲染**不再跟着时钟走**：只有真的推进过才回调一次 `onFrame`，
  *    暂停或本局结束时不再重绘（GDD §2.2「按需刷新，暂停时停止渲染」）。
+ *
+ * ⚠️ **分层豁免**（2026-10-02 审计）：本文件在 `core/`，而 `setInterval` / `performance.now()`
+ *    是**宿主**（浏览器 / Node）的 API —— 严格的「`core/` 不许碰宿主」在这里开一个口子，
+ *    判定为**豁免**而不是搬走：
+ *      ① 时钟就是「谁在推进 `s.i`」，而 `advanceOneHour` 就在本文件 —— 搬进 `main.js` 会把
+ *         「一点时间前进 ＝ 一次状态转移」这条唯一真相源劈成两半；
+ *      ② 这两个 API 在浏览器和 Node 里**都存在**（离线断言照样能跑），
+ *         与 `careers.js` 那种「Node 里根本没有 `localStorage`」的性质不同。
+ *    （`careers.js` 的 `localStorage` 同样判为豁免，理由是它自带 `try/catch` ＋ 内存兜底。）
  *
  * @param {object} s 状态
  * @param {object} cb { onFrame(s) }

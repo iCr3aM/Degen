@@ -14,8 +14,10 @@ function group(intStr) {
 /**
  * 价格：按量级选小数位，保证任何价位的币都读得出有效数字。
  *   108143.1 / 1234.56 / 3.1416 / 0.52341 / 0.000123
+ * ⚠️ 不导出（2026-10-02 审计）：它只服务本文件（`fmtMoneyShort` / `fmtQty`），
+ *    外部读者一律走那两个 —— 放出去只会多一套「价格怎么显示」的口径。
  */
-export function fmtPrice(p) {
+function fmtPrice(p) {
   if (!Number.isFinite(p)) return '--';
   const a = Math.abs(p);
   let d;

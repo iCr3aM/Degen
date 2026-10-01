@@ -216,10 +216,28 @@ export const canLiquidate = pos => !isSpot(pos) || pos.lev > 1;
 export const instrumentOf = pos => (isSpot(pos) && pos.lev > 1 ? 'margin' : 'perp');
 
 /**
+ * 维持线最多吃掉初始保证金的**一半**（＝爆仓前至少留一半垫子）。
+ *
+ * ⚠️ **为什么必须有这一条**（2026-10-02 审计修）：杠杆阶梯（`spotSteps` / `futSteps`）与
+ *    Binance 的维持档（`BINANCE_MARGIN_TIERS`）是两张**互不知道对方**的表。名义额一大，
+ *    维持档就会追平甚至超过 `1/杠杆` —— 实测两个格子：
+ *      · Binance 永续 20x、名义 ≥ $500 万 ⇒ 维持 5% = 1/20 ⇒ `强平价 ≡ 开仓价`，**开仓即强平**
+ *      · Binance 永续 125x（2019-10 ~ 2021-07）、名义 $25 万 ~ $100 万 ⇒ 维持 1% > 1/125
+ *    这两处旧行为都是「刚点下去就爆」，玩家只会以为界面坏了。
+ * ⚠️ 只在**退化格**里生效：正常格必满足 `maint < 1/lev`（如 BitMEX 100x 的 0.5% < 1%），
+ *    这一支逐位不碰 ⇒ 现有玩法与离线断言零影响。
+ */
+const MAINT_MAX_SHARE = 0.5;
+
+/**
  * 该仓位此刻的**维持保证金率**（B18）—— 按「所 × 工具 × 名义档」取。
  * 只依赖仓位自己的字段（`ex` / `notional` / `spot` / `lev`），**不需要外部时刻**。
  */
-export const maintRateOf = pos => maintRateAt(pos.ex, pos.notional, instrumentOf(pos));
+export function maintRateOf(pos) {
+  const m = maintRateAt(pos.ex, pos.notional, instrumentOf(pos));
+  const open = 1 / pos.lev;                       // 开仓时的保证金率
+  return m < open ? m : open * MAINT_MAX_SHARE;   // 退化格：见 MAINT_MAX_SHARE
+}
 
 /**
  * 这个仓位要不要付**借贷利息**（B26）—— 只有现货保证金要。

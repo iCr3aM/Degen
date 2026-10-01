@@ -220,7 +220,7 @@ export const COINS = [
   { sym: 'ETH',  name: '以太坊',  unlock: Date.UTC(2015, 7, 8, 6),   otc: Date.UTC(2016, 5, 1),  src: { bitstamp: 'ethusd', bitfinex: null,      binance: 'ETHUSDT',  binanceus: null },
     cdd: [{ file: 'Poloniex_ETHUSDT_1h.csv', quote: 'USDT' }],
     votes: [{ exch: 'bitfinex', pair: 'tETHUSD' }] },
-  { sym: 'SOL',  name: 'Solana',  unlock: Date.UTC(2020, 7, 11, 6),  otc: Date.UTC(2021, 0, 1),  src: { bitstamp: null,     bitfinex: null,      binance: 'SOLUSDT',  binanceus: 'SOLUSD' },
+  { sym: 'SOL',  name: '索拉纳',  unlock: Date.UTC(2020, 7, 11, 6),  otc: Date.UTC(2021, 0, 1),  src: { bitstamp: null,     bitfinex: null,      binance: 'SOLUSDT',  binanceus: 'SOLUSD' },
     votes: [{ exch: 'bitfinex', pair: 'tSOLUSD' }] },
 ];
 
@@ -350,8 +350,10 @@ export const exchangeOf = id => EXCHANGES.find(e => e.id === id) || null;
 export const haltedAt = (t, exId) =>
   !!exchangeOf(exId)?.halts?.some(h => t >= h.from && t < h.to);
 
-/** 取某家交易所某一类的杠杆阶梯（`kind`：`'spot'` 现货融资 / `'fut'` 合约）；该所不提供时为 `null` */
-export const stepsOf = (ex, kind = 'spot') => (kind === 'fut' ? ex.futSteps : ex.spotSteps);
+/** 取某家交易所某一类的杠杆阶梯（`kind`：`'spot'` 现货融资 / `'fut'` 合约）；该所不提供时为 `null`
+ *  ⚠️ 不导出（2026-10-02 审计）：它只服务本文件的 `maxLeverageAt` / `hasLeverageKindAt`
+ *     与 `leverageOptionsAt` —— 对外那几件事都由它们转述，别再开一个裸阶梯的入口。 */
+const stepsOf = (ex, kind = 'spot') => (kind === 'fut' ? ex.futSteps : ex.spotSteps);
 
 /**
  * 某家交易所**此刻**提不提供该类杠杆（v9 · §15.3 N3）—— 判据 = 阶梯存在且首档已生效。
@@ -871,14 +873,17 @@ export function fundingPremiumCapAt(t) {
  *    反而净赚一笔，破产从惩罚变成重开按键。改成**固定 $1,000** 后语义变干净：
  *    **破产 = 回到起点**（钱回到开局水平，白掉的是这几年时间）。
  *
- *    实测（`tools/_balance_sim.mjs`，15 次破产全部领救济金 → 换所 → 全仓现货死拿）：
- *    2014 破产领 $1,000 走到 2024 收盘是 **$138.8K**，2016 破产是 **$183.8K** ——
- *    翻盘能力充足，但相对「没破产」的终值仍损失 87–99%，惩罚没有失效。
+ *    实测（15 次破产全部领救济金 → 换所 → 全仓现货死拿）：2014 破产领 $1,000 走到 2024 收盘是
+ *    **$138.8K**，2016 破产是 **$183.8K** —— 翻盘能力充足，但相对「没破产」的终值仍损失 87–99%，
+ *    惩罚没有失效。
  *
  *    唯一的例外是**币种**：2014-11-20 之后打的是 U，之前打的是美元
- *    （与跨所通道同一把尺子，见 `takeLoan`）—— 所以 `t` 这个入参保留，只是不再决定金额。
+ *    （与跨所通道同一把尺子，见 `takeLoan`）—— 那一格由 `cashCurAt` 判，与这里的金额无关。
+ *
+ * ⚠️ 入参 `t` 已于 2026-10-02 审计删除：金额改成固定值之后它就再没被用过，
+ *    留着只会让调用方以为「不同年代领的钱不一样」而把 `timeOf(s)` 传进来。
  */
-export function loanAmountAt(t) {
+export function loanAmountAt() {
   return 1000;
 }
 

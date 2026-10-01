@@ -878,26 +878,38 @@ export function update(refs, s, view) {
        ⚠️ `view.guide` 豁免：新手引导期间 `s.paused` 恒为真，而第 4 步正高亮着「买入」教玩家怎么用 ——
           把那一枚画成灰与引导自相矛盾（详见 `main.js` 里 `view.guide` 那段注释）。 */
   const frozen = s.paused && !view.guide;
+  /* 「行情还在路上」（2026-10-02 审计修 · 用户拍板）—— `s.sym` 已经切过去了，但那个币的数据包
+     还在网络里（`market.loadCoin` 是**懒加载**）。这一窗只有几百毫秒，**持仓时却是致命的**：
+     平仓键点不动、换所又被持仓挡着（`switchExchange` 要求先平仓）⇒ 玩家以为界面卡死了。
+     所以这几枚一律走 `.off` ＋ `aria-disabled`（**保留可点**，点一下由 `main.js` 回一句
+     「行情加载中」，数据到货后下一帧自动恢复），绝不画成 `disabled` —— 后者会吞掉点击、零反馈。 */
+  const waiting = !isLoaded(sym) && !lockedUI && !frozen;
   const tradable = !lockedUI && !frozen && mark != null && isLoaded(sym);
   const dir = cur ? cur.side : null;
   /* 同向那一枚 = **加仓**（v13 · B4 / 方案 §5）：手上那条仓位与本键同向时不再禁掉 ——
      点下去会并进同一条仓位（改杠杆 / 换性质 / 反手这些冲突由 `engine.openTrade` 给一句明确文案，
      都属于「有、但这次不行」，不是「没有」）。反向那一枚在合约模式仍是禁用（那里有独立的平仓键）。 */
-  refs.longBtn.disabled = !(tradable && (!cur || dir === 'long'));
-  refs.shortBtn.disabled = !(tradable && (!cur || dir === 'short'));
-  refs.closeBtn.disabled = !cur || lockedUI || frozen;
+  refs.longBtn.disabled = !waiting && !(tradable && (!cur || dir === 'long'));
+  refs.shortBtn.disabled = !waiting && !(tradable && (!cur || dir === 'short'));
+  refs.closeBtn.disabled = !waiting && (!cur || lockedUI || frozen);
   /* 现货模式这两枚**四件事共用**：空仓开仓 / 同向加仓 / 反向平仓 —— 所以只要 `tradable` 就能点。
      「卖出」唯一的例外见下（空仓且该所没有融资 ⇒ 开不出空单，那时才禁）。 */
-  refs.buyBtn.disabled = !tradable;
+  refs.buyBtn.disabled = !waiting && !tradable;
   /* 「卖出」＝开现货空单（要借币，v10）：该所没有融资时**空仓不许开空**。
      ⚠️ 判据只看 `dir === null`：手上压着一张空单时「卖出」是**加仓**（B4）、
         压着一张多单时它是**平多**，两件事都不需要借币 ⇒ 必须能点。
      ⚠️ 这种「点不动」同样走 `aria-disabled` ＋ `.off`（理由同杠杆行），点一下给一条解释。 */
-  const sellOff = !dir && !canLev;
-  refs.sellBtn.disabled = !(tradable && !sellOff);
+  const sellOff = (!dir && !canLev) || waiting;
+  refs.sellBtn.disabled = !waiting && !(tradable && !(sellOff && !waiting));
   refs.sellBtn.classList.toggle('off', sellOff);
   if (sellOff) refs.sellBtn.setAttribute('aria-disabled', 'true');
   else refs.sellBtn.removeAttribute('aria-disabled');
+  /* 另外四枚的「行情加载中」也只挂样式、不禁用 —— 与「卖出」同一套（`.off` 本就带 `cursor: default`）。 */
+  for (const b of [refs.buyBtn, refs.longBtn, refs.shortBtn, refs.closeBtn]) {
+    b.classList.toggle('off', waiting);
+    if (waiting) b.setAttribute('aria-disabled', 'true');
+    else b.removeAttribute('aria-disabled');
+  }
 
   /* 换所键（顶栏那枚双行按钮）**同样吃暂停闸门**（本轮 ④）：换所是一笔要等好几根 K 线的
      链上转账，属于「会动钱」四类之一 —— 暂停时它必须也点不动，否则玩家会以为只有下单被拦。 */
@@ -1221,7 +1233,16 @@ export function renderOver(root, s) {
   box.append(el('b', win ? 'up' : 'down', title), el('p', null, body));
   const btn = el('button', null, '重新开始');
   btn.dataset.restart = '';
-  box.append(btn);
+  /* 第二枚出口（2026-10-02 审计修）：「回主菜单」。原来整张遮罩只有「重新开始」一条路 ——
+     本局结束后既回不了菜单，也看不了刚写进档案的那条记录，只能重开或刷新页面。
+     ⚠️ 主菜单在这一刻**不是**「无处可去的界面」：开始游戏 / 挑战 / 历史回顾 / 交易档案都还在，
+        只有「读取存档」会把人送回这张遮罩（那正是这一局的真相，不算陷阱）。
+        ⇒ `main.js` 的 `onHome` 里那条 `if (s.over) return` 已一并撤掉。 */
+  const home = el('button', 'flat', '回主菜单');
+  home.dataset.home = '';
+  const btns = el('div', 'over-btns');
+  btns.append(btn, home);
+  box.append(btns);
   root.append(box);
 }
 
@@ -1236,7 +1257,7 @@ export function renderOver(root, s) {
 export function renderLoan(root, s) {
   root.querySelector('.over')?.remove();
   const box = el('div', 'over');
-  const amount = loanAmountAt(timeOf(s));
+  const amount = loanAmountAt();
 
   box.append(
     el('b', 'down', '账户归零'),
@@ -1253,13 +1274,21 @@ export function renderLoan(root, s) {
 }
 
 /**
- * 破产预警遮罩（v11 · ③）—— 会直接弄死人 / 重创杠杆仓的历史事件，提前 7 天出现，**时钟已停**。
+ * 风险预警遮罩（v11 · ③）—— 会直接弄死人 / 重创杠杆仓的历史事件，提前 7 天出现，**时钟已停**。
  * 复用 `.over` 外壳（与借贷遮罩同一种语气：必须回答，不能点外面关掉）。
  *
  * ⚠️ **只陈述事实，不给行动建议**（拍板）：怎么应对是玩家的决策 —— 面板只说「7 天后有这么件事」。
  *    所以这里只有一条 `title`（来自锚点表，不额外写文案）＋ 一枚「知道了」。
  * ⚠️ 文案取自 `s.warnAt` 反查的锚点：`anchors.js` **不存 note**，所以能说的就是事件标题本身。
  * ⚠️ 这一帧只画一次（`s.paused` 期间不再有 `onFrame`），不需要去重重建。
+ *
+ * ⚠️ **标题与正文都改过（2026-10-02 审计修）**，两处各修一个毛病：
+ *   ① 台头原来写「破产预警」—— 但这张遮罩服务的**六条 `warn` 锚点**里只有 Mt.Gox 归零
+ *      （2014-02-25）真是「破产」，其余五条是崩盘 / 挤兑 / 算法稳定币脱锚（2018-11-15、
+ *      2020-03-12、2022-05-09、2022-11-11、2016-05-17）—— 统一口径改成**风险预警**。
+ *   ② 正文原来是 `标题 ＋ 「将在 7 天后发生」`，而锚点的 `title` 全是**已经发生过的口吻**
+ *      （「全球资产一起被抛售换现金」）—— 一句过去时 + 一句将来时并排，读起来自相矛盾。
+ *      改成「还有 7 天」，时态中性，只交代**倒计时**这件事。
  */
 export function renderWarn(root, s) {
   root.querySelector('.over')?.remove();
@@ -1268,8 +1297,8 @@ export function renderWarn(root, s) {
   const title = a ? a.title : '历史事件';
 
   box.append(
-    el('b', 'down', '破产预警'),
-    el('p', null, `${title}\n将在 7 天后发生`),
+    el('b', 'down', '风险预警'),
+    el('p', null, `${title}\n还有 7 天`),
   );
   const ok = el('button', null, '知道了');
   ok.dataset.warn = '';
@@ -1314,14 +1343,21 @@ export function pickExchange(s, anchor) {
   head.classList.add(congestion > 80 ? 'down' : congestion > 50 ? 'gold' : 'mut');
   panel.append(head);
 
+  /* 有持仓时**除「当前所」以外的每一行都点不动**（2026-10-02 审计修 · 用户拍板）：
+     `engine.switchExchange` 的硬规矩是「有持仓必须先全部平掉」（仓位挂在这一家所上、搬不走），
+     原来弹层里的行**照样是可点的**——玩家点一下只换来一条错误日志。现在提前置灰，
+     并让每行自己把原因写出来（「有持仓，先平仓」）。 */
+  const holding = heldSyms(s).length > 0;
+
   for (const ex of EXCHANGES) {
     const notYet = t < ex.open;
     const dead = ex.close != null && t >= ex.close;
+    const isCur = ex.id === s.ex;
     const row = el('button', 'pick-row');
     row.dataset.ex = ex.id;
     // 在途时**所有行都不可点**（同时在途只允许一笔）—— 让点不动的按钮先于错误日志表达这件事
-    row.disabled = notYet || dead || !!s.transfer;
-    row.classList.toggle('on', ex.id === s.ex);
+    row.disabled = notYet || dead || !!s.transfer || (holding && !isCur);
+    row.classList.toggle('on', isCur);
 
     /* 上行：名字 ＋ **两张费率**（v12 · 方案 §11.3）；下行：这家所自己的事
        （通道 / 到账预估 / 为什么不能选）。
@@ -1339,9 +1375,10 @@ export function pickExchange(s, anchor) {
     const note = notYet ? '还没开业'
       : dead ? '已归零'
         : s.transfer ? '转账在途'
-          : ex.id === s.ex ? '当前所'
-            : rail.hours ? `${rail.label} · ${Math.round(n / 24)} 天`
-              : `${confirmationsOf(ex.id)} 确认 · 预估 ${n}h`;
+          : isCur ? '当前所'
+            : holding ? '有持仓，先平仓'
+              : rail.hours ? `${rail.label} · ${Math.round(n / 24)} 天`
+                : `${confirmationsOf(ex.id)} 确认 · 预估 ${n}h`;
     row.append(l1, el('em', 'pick-note', note));
 
     panel.append(row);
@@ -2056,7 +2093,11 @@ export function openNodeCard(node) {
      否则「SOL 回到 $120」这类标题在 BTC 的语境里会让人以为图没切过去。 */
   const when = fmtDate(GAME.start + node.at * HOUR_MS, false);
   box.append(el('h3', null, node.sym ? `${when} · ${node.sym}` : when));
-  box.append(el('p', null, node.note ? `${node.title}\n${node.note}` : node.title));
+  /* ⚠️ 标题与史实说明**分两个元素**（2026-10-02 审计修 · 用户拍板）：原来两者拼在同一个 `<p>` 里
+     只用一个 `\n` 隔开，字号/颜色一模一样 ⇒ 读起来像同一句话说了两遍。现在标题独立成行并加重，
+     说明退成次要的素色段落（`review.js` 那边也同步把复述标题的句子删掉了）。 */
+  box.append(el('p', 'nodecard-title', node.title));
+  if (node.note) box.append(el('p', 'nodecard-note', node.note));
 
   const go = el('button', 'act long', '继续');
   go.dataset.review = 'go';

@@ -88,6 +88,12 @@ const isNewGame = !saved;
 /* 刚在主菜单挑完年代（或点「开始游戏」）⇒ 这一趟开机**跳过主菜单**，直接进开场白
    （否则会弹回菜单，等于白点）。 */
 const fromScenarioPick = isNewGame && !!pendingScen;
+/* 刚在主菜单挑了一个**别的**槽（「读取存档 → 挑战 / 普通」）⇒ 这一趟开机也跳过主菜单。
+   ⚠️ 与 `fromScenarioPick` 同一条理由：玩家上一步才点的「读取存档 → 挑战」，reload 回来
+      又把菜单弹在他脸上，等于白点一次（2026-10-02 审计修）。
+   ⚠️ `!!saved` 是必须的：信箱里有槽、但那一槽其实是空的（`loadSlot` 返回 null）时
+      走的还是「全新一局」那条路，那时仍该看到菜单。 */
+const fromSlotPick = !!pendingSlot && !!saved;
 
 let refs = null;
 let clock = null;
@@ -369,6 +375,18 @@ async function boot() {
   if (fromScenarioPick) {
     if (isChallenge(s.scen)) beginGame();
     else openIntro(s.scen);
+  } else if (fromSlotPick) {
+    /* 跨槽读档：**跳过菜单直接续玩**加载进来的那一局 —— 走法与 `onSlot` 的同槽分支一字不差
+       （落回交易页 ＋ 恢复运行），只是这里没有「待决态」以外的状态要碰。
+       ⚠️ 不补开局日志：那是「新开一局」才有的东西，续玩补一条会与存档里的时间线打架。
+       ⚠️ 待决 / 已结束的档**保持暂停**：恢复交给遮罩上那两枚按钮（与 `onSlot` 同一条）。 */
+    tab = 'trade';
+    if (!s.over && !s.pending) {
+      s.paused = false;
+      s.speed = 1;
+      clock.start();
+    }
+    after();
   } else openMenu({ canLoad: menuSlots().length > 0 });
 }
 
@@ -402,15 +420,19 @@ async function ensureLiq() {
  * （`market.loadCoin` 只在「当前币 / 持仓币 / 玩家手动切过去」时才下载）。两件事一错开，
  * 就会出现「Tab 已经亮了、点进去 K 线却是空白」—— 要等一次网络往返才出图。
  *
- * 这里在**距解锁还剩 `PRELOAD_HOURS` 游戏小时**时就把数据拉下来（`ensureCoin` 自带
+ * 这里在**距解锁还有 / 刚过去 `PRELOAD_HOURS` 游戏小时**时就把数据拉下来（`ensureCoin` 自带
  * 「已加载就跳过」与并发去重，重复调用无害）。首屏仍只下当前币 —— 只有走到临界点才动手。
+ *
+ * ⚠️ **窗口是前后对称的**（2026-10-02 审计修）：原来只认 `at > s.i`（还没解锁），于是一个
+ *    「读档正好落在某币上线之后几百小时」的档，那个币的 Tab 已经能点、包却一个字节都没下
+ *    —— 进去是一张空白图。往前那 30 游戏日补的正是这一段。
  */
 const PRELOAD_HOURS = 720;                 // 30 游戏日：1x 下提前 30 小时，50x 下约 14 秒
 
 function preloadUpcoming() {
   for (const c of COINS) {
     const at = Math.round((c.unlock - GAME.start) / HOUR_MS);
-    if (at > s.i && at - s.i <= PRELOAD_HOURS) ensureCoin(c.sym);
+    if (Math.abs(at - s.i) <= PRELOAD_HOURS && !isLoaded(c.sym)) ensureCoin(c.sym);
   }
 }
 
@@ -667,6 +689,17 @@ function dispatch(node) {
   /* 新手分步引导的「下一步」（本轮 ④）：只在引导期间存在，值固定 `'next'`。
      ⚠️ 它**不能**被上面那条暂停闸门拦下 —— 引导期间 `s.paused` 恒为真，而它正是走完引导的唯一出口。 */
   if (d.guide !== undefined) return nextGuide();
+
+  /* 「行情还在路上」（2026-10-02 审计修 · 用户拍板）：切币后数据包要一次网络往返才到货，
+     这期间 `markPrice` 是 `null`、下单 / 平仓都算不出价。渲染层因此把这几枚画成 `.off`
+     （**可点**）而不是 `disabled` —— 这一行就是那一份「为什么」。
+     ⚠️ 不与上面的暂停闸门合并：那条讲的是「时间停了」，这条讲的是「这只币的数据还没到」。 */
+  if (!isLoaded(s.sym) && (d.buy !== undefined || d.sell !== undefined
+    || d.act === 'long' || d.act === 'short' || d.act === 'close')) {
+    pushLog(s, `${s.sym} 行情加载中 ｜ 稍等片刻再下单`, 'info');
+    after();
+    return;
+  }
 
   /* 主菜单入口（需求 4 · 方案 §2）：`load` / `start` / `scen` / `review` / `careers` / `install`。 */
   if (d.menu !== undefined) return onMenu(d.menu, node);
@@ -1200,10 +1233,12 @@ function onSlot(slot) {
 /**
  * 设置页那枚「返回主菜单」（2026-10-01 用户要求）—— 停钟 ＋ 弹菜单，**本局状态一个字不动**
  * （与 `exitReview` / `exitCareers` 同一走法：菜单期间时钟本来就该停）。
- * ⚠️ 本局已结束时不给出口：那时时钟已停、屏上是结算遮罩，回菜单只会看到一屏无处可去的界面。
+ * ⚠️ **本局结束后也给这个出口**（2026-10-02 审计修）：原来这里有一条 `if (s.over) return`，
+ *    理由是「回菜单只会看到一屏无处可去的界面」—— 但菜单里开始游戏 / 挑战 / 历史回顾 /
+ *    交易档案都还在，唯独「读取存档」会把人送回结算遮罩（那是真相，不是陷阱）。
+ *    结算遮罩因此多了一枚「回主菜单」（`render.renderOver`）。
  */
 function onHome() {
-  if (s.over) return;
   closePicker();
   clock.stop();
   after();                       // 先落一次盘：菜单里「读取存档」靠这份档才列得出当前这一局
@@ -1381,7 +1416,14 @@ function enterReview() {
   syncRvMode(true);                              // ⑧：起手就是 1 日线（巡航段看日线才看得完 12 年）
   rvStart();
   draw(true);
-  if (!isLoaded('BTC')) ensureCoin('BTC').then(() => draw(true));
+  /* **五个币全部预载**（2026-10-02 审计修 · 用户拍板）：回顾可以随时切币、也可以跳到任意年份，
+     而行情是懒加载的（`market.loadCoin`）⇒ 原来只有 BTC 一路被拉下来，切到别的币先是**一张空白图**，
+     网络往返回来才长出 K 线。五个包合计约 1 MB（gzip 后更小），一次拉全比每次切都在等要好。
+     ⚠️ 只在**当前正在看的那个币**到货时补一帧 —— 否则五次到货会白画四帧。 */
+  for (const c of COINS) {
+    if (isLoaded(c.sym)) continue;
+    ensureCoin(c.sym).then(() => { if (rv && rv.sym === c.sym) draw(true); });
+  }
 }
 
 /**
@@ -1435,6 +1477,31 @@ function reviewFocus(node) {
     }
   }
   syncRvMode(true);                              // 换币 ⇒ 新币的视野是新开的，按新币重新落一次档
+}
+
+/**
+ * 节点卡的**弹卡时序**（2026-10-02 审计修 · 用户拍板）—— 原来直接在 `rvStep` 里
+ * `reviewFocus(node)` 紧接 `openNodeCard(node)`，切币是同步的、**行情是异步的**：
+ * 卡弹出来那一刻图上还是 BTC（或一张空白），等玩家点「继续」的几百毫秒数据才到货 ——
+ * 观感就是「在 BTC 的 K 线弹出 ETH 的新闻，点了继续才切过去」。
+ *
+ * 现在把顺序倒过来，并且等数据：
+ *   ① `reviewFocus` 同步切到事件讲的币（图立刻跟着切，币种条也高亮过去）；
+ *   ② 先 `draw` 一帧 —— 卡还没弹，玩家已经看见图切过去了；
+ *   ③ 该币行情没到货就 await（`enterReview` 已经预载五个币，正常路径这里一秒都等不到）；
+ *   ④ 数据到位后补一帧、再弹卡。
+ *
+ * ⚠️ `await` 期间玩家仍可能按到东西（例如上一张卡的「继续」），所以放行前用
+ *    「仍停在同一个节点、且仍处于暂停」把这一趟作废掉 —— 否则会弹出一张已经过时的卡。
+ */
+async function openNodeWhenReady(node) {
+  reviewFocus(node);
+  draw(true);
+  const sym = rv.sym;
+  if (!isLoaded(sym)) await ensureCoin(sym);
+  if (!rv || !rv.paused || nodeAt(rv.i) !== node) return;
+  draw(true);
+  openNodeCard(node);
 }
 
 /** 退出回顾：停掉那支专属时钟，回主菜单（方案 §2：退出后回到主菜单） */
@@ -1553,9 +1620,8 @@ function rvStep() {
     if (node && !rvSeen().has(node.at)) {
       rv.paused = true;
       rvAcc = 0;
-      reviewFocus(node);        // ⑨：事件讲的是别的币就先切过去 —— 针在它自己的图上
       pushRv(node.title, 'ok', node.at);
-      openNodeCard(node);
+      openNodeWhenReady(node);   // ⑨：先切到事件讲的币、等它的行情到位，再弹卡
       break;
     }
   }
