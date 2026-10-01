@@ -7,10 +7,22 @@
  * 日期、行情、解锁币种全部由它派生（`format.fmtDate` / `market`），谁都不许另存一份时间。
  */
 
-import { GAME } from './config.js';
+import { cashCurAt, DEFAULT_SCENARIO, GAME, scenarioOf, scenarioStartIndex } from './config.js';
 import { isSpot } from './positions.js';
 
-/* ⚠️ v20（2026-10-01）：`s.pvol` **再改形状** —— 由 `pvol[i][exId] = { u, b }` 改为
+/* ⚠️ v21（2026-10-01）：**年代开局（挑战模式）** ＋ **交易统计**。
+   新增 4 个持久字段：
+     · `s.scen`  —— 本局是哪个年代（`config.SCENARIOS[].id`）。**必须入存档**：`s.i` 的起点、
+                    `day0` 的分母、救济金闸门都靠它，读档时上一局的年代得认出来。
+     · `s.day0`  —— 资金曲线的**下标原点**（＝开局那天是全程第几天）。`s.eq` 是「本局第几个游戏日」
+                    的数组，而 `s.i` 是**全程**序号 ⇒ 少了这个原点，2021 年开局的第一帧会
+                    一口气塞进 2922 个假平点（`sampleEquity` 的补记循环）。
+     · `s.cash0` —— 本局**开局本金**。它同时是 HUD / 资产页涨跌着色的分界与资金曲线的基准线
+                    （改动前这两处硬编码 `GAME.cash`，对 $10 开局的「10u 战神」会全画错）。
+     · `s.stat`  —— 本局**交易统计**（笔数 / 胜负 / 最高杠杆 / 碰过哪些币 / 换所次数 / 上帝 / 救济金），
+                    供 M2 的「交易档案」与 M3 的「称号」消费。它**不参与任何玩法判定**。
+
+   ⚠️ v20（2026-10-01）：`s.pvol` **再改形状** —— 由 `pvol[i][exId] = { u, b }` 改为
    `pvol[i][exId][kind] = { u, b }`（`kind` = `'spot'` / `'fut'`）。
    现货与合约是两张费率表，30 天量必须各算各的，否则「拿现货刷量把合约费率刷低」。
    量柱读的是**全所 × 两条产品线的 `u` 之和**，观感不变。
@@ -32,14 +44,36 @@ import { isSpot } from './positions.js';
    ① **限价挂单 `s.orders` 整体移除**（C8-B2 回滚）—— 改动前它是 v15 新增的键。
    ② **场外配资改版为「一次性救济金」**—— 删除 `s.loan`（在贷）字段与全部利息/到期/违约逻辑。
    两处都动了状态形状，旧档对不上 ⇒ **弃档重开**（既有规范，不写迁移）。 */
-export const STATE_VERSION = 20;
+export const STATE_VERSION = 21;
 
-export function createState() {
+/**
+ * 开一局新的。
+ * @param {string} [scenId] 年代（`config.SCENARIOS[].id`）。缺省 / 认不出来 ⇒ **经典全程**。
+ *   三样东西跟着它走：`s.i` 的起点、开局本金、开局那家所。
+ */
+export function createState(scenId = DEFAULT_SCENARIO) {
+  const sc = scenarioOf(scenId);
+  const i0 = scenarioStartIndex(sc.id);
+  /* 开局那笔钱落在**哪一格** —— 与「搬钱走哪条通道」「救济金打哪一格」「上帝填哪一格」同一个
+     判据（`config.cashCurAt`）。经典全程（2013）⇒ `'usd'`，与旧档逐位相同；
+     2014-11-20 之后的年代局 ⇒ `'usdt'`：那个年代搬钱走链上、合约保证金也只要 U，
+     给一笔美元只会让玩家先做一次没有意义的「买 U」。 */
+  const cur0 = cashCurAt(sc.at);
   return {
     v: STATE_VERSION,
 
-    /** 当前处在全程第几根小时 K 线（0 = 2013-01-01 00:00 UTC） */
-    i: 0,
+    /**
+     * 本局年代（v21）—— `config.SCENARIOS[].id`。
+     * ⚠️ **必须入存档**：读档时要靠它认回 `day0` / `cash0` / 挑战模式闸门。
+     */
+    scen: sc.id,
+    /** 资金曲线的下标原点（v21）—— 开局那天是全程第几天 */
+    day0: Math.floor(i0 / 24),
+    /** 本局开局本金（v21）—— 涨跌着色分界 ＋ 曲线基准线 */
+    cash0: sc.cash,
+
+    /** 当前处在全程第几根小时 K 线（0 = 2013-01-01 00:00 UTC；年代开局从 `i0` 起） */
+    i: i0,
 
     /**
      * 本局的全局随机种子（S0 · 细粒度模拟的地基）—— 所有细刻度随机数的唯一源头
@@ -47,8 +81,8 @@ export function createState() {
      */
     seed: GAME.seed,
 
-    /** 当前所在的交易所 id（见 `config.EXCHANGES`）—— 开局那 $1,000 存在 Mt.Gox */
-    ex: GAME.ex,
+    /** 当前所在的交易所 id（见 `config.EXCHANGES`）—— 经典全程是 Mt.Gox，年代局各按 `SCENARIOS[].ex` */
+    ex: sc.ex,
 
     /**
      * 各交易所的余额 —— **资产按所分账 ＋ 每所两格**（v13 · 方案 §2）：
@@ -60,8 +94,10 @@ export function createState() {
      *   —— 2013 年世界上还没有 USDT（Tether 2014-11 才在 Omni 上发币），
      *   当年入金、电汇、结算全部走法币。要玩合约得先在资产页「买 U」。
      *   ⚠️ 两者**面值 1:1** 参与权益计算（见 `engine.equity`）—— 溢价只在「买 U」那一刻结算。
+     *   ⚠️ v21 起开局那笔钱落在**哪一格跟着年代走**（`cashCurAt`）：2015 年以后的年代局
+     *      直接给 U —— 那个年代搬钱走链上、合约保证金也只要 U。
      */
-    books: { [GAME.ex]: { usd: GAME.cash, usdt: 0 } },
+    books: { [sc.ex]: cur0 === 'usd' ? { usd: sc.cash, usdt: 0 } : { usd: 0, usdt: sc.cash } },
 
     /**
      * 持仓表（逐仓，**每个币最多一条**）—— 键 = 币符号，`{}` 表示空仓。
@@ -191,9 +227,32 @@ export function createState() {
     realized: 0,
 
     /**
-     * 资金曲线（v13 · 方案 §4）—— `s.eq[n]` = **第 n 个游戏日**记录的权益，升序。
+     * 本局**交易统计**（v21 · 2026-10-01）—— 只服务「交易档案」（M2）与「称号」（M3），
+     * **不参与任何玩法判定**（破产看 `equity`、费率看 `pvol`，都与此无关）。
+     *
+     *   `open`   开仓笔数（含加仓那一笔，＝成功调用 `openTrade` 的次数）
+     *   `win` / `loss` 平仓回合数，按**回合净额**（毛盈亏 − 开仓费 − 平仓费）的正负分桶
+     *   `liq`    被强平的笔数（逐步强平与整条强平都算一笔）
+     *   `spot` / `fut`  开仓笔数按产品线分桶（`引擎` 的 `isSpotOrder` 判据）
+     *   `maxLev` 用过的最高杠杆（含 1x；开局就是 1）
+     *   `syms`   交易过的币（`sym -> true`）—— 称号「单一信仰 / 五币全通」读它
+     *   `move`   成功换所次数 —— 称号「搬家达人」读它
+     *   `god`    是否开过上帝模式 —— 称号「上帝之手」读它
+     *   `loan`   领过救济金的次数（0 或 1）—— 称号「续命者」读它
+     *
+     * ⚠️ **峰值不入表**：它可以由 `s.eq`（每日权益采样）直接取最大值得出，不必另存一份。
+     */
+    stat: {
+      open: 0, win: 0, loss: 0, liq: 0,
+      spot: 0, fut: 0, maxLev: 1,
+      syms: {}, move: 0, god: false, loan: 0,
+    },
+
+    /**
+     * 资金曲线（v13 · 方案 §4）—— `s.eq[n]` = **本局第 n 个游戏日**记录的权益，升序。
      * 由 `engine.sampleEquity()` 在每根小时 K 线跑完时补记（`s.eq.length` 天然就是「下一个要记的日子」，
      * 所以不需要另存一份「上次记到哪天」的眼睛）。
+     * ⚠️ v21 起「第 n 个游戏日」是**相对本局开局**的 —— 全程第 `day` 天下的标是 `day − s.day0`。
      * ⚠️ 全程 4,383 个点 ≈ 45 KB —— 存得下，但**不许**改成每小时的粒度（那是 10 万个数）。
      */
     eq: [],

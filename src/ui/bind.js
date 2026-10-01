@@ -43,6 +43,10 @@ export const ACTION_KEYS = [
      `review` ＝ 回顾页的**全部**动作 —— 值是子命令（`exit` / `pause` / `spd:100` / `sym:BTC`
      / `years` / `year:2017` / `go` / `skip` / `all`），分派见 `main.js` 的 `onReview`。 */
   'menu', 'review',
+  /* M1 年代开局（2026-10-01）：`scen` ＝ 主菜单「挑战模式」里那五张年代卡，
+     值是 `config.SCENARIOS[].id`（`winter` / `ico` / `pre312` / `degen` / `luna`），
+     分派见 `main.js` 的 `onScenario`。 */
+  'scen',
   /* v13（《资产页与手机端 UI 打磨方案》§3.1）：`buyu` ＝ 资产页「买 U」卡片上的
      三枚金额档（`0.25` / `0.5` / `1`）＋ 那枚「兑换」键（`go`）。
      B5：`colors` ＝ 设置页的「涨跌色」开关（绿涨红跌 ⇄ 红涨绿跌）。 */

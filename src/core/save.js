@@ -35,7 +35,7 @@ export function save(s) {
  * 版本号对得上、字段却被改坏（手动编辑 / 半截写入）的档**同样按「丢弃重开」处理**，
  * 总好过让玩家卡在一个「界面可见、却完全点不动、也没有任何提示」的死局里。
  */
-const SHAPE = { books: 'obj', positions: 'obj', flow: 'obj', overhang: 'obj', pvol: 'obj', pulse: 'arr', log: 'arr', eq: 'arr' };
+const SHAPE = { books: 'obj', positions: 'obj', flow: 'obj', overhang: 'obj', pvol: 'obj', stat: 'obj', pulse: 'arr', log: 'arr', eq: 'arr' };
 
 function shaped(s) {
   if (typeof s.i !== 'number' || typeof s.sym !== 'string') return false;

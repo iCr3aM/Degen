@@ -1063,6 +1063,45 @@ canvas.curve {
   color: var(--mut-2);
 }
 
+/* 挑战模式的年代卡（M1 · 2026-10-01）—— 点「挑战模式」后在按钮列下面摊开的五张卡。
+   每张卡三行：名字 / 年代区间 / 一句话。整张卡是一枚 `<button>`（动作键 `data-scen`），
+   所以内部三行全部 `display: block`，不再继承按钮的居中。
+   ⚠️ `[hidden]` 那条**必须写**：上面那条 `display: flex` 的优先级高过浏览器默认的
+      `[hidden] { display: none }`，漏掉它 `wrap.hidden = true` 就关不上了。 */
+.menu-scens {
+  width: 100%;
+  max-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.menu-scens[hidden] { display: none; }
+.scen {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.scen b { display: block; font-size: calc(12px * var(--ui)); font-weight: 600; }
+.scen u {
+  display: block;
+  margin-top: 2px;
+  font-size: calc(11px * var(--ui));
+  color: var(--mut-2);
+  text-decoration: none;
+  font-feature-settings: "tnum";
+}
+.scen span { display: block; margin-top: 4px; font-size: calc(11px * var(--ui)); line-height: 1.6; color: var(--mut); }
+.scen:active { background: var(--line); }
+/* 武装态（有档时第一次点只是「准备重开」）：与 `.act.warn` 同一枚下跌色 */
+.scen.warn { border-color: var(--down); }
+.scen.warn b { color: var(--down); }
+
 /* B6-a（§7.9）：按钮上禁选文字（手机长按会弹出选择手柄，很碍事）。
    ⚠️ 用 `button` 兜底而不是逐个类名：全站可点的东西都是 `<button>`，一条覆盖完，
       **日志浮层（`.logs`）刻意不吃** —— 它是 `#overlay` 里的普通容器，玩家要能复读行情。 */

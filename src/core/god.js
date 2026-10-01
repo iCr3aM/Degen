@@ -163,5 +163,8 @@ export function factorFor(s, sym, j) {
  */
 export function enableGod(s) {
   s.god = { lastFill: s.god?.lastFill ?? 100000 };
+  /* 统计（v21 · M1）：这一局**动过上帝模式**（称号「上帝之手」读它）。
+     写在解锁那一刻而不是每次开面板：它要回答的是「这局的成绩干不干净」。 */
+  s.stat.god = true;
   return s.god;
 }

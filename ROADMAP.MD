@@ -7096,3 +7096,188 @@ BTC 2013-01-31、盘口 **$19.46**、**真行情 ＋ 真引擎** `openTrade`（�
 
 > 同 §三十五：以 `src/` 为准。
 
+---
+
+## 五十六、年代开局（挑战模式）· M1（✅ 2026-10-01 · 用户拍板）
+
+> **用户原话**：「先看看能否添加新功能，比如挑战模式（在币圈最疯狂的年代，`10u 战神`）等等类似的年代开局。
+> 然后主菜单可以再加一个交易档案的按钮，里面收录玩家所有的交易生涯（包括爆仓、打到最后一天），
+> 交易档案里面的单个交易生涯可以为图片方便分享，并且不同资金，或者不同状态，可以有不同的称号。」
+> 隔日追加：「**挑战模式不给救助金**。」
+
+三轮裁决（AskUserQuestion）：
+
+| 议题 | 裁决 |
+| --- | --- |
+| 年代局数量 | **6 局全要**（经典全程 ＋ 5 个挑战局） |
+| 称号形态 | **主称号 ＋ 徽章两轴** |
+| 交易统计字段 | **接受**，`STATE_VERSION` 一并升到 **21** |
+| 实施范围 | **「年代开局 → 档案 → 称号 → 分享图」全做** |
+
+本章只记 **M1（年代开局 ＋ 挑战模式 ＋ `s.stat` 打点）**；M2 / M3 / M4 另起章节。
+
+### 56.1 六局年代表（`config.SCENARIOS`）
+
+| id | 名称 | 开局 | 本金 | 开局所 | 挑战 | 副题（卡片 ＋ 开场白） |
+| --- | --- | --- | --- | --- | --- | --- |
+| `classic` | 经典全程 | 2013-01 | $1,000 | Mt.Gox | 否 | 从门头沟开盘走到币安收盘，12 年全程。 |
+| `winter` | 门头沟寒冬 | 2015-01 | $1,000 | Bitfinex | 是 | 门头沟倒了、市场冰封，你带着 $1,000 从头再来。 |
+| `ico` | ICO 狂潮 | 2017-09 | $1,000 | Binance | 是 | 站在 2017 年泡沫的起点，币安开业才一个多月。 |
+| `pre312` | 312 前夜 | 2020-02-20 | $1,000 | BitMEX | 是 | 距离「黑色星期四」还有 21 天，BitMEX 的 100x 合约就在手边。 |
+| `degen` | 10u 战神 | 2021-01 | **$10** | Binance | 是 | 牛市顶点，兜里只有 $10。 |
+| `luna` | LUNA 归零周 | 2022-05 | $1,000 | Binance | 是 | UST 脱锚前 8 天。 |
+
+`challenge: true` ＝ **除「经典全程」外的全部年代局**，判据收敛为一个纯函数 `isChallenge(id)`
+（`==== !scenarioOf(id).challenge` 的反面），**不许在别处另写一份数组**。
+
+四处口径：
+
+1. **起点全落在 UTC 零点**（与 `GAME.start` 同）⇒ `scenarioStartIndex()` 必为整数，`s.i` 起点整数。
+2. **开局所必须在那一年活着**：逐个对过 `EXCHANGES[].open / close` ——
+   `classic` Mt.Gox 2013-01-01 ✅（`close` 2014-02-25 是它**本局要扛的那记闷棍**，不是冲突）、
+   `winter` Bitfinex 2013-01-01 ✅、`ico`/`degen`/`luna` Binance 2017-07-14 ✅、`pre312` BitMEX 2014-01-01 ✅。
+3. `pre312` 的副题原写「你手上是 100x 的 BitMEX」—— 与**开局状态（现货 / 1x）不符**，改为
+   「BitMEX 的 100x 合约**就在手边**」。
+4. `ico` 的副题原写「币安刚开业**两个月**」——2017-07-14 → 2017-09-01 实为 49 天，
+   改为「开业才**一个多月**」。
+
+### 56.2 为什么年代开局**极便宜**（一句话：`s.i` 是唯一时间真相源）
+
+日期、行情、币种解锁、锚点、手续费率、杠杆上限、OTC 开放时刻、最小下单额、资金费率、可用的交易所 ——
+**全部**是 `timeOf(s)` 的纯函数。所以年代开局**不需要快进重放**，只需把 `s.i` 的起点设成那一年的序号，
+其余一切自动对上。落地成本 ≈ 一张表 ＋ 四处派生量。
+
+### 56.3 三处**必须**跟着动的派生量
+
+| 派生量 | 原来 | 为什么必须动 |
+| --- | --- | --- |
+| `s.cash0` | 硬编码 `GAME.cash` | 它同时是**资金曲线的基准线**与 **HUD / 资产页涨跌着色的分界** —— 对 $10 开局的「10u 战神」会全画错 |
+| `s.day0` | 无（隐含 0） | `s.eq[n]` 的下标是「**本局**第几个游戏日」，而 `s.i` 是**全程**序号 ⇒ 少了原点，2021 开局的第一帧会被 `sampleEquity` 的补记循环一口气塞进 **2922 个假平点** |
+| 开局所 ＋ 那一格钱 | 硬编码 `mtgox` ＋ `usd` | 2014-11-20 之后的年代局，**搬钱走链上、合约保证金也只要 U** —— 给一笔美元只会让玩家先做一次没有意义的「买 U」。落格判据与「搬钱通道」「救济金打哪格」「上帝填哪格」**共用** `config.cashCurAt` |
+
+`cashCurAt` 的分界线是 `USDT_LIVE = 2014-11-20` ⇒ 六局里只有 `classic` 落在 `usd` 格，其余五局落在 `usdt` 格。
+
+### 56.4 挑战模式**不给救助金**（用户 2026-10-01 拍板）
+
+判定**只收口在一处**：`engine.checkRuin` 里，插在 `s.loaned` 分支**之前**的那一行
+
+```js
+if (isChallenge(s.scen)) { endGame(s, OVER.LIQUIDATED); return true; }
+```
+
+⇒ 挑战局归零**直接终局**，连救济金遮罩都不弹（不是「弹了但点不动」）。
+`s.loaned` 与遮罩那条路径**只服务经典全程**，一行都没删。
+
+理由（写进 `config.SCENARIOS` 上方注释）：年代局的本金与年代都是玩家自己挑的，再发一笔 $1,000
+等于把挑战抹平 —— $10 开局尤其荒唐：救济金等于**爆赚 100 倍**。
+
+### 56.5 切年代的工程路径：`degen_next_scen` 一次性信箱 ＋ `location.reload()`
+
+`createClock(s)` 在启动时**闭包捕获了 `s`**，所以年代开局**不能原地替换 `s` 对象** ——
+必须与 `onWipe` / `doRestart` 走同一条路：**重新加载页面**。
+
+```
+点年代卡 → stashScen(id) 写 localStorage['degen_next_scen'] → location.reload()
+         → 新页 takePendingScen() 读出并**立刻删除**键 → createState(id)
+```
+
+- 键是**独立 localStorage 键**（与 `degen_settings` / `degen_colors` / `degen_fx` 同一惯例），**不进存档**。
+- **一次性**：`takePendingScen()` 读到就 `removeItem` ⇒ 刷新第二次不会被同一个选择再劫持一次。
+- 隐私模式下写不进去 ⇒ `stashScen` 静默失败，`createState` 回落到**经典全程**（不会崩）。
+- 挑完年代那一趟**跳过主菜单**（`fromScenarioPick`）：玩家上一步才点的「10u 战神」，
+  再弹一次菜单等于让他重选一遍。直接进开场白。
+
+⚠️ **TDZ 陷阱（本轮自查发现的崩溃）**：`takePendingScen()` 在模块顶部就被调用，而 `SCEN_KEY` 原本写在
+文件靠后的「启动」段 ⇒ `Cannot access 'SCEN_KEY' before initialization`。
+修复：`SCEN_KEY` ＋ 两个函数整块**上提到调用点之前**。
+
+### 56.6 主菜单的**武装状态机**（一个状态、六枚键共用）
+
+「开始游戏 / 继续游戏 / 挑战模式 / 历史回顾 / 安装应用」＋ 五张年代卡 —— 裸点第一下都要变「确认」，
+点第二下才真执行。原来只有一个布尔 `menuArmed`，会出**两种事故**：
+
+1. 「先点开始游戏、再点年代卡」的第二下被当成**确认重开** ⇒ 误删档。
+   **修复**：新增 `armedOn(node) = menuArmed && menuNode === node`，武装**绑定到具体节点**。
+2. `cancelMenuArm` 硬编码写回「开始游戏」，抹掉年代卡的三行结构。
+   **修复**：改为闭包 `menuArmUndo`（`armMenu` 记下「怎么还原」，`cancelMenuArm` 执行它）。
+   `armMenu` 开头先 `menuArmUndo()` 还原上一枚 —— 保证**同时只有一枚**处于武装态。
+
+⚠️ 年代卡是 `b` ＋ `u` ＋ `span` **三行**结构 ⇒ 武装时**只换 `b` 那一行**的文案为「确认重开？」，
+其余两行一字不动（`armMenu` 里的 `if (b) … else …` 两个分支就为这个差异存在）。
+
+⚠️ `doRestart` 一并重写：原代码 `s = createState()` 后**立刻** `location.reload()`（纯死代码）⇒
+年代局重开必掉回 2013。现在 `if (scenarioOf(s.scen).challenge) stashScen(s.scen);` 投信箱后再 reload。
+
+### 56.7 上帝模式跳日期的**下限闸门**
+
+跳到本局开局之前会让 `s.day0` / `s.cash0` 的基准错位。修复两处：
+
+- `godJump`：`const floor = scenarioStartIndex(s.scen);` ⇒ 目标早于它时写一条
+  `本局自 YYYY 年 M 月 起 ｜ 跳不到更早` 并**原地返回**；`Math.max(target, 0)` 改成 `Math.max(target, floor)`。
+- 年份档排的起点改为 `new Date(scenarioOf(s.scen).at).getUTCFullYear()`（不再从 2013 起排）。
+
+### 56.8 状态与存档（`STATE_VERSION` 20 → **21**）
+
+新增 4 个持久字段（旧档**直接弃档重开**，按既有规范不写迁移）：
+
+| 字段 | 内容 |
+| --- | --- |
+| `s.scen` | 本局年代 id。**必须入档**：`s.i` 起点、`day0` 分母、救济金闸门都靠它 |
+| `s.day0` | 资金曲线的下标原点 |
+| `s.cash0` | 本局开局本金 |
+| `s.stat` | 本局交易统计，**不参与任何玩法判定** |
+
+`s.stat` 的口径：`open`（开仓笔数，含加仓）/ `win`·`loss`（平仓回合，按**回合净额**分桶）/
+`liq` / `spot`·`fut` / `maxLev` / `syms` / `move`（换所次数）/ `god` / `loan`。
+**峰值不入表** —— 由 `s.eq` 直接取最大值得出，不必另存一份。
+
+打点位置：`openTrade`（`open`/`spot`/`fut`/`maxLev`/`syms`）、`closeTrade`（`win`/`loss`）、
+`forceLiquidate`（`liq`）、`switchExchange`（`move`）、`takeLoan`（`loan`）、`god.enableGod`（`god`）；
+`rewindTo`（重开）**整体重置** `s.stat`，只保留 `god`。`save.js` 的 `SHAPE` 相应加 `stat: 'obj'`。
+
+### 56.9 终局第三种结局：`OVER.GAVEUP`
+
+主动收摊（`giveUp()` 那条路）此前与爆仓共用 `LIQUIDATED` ⇒ 终局面板把「收摊」说成「爆仓」。
+新增 `OVER.GAVEUP`，`renderOver` 的标题三分支改为 `收盘结算 / 收摊 / 爆仓`，
+`endGame` 的正文加一句「就此收摊 ｜ 本局结束」。
+
+### 56.10 开场白与开局日志的场景感知
+
+- `openIntro(scenId)`：`classic` 那三行**一字不改**；其余年代第一行改报**这一局的年月 ＋ 交易所**，
+  之后接 `sc.blurb`。⚠️ **同一笔钱只说一次** —— `winter` / `degen` 的副题本身就是「你只有多少钱」，
+  第一行用 `sc.blurb.includes(money)` 判一下，命中就不再念本金。
+- 开局日志 `pushLog(s, openLogText())`：`classic` 沿用「开盘 · 2013 年 1 月，门头沟」，
+  其余改为「开盘 · YYYY 年 M 月，交易所名」。
+
+### 56.11 落点清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/core/config.js` | 新增 `SCENARIOS` / `DEFAULT_SCENARIO` / `scenarioOf` / `isChallenge` / `scenarioStartIndex` ＋ 整块注释 |
+| `src/core/state.js` | `STATE_VERSION` → 21；`createState(scenId)` 新增 `scen`/`day0`/`cash0`/`stat`，开局落格走 `cashCurAt` |
+| `src/core/save.js` | `SHAPE` 加 `stat: 'obj'` |
+| `src/core/engine.js` | `OVER.GAVEUP`；`sampleEquity` 减 `day0`；`checkRuin` 挑战闸门；六处 `s.stat` 打点；`endGame`/`rewindTo` 分支 |
+| `src/core/god.js` | `enableGod` 打 `s.stat.god` |
+| `src/ui/bind.js` | `ACTION_KEYS` 登记 `'scen'` |
+| `src/ui/render.js` | `openIntro` 场景感知；菜单新增「挑战模式」；`scenarioList()` / `toggleScenarioList()`；`renderOver` 的 `quit` 分支；god 年份档按局 |
+| `src/main.js` | `degen_next_scen` 信箱；`onScenario`；`armedOn` / `menuArmUndo` 武装状态机；`doRestart` 重写；`godJump` 下限闸门；`openLogText` |
+| `src/ui/style.css` | `.menu-scens` / `.scen` 全族（⚠️ **必须显式写 `.menu-scens[hidden] { display: none }`** —— `display:flex` 会盖过浏览器默认的 `[hidden]`，同优先级下作者样式表优先） |
+
+### 56.12 验收（2026-10-01）
+
+- 临时脚本 `tools/_m1_check.mjs`（**跑完即删**）**109/109 全绿**，覆盖：
+  `STATE_VERSION === 21`；六局 `s.i` 起点为整数天且等于 `scenarioStartIndex`；
+  `day0` / `cash0` / `ex` / 开局那格钱（`cashCurAt`）逐局对；开局所在开局时刻**活着**；
+  `isChallenge` 逐局对；`save.js` 形状表认 `stat`；`stat` 初值；时间轴不越界；
+  **经典全程与旧档逐位一致**（`0/0/1000` ＋ `mtgox.usd`）；未知 id 回落经典全程；
+  开场白**不重复念钱**。
+- `npm run build` ✅ 通过：22 modules，`dist/assets/index.DFZ8e06m.js` **103.20 kB** / `index.Bwt_GPhG.css` 20.93 kB。
+
+### 56.13 明确不做（本轮）
+
+- 不改任何核心机制（冲击 / 摩擦 / 滑点 / 手续费 / 强平）—— 年代开局只换三个起点。
+- 不为年代局做「提前快进重放」—— `s.i` 是唯一真相源，不需要。
+- 不做年代排行榜 / 跨局对比（M2「交易档案」才谈跨局）。
+
+> 同 §三十五：以 `src/` 为准。
+

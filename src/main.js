@@ -7,7 +7,7 @@
  *   main.js 是唯一把两边连起来的地方（也是唯一允许读时钟的地方）
  */
 
-import { GAME, COINS, HOUR_MS, cashCurAt, hasFinancingAt, maxLeverageAt } from './core/config.js';
+import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, cashCurAt, exchangeOf, hasFinancingAt, maxLeverageAt, scenarioOf, scenarioStartIndex } from './core/config.js';
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { load, save, wipe, disableSave } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
@@ -21,7 +21,7 @@ import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
   renderReview, openNodeCard, openYearPick, openGuide,
-  isStandalone, toggleInstallGuide, menuRemoveInstall,
+  isStandalone, toggleInstallGuide, menuRemoveInstall, toggleScenarioList,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -30,11 +30,39 @@ import * as snd from './ui/sound.js';
 
 const root = document.getElementById('app');
 
+/* ── 年代开局（M1 · 2026-10-01）──────────────────────────────────────
+   「下一局开哪个年代」的**一次性信箱**：玩家在主菜单挑完 → 写进 localStorage → reload →
+   开机第一件事读出来并清掉。为什么必须是独立键而不是存档字段：存档里那一份描述的是**正在玩的
+   这一局**，而这里要传的是**下一局**——写进 `degen_save` 等于把两件事混成一个字段。
+   ⚠️ 与 `degen_settings` / `degen_colors` 同一口径（浏览器偏好走独立键，不进存档）。
+   ⚠️ 这一块**必须排在下面 `takePendingScen()` 那次调用之前**：`SCEN_KEY` 是 `const`，
+      函数虽然会被提升，键名却还在暂时性死区里（照原样写在「启动」段会当场抛 TDZ）。 */
+const SCEN_KEY = 'degen_next_scen';
+
+/** 读走信箱里的年代 id（读到就清）—— 没有 / 读不动（隐私模式）一律 `null` = 经典全程 */
+function takePendingScen() {
+  try {
+    const v = localStorage.getItem(SCEN_KEY);
+    if (v !== null) localStorage.removeItem(SCEN_KEY);
+    return v || null;
+  } catch { return null; }
+}
+
+/** 把年代 id 投进信箱，等下一次 `location.reload()` 消费 */
+function stashScen(id) {
+  try { localStorage.setItem(SCEN_KEY, id); } catch { /* 隐私模式：存不下就退回经典全程 */ }
+}
+
 /* ⚠️ `load()` 返回 null 就是**全新一局** —— 开场叙事弹窗只在这一次出现（Batch 4 · B19）。
    读档续玩（哪怕是暂停在 2015 年的档）不该再看一遍开场白。 */
 const saved = load();
-let s = saved || createState();
+/* ⚠️ 走 reload 而不是原地重建 `s`（M1）：`createClock(s)` 闭包捕获的是**开局那一份** `s`，
+   原地换对象会让时钟继续推那份旧状态 —— 重开 / 删档本来也一直是 reload，同一条路。 */
+const pendingScen = takePendingScen();
+let s = saved || createState(pendingScen || DEFAULT_SCENARIO);
 const isNewGame = !saved;
+/* 刚在主菜单挑完年代 ⇒ 这一趟开机**跳过主菜单**，直接进开场白（否则会弹回菜单，等于白点）。 */
+const fromScenarioPick = isNewGame && !!pendingScen;
 
 let refs = null;
 let clock = null;
@@ -49,6 +77,10 @@ let resetTimer = 0;
 let menuNode = null;
 let menuArmed = false;
 let menuTimer = 0;
+/* 武装时那枚键的**还原函数**（M1）—— 「开始游戏」是纯文字键（还原 `textContent`），
+   而年代卡是 `b` ＋ `u` ＋ `span` 三行结构（只换 `b` 那一行）。这套差异收在 `armMenu` 里，
+   `cancelMenuArm` 只管调用，不关心按钮长什么样。 */
+let menuArmUndo = null;
 
 /* ── PWA（2026-10-01）────────────────────────────────────────────────
    `installEvt`：浏览器交出来的 `beforeinstallprompt` 事件，抓到后**拦下自带横幅**
@@ -277,8 +309,11 @@ async function boot() {
        历史回顾 → 只读回顾模式
      ⚠️ 菜单期间**时钟不启动**（与开场叙事同一条）：玩家选完才真正开盘，
         否则停在这一屏时行情已经自己走了几十根。
-     ⚠️ 「继续游戏」只在**这一局确实读到档**时出现（`isNewGame` 的反面）。 */
-  openMenu({ canContinue: !isNewGame });
+     ⚠️ 「继续游戏」只在**这一局确实读到档**时出现（`isNewGame` 的反面）。
+     ⚠️ **刚挑完年代的那一趟跳过菜单**（`fromScenarioPick`）：玩家上一步才点的「10u 战神」，
+        再把菜单弹回来等于让他白点一次 —— 直接进那一局的开场白。 */
+  if (fromScenarioPick) openIntro(s.scen);
+  else openMenu({ canContinue: !isNewGame });
 }
 
 /** 保证某个币的数据已加载；失败只记一条日志，不让整个游戏崩掉 */
@@ -576,6 +611,8 @@ function dispatch(node) {
 
   /* 主菜单三入口（需求 4 · 方案 §2）：`start` / `continue` / `review`。 */
   if (d.menu !== undefined) return onMenu(d.menu, node);
+  /* 年代开局（M1）：主菜单「挑战模式」里那五张卡，值是年代 id，见 `onScenario`。 */
+  if (d.scen !== undefined) return onScenario(d.scen, node);
   /* 回顾页的全部动作（需求 4 · 方案 §3）：值即子命令，见 `onReview`。 */
   if (d.review !== undefined) return onReview(d.review);
   /* 开场的两枚入口（v11 · ③）：`d.intro` 是 `'new'`（我是新手）或 `'old'`（我是老手）——
@@ -902,7 +939,18 @@ function onGodGo() {
  * @param {string} label  日志里的日期文案（`fmtDate` 的结果）
  */
 function godJump(target, label) {
-  const to = Math.min(Math.max(target, 0), GAME.candles - 1);
+  /* 年代开局（M1）：**跳不到本局开局之前** —— `day0` / `cash0` 都是按开局那一天定的，
+     时钟落回 2013 年之后，资金曲线与涨跌着色的基准全部错位（M1 之前不存在这种目标，
+     因为开局恒在全程第 0 根）。这里明说一句而不是静默夹取：玩家选的日期与真正跳到的日期
+     对不上，比跳不动更难查。 */
+  const floor = scenarioStartIndex(s.scen);
+  if (target < floor) {
+    pushLog(s, `本局自 ${fmtDate(scenarioOf(s.scen).at, false)} 起 ｜ 跳不到更早`, 'info');
+    showGod();
+    after();
+    return;
+  }
+  const to = Math.min(Math.max(target, floor), GAME.candles - 1);
   if (to === s.i) {
     pushLog(s, `已经在这一刻：${label}`, 'info');
     showGod();
@@ -962,7 +1010,8 @@ const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.v
    · `start`   ：无档 ⇒ 直接转开场叙事；**有档 ⇒ 先「武装」**（按钮变红，3 秒内再点一次才重开），
                  走既有 `onWipe()`（`disableSave` ＋ `wipe` ＋ reload）——**不新写重开逻辑**。
    · `review`  ：只读回顾模式（`enterReview`）。
-   · `install` ：PWA 安装（2026-10-01）—— 见 `onInstall()`。 */
+   · `install` ：PWA 安装（2026-10-01）—— 见 `onInstall()`。
+   · `scen`    ：挑战模式的年代卡列表开 / 关（M1）—— 它本身不开局，见 `onScenario`。 */
 function onMenu(kind, node) {
   if (kind === 'continue') {
     closePicker();
@@ -972,24 +1021,71 @@ function onMenu(kind, node) {
   }
   if (kind === 'review') return enterReview();
   if (kind === 'install') return onInstall();
+  if (kind === 'scen') { toggleScenarioList(); return; }
   /* kind === 'start' */
   if (isNewGame) {                 // 无档：直接进开场叙事（新手 / 老手）
     closePicker();
-    openIntro();
+    openIntro(s.scen);             // 新局的年代就是 `createState` 用的那一个（无档时恒为经典全程）
     return;
   }
   /* 有档：双重确认（与设置页那套 `onReset` 同一手法，状态各自独立） */
-  if (!menuArmed) {
-    menuArmed = true;
-    menuNode = node;
-    node.textContent = '确认重开';
-    node.classList.add('warn');
-    clearTimeout(menuTimer);
-    menuTimer = setTimeout(cancelMenuArm, 3000);
-    return;
-  }
+  if (!armedOn(node)) { armMenu(node); return; }
   cancelMenuArm();
   onWipe();                        // disableSave ＋ wipe ＋ reload ⇒ 回来后是无档的新局
+}
+
+/**
+ * 挑一个年代局开局（M1 · 2026-10-01）—— 主菜单「挑战模式」里那五张卡（`data-scen`）。
+ *
+ * 两条路都与「开始游戏」**共用同一套状态机**：
+ *   ① **无档**：直接把 id 投进信箱 ＋ `reload()` —— 开机那一趟 `createState(id)` 就是这一局；
+ *   ② **有档**：先「武装」这张卡（3 秒内再点一次才真重开），确认后走既有的 `onWipe()`
+ *      （`disableSave` ＋ `wipe` ＋ `reload`），**不新写重开逻辑**。
+ *      ⚠️ 必须把 id 投进信箱再 `onWipe()`，否则 reload 回来会按 `DEFAULT_SCENARIO` 开经典全程。
+ *
+ * ⚠️ 卡片颜色只标到 `challenge` 的那些（非挑战的经典全程不在列表里，这里再挡一次，
+ *    免得将来有人把 classic 也加进列表后出现「点了开始、却又被当成重开」的怪状态）。
+ */
+function onScenario(id, node) {
+  if (!scenarioOf(id).challenge) return;
+  if (isNewGame) {                 // 无档：没有东西可重开，投信箱后直接换一局
+    stashScen(id);
+    location.reload();
+    return;
+  }
+  if (!armedOn(node)) { armMenu(node); return; }
+  cancelMenuArm();
+  stashScen(id);
+  onWipe();
+}
+
+/** 这一枚键是不是**就是**当前被武装的那一枚。
+ *  ⚠️ 菜单里现在有 6 枚键共用这套武装状态（开始游戏 ＋ 5 张年代卡）。只判 `menuArmed` 的话，
+ *     玩家先点「开始游戏」再点某张年代卡，那一下会**直接当成确认重开** —— 连点两枚不同的键
+ *     却触发了一次删档。 */
+const armedOn = node => menuArmed && menuNode === node;
+
+/** 武装一枚菜单键（「开始游戏」或某张年代卡）—— 变红 ＋ 改文案，3 秒无后续自动还原 */
+function armMenu(node) {
+  /* 改点别的一枚 ⇒ 先把上一枚的红色收回去（否则菜单上会同时亮着两枚「确认重开」） */
+  if (menuArmUndo) { menuArmUndo(); menuArmUndo = null; }
+  menuArmed = true;
+  menuNode = node;
+  /* 年代卡是多行结构：只换 `b` 那一行，别把 `u` / `span` 一并抹掉 */
+  const head = node.querySelector('b');
+  if (head) {
+    const old = head.textContent;
+    head.textContent = '确认重开？';
+    node.classList.add('warn');
+    menuArmUndo = () => { head.textContent = old; node.classList.remove('warn'); };
+  } else {
+    const old = node.textContent;
+    node.textContent = '确认重开';
+    node.classList.add('warn');
+    menuArmUndo = () => { node.textContent = old; node.classList.remove('warn'); };
+  }
+  clearTimeout(menuTimer);
+  menuTimer = setTimeout(cancelMenuArm, 3000);
 }
 
 /** iOS Safari 从不发 `beforeinstallprompt`（它走「分享 → 添加到主屏幕」）——
@@ -1095,11 +1191,10 @@ function onInstall() {
 function cancelMenuArm() {
   clearTimeout(menuTimer);
   menuArmed = false;
-  if (menuNode) {
-    menuNode.textContent = '开始游戏';
-    menuNode.classList.remove('warn');
-    menuNode = null;
-  }
+  /* ⚠️ 还原交给武装时记下的那个闭包（M1）：原来是**硬编码**写回「开始游戏」的文案 ——
+     年代卡复用这套状态机之后，那一句会把整张卡的标题改成「开始游戏」。 */
+  if (menuArmUndo) { menuArmUndo(); menuArmUndo = null; }
+  menuNode = null;
 }
 
 /* ── 历史回顾（需求 4 · 方案 §3）────────────────────────────────────
@@ -1331,14 +1426,24 @@ function onIntro(kind) {
   s.hintOn = kind !== 'old';
   /* 开局写一条**真实发生的事**（Batch 5 · B24）：日志条原来是写死的「等待开盘…」兜底，
      可此刻行情其实已经在跑 —— 文案与实况自相矛盾。这条日志把空态填掉，
-     时间戳取 `s.i = 0`（`pushLog` 自己取），语义正确。读档续玩不补（与开场弹窗同一判据）。 */
-  pushLog(s, '开盘 · 2013 年 1 月，门头沟', 'info');
+     时间戳取 `s.i = 0`（`pushLog` 自己取），语义正确。读档续玩不补（与开场弹窗同一判据）。
+     ⚠️ 年月与交易所必须跟着**本局年代**走（M1）：2021 年的局里写「2013 年 1 月，门头沟」，
+        就是在第一行日志上自相矛盾。 */
+  pushLog(s, openLogText(), 'info');
   clock.start();
   snd.begin();
   /* 新手 ＋ 新局 ⇒ 接一段分步引导（本轮 ④）。⚠️ 排在 `clock.start()` 之后、`after()` 之前：
      引导自己会把时钟压回暂停，`after()` 顺手把「暂停」也落盘（关掉标签页再回来仍是暂停态）。 */
   if (isNewGame && s.hintOn) startGuide();
   after();
+}
+
+/** 开局那条日志的文字（M1）：经典全程沿用旧文案，其余年代按 `SCENARIOS[].at / ex` 现拼。 */
+function openLogText() {
+  const sc = scenarioOf(s.scen);
+  if (sc.id === 'classic') return '开盘 · 2013 年 1 月，门头沟';
+  const at = new Date(sc.at);
+  return `开盘 · ${at.getUTCFullYear()} 年 ${at.getUTCMonth() + 1} 月，${exchangeOf(sc.ex).name}`;
 }
 
 /* ── 新手分步引导（本轮 ④）—— 六步走完就开盘 ──────────────────────
@@ -1594,11 +1699,14 @@ function cancelReset() {
 }
 
 function doRestart() {
-  const keepSym = s.sym;
-  const keepSpeed = s.speed;
-  s = createState();
-  s.sym = keepSym;
-  s.speed = keepSpeed;
+  /* ⚠️ 「重开本局」＝ **重开这一局的那个年代**（M1 · 2026-10-01）。
+     原来这里先 `createState()` 再设 `sym` / `speed`，可紧接着就 `location.reload()` ——
+     那份新状态根本没机会被用上（`disableSave` ＋ `wipe` 之后 reload 读到的是「无档」）。
+     现在把年代投进信箱，reload 回来才是**同一年代**的新局；否则 2021 年开的那局一重开
+     就掉回 2013 年。
+     ⚠️ **经典全程不投信箱**（`scenarioOf` 的 `challenge` 为假时跳过）：它原来的行为是
+     「reload 回来先看到主菜单」，那条路一个字都不该动 —— 年代局才需要这一趟直通。 */
+  if (scenarioOf(s.scen).challenge) stashScen(s.scen);
   disableSave();
   wipe();
   location.reload();

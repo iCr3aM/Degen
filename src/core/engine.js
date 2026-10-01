@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
@@ -48,6 +48,8 @@ const OTC_OFF = '场外通道关闭 ｜ 已自动切回盘口';
 export const OVER = {
   LIQUIDATED: 'liquidated',   // 爆仓，保证金全部损失且账户清零
   SETTLED: 'settled',         // 活到 2024-12-31 收盘
+  /* 2026-10-01 新增：玩家在归零遮罩上主动点「就此收摊」—— 这不叫爆仓，档案里要分开记。 */
+  GAVEUP: 'gaveup',
   /* ⚠️ `DEFAULTED`（债务违约）已于 2026-10-01 随「救济金不用还」一起删除（用户拍板）。 */
 };
 
@@ -112,12 +114,15 @@ export const available = s => cashOf(s);
  *
  * ⚠️ `s.eq.length` 本身就是「下一个该记的日子」：一天只推一个点，第 0 天推完长度变 1，
  *    第 1 天就轮到下标 1 …… 不需要另存一份「上次记到哪天」的状态。
+ * ⚠️ **下标要减掉 `s.day0`**（v21 · 年代开局）：`s.i` 是**全程**小时序号，而 `s.eq` 记的是
+ *    **本局**第几个游戏日。2021 年开局时 `floor(s.i / 24)` 已经是 2922 —— 不减原点的话，
+ *    开新局第一帧就会往 `s.eq` 里灌 2922 个假平点，曲线整条被压扁。
  * ⚠️ **补记循环**：一帧在 50x 下连跑 50 根小时线、跨天很正常；上帝模式「跳日期」更是逐小时重放。
  *    同一根小时线落在已记过的那天就不动，跨过了几天就用当前权益补齐 ——
  *    曲线宁可多一小段平线，也不能留洞。
  */
 export function sampleEquity(s) {
-  const day = Math.floor(s.i / 24);
+  const day = Math.floor(s.i / 24) - s.day0;
   while (s.eq.length <= day) s.eq.push(equity(s));
 }
 
@@ -620,6 +625,12 @@ export function openTrade(s, side, frac = 1) {
   /* 持仓抛压折价（v18 · 2026-10-01）：这一单若**加厚了现货实物多头**，市场对你的忌惮随之变重。
      合约 / OTC 不改变 `capturedOf` ⇒ 值没变时函数内部自己会跳过（不写、不冲 σ 缓存）。 */
   refreshOverhang(s, s.sym);
+  /* 交易统计（v21）—— 只喂 M2 的「交易档案」与 M3 的「称号」，不参与任何判定。
+     ⚠️ 记在**成功落账之后**：被闸门拦下 / 资金不足 / 低于最小名义的那些单不算一笔。 */
+  s.stat.open += 1;
+  if (spot) s.stat.spot += 1; else s.stat.fut += 1;
+  if (lev > s.stat.maxLev) s.stat.maxLev = lev;
+  s.stat.syms[s.sym] = true;
   return { ok: true };
 }
 
@@ -655,6 +666,9 @@ export function closeTrade(s, why = '手动') {
      2013 年用美元开的仓，平掉回的还是美元：否则 Mt.Gox 会凭空空降一笔 USDT。 */
   credit(s, pos.ex, r.net, pos.mix);
   s.realized += r.pnl - r.fee;
+  /* 交易统计（v21）：按**回合净额**（毛盈亏 − 开仓费 − 平仓费）分胜负 —— 与日志里报的
+     「净额」同一口径，所以玩家看到的「盈利」与档案里的「盈利笔数」对得上。 */
+  if (r.pnl - (pos.openFee ?? 0) - r.fee > 0) s.stat.win += 1; else s.stat.loss += 1;
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(s, sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
   /* 玩家自己的成交量（v17 · 2026-10-01）：平仓同样是成交 ⇒ 记进当根 K 线的量柱。
      OTC 不落公开盘口（与「不写冲击池」同一先例）⇒ 不计。 */
@@ -734,6 +748,7 @@ function forceLiquidate(s, pos, atPrice) {
 
   if (back > 1e-9) credit(s, pos.ex, back, pos.mix);   // 退回**当初开仓那家所**（原路：按 mix 比例分两格）
   s.realized -= pos.margin - back;                     // 真实现金变动 = 丢掉保证金、收回退款
+  s.stat.liq += 1;                                     // 统计（v21）：逐步强平与整条强平都各算一笔
   delete s.positions[pos.sym];
   refreshOverhang(s, pos.sym);                         // v18：爆掉的若是现货实物多头，折价随之归零
 }
@@ -742,6 +757,7 @@ function endGame(s, reason) {
   s.over = { reason, at: s.i };
   s.paused = true;
   const text = reason === OVER.SETTLED ? '活到了 2024-12-31，结算'
+    : reason === OVER.GAVEUP ? '就此收摊 ｜ 本局结束'
     : '账户归零，游戏结束';
   pushLog(s, text, reason === OVER.SETTLED ? 'ok' : 'bad');
   return { ok: false, why: reason };
@@ -769,6 +785,15 @@ function checkRuin(s) {
       pushLog(s, '上帝模式 ｜ 账户归零，不结束本局', 'bad');
     }
     return false;
+  }
+
+  /* 挑战模式（年代开局）**不发救济金**（用户 2026-10-01 拍板）—— 归零即终局。
+     理由：年代与本金都是玩家自己挑的，再发一笔 $1,000 等于把挑战抹平 ——
+     「10u 战神」那一局领一次就是**暴赚 100 倍**，破产反倒成了正收益。
+     ⚠️ 必须排在 `s.loaned` 之前：挑战局连遮罩都不弹，直接结束。 */
+  if (isChallenge(s.scen)) {
+    endGame(s, OVER.LIQUIDATED);
+    return true;
   }
 
   if (!s.loaned) {
@@ -909,6 +934,7 @@ export function switchExchange(s, id) {
   const eta = rail.hours ? `${Math.round(n / 24)} 天后到账` : `${n} 小时后到账`;
   pushLog(s, `转账 → ${ex.name}｜${fmtMoneyShort(send)}｜${rail.label} · ${eta}｜手续费 ${fmtMoneyShort(fee)}`
     + (add ? `｜推高拥堵 +${add.toFixed(1)}` : ''), 'info');
+  s.stat.move += 1;                                    // 统计（v21）：称号「搬家达人」读它
   return { ok: true };
 }
 
@@ -986,6 +1012,7 @@ export function takeLoan(s) {
 
   const amount = loanAmountAt(timeOf(s));
   s.loaned = true;
+  s.stat.loan += 1;                                    // 统计（v21）：称号「续命者」读它
   /* 救济金打**这个年代的那一格**（v13 · 方案 §9.2 ④）：2013–2014 给的是美元，
      2014-11 之后给的是 U —— 与跨所通道同一把尺子。 */
   const cur = cashCurAt(timeOf(s));
@@ -1001,8 +1028,10 @@ export function takeLoan(s) {
 export function giveUp(s) {
   if (s.pending !== 'loan') return { ok: false, why: '现在没有要放弃的东西' };
   s.pending = null;
-  endGame(s, OVER.LIQUIDATED);
-  return { ok: false, why: OVER.LIQUIDATED };
+  /* ⚠️ 走 `GAVEUP` 不走 `LIQUIDATED`（v21）：玩家是**主动收摊**，不是被打爆的 ——
+     交易档案里这两种结局必须分得开（一个是「我认输」，一个是「市场把我打穿了」）。 */
+  endGame(s, OVER.GAVEUP);
+  return { ok: false, why: OVER.GAVEUP };
 }
 
 /* ───────────────────────────── 时间推进 ───────────────────────────── */
@@ -1192,6 +1221,9 @@ export function rewindTo(s, to) {
   s.flow = {};
   s.pvol = {};          // 玩家自己的成交量（v17）也是「进度」，回退时一并抹掉 —— 与 s.flow 同口径
   s.realized = 0;
+  /* 交易统计（v21）也属于「进度」⇒ 一并清空。唯独 `god`（是否开过上帝模式）留着 ——
+     它是「这一局不干净」的**永久标记**，回退一百次也不该被洗白。 */
+  s.stat = { open: 0, win: 0, loss: 0, liq: 0, spot: 0, fut: 0, maxLev: 1, syms: {}, move: 0, god: s.stat.god, loan: 0 };
   s.eq = [];
   s.loaned = false;
   s.pending = null;

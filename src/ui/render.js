@@ -11,7 +11,7 @@
  * 所有会变的数字都挂在 `refs` 上，`update()` 是唯一的写入口。
  */
 
-import { GAME, COINS, EXCHANGES, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, usdtPriceAt } from '../core/config.js';
+import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of } from '../core/engine.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
@@ -610,7 +610,7 @@ export function update(refs, s, view) {
   /* 账户三格 */
   const eq = equity(s);
   refs.eqVal.textContent = moneySlot('eq', eq);
-  refs.eqVal.className = 'num ' + (eq >= GAME.cash ? 'up' : 'down');
+  refs.eqVal.className = 'num ' + (eq >= s.cash0 ? 'up' : 'down');
   /* 副行两个数**都带符号**（Batch 4 · B17）：正绿负红，与持仓盈亏同一口径。
      颜色写在这里而不是 CSS 默认值 —— 见 `style.css` 里 `.hud .cell u.up` 那段注释。 */
   refs.eqSub.textContent = `已实现 ${moneySlot('realized', s.realized, { sign: true })}`;
@@ -625,7 +625,7 @@ export function update(refs, s, view) {
     refs.cashSub.textContent = `未实现 ${moneySlot('unreal', u, { sign: true })}`;
     refs.cashSub.className = 'num sign ' + (u >= 0 ? 'up' : 'down');
   } else {
-    refs.cashSub.textContent = `初始 ${fmtMoney(GAME.cash)}`;
+    refs.cashSub.textContent = `初始 ${fmtMoney(s.cash0)}`;
     refs.cashSub.className = 'num mut';
   }
 
@@ -914,8 +914,8 @@ export function update(refs, s, view) {
     /* 总资产（B6-c · §7.12 ④⑤）：全屏**唯一的主数值**（18px）＋ 换值闪一下。
        ⚠️ 这里改用 `classList.toggle` 而不是整体重写 `className` —— 整体重写会把下面刚挂上的
           `.flash` 一起擦掉（每帧擦一次 ⇒ 150ms 的动画只能播一帧）。 */
-    refs.asTotal.classList.toggle('up', eq >= GAME.cash);
-    refs.asTotal.classList.toggle('down', eq < GAME.cash);
+    refs.asTotal.classList.toggle('up', eq >= s.cash0);
+    refs.asTotal.classList.toggle('down', eq < s.cash0);
     const totalText = moneySlot('eq', eq);
     if (totalText !== refs._totalText) {
       refs._totalText = totalText;
@@ -946,7 +946,7 @@ export function update(refs, s, view) {
     drawEquityCurve(refs.asCurve, {
       eq: s.eq,
       range: view.eqRange,
-      base: GAME.cash,
+      base: s.cash0,
       cssW: refs.asCurve.clientWidth,
       cssH: refs.asCurve.clientHeight,
     });
@@ -1165,12 +1165,17 @@ export function renderOver(root, s) {
   const box = el('div', 'over');
   const reason = s.over.reason;
   const win = reason === 'settled';
+  /* `gaveup`（v21 · M1）：归零遮罩上主动点「就此收摊」——**不是**被打穿的，
+     与爆仓分开说（`engine.OVER.GAVEUP` 的注释里写着同一个理由）。 */
+  const quit = reason === 'gaveup';
   const eq = equity(s);
 
-  const title = win ? '收盘结算' : '爆仓';
+  const title = win ? '收盘结算' : (quit ? '收摊' : '爆仓');
   const body = win
     ? `你活到了 ${fmtDate(timeOf(s), false)}\n最终权益 ${fmtMoney(eq)}`
-    : `保证金归零，账户清零\n倒在 ${fmtDate(timeOf(s))}`;
+    : (quit
+      ? `你主动收了摊\n最终权益 ${fmtMoney(eq)}`
+      : `保证金归零，账户清零\n倒在 ${fmtDate(timeOf(s))}`);
 
   box.append(el('b', win ? 'up' : 'down', title), el('p', null, body));
   const btn = el('button', null, '重新开始');
@@ -1436,20 +1441,40 @@ export function openLog(s, onClose) {
  *   ② 弹窗期间**时钟不启动**（`main.js` 里 `clock.start()` 排在 `onIntro()` 之后），
  *      玩家读完再开盘，不浪费开局那几根 K 线。
  */
-export function openIntro() {
+export function openIntro(scenId) {
   closePicker();
   const ov = document.getElementById('overlay');
   if (!ov) return;
+
+  /* 年代（M1 · 2026-10-01）：开场白必须**说清这一局从哪年开始** —— 否则年代局的开场
+     与经典全程一字不差，玩家分不清自己选的那一局到底生效了没有。
+     ⚠️ 经典全程那三行**一字不改**（门头沟 / 币安都是玩家看惯的旧文案），其余年代走下面那支。 */
+  const sc = scenarioOf(scenId);
+  const money = `$${sc.cash.toLocaleString('en-US')}`;
 
   /* 整屏暗底（本轮 ①）—— 与主菜单同一块 `.menu-back`：开场白与主菜单是**连着的两屏**，
      中间不该出现「一屏有暗底、下一屏没有」的跳变。盒子本身仍是居中的 `.confirm`。 */
   const back = el('div', 'menu-back');
   const box = el('div', 'confirm intro');
   box.append(el('h3', null, 'Degen · 加密交易员'));
-  box.append(el('p', null,
-    `2013 年 1 月，你带着 $${GAME.cash.toLocaleString('en-US')} 走进门头沟。\n`
-    + '这里没有救世主：行情 24 小时不睡，交易所会说没就没。\n'
-    + '从门头沟活到币安，撑到 2024 年底 —— 那就叫赢。'));
+  if (sc.id === 'classic') {
+    box.append(el('p', null,
+      `2013 年 1 月，你带着 ${money} 走进门头沟。\n`
+      + '这里没有救世主：行情 24 小时不睡，交易所会说没就没。\n'
+      + '从门头沟活到币安，撑到 2024 年底 —— 那就叫赢。'));
+  } else {
+    const at = new Date(sc.at);
+    /* ⚠️ **同一笔钱只说一次**：`winter` / `degen` 的副题（`blurb`）本身就是「你只有多少钱」这句叙事，
+       第一行再念一遍本金就成了原地重复。副题里已经写了那笔钱 ⇒ 第一行只报年月与交易所。 */
+    const arrival = sc.blurb.includes(money)
+      ? `，你走进 ${exchangeOf(sc.ex).name}。`
+      : `，你带着 ${money} 走进 ${exchangeOf(sc.ex).name}。`;
+    box.append(el('p', null,
+      `${at.getUTCFullYear()} 年 ${at.getUTCMonth() + 1} 月${arrival}\n`
+      + '这里没有救世主：行情 24 小时不睡，交易所会说没就没。\n'
+      + `${sc.blurb}\n`
+      + '撑到 2024 年底 —— 那就叫赢。'));
+  }
   /* 两枚入口（v11 · ③）：**叙事对两者完全一致** —— 世界观不分新手老手，差别只在 `s.hintOn`。
      「新手」开提示（破产预警遮罩这类引导），「老手」关它。按钮**不写**「跳过 / 已了解」那种字眼，
      因为老手关掉的只是提示，不是叙事本身。 */
@@ -1509,11 +1534,17 @@ export function openMenu({ canContinue = false } = {}) {
     cont.dataset.menu = 'continue';
     btns.append(cont);
   }
+  /* 挑战模式（M1 · 2026-10-01）—— 年代局列表的**开关**（值 `'scen'`，见 `main.js` 的 `onMenu`）。
+     它自己不开始游戏：点开先摊出那五张年代卡，玩家再在里面挑一张。 */
+  const scen = el('button', 'act chan', '挑战模式');
+  scen.dataset.menu = 'scen';
+  btns.append(scen);
   const review = el('button', 'act chan', '历史回顾');
   review.dataset.menu = 'review';
   btns.append(review);
   if (!isStandalone()) menuInstallBtn(btns);
   box.append(btns);
+  box.append(scenarioList());
 
   /* 构建日期（UTC+8）——`__BUILD_DATE__` 由构建期替换成字面量字符串 */
   box.append(el('p', 'menu-build', `构建 ${__BUILD_DATE__}`));
@@ -1534,6 +1565,41 @@ export function isStandalone() {
     return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
       || window.navigator.standalone === true;
   } catch { return false; }
+}
+
+/**
+ * 挑战模式的年代卡列表（M1 · 2026-10-01）—— 主菜单里「挑战模式」下面那一段。
+ *
+ * **为什么把「经典全程」排除在外**：它就是上面那枚「开始游戏」，列在这里等于同一个入口出现两次
+ * （LESS IS MORE）。这里的五张卡全部是 `challenge: true` 的年代局。
+ *
+ * ⚠️ 卡片是 `<button>` 而**不是** `div` ＋ 内部若干行：整张卡都得能点。动作键是 `data-scen`
+ *    （值 = `SCENARIOS[].id`），必须登记在 `bind.js` 的 `ACTION_KEYS` 里，否则点了没反应。
+ * ⚠️ 默认 `hidden`：菜单打开时只露那几枚入口，玩家点了「挑战模式」才摊开。
+ */
+function scenarioList() {
+  const wrap = el('div', 'menu-scens');
+  wrap.hidden = true;
+  for (const sc of SCENARIOS) {
+    if (!sc.challenge) continue;
+    const row = el('button', 'scen');
+    row.dataset.scen = sc.id;                 // ⚠️ 动作键：`main.js` 的 `onScenario`
+    row.append(el('b', null, sc.name));
+    row.append(el('u', null, `${sc.from} → ${sc.to}`));
+    row.append(el('span', null, sc.blurb));
+    wrap.append(row);
+  }
+  return wrap;
+}
+
+/** 开 / 关年代卡列表（「挑战模式」那枚按钮调它）。展开返回 `true`，收起返回 `false` ——
+ *  与上面 `toggleInstallGuide` 同一副签名（都是「同一个按钮开与关」）。 */
+export function toggleScenarioList() {
+  const box = document.querySelector('.menu-box');
+  const wrap = box && box.querySelector('.menu-scens');
+  if (!wrap) return false;
+  wrap.hidden = !wrap.hidden;
+  return !wrap.hidden;
 }
 
 /** 菜单里的「安装应用」按钮（PWA） */
@@ -1922,7 +1988,9 @@ export function openGod(s, sel = null) {
   tRow.append(tBox, gBtn);
   rows.append(tRow);
 
-  const y0 = new Date(GAME.start).getUTCFullYear();
+  /* ⚠️ 年代开局（M1）起，年份档**从本局开局那一年**起排 —— 再往前没有这一局（`main.js`
+     的 `godJump` 也会挡），列出来只是让人点一个跳不过去的年份。 */
+  const y0 = new Date(scenarioOf(s.scen).at).getUTCFullYear();
   const y1 = new Date(GAME.start + (GAME.candles - 1) * HOUR_MS).getUTCFullYear();
   const yRow = el('div', 'god-pick god-years');
   for (let y = y0; y <= y1; y++) yRow.append(pickBtn(y === pick.y, 'godyear', y));

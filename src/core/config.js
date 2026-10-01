@@ -56,6 +56,73 @@ export const GAME = {
   mode: 'spot',
 };
 
+/* ══════════════ 年代开局（挑战模式 · M1 · 2026-10-01 用户拍板「6 局全要」） ══════════════
+ *
+ * 「在同一套真实行情里，**换个年代重新开始**」—— 不改任何机制，只换三个起点：
+ *   ① 从哪一年开始（`at`）② 开局多少钱（`cash`）③ 开局站在哪家所（`ex`）。
+ *
+ * ⚠️ **为什么这么便宜**：`s.i` 是全项目**唯一的时间真相源** —— 日期、行情、币种解锁、锚点、
+ *    手续费、杠杆上限、OTC 开放、最小下单额全是 `timeOf(s)` 的纯函数。所以年代开局
+ *    不需要「快进重放」，只需要把 `s.i` 的起点设成那一年的序号，其余一切自动对上。
+ *
+ * ⚠️ **三处必须跟着动的派生量**（漏一处就会画错图，见 ROADMAP §五十六）：
+ *    ① `state.cash0` —— 资金曲线基准线、HUD 涨跌着色的分界（原来是硬编码的 `GAME.cash`）
+ *    ② `state.day0` —— `sampleEquity` 的下标原点（否则 2021 开局第一帧就塞 2922 个假平点）
+ *    ③ 开局所必须在那一年**活着**（`EXCHANGES[].open / close`），且开局那格钱走 `cashCurAt`
+ *
+ * `challenge: true` ⇒ **挑战模式**（除「经典全程」外的全部年代局）：
+ *    归零**不发救济金**（用户 2026-10-01 拍板）—— 年代局的本金与年代都是玩家自己挑的，
+ *    再发一笔 $1,000 等于把挑战抹平（$10 开局尤其荒唐：救济金是爆赚 100 倍）。
+ *    判定收口在 `engine.checkRuin`，别在别处另判。
+ *
+ * `from` / `to` 只是**显示用的年月**，不是时间数据 —— 真正的起点是 `at`。
+ * 全部起点都落在 UTC 零点（`GAME.start` 也是），所以 `s.i` 起点必为整数。
+ */
+export const SCENARIOS = [
+  {
+    id: 'classic', name: '经典全程', from: '2013-01', to: '2024-12',
+    at: Date.UTC(2013, 0, 1), cash: 1000, ex: 'mtgox', challenge: false,
+    blurb: '从门头沟开盘走到币安收盘，12 年全程。',
+  },
+  {
+    id: 'winter', name: '门头沟寒冬', from: '2015-01', to: '2024-12',
+    at: Date.UTC(2015, 0, 1), cash: 1000, ex: 'bitfinex', challenge: true,
+    blurb: '门头沟倒了、市场冰封，你带着 $1,000 从头再来。',
+  },
+  {
+    id: 'ico', name: 'ICO 狂潮', from: '2017-09', to: '2024-12',
+    at: Date.UTC(2017, 8, 1), cash: 1000, ex: 'binance', challenge: true,
+    blurb: '站在 2017 年泡沫的起点，币安开业才一个多月。',
+  },
+  {
+    id: 'pre312', name: '312 前夜', from: '2020-02', to: '2024-12',
+    at: Date.UTC(2020, 1, 20), cash: 1000, ex: 'bitmex', challenge: true,
+    blurb: '距离「黑色星期四」还有 21 天，BitMEX 的 100x 合约就在手边。',
+  },
+  {
+    id: 'degen', name: '10u 战神', from: '2021-01', to: '2024-12',
+    at: Date.UTC(2021, 0, 1), cash: 10, ex: 'binance', challenge: true,
+    blurb: '牛市顶点，兜里只有 $10。',
+  },
+  {
+    id: 'luna', name: 'LUNA 归零周', from: '2022-05', to: '2024-12',
+    at: Date.UTC(2022, 4, 1), cash: 1000, ex: 'binance', challenge: true,
+    blurb: 'UST 脱锚前 8 天。',
+  },
+];
+
+/** 默认局（无档直开、旧档回落）—— 未指定年代时一律回落到它 */
+export const DEFAULT_SCENARIO = SCENARIOS[0].id;
+
+/** 按 id 取年代定义；取不到（含 `undefined` / 已删除的 id）**回落到经典全程**，不抛错 */
+export const scenarioOf = id => SCENARIOS.find(x => x.id === id) || SCENARIOS[0];
+
+/** 这一局是不是挑战模式（＝除经典全程外的年代局）—— 见上面 `challenge` 那段 */
+export const isChallenge = id => scenarioOf(id).challenge;
+
+/** 年代开局的第一根小时 K 序号（`s.i` 的起点）—— 起点全落在 UTC 零点，必为整数 */
+export const scenarioStartIndex = id => Math.round((scenarioOf(id).at - GAME.start) / HOUR_MS);
+
 /**
  * 速度档（GDD §11）—— 2026-09-29 由 `1/2/5/10/20/50` 收窄为 **`1/5/10/50`**：
  *   - `2x` 与 `1x` 只差一倍，「稍快一点」1x→5x 已覆盖 ⇒ 删
