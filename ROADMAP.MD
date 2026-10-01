@@ -6666,7 +6666,11 @@ BTC 2013-01-31、盘口 **$19.46**、**真行情 ＋ 真引擎** `openTrade`（�
 - **② `sw.js` 版本化**：`__BUILD_ID__`（构建指纹）拼到注册 URL ⇒ `navigator.serviceWorker.register('sw.js?v=<指纹>')`。指纹一变，浏览器即认定「新 SW」。
 - **③ 单次自动接管刷新**：`sw.js` 内 `skipWaiting()` ＋ 客户端 `controllerchange` 监听，**只 reload 一次**（用标志位防循环）⇒ 用户刷新后**立刻**是新版。
 - **④ 保持 SWR**：行情包不改为 network-first —— 它体积大、更新频率低，SWR 是正确取舍；本轮**不动**。
-- **⑤ 部署侧建议**：`index.html` / `sw.js` 回 `Cache-Control: no-cache`（或 `max-age=0, must-revalidate`），`assets/*.[hash].*` 回 `immutable, max-age=31536000`。站点若跑 Nginx 请照抄；本项目自身不产出该配置。
+- **⑤ 部署侧缓存头**（2026-10-01 补齐）：新增 **`public/_headers`**（Netlify / Cloudflare Pages 自动读取，构建时原样复制到 `dist/_headers`）——
+  `index.html` / `sw.js` / `manifest.webmanifest` / `data/*` 回 **`no-cache`**（每次回源校验），
+  `assets/*` 回 **`immutable, max-age=31536000`**，图标回 `max-age=604800`。
+  规则**互不重叠**，不依赖各家「多条命中时谁赢」的差异。
+  ⚠️ 换 Nginx / Apache / 对象存储本文件**不生效** —— 文件头注释里给了等价的 Nginx `location` 写法，照抄即可。
 
 **不能动的地方（三条硬约束）**：
 
