@@ -53,6 +53,11 @@ const THEME_VARS = {
   LINE: '--line',    // 网格线
   PV_SPOT: '--pv-spot',   // 量柱里**玩家自己的现货**那一段（v20）
   PV_FUT: '--pv-fut',     // 量柱里**玩家自己的合约**那一段（v20）
+  /* M4 分享卡（`shareCard.js`）借这里的取色 —— 底色与面板色，K 线自己用不上，
+     但分享卡要跟主题同源（红涨绿跌对调时它也得跟着翻）。 */
+  BG: '--bg',
+  PANEL: '--panel',
+  MUT2: '--mut-2',
 };
 
 let themeCache = null;
@@ -70,7 +75,7 @@ let p90Cache = { key: '', v: 0 };
  * ⚠️ 缓存**不再是终身有效**的（B5 起）：设置页可以把涨跌色对调（`<html>.red-up`），
  *    那是 `:root` 上的一次真实变化 ⇒ 切换时必须调一次 `resetTheme()`。
  */
-function theme() {
+export function theme() {
   if (!themeCache) {
     const cs = getComputedStyle(document.documentElement);
     themeCache = {};

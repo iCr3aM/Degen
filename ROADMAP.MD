@@ -7458,3 +7458,74 @@ M1 已打点的 `s.stat`（`open/fut/maxLev/syms/move/loan/god`）上 —— 绝
 
 > 同 §三十五：以 `src/` 为准。
 
+---
+
+## 五十九、分享图 · M4（✅ 2026-10-01 · 用户拍板「全做」）
+
+四段里程碑之四（收官）：**档案里每一条生涯都能生成一张竖版图**，发朋友圈 / 推特。
+入口只在档案卡上（用户拍板），不动 `degen_save`、不动 `STATE_VERSION`。
+
+### 59.1 卡片：`ui/shareCard.js`（纯 canvas 1080×1350）
+
+四段内容：**DEGEN 标 ＋ 副题** / **局名 ＋ 主称号 ＋ 徽章** / **资金曲线** / **终值 ×倍数 ＋ 起止 ＋ 水印**。
+
+⚠️ **称号 / 徽章直接复用 `core/titles.js`** ⇒ 卡片与档案页**永远同一枚**，不两处各写一份判断。
+⚠️ **配色全部来自 `chart.js` 的 `theme()`**（与 K 线同一源）：`THEME_VARS` 新增
+`BG` / `PANEL` / `MUT2` 三键并导出 `theme()` ⇒ 设置页「红涨绿跌」对调时卡片跟着翻，
+不会出现「游戏里绿涨、卡片里红涨」。
+⚠️ `ctx.roundRect` 不用（老浏览器没有）—— 自己写 `arcTo` 圆角路径。
+
+### 59.2 曲线从哪来：档案补一条**抽稀过的 `eq`**（容器 v1 → v2）
+
+分享卡要画资金曲线，但 M2 的档案记录**没存曲线** ⇒ 往记录里补一个 `eq` 字段。
+`degen_careers` 的容器版本随之 **v1 → v2**（版本不符**整体丢弃**，与 `save.js` 同一规矩）。
+
+- `s.eq` 最长 ~4380 点（每游戏日一个点），整条存进 localStorage 会让 50 条记录顶到配额
+  ⇒ `careers.thinEq(eq, EQ_PTS = 128)`：**等距取点、首尾必留、不插值**（值全来自原数组，
+  不凭空造平滑点）。128 点足够画满一张 1080px 宽的卡片，体积可忽略。
+- 写入点：`engine.recordCareer` 加一行 `eq: thinEq(s.eq)`。
+
+### 59.3 导出三级兜底（与 PWA 安装同一条降级口径）
+
+| 级 | 条件 | 结果 |
+| --- | --- | --- |
+| ① | `navigator.canShare({ files })` | `navigator.share()` 原生面板（用户取消 `AbortError` 也当成功 —— 面板确实弹过） |
+| ② | `'download' in HTMLAnchorElement.prototype` | `<a download>` 直接下载 |
+| ③ | iOS 老 Safari（没有 `download`） | 新窗口打开，长按保存 |
+
+⚠️ **反馈只落在那枚键自己身上**（生成中… → 已分享 / 已保存 / 长按保存 / 失败，1.6 秒复原）：
+档案页是整屏页、**没有日志栏**，`pushLog` 玩家看不见；再起一套 toast 又是新 UI（LESS IS MORE）。
+
+### 59.4 落点清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/core/careers.js` | `V` 1 → 2；新增 `EQ_PTS` / `thinEq(eq, n)` |
+| `src/core/engine.js` | `import { thinEq }`；`recordCareer` 加 `eq: thinEq(s.eq)` |
+| `src/ui/shareCard.js` | **新增**：`drawCard(rec)` / `shareCareer(rec)`（纯 canvas ＋ 三级导出） |
+| `src/ui/chart.js` | `theme()` 改 `export`；`THEME_VARS` 加 `BG` / `PANEL` / `MUT2` |
+| `src/ui/render.js` | `careerRow` 的 `head` 末位加 `.career-share` 键（`data-careers="share:<id>"`） |
+| `src/ui/bind.js` | 只更新 `'careers'` 那条注释（值多了 `share:<id>`；键本来就已登记） |
+| `src/main.js` | `import { shareCareer }`；`dispatch` 拆 `exit` / `share:<id>` 两支；新增 `onShareCareer` |
+| `src/ui/style.css` | `.career-share` 三条（含 `:active` / `:disabled`） |
+
+### 59.5 验收（2026-10-01）
+
+- 临时脚本 `tools/_m4_check.mjs`（**跑完即删**）**19/19 全绿**，覆盖：`thinEq` 六项属性
+  （空 / 短数组 / 压到 128 点 / 首尾必留 / 下标单调 / 不插值 / 不改原数组）；
+  容器 v2（v1 旧档整体丢弃、落盘 `v === 2`、`eq` 存得住读得回）；
+  **`giveUp → endGame` 真的把抽稀曲线写进档案**（长度 = `EQ_PTS`、首尾对得上）。
+- `npm run build` ✅ 通过：**25 modules**，`dist/assets/index.BHsNDXor.js` **110.76 kB** /
+  `index.th8Zgm92.css` 22.58 kB。
+- ⚠️ canvas 渲染与 `navigator.share` **无法在 Node 断言**（没有 DOM）—— 卡片观感与
+  分享面板属**真机确认项**，本轮只钉数据层。
+
+### 59.6 明确不做（本轮）
+
+- 不做卡片**模板 / 配色选择**（一套版式走到底，LESS IS MORE）。
+- 不做**排行榜分享 / 二维码**（卡片只描述「我这一局」）。
+- 不做**服务端生成**（纯前端 canvas，零后端）。
+- 不把曲线存**整条**（抽稀到 128 点，配额优先）。
+
+> 同 §三十五：以 `src/` 为准。
+

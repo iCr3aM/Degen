@@ -1899,6 +1899,10 @@ function careerRow(r) {
   head.append(el('b', null, scenarioOf(r.scen).name));
   head.append(el('em', 'career-title', titleOf(r)));
   head.append(el('u', OVER_TONE[r.reason] || 'mut', OVER_LABEL[r.reason] || '结束'));
+  /* 分享（M4）：值带记录 id ⇒ `main.js` 按 id 取回那一条去画图（见 `onShareCareer`） */
+  const share = el('button', 'career-share', '分享');
+  share.dataset.careers = 'share:' + r.id;
+  head.append(share);
   row.append(head);
 
   row.append(el('div', 'career-sub',

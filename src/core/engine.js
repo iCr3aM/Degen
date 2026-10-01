@@ -27,7 +27,7 @@ import {
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
 import { hashStr, rand } from './rng.js';
-import { addCareer } from './careers.js';
+import { addCareer, thinEq } from './careers.js';
 
 /** 交易所归零前多少毫秒给一条预警日志（7 天） */
 const WARN_LEAD = 7 * 24 * HOUR_MS;
@@ -780,6 +780,8 @@ function recordCareer(s, reason) {
     spot: s.stat.spot, fut: s.stat.fut, maxLev: s.stat.maxLev,
     move: s.stat.move, god: s.stat.god, loan: s.stat.loan,
     syms: Object.keys(s.stat.syms),
+    /* M4：抽稀后的资金曲线（首尾必留）—— 分享卡拿它画那条线。 */
+    eq: thinEq(s.eq),
   });
 }
 

@@ -1216,6 +1216,19 @@ button { user-select: none; -webkit-user-select: none; }
 .career-num { margin-top: 6px; display: flex; align-items: baseline; gap: 8px; font-feature-settings: "tnum"; }
 .career-num b { font-size: calc(14px * var(--ui)); }
 .career-num u { margin-left: auto; text-decoration: none; font-size: calc(12px * var(--ui)); }
+/* 分享键（M4）—— 挂在 `career-head` 末位（`u` 的 `margin-left:auto` 把这两枚一起顶到最右） */
+.career-share {
+  font-family: inherit;
+  font-size: calc(11px * var(--ui));
+  line-height: 1;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--mut);
+  cursor: pointer;
+}
+.career-share:active { background: var(--accent-soft); color: var(--fg); }
+.career-share:disabled { opacity: .45; }
 
 /* ══════════════ B6-b：触摸命中区 ＋ 窄屏（§7.4 / §7.7） ══════════════ */
 

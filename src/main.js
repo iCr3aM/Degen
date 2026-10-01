@@ -27,6 +27,7 @@ import {
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
 import { resetTheme } from './ui/chart.js';
+import { shareCareer } from './ui/shareCard.js';
 import * as snd from './ui/sound.js';
 
 const root = document.getElementById('app');
@@ -625,8 +626,11 @@ function dispatch(node) {
   if (d.scen !== undefined) return onScenario(d.scen, node);
   /* 回顾页的全部动作（需求 4 · 方案 §3）：值即子命令，见 `onReview`。 */
   if (d.review !== undefined) return onReview(d.review);
-  /* 交易档案页（M2）：只有一枚「返回」（值固定 `'exit'`）。 */
-  if (d.careers !== undefined) return exitCareers();
+  /* 交易档案页（M2）：`exit` 返回；`share:<id>` 把那一条生涯画成分享图（M4）。 */
+  if (d.careers === 'exit') return exitCareers();
+  if (typeof d.careers === 'string' && d.careers.startsWith('share:')) {
+    return onShareCareer(d.careers.slice(6), node);
+  }
   /* 开场的两枚入口（v11 · ③）：`d.intro` 是 `'new'`（我是新手）或 `'old'`（我是老手）——
      它只决定 `s.hintOn`，叙事文案两者一样。 */
   if (d.intro !== undefined) return onIntro(d.intro);
@@ -1309,6 +1313,28 @@ function exitCareers() {
   arch = false;
   draw(true);                                    // `arch` 归 falsy ⇒ `showPage` 自动切回交易页
   openMenu({ canContinue: !isNewGame });
+}
+
+/**
+ * 分享一条生涯（M4）—— 见 `ui/shareCard.js`。
+ * ⚠️ **反馈只落在那枚键自己身上**（生成中… → 已分享 / 已保存 / 失败，1.6 秒后复原）：
+ *    档案页是整屏页、**没有日志栏**，`pushLog` 玩家根本看不见；再起一套 toast 又是新 UI
+ *    （LESS IS MORE）。原生分享面板 / 浏览器下载本身也各有反馈。
+ */
+async function onShareCareer(id, node) {
+  const rec = loadCareers().find(r => String(r.id) === id);
+  if (!rec) return;
+  const label = node.textContent;
+  node.disabled = true;
+  node.textContent = '生成中…';
+  let status = 'failed';
+  try { status = await shareCareer(rec); } catch { /* 落到「失败」 */ }
+  node.textContent = status === 'failed' ? '失败'
+    : status === 'shared' ? '已分享'
+      : status === 'opened' ? '长按保存' : '已保存';
+  setTimeout(() => {
+    if (node.isConnected) { node.textContent = label; node.disabled = false; }
+  }, 1600);
 }
 
 /** 回顾日志（**加长那一栏**的内容源）：节点史实 ＋ 里程碑，只装回顾自己的东西 */

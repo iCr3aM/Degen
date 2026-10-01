@@ -18,8 +18,13 @@
  */
 
 const KEY = 'degen_careers';
-const V = 1;
+const V = 2;                 // v1 → v2（M4 · 2026-10-01）：记录里多了抽稀后的资金曲线 `eq`
 const MAX = 50;
+
+/** 资金曲线在档案里保留多少个点（M4 分享卡要画它）——
+ *  一局最多 ~4380 个游戏日，整条存进 localStorage 会让 50 条记录顶到配额；
+ *  抽稀到 128 点足够画出一张 1080px 宽的卡片，体积也可忽略。 */
+export const EQ_PTS = 128;
 
 /** localStorage 不可用时的兜底（Node / 隐私模式）—— 与已写入的那份镜像，读不出就走它 */
 let mem = [];
@@ -55,4 +60,20 @@ export function addCareer(rec) {
   const entry = { id: Date.now(), ...rec };
   write([entry, ...read()].slice(0, MAX));
   return entry;
+}
+
+/**
+ * 资金曲线抽稀（M4）—— **等距取点，首尾必留**。
+ * `s.eq` 是「本局第几个游戏日」的权益序列（升序），最长 ~4380 点；
+ * 这里把它压到 `n` 点存进档案，供分享卡画线。点数不足 `n` 时原样返回（不插值、不造假点）。
+ * @param {number[]} eq
+ * @param {number} [n]
+ * @returns {number[]}
+ */
+export function thinEq(eq, n = EQ_PTS) {
+  if (!Array.isArray(eq) || !eq.length) return [];
+  if (eq.length <= n || n < 2) return eq.slice();
+  const out = [];
+  for (let k = 0; k < n; k++) out.push(eq[Math.round((k * (eq.length - 1)) / (n - 1))]);
+  return out;
 }

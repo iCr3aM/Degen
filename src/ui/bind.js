@@ -43,8 +43,8 @@ export const ACTION_KEYS = [
      `review` ＝ 回顾页的**全部**动作 —— 值是子命令（`exit` / `pause` / `spd:100` / `sym:BTC`
      / `years` / `year:2017` / `go` / `skip` / `all`），分派见 `main.js` 的 `onReview`。 */
   'menu', 'review',
-  /* M2 交易档案（2026-10-01）：`careers` ＝ 档案页顶栏那枚「返回」（值固定 `'exit'`），
-     分派见 `main.js` 的 `dispatch`。 */
+  /* M2 交易档案（2026-10-01）：`careers` ＝ 档案页的动作 —— `exit`（顶栏「返回」）／
+     `share:<id>`（每条生涯那枚「分享」，M4）。分派见 `main.js` 的 `dispatch`。 */
   'careers',
   /* M1 年代开局（2026-10-01）：`scen` ＝ 主菜单「挑战模式」里那五张年代卡，
      值是 `config.SCENARIOS[].id`（`winter` / `ico` / `pre312` / `degen` / `luna`），
