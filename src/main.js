@@ -162,8 +162,9 @@ const GUIDE = [
 
 async function boot() {
   /* 涨跌色偏好**最先落**（B5）：`:root.red-up` 一挂上，连开机那句话的颜色都是对的 ——
-     放到 `mount()` 之后也行，但那样第一次开机画面会闪一下默认色。 */
+     放到 `mount()` 之后也行，但那样第一次开机画面会闪一下默认色。动效档同理（同一刻落）。 */
   applyRedUp(redUp);
+  applyFx(fx);
   renderBoot('正在读取行情数据包…');
   try {
     await loadManifest();
@@ -355,14 +356,17 @@ let lastMarketI = null;
  *
  * **资金费 / 借贷利息不再出声**（T-1 删除项）：它每 8 小时结算一次，50x 下一局上千次，
  * 而玩家的决策早就在下单时做完了 —— 结算照旧写日志，只是沉默。
+ *
+ * T-2（2026-10-01）：每条事件音**并挂一次震动** —— 手机揣在兜里时声音听不见，
+ * 震动才是「出事了」的那条通道。分级与音色一致：塌方 / 警报走 `heavy`，其余走 `light`。
  */
 function eventSound(last) {
   const text = last.text;
-  if (text.includes('推高拥堵')) return snd.pulse();
-  if (last.kind === 'news') return snd.news();
-  if (text.includes('被盗削减') || / 归零/.test(text)) return snd.crash();
-  if (text.includes('上线 ｜') || text.includes('恢复交易') || text.startsWith('到账')) return snd.notice();
-  if (text.includes('停机维护')) return snd.warn();
+  if (text.includes('推高拥堵')) { snd.pulse(); return snd.buzz('light'); }
+  if (last.kind === 'news') { snd.news(); return snd.buzz('light'); }
+  if (text.includes('被盗削减') || / 归零/.test(text)) { snd.crash(); return snd.buzz('heavy'); }
+  if (text.includes('上线 ｜') || text.includes('恢复交易') || text.startsWith('到账')) { snd.notice(); return snd.buzz('light'); }
+  if (text.includes('停机维护')) { snd.warn(); return snd.buzz('heavy'); }
 }
 
 /**
@@ -424,7 +428,7 @@ function soundFromTick(s) {
     const mark = markPrice(s, sym);
     const safe = mark == null ? 1 : safetyOf(pos, mark);
     if (safe <= 0.2) {
-      if (!warnedSyms.has(sym)) { warnedSyms.add(sym); snd.warn(); }
+      if (!warnedSyms.has(sym)) { warnedSyms.add(sym); snd.warn(); snd.buzz('heavy'); }
     } else {
       warnedSyms.delete(sym);
     }
@@ -454,9 +458,12 @@ function draw(force = false) {
     tab,
     /* 资产页资金曲线的区间（`0` = 全部）—— 纯界面状态，与 `redUp` 同一类 */
     eqRange,
-    /* 音效偏好归 `sound.js` 管，不进主状态 —— 设置页那两个开关的文案由渲染层每帧从这里取 */
-    muted: snd.isMuted(),
+    /* 音频 / 震动 / 动效偏好归各自那份浏览器存档管，不进主状态 ——
+       设置页那些档位的高亮由渲染层每帧从这里取。 */
+    vol: snd.getVol(),
     marketSound: snd.isMarketOn(),
+    vib: snd.getVib(),
+    fx,
     /* 涨跌色偏好（B5）：同上，归那个独立 localStorage 键管 */
     redUp,
     /* 新手分步引导正在走（本轮 ①/F）—— 引导期间 `s.paused` 恒为真，但**界面不该装成「暂停」**：
@@ -472,8 +479,12 @@ function draw(force = false) {
     if (s.over) {
       closePicker();
       renderOver(root, s);
-      // 结束音只响一次（`overDrawn` 是「这一局结束的画面画过了没」）
-      if (!overDrawn) (s.over.reason === 'settled' ? snd.settle : snd.liq)();
+      // 结束音只响一次（`overDrawn` 是「这一局结束的画面画过了没」）；震动与它同拍
+      if (!overDrawn) {
+        const settled = s.over.reason === 'settled';
+        (settled ? snd.settle : snd.liq)();
+        snd.buzz(settled ? 'light' : 'heavy');
+      }
     } else if (s.pending === 'loan') {
       /* 归零待决（B30）：遮罩替掉正常界面，时钟已停。
          不给它配音效 —— 「账户归零」那条日志已经响过 warn 了（`soundFromTick`）。 */
@@ -511,7 +522,7 @@ function dispatch(node) {
      平仓（`close`）、换所（`ex` 弹层 ＋ `exok` 二次确认）、盘口 ⇄ OTC 切换（`chan`）、
      **买 U（`buyu`）**。
      其余一律**照常可用**（用户 2026-09-29 拍板）：杠杆档 / 金额档 / 现货合约 / 切币 /
-     粒度 / 切页 / 日志浮层 / 设置页（音效·新手提示·重开）/ 上帝面板 / 暂停键本身。
+     粒度 / 切页 / 日志浮层 / 设置页（音量·行情音·震动·动效·新手提示·重开）/ 上帝面板 / 暂停键本身。
      理由：那些只改「下一单的参数」，此时既没有行情在走、也没有一笔单会成交 ——
      拦它们只会让玩家以为界面坏了。
 
@@ -554,8 +565,10 @@ function dispatch(node) {
      ⚠️ 走 `after()` 是**沿用 `onColorToggle` 的先例**（同为纯显示偏好）—— 它顺手落一次盘，
         代价可忽略，换来的是「所有分派出口长得一样」。 */
   if (d.eqrange !== undefined) { eqRange = Number(d.eqrange); after(); return; }
-  if (d.snd !== undefined) return onSoundToggle();
+  if (d.vol !== undefined) return onVol(Number(d.vol));
   if (d.market !== undefined) return onMarketToggle();
+  if (d.vib !== undefined) return onVib(Number(d.vib));
+  if (d.fx !== undefined) return onFx(Number(d.fx));
   if (d.colors !== undefined) return onColorToggle();
   if (d.reset !== undefined) return onReset(node);
   if (d.sclose !== undefined) return onClosePanel();
@@ -681,12 +694,12 @@ function dispatch(node) {
     if (!pos || pos.side === side) {
       const r = openTrade(s, side, s.sizeFrac);
       if (!r.ok) pushLog(s, r.why, 'bad');
-      else snd.open();
+      else { snd.open(); snd.buzz('light'); }
     } else {
       /* `why` 写玩家按下的那枚键：平多＝卖出（卖出手上的币）、平空＝买回（买回借出的币） */
       const r = closeTrade(s, side === 'long' ? '买回' : '卖出');
       if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
-      else snd.close();
+      else { snd.close(); snd.buzz('light'); }
     }
     after();
     return;
@@ -694,14 +707,14 @@ function dispatch(node) {
   if (d.act === 'long' || d.act === 'short') {
     const r = openTrade(s, d.act, s.sizeFrac);
     if (!r.ok) pushLog(s, r.why, 'bad');
-    else snd.open();
+    else { snd.open(); snd.buzz('light'); }
     after();
     return;
   }
   if (d.act === 'close') {
     const r = closeTrade(s);
     if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
-    else snd.close();
+    else { snd.close(); snd.buzz('light'); }
     after();
     return;
   }
@@ -1368,19 +1381,29 @@ function onTab(name) {
 }
 
 /**
- * 音效开关：先落盘再重画，静音时**不响**（否则关掉它还会「嗒」一下）。
- * ⚠️ 按钮的文案 / 高亮**不在这里手改**：设置页是常驻骨架，`update()` 每帧从 `view.muted`
- *    同步（`after()` 会强制画一帧，所以反馈仍是即时的）。
+ * 音量档（T-2 · 2026-10-01，**取代**原来的「音效」开关键）：0 关 / 1 小 / 2 中 / 3 大。
+ * 存进 `sound.js` 的 `degen_settings`（独立键，不进存档）；切到「关」那一刻不响（否则关掉还「嗒」一下）。
+ * ⚠️ 档位高亮**不在这里手改**：设置页是常驻骨架，`update()` 每帧从 `view.vol` 同步
+ *    （`after()` 会强制画一帧，所以反馈仍是即时的）。
  */
-function onSoundToggle() {
-  const muted = !snd.isMuted();
-  snd.setMuted(muted);
-  if (!muted) snd.tap();
+function onVol(v) {
+  snd.setVol(v);
+  if (v) snd.tap();
   after();
 }
 
 /**
- * 行情音开关（T-1 · P9）—— 与音效开关同一个写法。
+ * 震动档（T-2）：0 关 / 1 弱 / 2 强，默认**强**。独立于音量 —— 关声也照样震。
+ * 只在触屏设备上会建出这一行控件（见 `render.js`），这里不额外兜底。
+ */
+function onVib(v) {
+  snd.setVib(v);
+  if (v) snd.buzz('light');   // 当场试一下力度，玩家不用猜「弱」到底多弱
+  after();
+}
+
+/**
+ * 行情音开关（T-1 · P9）—— 与音量档同一个写法（独立键 ＋ 渲染层每帧同步高亮）。
  * 它**只管行情音**（涨 / 跌 / 放量 / 插针）：那是环境音，50x 下吵了可以只关它，
  * 事件音（爆仓 / 新闻 / 灾难 / 到账）照响 —— 那些被吞掉是不可接受的。
  */
@@ -1392,10 +1415,10 @@ function onMarketToggle() {
 }
 
 /* ── 涨跌色方向（B5 · 用户 2026-09-30 拍板）──────────────────────────────
-   纯**显示偏好**，所以与音效同一个存法：**独立 localStorage 键**（`degen_colors`），
+   纯**显示偏好**，所以与音量 / 震动同一个存法：**独立 localStorage 键**（`degen_colors`），
    不进存档 —— 「重开本局」不该把玩家的习惯一起清掉。
-   ⚠️ 不复用音效那个 `degen_settings`：那格里存的是一个裸字符串（'mute' / 'on'），
-      塞不进第二个值；各存各的键就不会互相覆盖。
+   ⚠️ 不复用音频那个 `degen_settings`：那里的形状是音频自己的 `{ vol, market, vib }`，
+      掺一个颜色进来会让两件事的迁移互相牵连（`readPrefs` 要认老格式），各存各的键最省心。
    实现只有两件事：① 在 `<html>` 上挂 / 摘 `.red-up`（`:root.red-up` 负责对调两枚语义色，
    全站颜色都从变量派生 ⇒ 一处切换、处处生效）；② 让 K 线的颜色缓存失效
    —— canvas 不认 `var()`，它是读一次就缓存的（`chart.theme()`）。
@@ -1410,15 +1433,47 @@ function applyRedUp(v) {
   resetTheme();
 }
 
-/** 涨跌色开关 —— 同音效：只翻偏好，按钮外观由 `update()` 每帧从 `view.redUp` 同步。 */
+/** 涨跌色开关 —— 同音量：只翻偏好，按钮外观由 `update()` 每帧从 `view.redUp` 同步。 */
 function onColorToggle() {
   applyRedUp(!redUp);
   snd.tap();
   after();
 }
 
+/* ── 动效强度（T-2 · 2026-10-01）──────────────────────────────────────
+   纯**显示偏好**，与涨跌色同一个存法：独立 localStorage 键（`degen_fx`），不进存档
+   —— 「重开本局」不该把玩家的习惯一起清掉。
+   三档（0 关 / 1 减弱 / 2 全）挂在 `<html>` 的类上，由 `style.css` 的 `.fx-off` / `.fx-low`
+   去压 transition / animation —— 压制规则只有一份（与 `prefers-reduced-motion` 那条同源）。
+   默认「全」；系统若开了「减弱动态效果」，默认就落到「关」（玩家仍可到设置里改回来）。 */
+const FX_KEY = 'degen_fx';
+const FX_DEFAULT = (() => {
+  try { return matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 2; } catch { return 2; }
+})();
+let fx = (() => {
+  try {
+    const v = Number(localStorage.getItem(FX_KEY));
+    return Number.isInteger(v) && v >= 0 && v <= 2 ? v : FX_DEFAULT;
+  } catch { return FX_DEFAULT; }
+})();
+
+function applyFx(v) {
+  fx = v;
+  const r = document.documentElement;
+  r.classList.toggle('fx-off', fx === 0);
+  r.classList.toggle('fx-low', fx === 1);
+  try { localStorage.setItem(FX_KEY, String(fx)); } catch { /* 隐私模式：本次会话内有效即可 */ }
+}
+
+/** 动效档 —— 同音量：只翻偏好，档位高亮由 `update()` 每帧从 `view.fx` 同步。 */
+function onFx(v) {
+  applyFx(v);
+  snd.tap();
+  after();
+}
+
 /**
- * 新手提示开关（v11 · ③）—— 与音效开关同一个写法：只翻状态，按钮外观由 `update()` 每帧同步。
+ * 新手提示开关（v11 · ③）—— 与音量档同一个写法：只翻状态，按钮外观由 `update()` 每帧同步。
  * 它管**引导类**内容（破产预警遮罩等），**不管**开场叙事 —— 那个新老手都要看一遍。
  */
 function onHintToggle() {

@@ -907,6 +907,11 @@ canvas.curve {
 }
 .set-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .set-btn:active { background: var(--line); }
+/* 档位组（T-2 · 2026-10-01）：一排并排的 `.set-btn`（2–4 枚），当前档挂 `.on`。
+   宽度**放开** —— 上面那条 64px 定宽是给「开 / 关」二态用的（防文案切换时抖动），
+   四档并排 4 × 64 装不下，且各档文字长短不一，用 `auto ＋ 等内边距 ＋ 最小宽` 才不会挤变形。 */
+.set-seg { display: flex; gap: 4px; }
+.set-seg .set-btn { width: auto; min-width: calc(40px * var(--ui)); padding: 0 10px; }
 /* 「确认重开」的武装态：整块转红。`.act flat` 是中性格，`.act` 家族本来没有警示色 ——
    破坏性操作与非破坏性操作必须一眼分得开，这一步的颜色变化本身就是确认反馈。 */
 .act.warn { background: var(--down); color: var(--on-down); }
@@ -1192,6 +1197,20 @@ button { user-select: none; -webkit-user-select: none; }
    ⚠️ 日志串是纯文本（`pushLog` 在 core 里拼的），那里直接写字面量符号，不走这条规则。 */
 .sign.up::before { content: '▲ '; font-size: .85em; }
 .sign.down::before { content: '▼ '; font-size: .85em; }
+
+/* T-2（2026-10-01）：设置页的「动效」档 —— 三档挂在 `<html>` 的类上（默认值在 `main.js`）。
+   · `.fx-off` ＝ 全归零：**复用** `prefers-reduced-motion` 那一套（同一份语义、同一条规矩）。
+   · `.fx-low` ＝ 只砍两类「会分心」的：总资产闪烁、切页 / 弹层淡入；
+     选中态过渡（`.tab.on` 那一批）**保留** —— 那是「我点到了」的状态反馈，砍掉反而像没点上。 */
+:root.fx-off *, :root.fx-off *::before, :root.fx-off *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+}
+:root.fx-low .hud.one .cell b.flash,
+:root.fx-low .page.on,
+:root.fx-low .pick-back, :root.fx-low .logs, :root.fx-low .confirm,
+:root.fx-low .over, :root.fx-low .menu-back { animation: none; }
 
 /* ══════════════ 桌面端三档（T-1 · 2026-10-01） ══════════════
    断点以下**一条规则都不写** —— 手机端（<620px）逐位不变，这是本批唯一的回归红线。

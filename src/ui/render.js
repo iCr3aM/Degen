@@ -22,6 +22,7 @@ import { RV_SPEEDS } from '../core/review.js';
 import { anyHeld, heldSyms, posOf, slotOf } from '../core/state.js';
 import { drawChart, drawEquityCurve } from './chart.js';
 import { windowFor, setYPx } from './view.js';
+import { vibSupported } from './sound.js';
 
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -359,34 +360,61 @@ export function mount(root) {
   const assetsPage = el('div', 'page assets-page');
   assetsPage.append(asHead, asSlots, asBox, asBreak, asCurveBox, uCard, asList);
 
-  /* ── 设置页（原设置弹层那三件，原封不动搬成页 · §6.2）──
-     ⚠️ 两个开关的文案 / 高亮**每帧由 `update()` 从状态与偏好同步**，不在这里手改节点：
-        页是静态 DOM，`onSoundToggle` 再手改一遍就会两处打架（从前弹层不参与重绘，才允许手改）。
-     ⚠️ 「重开本局」的双重确认状态机仍在 `main.js`（`onReset` / `cancelReset`），理由同前。 */
-  const sndBtn = el('button', 'set-btn on', '开');
-  sndBtn.dataset.snd = 'toggle';
-  /* 行情音（T-1 · P9）：与「音效」**分开**的第二个音频开关 —— 它只管涨 / 跌 / 放量 / 插针
-     那四声环境音（50x 下吵了可以只关它），事件音照响。默认开。 */
+  /* ── 设置页（原设置弹层那几件，原封不动搬成页 · §6.2）──
+     ⚠️ 所有偏好控件的文案 / 高亮**每帧由 `update()` 从状态与偏好同步**，不在这里手改节点：
+        页是静态 DOM，处理器再手改一遍就会两处打架（从前弹层不参与重绘，才允许手改）。
+     ⚠️ 「重开本局」的双重确认状态机仍在 `main.js`（`onReset` / `cancelReset`），理由同前。
+
+     T-2（2026-10-01）：原来那枚「音效」开关键换成**三排档位组** ＋ 两个老开关 ——
+       · 音量（关 / 小 / 中 / 大）—— 它**取代**音效开关，一个档位就是总闸，「关」＝静音；
+       · 震动（关 / 弱 / 强）—— 只在触屏设备建这一行（`vibSupported()` 为假 ⇒ 整行不存在）；
+       · 动效（关 / 减弱 / 全）。
+     「行情音」是**另一件事**（只关涨 / 跌 / 放量 / 插针那四声环境音，事件音照响），与音量并存。 */
+
+  /** 一排档位组：标签 ＋ 若干并排的 `.set-btn`（当前档挂 `.on`）。返回 `map`（值 → 按钮）供 `update()` 同步。 */
+  const segRow = (label, key, items) => {
+    const row = el('div', 'set-row');
+    row.append(el('i', null, label));
+    const seg = el('div', 'set-seg');
+    const map = new Map();
+    for (const [v, text] of items) {
+      const b = el('button', 'set-btn', text);
+      b.dataset[key] = v;
+      seg.append(b);
+      map.set(v, b);
+    }
+    row.append(seg);
+    return { row, map };
+  };
+
+  const { row: volRow, map: volBtns } = segRow('音量', 'vol', [['0', '关'], ['1', '小'], ['2', '中'], ['3', '大']]);
+  /* 行情音（T-1 · P9）：与音量**分开**的音频开关 —— 它只管涨 / 跌 / 放量 / 插针那四声环境音
+     （50x 下吵了可以只关它），事件音照响。默认开。 */
   const mktBtn = el('button', 'set-btn on', '开');
   mktBtn.dataset.market = 'toggle';
-  const hintBtn = el('button', 'set-btn on', '开');
-  hintBtn.dataset.hint = 'toggle';
-  const setCard = el('div', 'set-card');
-  const sndRow = el('div', 'set-row');
-  sndRow.append(el('i', null, '音效'), sndBtn);
   const mktRow = el('div', 'set-row');
   mktRow.append(el('i', null, '行情音'), mktBtn);
+  /* 震动（T-2）：桌面浏览器即便有 `navigator.vibrate` 也是空转 ⇒ 不支持就**整行不建**。 */
+  const { row: vibRow, map: vibBtns } = vibSupported()
+    ? segRow('震动', 'vib', [['0', '关'], ['1', '弱'], ['2', '强']])
+    : { row: null, map: new Map() };
+  const { row: fxRow, map: fxBtns } = segRow('动效', 'fx', [['0', '关'], ['1', '减弱'], ['2', '全']]);
   /* 新手提示（v11 · ③）：管破产预警遮罩这类**引导**内容（开局叙事不受它管）。 */
+  const hintBtn = el('button', 'set-btn on', '开');
+  hintBtn.dataset.hint = 'toggle';
   const hintRow = el('div', 'set-row');
   hintRow.append(el('i', null, '新手提示'), hintBtn);
   /* 涨跌色方向（B5 · 用户 2026-09-30 拍板）：文案写**当前方向**（默认「绿涨」），
-     `.on` 表示「已经从惯例切走了」—— 与前三个开关「on = 启用」的语气一致。
+     `.on` 表示「已经从惯例切走了」—— 与前几个开关「on = 启用」的语气一致。
      偏好归 `main.js`（独立 localStorage 键），这里只负责显示。 */
   const colBtn = el('button', 'set-btn', '绿涨');
   colBtn.dataset.colors = 'toggle';
   const colRow = el('div', 'set-row');
   colRow.append(el('i', null, '涨跌色'), colBtn);
-  setCard.append(sndRow, mktRow, hintRow, colRow);
+  const setCard = el('div', 'set-card');
+  setCard.append(volRow, mktRow);
+  if (vibRow) setCard.append(vibRow);
+  setCard.append(fxRow, hintRow, colRow);
   const resetBtn = el('button', 'act flat', '重开本局');
   resetBtn.dataset.reset = '';
   /* 按钮必须包在 `.row` 里：`.act` 自己带 `flex: 1`，直接放进纵向 flex 的 `.page` 会被拉满整屏 */
@@ -492,7 +520,7 @@ export function mount(root) {
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asList,
     asCurve, eqRangeBtns, asBusy, asOnway, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
-    sndBtn, mktBtn, hintBtn, colBtn,
+    volBtns, vibBtns, fxBtns, mktBtn, hintBtn, colBtn,
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
     rvWrap, rvCanvas, rvHead, rvSym, rvMcap, rvSupp, rvChg, rvModeBtn, rvLogs,
@@ -566,12 +594,14 @@ export function update(refs, s, view) {
   refs.pauseBtn.classList.toggle('on', s.paused);
   refs.pauseBtn.disabled = lockedUI;
 
-  /* 设置页那四个开关（静态 DOM，不重建）：文案与高亮**只从这里写**。
-     `view.muted` / `view.redUp` 由 `main.js` 注入（这两个纯显示偏好归浏览器存档管，不是主状态）。 */
-  refs.sndBtn.textContent = view.muted ? '关' : '开';
-  refs.sndBtn.classList.toggle('on', !view.muted);
+  /* 设置页那些偏好控件（静态 DOM，不重建）：高亮 / 文案**只从这里写**。
+     `view.vol` / `view.vib` / `view.fx` / `view.marketSound` / `view.redUp` 由 `main.js` 注入
+     （它们都是浏览器偏好，不是主状态）；`s.hintOn` 是主状态。 */
+  for (const [v, b] of refs.volBtns) b.classList.toggle('on', Number(v) === view.vol);
   refs.mktBtn.textContent = view.marketSound ? '开' : '关';
   refs.mktBtn.classList.toggle('on', view.marketSound);
+  for (const [v, b] of refs.vibBtns) b.classList.toggle('on', Number(v) === view.vib);
+  for (const [v, b] of refs.fxBtns) b.classList.toggle('on', Number(v) === view.fx);
   refs.hintBtn.textContent = s.hintOn ? '开' : '关';
   refs.hintBtn.classList.toggle('on', s.hintOn);
   refs.colBtn.textContent = view.redUp ? '红涨' : '绿涨';

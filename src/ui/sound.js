@@ -6,7 +6,7 @@
  * 比任何一个 mp3 都小，也不用多一个要上传、要缓存、要解码的二进制资源。
  *
  * 三条规矩：
- *   ① **开关存独立的 localStorage 键**（`degen_settings`）—— 不进存档，否则重开会把开关一起清掉；
+ *   ① **偏好存独立的 localStorage 键**（`degen_settings`）—— 不进存档，否则重开会把偏好一起清掉；
  *   ② **懒建 AudioContext**：浏览器要求首次用户手势之后才允许出声，所以第一个声音
  *      必然来自一次点击（本作的开局按钮「开始交易」正好是这一下）；
  *   ③ **任何异常都不许往上冒**：浏览器不支持 / 上下文被挂起时静默变成「没声音」，
@@ -14,12 +14,17 @@
  *
  * 音色取向：短促、干脆、不刺耳。上涨用上行音程、下跌用下行音程 —— 不用听歌词也知道方向。
  *
- * ── T-1 的两个结构性改动 ──────────────────────────────────────────
- *   ④ **主总线**：`osc → gain → 压缩器 → 主增益 → destination`。50x 下多声会叠在一起互相盖住，
- *      压缩器把它们压到同一条响度线上（照搬 aggr.trade 用 Tone.js 默认挂的那条思路，但零依赖）。
+ * ── T-1 的结构性改动 ──────────────────────────────────────────────
+ *   ④ **主总线**：`osc → gain → 限幅器 → 主增益 → destination`。50x 下多声会叠在一起互相盖住，
+ *      限幅器把它们压到同一条响度线下（照搬 aggr.trade 用 Tone.js 默认挂的那条思路，但零依赖）。
  *   ⑤ **两类音**：**事件音**（爆仓 / 新闻 / 灾难 / 到账…，由日志驱动，**永不节流**）
  *      与**行情音**（`tickUp` / `tickDown` / `surge` / `spike`，由 K 线驱动，**同种音 120ms 节流**）。
- *      行情音另受一个**独立开关**管（它是环境音，吵了可以只关它，事件音照响）。
+ *
+ * ── T-2（2026-10-01 拍板）的三个可设置项 ──────────────────────────
+ *   ⑥ **音量四档**（关 / 小 / 中 / 大）取代原来的「音效」开关键 —— 总闸就是它，关档＝静音。
+ *   ⑦ **震动三档**（关 / 弱 / 强，默认**强**）：`navigator.vibrate`，移动端专属，与音量互不隶属。
+ *   ⑧ **响度整体上调**：单音 gain 统一乘 `TONE_GAIN`，限幅器阈值抬到 −8dB —— 修「声音太小」。
+ *      详见 `TONE_GAIN` 与 `busOf()` 的注释（旧参数把大半单音压在压缩拐点区往下削）。
  */
 
 const KEY = 'degen_settings';
@@ -28,18 +33,33 @@ const KEY = 'degen_settings';
  *  50x 下 1 真实秒 = 50 游戏小时，不节流就是机关枪 —— 这是三条闸里的第二条。 */
 const MARKET_GAP = 120;
 
-/* ───────────────────────── 偏好（两个开关） ─────────────────────────
+/* ───────────────────── 偏好（音量档 / 行情音 / 震动） ─────────────────────
  * ⚠️ **`degen_settings` 存的是 JSON**（T-1 起）。老版本存的是**裸字符串** `'mute'` / `'on'`，
- *    读到非 JSON 必须按老格式解，否则老用户的静音设置会被吃掉（迁移见 `readPrefs`）。 */
+ *    JSON 时代又只有 `{ mute, market }` 两个布尔 —— 两者都要能读（迁移见 `readPrefs`），
+ *    否则老用户的静音设置会被吃掉。 */
+
+/** 音量四档（2026-10-01 拍板，**取代**原来的「音效」开关键）—— 值即主增益倍率。
+ *  「关」＝静音：它不再需要单独一个开关，一个档位就是总闸。 */
+export const VOLUMES = [0, 0.55, 1, 1.7];   // 关 / 小 / 中 / 大
+const DEFAULT_VOL = 2;                      // 默认「中」
+const DEFAULT_VIB = 2;                      // 震动默认**强**（用户 2026-10-01 拍板）
+
+/** 档位下标守卫：不是合法下标就落回默认档（存档 / localStorage 里的脏值不许把 UI 弄崩） */
+const idx = (v, n, d) => (Number.isInteger(v) && v >= 0 && v < n ? v : d);
+
 function readPrefs() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return { mute: false, market: true };
-    if (raw === 'mute') return { mute: true, market: true };    // 老格式：静音
-    if (raw === 'on') return { mute: false, market: true };      // 老格式：开声
+    if (!raw) return { vol: DEFAULT_VOL, market: true, vib: DEFAULT_VIB };
+    if (raw === 'mute') return { vol: 0, market: true, vib: DEFAULT_VIB };              // 老格式：静音 ⇒ 音量关
+    if (raw === 'on') return { vol: DEFAULT_VOL, market: true, vib: DEFAULT_VIB };       // 老格式：开声
     const o = JSON.parse(raw);
-    return { mute: !!o.mute, market: o.market !== false };
-  } catch { return { mute: false, market: true }; }
+    return {
+      vol: o.mute ? 0 : idx(o.vol, VOLUMES.length, DEFAULT_VOL),   // `mute: true` ⇒ 音量关
+      market: o.market !== false,
+      vib: idx(o.vib, 3, DEFAULT_VIB),
+    };
+  } catch { return { vol: DEFAULT_VOL, market: true, vib: DEFAULT_VIB }; }
 }
 
 const prefs = readPrefs();
@@ -48,12 +68,14 @@ function writePrefs() {
   try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch { /* 隐私模式：本次会话内有效即可 */ }
 }
 
-export const isMuted = () => prefs.mute;
+/** 当前音量档（0–3）。`0` ＝ 静音 —— 全模块只认这一个「关」。 */
+export const getVol = () => prefs.vol;
 
-export function setMuted(v) {
-  prefs.mute = !!v;
+export function setVol(v) {
+  prefs.vol = idx(v, VOLUMES.length, DEFAULT_VOL);
   writePrefs();
-  if (prefs.mute && ac && ac.state === 'running') {
+  applyMaster();
+  if (!prefs.vol && ac && ac.state === 'running') {
     // 立刻静音：挂起上下文比逐个停振荡器干净，恢复时也不会有一串残音排队
     try { ac.suspend(); } catch { /* 忽略 */ }
   }
@@ -67,14 +89,51 @@ export function setMarketOn(v) {
   writePrefs();
 }
 
+/* ───────────────────────── 震动（移动端专属 · 2026-10-01） ─────────────────────────
+ * 与音量**互不隶属**：关掉声音照样可以震，反之亦然（真实手机就是这么用的）。
+ * 只用 `navigator.vibrate`，**零依赖、零资源**；不支持 / 被拒绝时静默跳过。 */
+
+/** 这台机器会不会真的震 —— 触屏设备 ＋ 有 `navigator.vibrate`。
+ *  桌面浏览器即便有 `vibrate` 也是空转 ⇒ 设置页那一行在桌面上**整行不显示**。 */
+export function vibSupported() {
+  try {
+    return typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function'
+      && typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  } catch { return false; }
+}
+
+/** 力度 × 档位 → 震动模式（毫秒）：
+ *  `light` 是「点一下」级别（新闻 / 上线 / 到账 / 开平仓），`heavy` 是「出事」级别（爆仓 / 灾难 / 预警 / 结束）。
+ *  弱档一次短震，强档三下（起-停-起）—— 三下是**可辨的**，一次长震与一次短震在口袋里分不出来。 */
+const VIB = {
+  light: [0, [12], [16, 45, 16]],
+  heavy: [0, [35], [55, 70, 55]],
+};
+
+export const getVib = () => prefs.vib;
+
+export function setVib(v) {
+  prefs.vib = idx(v, 3, DEFAULT_VIB);
+  writePrefs();
+}
+
+/** 震一下。`kind` = `'light'`（默认）或 `'heavy'`。 */
+export function buzz(kind = 'light') {
+  if (!prefs.vib) return;
+  try {
+    const pat = VIB[kind] || VIB.light;
+    if (navigator.vibrate) navigator.vibrate(pat[prefs.vib] || 0);
+  } catch { /* 忽略：有的浏览器在无用户手势时会抛 */ }
+}
+
 /* ───────────────────────── 音频上下文 ＋ 主总线 ───────────────────────── */
 
 let ac = null;
-let bus = null;          // { comp }：主总线压缩器；与 `ac` 同生命周期
+let bus = null;          // { comp, master }：主总线限幅器 ＋ 主增益；与 `ac` 同生命周期
 
-/** 取（必要时新建并唤醒）音频上下文；静音或不可用时返回 null */
+/** 取（必要时新建并唤醒）音频上下文；音量关档或不可用时返回 null */
 function audio() {
-  if (prefs.mute) return null;
+  if (!prefs.vol) return null;             // 音量关 = 总闸拉下
   try {
     const Ctor = window.AudioContext || window.webkitAudioContext;
     if (!Ctor) return null;
@@ -89,25 +148,41 @@ function audio() {
 /**
  * 主总线的入口节点。**懒建、与上下文同生命周期**。
  *
- * 参数照搬 aggr.trade 那条思路（它用 Tone.js 默认挂的压缩器 / 限幅器）：
- * `threshold −18dB / knee 12 / ratio 6 / attack 3ms / release 180ms`，主增益 0.9。
- * 收益：十几声叠在一起时不糊、不爆，整体响度一致。**不引入任何依赖、不引入音频文件。**
+ * `osc → gain → comp → master → destination`。两条参数是为「响度」调的（T-2）：
+ *   · `comp` 是**限幅器**（threshold −8 / knee 6 / ratio 12 / release 0.25s）——
+ *     旧参数（−18 / 12 / 6）的拐点区在 [−30, −18]dB，而单音峰值正好落在那里被 6:1 往下压，
+ *     等于每一声都被削一刀；抬到 −8 之后常态单音**不进压缩**，只有 50x 叠声时才限幅。
+ *   · `master` 增益 = 当前音量档（`VOLUMES[prefs.vol]`）—— 档位切换只动这一个节点。
  */
 function busOf(a) {
   if (!bus) {
     const comp = a.createDynamicsCompressor();
-    comp.threshold.value = -18;
-    comp.knee.value = 12;
-    comp.ratio.value = 6;
+    comp.threshold.value = -8;
+    comp.knee.value = 6;
+    comp.ratio.value = 12;
     comp.attack.value = 0.003;
-    comp.release.value = 0.18;
+    comp.release.value = 0.25;
     const master = a.createGain();
-    master.gain.value = 0.9;
+    master.gain.value = VOLUMES[prefs.vol];
     comp.connect(master).connect(a.destination);
-    bus = { comp };
+    bus = { comp, master };
   }
   return bus.comp;
 }
+
+/** 音量档变了：把新倍率写进主增益（总线还没建就什么都不用做，建的时候会读现值）。 */
+function applyMaster() {
+  if (bus) bus.master.gain.value = VOLUMES[prefs.vol];
+}
+
+/**
+ * 单音的整体响度倍数（T-2 修「声音太小」）。
+ * 旧的 `gain`（0.02 点按 ～ 0.07 爆仓）换算成峰值只有 **−34dB ～ −23dB**，
+ * 再叠上压缩器往下压与 0.9 的主增益，最终输出常有 −30dB —— 手机外放几乎听不见。
+ * 统一乘 3.2（约 +10dB）把常态单音推回限幅器阈值之下、主增益之上，
+ * 由**音量档**决定最终大小，而不是由每个音自己的常量凑。
+ */
+const TONE_GAIN = 3.2;
 
 /**
  * 一枚短音。`to` 给频率滑到哪（不给就是不滑，走固定音高）。
@@ -124,7 +199,7 @@ function tone({ f, to = 0, dur = 0.08, type = 'triangle', gain = 0.05, at = 0 })
   osc.frequency.setValueAtTime(f, t0);
   if (to) osc.frequency.exponentialRampToValueAtTime(Math.max(30, to), t0 + dur);
   g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(gain, t0 + 0.008);
+  g.gain.exponentialRampToValueAtTime(gain * TONE_GAIN, t0 + 0.008);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
   osc.connect(g).connect(busOf(a));
   osc.start(t0);

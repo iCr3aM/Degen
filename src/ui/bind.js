@@ -11,10 +11,12 @@
 /** 所有动作键。渲染出的 `data-*` 必须落在这里，否则点了没反应。 */
 export const ACTION_KEYS = [
   'sym', 'ex', 'exok', 'exno', 'frac', 'lev', 'speed', 'act', 'pause', 'restart', 'wipe', 'mode',
-  /* Batch 4：`settings`（顶栏第三枚）/ `snd`（音效开关）/ `reset`（面板内重开）/ `sclose`（关面板）
+  /* Batch 4：`settings`（顶栏第三枚）/ `reset`（面板内重开）/ `sclose`（关面板）
      / `intro`（开场弹窗的「开始交易」）
-     Batch 5（B30）：`loan`（归零遮罩上的「借续命」/「就此收摊」） */
-  'settings', 'snd', 'market', 'reset', 'sclose', 'intro', 'loan',
+     Batch 5（B30）：`loan`（归零遮罩上的「借续命」/「就此收摊」）
+     ⚠️ 原来的 `snd`（音效开关）已随 T-2 的「音量四档」整体删除（2026-10-01）——
+        它被 `vol` 取代（`data-vol="0|1|2|3"`），所以这一条不再留在表里。 */
+  'settings', 'market', 'reset', 'sclose', 'intro', 'loan',
   /* A6（方案 §6.4）：`tab` ＝ 底部 Tab 三条（交易 / 资产 / 设置）。
      ⚠️ `settings` **保留**（§9 B8）：顶栏那枚「设置」按钮已随 A6 撤掉，但设置页里
         将来仍可能复用它做一个「关」的出口 —— 现在页的出口就是底部 Tab，所以没有任何 DOM 挂它。 */
@@ -48,6 +50,10 @@ export const ACTION_KEYS = [
   /* 资金曲线区间（用户 2026-10-01 拍板）：`eqrange` ＝ 资产页曲线上方那排档位键，
      值是「最近多少个游戏日」（`7` / `30` / `90` / `365` / `0`，`0` = 全部）。 */
   'eqrange',
+  /* T-2（2026-10-01）：设置页那三排档位组 —— 值是档位下标（字符串）。
+     `vol`（音量：0 关 / 1 小 / 2 中 / 3 大）／`vib`（震动：0 关 / 1 弱 / 2 强）／
+     `fx`（动效：0 关 / 1 减弱 / 2 全）。 */
+  'vol', 'vib', 'fx',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');
