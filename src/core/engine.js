@@ -17,7 +17,7 @@ import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, ra
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { HEAT, NPC, SHOCK, addFlow, playerFactor, shockParamsOf } from './god.js';
+import { HEAT, NPC, SHOCK, addFlow, exDevOf, playerFactor, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -68,16 +68,35 @@ export const timeOf = s => GAME.start + s.i * HOUR_MS;
 
 /* ───────────────────────────── 派生量 ───────────────────────────── */
 
-/** 某个币当前的标记价（用收盘价） */
+/** 某个币的**基准价**（用收盘价）—— **全市场共用一份**，只服务 K 线图 / 新闻 / 热度这些市场级读数。
+ *  ⚠️ 玩家自己的钱（成交 / 盈亏 / 强平 / 保证金）**不许读它**，一律走下面的 `exPrice`（缺口 10）。 */
 export function markPrice(s, sym = s.sym) {
   return closeAt(sym, s.i);
 }
 
-/** 某个币的持仓的未实现盈亏 */
+/**
+ * 某个币在**某家交易所**的**本所价**（缺口 10 · 2026-10-03 拍板）—— 玩家自己的钱只读它。
+ *
+ *     exPrice = markPrice × exDevOf(所, 币, 小时)
+ *
+ * `exDevOf`（`god.js`）= **长期基差 ＋ 小噪声**：门头沟史实溢价 +2%、Bitfinex +0.1%，其余 ≈0；
+ * 再叠一层逐小时白噪声（幅度按所压在一次往返手续费之内 ⇒ 不可套利）。
+ *
+ * ⚠️ **口径（拍板）**：成交 / 盈亏 / 强平 / 保证金**一律读本仓所在所（`pos.ex`）的本所价** ——
+ *    成交价与估值价同源，消除「在便宜的所成交、按贵的所估值」的白赚口子。
+ * ⚠️ 默认 `exId = s.ex`（当前所在所）；**估值 / 平仓 / 资金费必须显式传 `pos.ex`** ——
+ *    玩家换所之后，旧仓仍按**它自己那家所**估值。
+ */
+export function exPrice(s, sym, exId = s.ex) {
+  const p = markPrice(s, sym);
+  return p == null ? null : p * exDevOf(exId, sym, s.i);
+}
+
+/** 某个币的持仓的未实现盈亏（按**本仓所在所**的本所价 —— 缺口 10） */
 export function unrealizedOf(s, sym) {
   const pos = posOf(s, sym);
   if (!pos) return 0;
-  const p = markPrice(s, sym);
+  const p = exPrice(s, sym, pos.ex);
   return p == null ? 0 : pnlOf(pos, p);
 }
 
@@ -96,13 +115,15 @@ export function totalUnrealized(s) {
  *    并且被 `isBankrupt` 直接误判成破产、本局当场结束。它不是「隐藏资产」，是**可见但不可用**。
  * ⚠️ **USDT 按面值 $1 计入**（v13 · 方案 §2.2）：溢价已经在「买 U」那一刻结清（`usdtPriceAt`），
  *    这里再按市价重估就是把同一笔钱计两次价。副作用是好的：破产判定不会因为 U 脱锚而提前触发。
+ * ⚠️ **仓位按它自己那家所的本所价估值**（缺口 10 · 2026-10-03）：玩家换所之后旧仓照旧按 `pos.ex` ⇒
+ *    权益不会因为「人在哪家所」而跳。
  */
 export function equity(s) {
   let sum = cashOf(s);
   if (s.transfer) sum += s.transfer.amount;
   for (const sym of heldSyms(s)) {
     const pos = s.positions[sym];
-    const p = markPrice(s, sym);
+    const p = exPrice(s, sym, pos.ex);
     sum += p == null ? pos.margin : equityOf(pos, p);
   }
   return sum;
@@ -1452,7 +1473,7 @@ function openCheck(s, side, frac = 1) {
   if (!coin || !isLoaded(s.sym)) return { ok: false, why: '行情还没加载完' };
   if (timeOf(s) < coin.unlock) return { ok: false, why: `${s.sym} 还没上线` };
 
-  const price = markPrice(s, s.sym);
+  const price = exPrice(s, s.sym, s.ex);   // 缺口 10：按**当前所在所**的本所价成交
   if (!(price > 0)) return { ok: false, why: '当前没有可成交的价格' };
 
   // 杠杆上限与费率都取**玩家当前所在的交易所**（GDD §7.1）。OTC 一律 1x（= 现货）
@@ -1640,7 +1661,7 @@ function closeCheck(s, frac = 1) {
   const pos = posOf(s, sym);
   if (!pos) return { ok: false, why: `${sym} 没有持仓` };
 
-  const price = markPrice(s, sym);
+  const price = exPrice(s, sym, pos.ex);   // 缺口 10：按**本仓所在所**的本所价平仓（与开仓同源）
   if (!(price > 0)) return { ok: false, why: '当前没有可成交的价格' };
 
   /* OTC 通道**只平现货**（1x 做多）—— 杠杆仓一律走盘口（§15.3 的通道语义）。
@@ -2444,7 +2465,7 @@ function settleFunding(s) {
     }
 
     if (!paysFunding(pos)) continue;                 // 现货 1x：两样都不付
-    const mark = markPrice(s, sym);
+    const mark = exPrice(s, sym, pos.ex);            // 缺口 10：资金费也按**本仓所在所**的本所价
     if (!(mark > 0)) continue;
 
     /* **全市场多空失衡**驱动的资金费（v30 · 第 6 批 · 缺口 3）—— 真实资金费是**多空之间的
@@ -2514,8 +2535,12 @@ function liquidateAll(s) {
     const pos0 = s.positions[sym];
     if (!pos0 || !canLiquidate(pos0)) continue;
 
-    const c = candleAt(sym, s.i);
-    if (!c) continue;
+    const c0 = candleAt(sym, s.i);
+    if (!c0) continue;
+    /* 缺口 10（2026-10-03）：强平按**本仓所在所**的本所价判 —— 与成交 / 估值同源。
+       整根等比缩放 ⇒ 与 `pathOf` 的「min ≡ l、max ≡ h」红线（S1 红线 1）不冲突。 */
+    const dv = exDevOf(pos0.ex, sym, s.i);
+    const c = dv === 1 ? c0 : { o: c0.o * dv, h: c0.h * dv, l: c0.l * dv, c: c0.c * dv };
 
     /* 便宜的闸：**当根高低点**没打穿强平价、保证金率也没趴在维持线上 ⇒ 这一小时不必建细路径。
        （`pathOf` 是 121 个点的布朗桥，每根 K 线每个仓位都白建一次太浪费。） */

@@ -11,7 +11,7 @@ import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, cashCurAt, exchangeOf, hasFinan
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, equity, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked } from './core/engine.js';
+import { createClock, chanOf, equity, exPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
@@ -581,7 +581,7 @@ function soundFromTick(s) {
   for (const sym of heldSyms(s)) {
     const pos = s.positions[sym];
     if (!canLiquidate(pos)) { warnedSyms.delete(sym); continue; }
-    const mark = markPrice(s, sym);
+    const mark = exPrice(s, sym, pos.ex);   // 缺口 10：预警阈值也按**本仓所在所**的本所价
     const safe = mark == null ? 1 : safetyOf(pos, mark);
     if (safe <= 0.2) {
       if (!warnedSyms.has(sym)) { warnedSyms.add(sym); snd.warn(); snd.buzz('heavy'); }

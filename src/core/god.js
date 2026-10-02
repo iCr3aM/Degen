@@ -43,6 +43,9 @@
  *    否则会算出「价格在动、波动率不动」的不自洽滑点。
  */
 
+import { exchangeOf, GAME } from './config.js';
+import { hashStr, rand } from './rng.js';
+
 /** 冲击模型的常数（实证取值，见方案文档 §2.6 / §27.4-B1） */
 export const SHOCK = {
   /**
@@ -607,6 +610,47 @@ function shockFactorOf(r) {
   if (!r) return 1;
   const f = 1 + Math.min(SHOCK.riseMax, Math.max(SHOCK.fallMax, r));
   return f > 1e-9 ? f : 1e-9;
+}
+
+/* ───────────────────── 跨所价格偏移（缺口 10 · 2026-10-03 拍板） ───────────────────── */
+
+/** 本所价偏移的随机通道名（`rng.rand` 的 `chan`）—— 与 'path' / 'volume' 那几套互不污染 */
+const EXDEV_CHAN = hashStr('exdev');
+
+/**
+ * 某家所在某个币、某一小时的**本所价系数**（缺口 10「跨所价格同源」）。
+ *
+ * 口径（用户 2026-10-03 拍板）：**长期基差 ＋ 小噪声**
+ *
+ *     dev   = clamp( basis(所) + amp(所) × 白噪声(所, 币, 小时), ±cap(所) )
+ *     本所价 = 基准价 × (1 + dev)
+ *
+ * 「基准价」= `market.closeAt`（＝数据包 × 玩家 / NPC 位移），**全市场共用一份**，只服务 K 线图 /
+ * 新闻 / 热度这些市场级读数；玩家自己的钱（成交 / 盈亏 / 强平 / 保证金）一律走**本仓所在所**
+ * 的本所价（`engine.exPrice`）⇒ 成交价与估值价同源，不存在「在便宜的所成交、按贵的所估值」的白赚口子。
+ *
+ * ⚠️ **偏移必须不可套利**，拍板表就是按这条定的：
+ *   · **基差**恒定（不随年代漂移）⇒ 买、卖乘的是同一个系数 ⇒ **往返净零**，多大都不套利。
+ *     （这也是「门头沟溢价 +2%」能放心给的原因 —— 它只在换所时看得见，不产生任何时间上的优势。）
+ *   · **噪声**是逐小时独立的**白噪声** ⇒「低买高卖」能拿到的上限是峰谷差 `2×amp`；四家的 `amp`
+ *     都压在**一次往返手续费**之内（门头沟 0.6%/边 ⇒ ±40bp；Bitfinex 0.2% ⇒ ±13bp；
+ *     BitMEX 0.075% ⇒ ±5bp；Binance 0.04% ⇒ ±3bp）⇒ 拿噪声套利赚不回手续费。
+ * ⚠️ 幅度依据（联网核实 · 2026-10-03）：头部所常态毛差 3–35bp（2024 实测 Binance–Coinbase 均差
+ *    3.1bp、Binance 比 Kraken 最多高 50bp）；门头沟史实「Gox 溢价」2013-12 比 Bitstamp / BTC-e
+ *    高 $21–34（约 2–3%）。压力期（312 / 519）各所可相差 6–12% —— 本层**不建模压力放大**，
+ *    那属于缺口 1 的深度撤退，别重复计价。
+ *
+ * @param {string} exId 交易所 id
+ * @param {string} sym  币符号（噪声按币独立，免得五个币同向抖动）
+ * @param {number} hour 绝对小时序号（`s.i`）
+ * @returns {number} 乘数（≈ 0.97 ~ 1.03）；未知交易所 / 未配置 `dev` 恒返回 1
+ */
+export function exDevOf(exId, sym, hour) {
+  const d = exchangeOf(exId)?.dev;
+  if (!d) return 1;
+  const n = (rand(GAME.seed, hashStr(sym), hour, 0, EXDEV_CHAN) * 2 - 1) * d.amp;
+  const dev = d.basis + n;
+  return 1 + Math.max(-d.cap, Math.min(d.cap, dev));
 }
 
 /* ───────────────────────── 上帝面板用的小工具 ───────────────────────── */

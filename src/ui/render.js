@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canCloseAt, canOpenAt, chanOf, equity, futuresAvailable, heatOf, longShareOf, markPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canCloseAt, canOpenAt, chanOf, equity, exPrice, futuresAvailable, heatOf, longShareOf, markPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { HEAT } from '../core/god.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -790,7 +790,7 @@ export function update(refs, s, view) {
   /* 持仓条：只显示当前所选币；**无持仓也常驻**（三格填 `--`），见 mount() 的注释 */
   if (cur) {
     const p = cur;
-    const posMark = markPrice(s, p.sym);
+    const posMark = exPrice(s, p.sym, p.ex);   // 缺口 10：本仓按**它自己那家所**的本所价
     setText(refs.posSide, isSpot(p)
       /* 字面（v9 · §15.6 N4）：现货写「买入 / 卖出」—— 与操作区那两枚键一一对应。
          原来这里笼统写「现货」两个字，是因为现货恒为 1x 做多；§15.6 N2 起现货**也带杠杆、

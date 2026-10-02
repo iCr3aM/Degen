@@ -259,6 +259,8 @@ export const coinOf = sym => COINS.find(c => c.sym === sym) || null;
  *                  **不动持仓、不动其他所**（与 `close` 的整所归零是两回事）。
  *   - `halts`    ：**停机维护**窗口（B24 · 可选）—— `[{ from, to }]`：窗口内**只平不开**
  *                  （判据走 `haltedAt()`，别在调用处自己比时刻）。
+ *   - `dev`      ：**本所价偏移**（缺口 10 · 2026-10-03 拍板）—— `{ basis, amp, cap }`：
+ *                  本所价 = 基准价 × (1 + 基差 + 噪声)，夹在 `±cap`。口径与取值依据见 `god.exDevOf`。
  *
  * ⚠️ **现货与合约是两回事，费率也必须是两张表**（v12 · 方案 §11.0 偏离①）：
  *    改动前每家只有一个 `fee`，于是 BitMEX 的 **0.05%（衍生品）** 与 Binance 的 **0.04%（合约）**
@@ -290,6 +292,9 @@ export const EXCHANGES = [
        （13 档的明细见下面的 `FEE_TIERS.mtgox`）；**买卖双方都收**（本作只有单笔市价成交，记单边一次）。
        这里的 `0.006` 是**首档（基准）**，阶梯由 `feeRateOf` 按 30 天量打折。 */
     fees: { spot: [{ from: Date.UTC(2013, 0, 1), v: 0.006 }], fut: null },
+    /* 本所价偏移（缺口 10 · 2026-10-03 拍板）—— `{ basis, amp, cap }`，见 `god.exDevOf`。
+       史实「Gox 溢价」：2013-12 门头沟价比 Bitstamp / BTC-e 高 $21–34（约 2–3%）。 */
+    dev: { basis: 0.020, amp: 0.0040, cap: 0.030 },
   },
   {
     id: 'bitfinex', name: 'Bitfinex',
@@ -311,6 +316,7 @@ export const EXCHANGES = [
       spot: [{ from: Date.UTC(2013, 0, 1), v: 0.002 }],
       fut: [{ from: Date.UTC(2019, 8, 2), v: 0.002 }],
     },
+    dev: { basis: 0.001, amp: 0.0013, cap: 0.008 },
   },
   {
     id: 'bitmex', name: 'BitMEX',
@@ -335,6 +341,7 @@ export const EXCHANGES = [
         { from: Date.UTC(2021, 0, 1),  v: 0.0005 },
       ],
     },
+    dev: { basis: 0, amp: 0.0005, cap: 0.003 },
   },
   {
     id: 'binance', name: 'Binance',
@@ -357,6 +364,7 @@ export const EXCHANGES = [
       spot: [{ from: Date.UTC(2017, 6, 14), v: 0.001 }],
       fut: [{ from: Date.UTC(2019, 8, 13), v: 0.0004 }],
     },
+    dev: { basis: 0, amp: 0.0003, cap: 0.002 },
   },
 ];
 
