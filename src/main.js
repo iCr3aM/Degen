@@ -231,9 +231,11 @@ let logWasPaused = false;
    ⚠️ 引导期间**暂停**（`s.paused = true`）：读字的时候行情不该跑，而遮罩本来就吃掉了
       底下所有点击 —— 玩家除了「下一步」什么也做不了，让它跑纯属白走 K 线。 */
 let guideStep = null;
+/** 本次引导**实际会走**的步骤（从 `GUIDE` 里筛掉目标当下画不出来的那些）—— 见 `guideSteps()`。 */
+let guideList = [];
 
 /** 九步：交易所 → 账户两格 → 币种条 → 行情区 → 热度/OI/多空比 → 下单区 → 持仓条 → 底部 Tab → 通道。
- *  目标从 `refs` 现取（不缓存节点）；步骤序号与「N / M」由 `showGuide` 按 `GUIDE.length` 现算，
+ *  目标从 `refs` 现取（不缓存节点）；步骤序号与「N / M」由 `showGuide` 按**筛过的**表现算，
  *  增减步骤**只改这张表**即可。
  *  ⚠️ 每条文案控制在 ~28 字内：卡片只有一两行位置，再长会被撑高、挤到翻面或越界。 */
 const GUIDE = [
@@ -1920,30 +1922,48 @@ function openLogText() {
   return `开盘 · ${at.getUTCFullYear()} 年 ${at.getUTCMonth() + 1} 月，${exchangeOf(sc.ex).name}`;
 }
 
-/* ── 新手分步引导（本轮 ④）—— 六步走完就开盘 ──────────────────────
+/* ── 新手分步引导（本轮 ④）—— 走完就开盘 ──────────────────────
    `showGuide` / `nextGuide` 都不调 `after()`：引导是 `#overlay` 上的一层，
    与每帧重绘无关；`s.paused` 只在开（`startGuide`）与收（`endGuide`）各写一次。 */
 
 function startGuide() {
   guideStep = 0;
+  guideList = guideSteps();
   s.paused = true;         // 读字的时候行情不该跑
   s.speed = 1;
   showGuide();
 }
 
+/**
+ * 本次引导**真的画得出来**的步骤：节点取得到、且此刻**有尺寸**（不是 `hidden` / `display:none`）。
+ *
+ * ⚠️ 为什么要筛：`GUIDE` 里那一步「两条通道」的目标是通道键，而它在权益没到当年解锁线时是
+ *    `hidden`（`render.js` 的 `chanBtn`，2013 年要 $20 万才露头）—— 开局 $1,000 的经典局根本看不见它。
+ *    不筛的话 `openGuide` 量到的是一个 0×0 的矩形，高亮环缩进左上角、卡片指着空气。
+ * ⚠️ 序号「N / M」也按筛完的表算 —— 玩家看到的步数必须就是真实步数。
+ */
+function guideSteps() {
+  return GUIDE.filter(st => {
+    const t = st.at();
+    if (!t) return false;
+    const r = t.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  });
+}
+
 /** 画当前这一步。目标取不到（理论不可达）就**直接收摊**，不让玩家卡在一步空引导上。 */
 function showGuide() {
-  const st = GUIDE[guideStep];
+  const st = guideList[guideStep];
   const target = st && st.at();
   if (!target) { endGuide(); return; }
-  openGuide(target, `第 ${guideStep + 1} / ${GUIDE.length} 步 · ${st.text}`, guideStep === GUIDE.length - 1);
+  openGuide(target, `第 ${guideStep + 1} / ${guideList.length} 步 · ${st.text}`, guideStep === guideList.length - 1);
 }
 
 /** 「下一步」：走完最后一步 ⇒ 收摊开盘 */
 function nextGuide() {
   if (guideStep == null) return;
   guideStep++;
-  if (guideStep >= GUIDE.length) { endGuide(); return; }
+  if (guideStep >= guideList.length) { endGuide(); return; }
   showGuide();
 }
 
