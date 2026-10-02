@@ -10,7 +10,16 @@
 import { cashCurAt, DEFAULT_SCENARIO, GAME, isChallenge, scenarioOf, scenarioStartIndex } from './config.js';
 import { isSpot } from './positions.js';
 
-/* ⚠️ v24（2026-10-02）：`s.pvol` **最外层补一层币种** —— 由 `pvol[i][exId][kind]` 改为
+/* ⚠️ v25（2026-10-02）：`s.overhang[sym]` 补一个 `scar`（**卖出疤痕**）——
+   由 `{ v, at }` 改为 `{ v, at, scar }`（`v` = 持仓折价 ＋ 疤痕，恒 ≤ 0）。
+   病根（K 线位移审计实测）：平掉一条 $50M 现货多头后 `overhang` 整条被删 ⇒ 释放的 −1.71% 折价
+   远大于平仓那一笔只回吐 −1.21% 的冲击（`SHOCK.closeGive`）⇒ **卖出之后价格反而比持仓时更高**
+   （实测 +0.49%），「买 → 立刻平」成了白赚一档的套利。
+   修法：卖出只释放 `SHOCK.closeGive`，其余 `1 − closeGive` 压成 `scar` 永久留下 ——
+   与 `s.flow` 的 `closeGive` 单向棘轮**同一个比例**、同一套「痕迹永久保留」哲学。
+   动了状态形状 ⇒ 一并升版本号，旧档走既有的「丢弃重开」路径。
+
+   ⚠️ v24（2026-10-02）：`s.pvol` **最外层补一层币种** —— 由 `pvol[i][exId][kind]` 改为
    `pvol[sym][i][exId][kind]`（用户反馈的「K 线污染」）。
    病根：`s.i` 是**全币种共用**的小时序号，量柱只按它取数 ⇒ 在 BTC 买的这一笔会同时出现在
    ETH / XRP / DOGE / SOL 的**同一根**柱子上（五条 K 线共用一个 `pvol[i]`）。
@@ -64,7 +73,7 @@ import { isSpot } from './positions.js';
    ① **限价挂单 `s.orders` 整体移除**（C8-B2 回滚）—— 改动前它是 v15 新增的键。
    ② **场外配资改版为「一次性救济金」**—— 删除 `s.loan`（在贷）字段与全部利息/到期/违约逻辑。
    两处都动了状态形状，旧档对不上 ⇒ **弃档重开**（既有规范，不写迁移）。 */
-export const STATE_VERSION = 24;
+export const STATE_VERSION = 25;
 
 /**
  * 开一局新的。
@@ -164,11 +173,18 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     flow: {},
 
     /**
-     * **持仓抛压折价**（v18 · 2026-10-01 拍板）—— `sym -> { v, at }`，`v` 恒 ≤ 0（0 时不存键）。
+     * **持仓抛压折价**（v18 · 2026-10-01 拍板 · v25 补 `scar`）——
+     * `sym -> { v, at, scar }`，`v` 恒 ≤ 0、`v = 0` 且 `scar = 0` 时不存键。
      *
      * 「你的现货实物多头占了多少可交易浮筹」越大，市场越忌惮你随时砸盘 ⇒ 价格被压一个**持续的**
      * 折价（`−FLOAT.overhangMax × share`，最狠 −20%）。与 `s.flow` 不同：它**不衰减** —— 只要你
-     * 还没卖，这份忌惮就一直在；持仓归零（平仓 / 强平）时整条记录被删掉、折价随之消失。
+     * 还没卖，这份忌惮就一直在。
+     *
+     * `v` = **持仓折价 ＋ 疤痕**：
+     *   · 持仓折价 = 当前持有那条仓位该占的份额（随持仓 / 流通量变，每日按流通量退坡重算）；
+     *   · `scar`（v25 · 2026-10-02）= 卖出时**没被释放**的那部分折价（`1 − SHOCK.closeGive`），
+     *     **永久留下** —— 与 `s.flow` 的 `closeGive` 单向棘轮同一个比例、同一套「痕迹永久保留」哲学。
+     *     持仓归零时只有 `closeGive` 那部分折价消失，剩下的就是这条疤。
      *
      * ⚠️ 存 `at` 是**必须**的：`god.factorFor` 每一根（含历史）都会被调到，若按当前持仓实时算，
      *    玩家一买入 **整条历史 K 线都会被重新标定**（与 `s.flow` 逐根约束同一个理由）。

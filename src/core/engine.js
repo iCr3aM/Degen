@@ -370,27 +370,55 @@ function pushFlow(s, sym, dir, notional, give = 1) {
 
 /**
  * 重算并写下**持仓抛压折价**（`s.overhang[sym]`，v18 · 2026-10-01 拍板）—— 每次现货实物多头
- * 增减（开 / 加仓、平仓、强平、交易所归零）之后调用。
+ * 增减（开 / 加仓、平仓、强平、部分强平、交易所归零）之后调用，外加每日按流通量退坡重算。
  *
- * 写的是 `{ v: −FLOAT.overhangMax × share, at: s.i }`；`share = 0`（没持仓 / OTC / 合约仓）时
- * **删掉整条记录**（折价随之消失）。**值没变时一个字节都不写** —— 否则每点一次都会刷存档，
+ * 写的是 `{ v, at, scar }`：`v` = 这一刻的价格折价（恒 ≤ 0）＝ **持仓折价 ＋ 疤痕**，
+ * `v = −FLOAT.overhangMax × share + scar`。
+ *
+ * ⚠️ **疤痕 `scar`**（v25 · 2026-10-02）—— 卖出只释放一部分，其余永久留下：
+ *    折算与 `s.flow` 的 `SHOCK.closeGive` **同一个比例**（买→卖往返不再等量抵消）。
+ *    起因是实测缺陷：平掉一条 $50M 现货多头后，`overhang` 整条消失 ⇒ 释放的 −1.71% 折价
+ *    远大于平仓那一笔只回吐 −1.21% 的冲击 ⇒ **卖出之后价格反而比持仓时更高**（实测 +0.49%），
+ *    「买→立刻平」成了白赚一档的套利。现在卖出只释放 `give`（= `closeGive`），
+ *    其余 `1 − give` 压成 `scar` 永久留在场上（与「订单造成的 K 线永久保留」同一哲学）。
+ *
+ * ⚠️ `scar` 只在 `give > 0`（真实成交：平仓 / 强平 / 部分强平）时才累积：
+ *    · 加仓 / 买回（折价幅度**变大**）不产生疤痕；
+ *    · **按日重算**（`give = 0`）也不产生 —— 流通量逐年增长让同一份持仓的占比自然退坡，
+ *      那是「稀释」不是「卖出」，不该留疤。
+ *
+ * `share = 0` 且无疤痕时才**删掉整条记录**。**值没变时一个字节都不写** —— 否则每点一次都会刷存档，
  * 还会连带把 σ 缓存白冲一遍。
  *
  * ⚠️ 它是**逐根台阶**（`at` 之前的 K 线不受影响）⇒ 必须 `invalidateSigma()`，与 `s.flow` 同一条纪律。
  * ⚠️ 与 `s.flow` **方向可能相反**（买入把价抬上去、占比上升把价压下来）：两者相加后才是最终位移，
  *    净效果靠实测标定，别默认它们会互相抵消（见 ROADMAP §四十六）。
+ * @param {number} give **释放比例**（v25）：真实成交那一侧传 `SHOCK.closeGive`（平仓 / 强平 /
+ *   部分强平），其余（开仓 / 加仓 / 按日重算 / 交易所归零）传缺省 `0` = 全额释放、不留疤。
  */
-function refreshOverhang(s, sym) {
+function refreshOverhang(s, sym, give = 0) {
   if (!s.overhang) s.overhang = {};
-  const share = floatShareOf(s, sym, s.i);
-  const v = share > 0 ? -FLOAT.overhangMax * share : 0;
   const prev = s.overhang[sym];
+  /* 上一刻拆成两块：`scar` = 卖出留下的永久疤痕，`prev.v − scar` = 那一刻的持仓折价 */
+  const prevScar = prev ? (prev.scar ?? 0) : 0;
+  const prevHold = prev ? prev.v - prevScar : 0;
+
+  const share = floatShareOf(s, sym, s.i);
+  const hold = share > 0 ? -FLOAT.overhangMax * share : 0;
+
+  let scar = prevScar;
+  if (give > 0) {
+    const drop = hold - prevHold;          // > 0 ⇒ 折价幅度在变薄（卖出 / 减仓）
+    if (drop > 0) scar -= drop * (1 - give);
+  }
+
+  const v = hold + scar;
   if (v === 0) {
     if (!prev) return;                     // 本来就没折价：不写、不动 σ
     delete s.overhang[sym];
   } else {
-    if (prev && prev.v === v) return;      // 值没变：不写、不动 σ
-    s.overhang[sym] = { v, at: s.i };
+    if (prev && prev.v === v && prevScar === scar) return;   // 值没变：不写、不动 σ
+    s.overhang[sym] = { v, at: s.i, scar };
   }
   invalidateSigma();
 }
@@ -827,9 +855,11 @@ export function closeTrade(s, why = '手动') {
     pushFlow(s, sym, dir, notional, SHOCK.closeGive);
     consumePool(s, sym, notional);        // 瞬时深度池（L1）：平仓同样是真实成交 ⇒ 也吃深度
   }
-  /* 持仓抛压折价（v18 · 2026-10-01）：这一条仓位没了（`delete` 在上面）⇒ 折价随之归零。
+  /* 持仓抛压折价（v18 · 2026-10-01）：这一条仓位没了（`delete` 在上面）⇒ 折价随之释放。
+     ⚠️ **只释放 `SHOCK.closeGive`**（v25 · 2026-10-02）：与上面那一笔回吐同一个比例，
+        否则折价一次性归零会让「卖出之后比持仓时更贵」（见 `refreshOverhang` 的疤痕注释）。
      走上一步的**只有现货实物多头** —— 平掉一张合约仓时 `capturedOf` 本来就没变，函数内部会跳过。 */
-  refreshOverhang(s, sym);
+  refreshOverhang(s, sym, SHOCK.closeGive);
 
   if (checkRuin(s)) return { ok: false, why: s.over.reason };
   return { ok: true };
@@ -879,7 +909,7 @@ function forceLiquidate(s, pos, atPrice) {
   s.realized -= pos.margin - back;                     // 真实现金变动 = 丢掉保证金、收回退款
   s.stat.liq += 1;                                     // 统计（v21）：逐步强平与整条强平都各算一笔
   delete s.positions[pos.sym];
-  refreshOverhang(s, pos.sym);                         // v18：爆掉的若是现货实物多头，折价随之归零
+  refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：爆掉的现货实物多头同 `closeGive` 比例释放折价
 }
 
 /**
@@ -1629,7 +1659,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
   s.positions[pos.sym] = r.pos;
   pushLog(s, `部分强平 ${pos.sym} ${pos.lev}x｜平掉 ${fmtRate(frac, 1)}｜保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad');
-  refreshOverhang(s, pos.sym);             // v18：爆掉的若是现货实物多头，折价随之归零
+  refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：部分强平也是卖出 ⇒ 折价同比例释放
 }
 
 /**
