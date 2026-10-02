@@ -216,6 +216,20 @@ export const canLiquidate = pos => !isSpot(pos) || pos.lev > 1;
 export const instrumentOf = pos => (isSpot(pos) && pos.lev > 1 ? 'margin' : 'perp');
 
 /**
+ * 这一笔订单 / 仓位的**冲击形态品种**（§73.6）—— 决定走 `SHOCK_MODE.spot` 还是 `fut` 那一套
+ * `perm` / `betaFast`，也决定它参不参与 NPC 级联。
+ *
+ * 三档的唯一分界是「**有没有杠杆盘**」，不是「走不走现货模式」：
+ *   - 真现货 1x（`spot && lev ≤ 1`）⇒ `'spot'`（实物换手、无杠杆盘 ⇒ 痕迹久、不级联）；
+ *   - 合约（`mode='fut'`）与**现货保证金杠杆**（`spot && lev > 1`）⇒ `'fut'`（合成盘、有杠杆盘）。
+ *
+ * ⚠️ 与 `isSpot` / `instrumentOf` **不是同一件事**：那两个回答「是不是现货通道 / 什么工具」，
+ *    这里回答「它的冲击长什么样」。现货模式带杠杆（Bitfinex 2013 的 margin）是现货通道，
+ *    却属于杠杆盘 —— 这正是用户要的「现货 / 合约 / 杠杆三个手感不同」的那第三档。
+ */
+export const shockKindOf = (spot, lev) => (spot && lev <= 1 ? 'spot' : 'fut');
+
+/**
  * 维持线最多吃掉初始保证金的**一半**（＝爆仓前至少留一半垫子）。
  *
  * ⚠️ **为什么必须有这一条**（2026-10-02 审计修）：杠杆阶梯（`spotSteps` / `futSteps`）与
@@ -247,61 +261,26 @@ export const paysInterest = pos => instrumentOf(pos) === 'margin';
 
 /* ───────────────────────── 资金费率（GDD §9.5） ───────────────────────── */
 
-/**
- * 资金费率参数。
- *
- * ⚠️ **溢价指数是合成的**（2026-09-28 拍板，2026-09-29 Batch 4 · B18 改口径）：
- *    数据包里每个币只有**一条真小时线**，拿不到「合约价 vs 现货价」两条线，
- *    所以真实溢价指数在数据上根本算不出来。本作的替代口径是
- *    **波动率归一化动量**：把近 `window` 根的涨跌幅除以「同期典型波动」，再乘年代化上限 ——
- *    价格连续上涨 ⇒ 永续贵于现货 ⇒ 正溢价 ⇒ 多头付空头，方向与真实市场一致。
- *    它是由真实成交价推出来的合成量，不是编造的价格。
- */
+/** 持仓成本（永续资金费 / 现货保证金利息）的**结算周期**：每 8 游戏小时一次。 */
 export const FUNDING = {
-  window: 8,            // 溢价指数取近 8 根（= 一个结算周期）的涨跌幅
-  hours: 8,             // 每 8 游戏小时结算一次
-  base: 0.0001,         // 基础利率 0.01%（史实 BitMEX 基准，也是 92% 时间的常态值）
-  cap: 0.0005,          // 官方公式里那个 clamp 的上下限 ±0.05%
-  sigmaWindow: 720,     // σ 的窗口：720 根 = 30 天
-  sigmaK: 3,            // 几个「8 小时标准差」算顶格（≈ 3σ 事件，常态下几乎碰不到）
-  sigmaDefault: 0.006,  // 样本不足（新币头几天）时的兜底 σ：0.6% / 小时
-  premiumCap: 0.001,    // 溢价上限的**兜底值**；真实取值按年代走 `config.fundingPremiumCapAt`
+  hours: 8,
 };
 
 /**
- * 溢价指数 = 年代上限 × clamp(动量 / (k · σ√8), −1, +1)（Batch 4 · B18）。
+ * **资金费率参数**（§73.6 · 2026-10-02 拍板）—— 由「市场动量溢价」改为「**玩家自己的拥挤成本**」。
  *
- * 为什么必须归一化：旧口径直接把 **8 小时涨跌幅**夹到 ±0.1%，而真实 8h 涨跌幅常远超 0.1%
- * ⇒ 溢价几乎永远顶格 ⇒ 费率被钉死在 ±0.05%/8h（年化 54.75%，恒定不变）。
- * 现实是 **92–93% 的时间贴在 0.01%/8h（年化 10.95%）**，只有极端行情才偏离。
- * 除以「同期典型波动」之后，常态下 |z| ≪ 1 ⇒ 溢价趋近 0 ⇒ 官方公式自动退化成 0.01%；
- * 只有 |z| > 3 的行情才把费率推向年代上限。
+ * 旧口径（Batch 4 · B18）是「波动率归一化动量 → 合成溢价指数」：费率几乎只由行情决定，
+ * 玩家持仓多大都一样，于是「扛一张巨仓」与「扛一张小仓」的成本没有区别 —— 现货 / 合约 / 杠杆
+ * 的差别只剩「有没有这一项」。新口径把费率直接绑在**玩家持仓名义相对小时基准深度**上：
  *
- * @param {number} roc   近一个结算周期的涨跌幅
- * @param {number} sigma 近 30 天的**小时**收益标准差（`engine.hourlySigma` 提供）
- * @param {number} cap   该年代的溢价上限（`config.fundingPremiumCapAt` 提供）
+ *     rate = clamp(FR.k × (持仓名义 ÷ hourLiqBase) × dir, ±FR.max)
+ *
+ * 仓越大、越拥挤，付得越多；`dir = +1`（多头）时多头付、`−1`（空头）时空头付。
+ * 这才让「扛单有成本」在量级上有意义，也让仓位大小真的改变手感。
+ *
+ * ⚠️ 结算周期沿用 `FUNDING.hours`，不另立第二个小时数（一处口径）。
  */
-export function premiumOf(roc, sigma, cap = FUNDING.premiumCap) {
-  if (!Number.isFinite(roc)) return 0;
-  const s = Number.isFinite(sigma) && sigma > 0 ? sigma : FUNDING.sigmaDefault;
-  const scale = FUNDING.sigmaK * s * Math.sqrt(FUNDING.window);   // √8 = 一个结算周期的典型波动
-  if (!(scale > 0)) return 0;
-  const z = Math.max(-1, Math.min(1, roc / scale));
-  return cap * z;
-}
-
-/**
- * 资金费率 = 溢价指数 + clamp(基础利率 − 溢价指数, ±0.05%)（GDD §9.5 原式，与 BitMEX / Binance /
- * Hyperliquid 官方式同形）。
- *
- * 平盘时就是基础利率 0.01%（多头付空头）；只有极端行情把溢价推上去，费率才离开那一点。
- * 取值上界由 `cap` 决定：溢价顶格 +0.5%（2016–2018 年代）时，clamp 项取到 −0.05%，费率 ≈ +0.45%。
- */
-export function fundingRateOf(roc, sigma, cap = FUNDING.premiumCap) {
-  const p = premiumOf(roc, sigma, cap);
-  const adj = Math.max(-FUNDING.cap, Math.min(FUNDING.cap, FUNDING.base - p));
-  return p + adj;
-}
+export const FR = { k: 0.0015, max: 0.003 };
 
 /**
  * 该仓位这一次应付的资金费。

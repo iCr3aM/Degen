@@ -13,7 +13,8 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, chanOf, equity, futuresAvailable, markPrice, otcOpenFor, otcUnlocked, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canOpenAt, chanOf, equity, futuresAvailable, heatOf, markPrice, otcOpenFor, otcUnlocked, pauseLocked, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { HEAT } from '../core/god.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
@@ -178,8 +179,15 @@ export function mount(root) {
   chartEta.hidden = true;
   const chartLock = el('div', 'chart-lock', '双击回最新');
   chartLock.hidden = true;
+  /* 市场热度（§73.5）—— 0–1 的条 ＋ 贪婪 / 中性 / 恐慌 三档字面。
+     ⚠️ 放左下角这一列（那时常空着），**不占** `.chart-head` 那一行的宽度 ——
+        头部五行字在 390px 屏上已经排满，再插一枚会把粒度小字挤掉。 */
+  const heatBar = el('i');
+  const heatTxt = el('u');
+  const heatChip = el('div', 'chart-heat');
+  heatChip.append(heatBar, heatTxt);
   const chartSide = el('div', 'chart-side');
-  chartSide.append(chartEta, chartLock);
+  chartSide.append(heatChip, chartEta, chartLock);
   const chartWrap = el('div', 'chart-wrap');
   chartWrap.append(canvas, chartHead, chartSide);
 
@@ -538,6 +546,7 @@ export function mount(root) {
     eqVal, eqSub, cashVal, cashSub,
     symbols, symBtns,
     canvas, chartWrap, chartHead, chSym, chMcap, chSupp, chChg, modeBtn, chartEta, chartLock,
+    heatChip, heatBar, heatTxt,
     posbar, posSide, posPnl, posRate,
     logline, newsTag, logTime, logText,
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
@@ -800,8 +809,24 @@ export function update(refs, s, view) {
     setCls(refs.logline, 'logline');
   }
 
-  /* 金额档 */
-  for (const [k, b] of refs.fracBtns) b.classList.toggle('on', Math.abs(s.sizeFrac - Number(k)) < 1e-9);
+  /* **下单一小时锁**（§73.8 · 2026-10-02 用户拍板）：一笔成交后 `s.lockI = s.i`，
+     必须走满 1 游戏小时才解锁。判据 `pauseLocked` 与 `main.js` 闸门**同源**（不各算一遍）。 */
+  const locked = pauseLocked(s);
+
+  /* 金额档 —— 两种置灰（§73.9）：
+     ① 锁定期：刚成交过，这一小时里点哪一档都没用 ⇒ 整排灰；
+     ② `canOpenAt`：按这一档算出的这单**开不出来**（保证金不足 / 名义 < MIN_NOTIONAL / 无足够浮筹）。
+        ⚠️ 判据是「这一下点下去会不会失败」，与 `main.js` 分派层读**同一个函数**（`engine.canOpenAt`）。
+        ⚠️ 两个方向都开不出来才灰 —— 玩家可能想开多、也可能想开空，只堵一边会误灰。
+        ⚠️ 它只管**开仓**：手上有仓位时「卖出/平仓」不受这一档影响（平仓不看 `sizeFrac`）。 */
+  for (const [k, b] of refs.fracBtns) {
+    const f = Number(k);
+    b.classList.toggle('on', Math.abs(s.sizeFrac - f) < 1e-9);
+    /* ⚠️ 数据包没到货时不判 `canOpenAt`（此时 `markPrice` 为 null，六个档全会闪一下灰）——
+       行情加载中由动作键那边的 `.off` 讲，这一排只是「下一单的参数」，不必跟着闪。 */
+    const dead = isLoaded(sym) && !(canOpenAt(s, 'long', f) || canOpenAt(s, 'short', f));
+    b.disabled = lockedUI || locked || dead;
+  }
 
   /* 模式键（U1 · §21.4；v9 · §15.6 N3）：字面是**当前**模式。`合约` 时走 `.on` ——
      与通道键同一约定：偏离默认态（现货）才高亮，让玩家一眼看见「我这一单是合约」。
@@ -883,15 +908,15 @@ export function update(refs, s, view) {
      平仓键点不动、换所又被持仓挡着（`switchExchange` 要求先平仓）⇒ 玩家以为界面卡死了。
      所以这几枚一律走 `.off` ＋ `aria-disabled`（**保留可点**，点一下由 `main.js` 回一句
      「行情加载中」，数据到货后下一帧自动恢复），绝不画成 `disabled` —— 后者会吞掉点击、零反馈。 */
-  const waiting = !isLoaded(sym) && !lockedUI && !frozen;
-  const tradable = !lockedUI && !frozen && mark != null && isLoaded(sym);
+  const waiting = !isLoaded(sym) && !lockedUI && !frozen && !locked;
+  const tradable = !lockedUI && !locked && !frozen && mark != null && isLoaded(sym);
   const dir = cur ? cur.side : null;
   /* 同向那一枚 = **加仓**（v13 · B4 / 方案 §5）：手上那条仓位与本键同向时不再禁掉 ——
      点下去会并进同一条仓位（改杠杆 / 换性质 / 反手这些冲突由 `engine.openTrade` 给一句明确文案，
      都属于「有、但这次不行」，不是「没有」）。反向那一枚在合约模式仍是禁用（那里有独立的平仓键）。 */
   refs.longBtn.disabled = !waiting && !(tradable && (!cur || dir === 'long'));
   refs.shortBtn.disabled = !waiting && !(tradable && (!cur || dir === 'short'));
-  refs.closeBtn.disabled = !waiting && (!cur || lockedUI || frozen);
+  refs.closeBtn.disabled = !waiting && (!cur || lockedUI || frozen || locked);
   /* 现货模式这两枚**四件事共用**：空仓开仓 / 同向加仓 / 反向平仓 —— 所以只要 `tradable` 就能点。
      「卖出」唯一的例外见下（空仓且该所没有融资 ⇒ 开不出空单，那时才禁）。 */
   refs.buyBtn.disabled = !waiting && !tradable;
@@ -913,7 +938,7 @@ export function update(refs, s, view) {
 
   /* 换所键（顶栏那枚双行按钮）**同样吃暂停闸门**（本轮 ④）：换所是一笔要等好几根 K 线的
      链上转账，属于「会动钱」四类之一 —— 暂停时它必须也点不动，否则玩家会以为只有下单被拦。 */
-  refs.exBtn.disabled = frozen;
+  refs.exBtn.disabled = frozen || locked;
 
   /* 通道切换键**三级状态**（P2-B 修订 · GDD §15.3）：
        ① 权益 ≤ $500 万 ⇒ `hidden` —— 一个 $1,000 开局的玩家不该看见自己用不了的东西
@@ -925,7 +950,7 @@ export function update(refs, s, view) {
   const chan = chanOf(s);
   const unlocked = otcUnlocked(s);
   refs.chanBtn.hidden = !unlocked;
-  refs.chanBtn.disabled = !(unlocked && otcOpenFor(s)) || frozen;
+  refs.chanBtn.disabled = !(unlocked && otcOpenFor(s)) || frozen || locked;
   refs.chanBtn.textContent = chan === 'otc' ? 'OTC' : '盘口';
   refs.chanBtn.classList.toggle('on', chan === 'otc');
 
@@ -999,9 +1024,15 @@ export function update(refs, s, view) {
     refs.uCard.hidden = !usdtLive;
     if (usdtLive) {
       refs.uPrice.textContent = `1 USDT = $${usdtPriceAt(now).toFixed(3)}`;
-      for (const [k, b] of refs.uFracBtns) b.classList.toggle('on', Math.abs(s.sizeFrac - Number(k)) < 1e-9);
-      /* 没有美元可换 ⇒ 键画灰（`.act:disabled` 那档，与「暂停时画灰」同一副样子） */
-      refs.uBuyBtn.disabled = frozen || !(usd > 0);
+      /* 买 U 这一排同样吃**暂停闸门**与**下单一小时锁**（§73.8/§73.9）：换 U 与下单共用 `s.sizeFrac`，
+         两者都被拦时这一排留着可点只会让玩家以为「换 U 也能钻空子」。 */
+      for (const [k, b] of refs.uFracBtns) {
+        b.classList.toggle('on', Math.abs(s.sizeFrac - Number(k)) < 1e-9);
+        b.disabled = frozen || locked;
+      }
+      /* 没有美元可换 ⇒ 键画灰（`.act:disabled` 那档，与「暂停时画灰」同一副样子）。
+         判据与 `engine.buyUsdt` 的 `!(usd > 0)` **同源** —— 那正是这一下点下去会失败的唯一原因。 */
+      refs.uBuyBtn.disabled = frozen || locked || !(usd > 0);
     }
 
     const listSig = posListSignature(s);
@@ -1118,6 +1149,12 @@ function syncChart(refs, s, view, sym, cur, mark) {
   refs.modeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
   /* 锁视野提示（Batch 3 · B14）：拖动/缩放之后才出现，双击复位后自己消失 */
   refs.chartLock.hidden = !win.locked;
+
+  /* 市场热度（§73.5）：0–1 的条 ＋ 贪婪 / 中性 / 恐慌 三档字面。判据与 `HEAT` 同源。 */
+  const heat = heatOf(s, sym);
+  refs.heatBar.style.setProperty('--heat', `${Math.round(heat * 100)}%`);
+  refs.heatTxt.textContent = heat >= HEAT.greed ? '贪婪' : heat <= HEAT.panic ? '恐慌' : '中性';
+  refs.heatChip.dataset.heat = heat >= HEAT.greed ? 'greedy' : heat <= HEAT.panic ? 'panic' : 'mid';
 
   /* 在途转账倒计时（K 线右上角）。两个数字与顶栏那行同源，但这里多一个「去哪儿」——
      玩家一眼能确认钱在往哪家所的路上。 */
@@ -2282,7 +2319,8 @@ export function openGod(s, sel = null) {
   /* ⚠️ 年代开局（M1）起，年份档**从本局开局那一年**起排 —— 再往前没有这一局（`main.js`
      的 `godJump` 也会挡），列出来只是让人点一个跳不过去的年份。 */
   const y0 = new Date(scenarioOf(s.scen).at).getUTCFullYear();
-  const y1 = new Date(GAME.start + (GAME.candles - 1) * HOUR_MS).getUTCFullYear();
+  /* ⚠️ 上界跟着**本局终点**走（§73.7）：挑战局 2–4 个月就收摊，列到 2024 只是让人点一个跳不过去的年份。 */
+  const y1 = new Date(GAME.start + (s.endI - 1) * HOUR_MS).getUTCFullYear();
   const yRow = el('div', 'god-pick god-years');
   for (let y = y0; y <= y1; y++) yRow.append(pickBtn(y === pick.y, 'godyear', y));
   rows.append(yRow);

@@ -12,18 +12,18 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, fundingPremiumCapAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { SHOCK, addFlow } from './god.js';
+import { HEAT, NPC, SHOCK, addFlow, factorFor, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
-import { fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
+import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
   closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, maintRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
-  FUNDING, fundingOf, fundingRateOf, canLiquidate, paysFunding, paysInterest,
+  FUNDING, FR, fundingOf, canLiquidate, paysFunding, paysInterest, shockKindOf,
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
@@ -54,6 +54,14 @@ export const OVER = {
   GAVEUP: 'gaveup',
   /* ⚠️ `DEFAULTED`（债务违约）已于 2026-10-01 随「救济金不用还」一起删除（用户拍板）。 */
 };
+
+/**
+ * **暂停下单的锁**（§73.8）—— 暂停时下过一单之后，到「走满 1 游戏小时」之前一律为真。
+ *
+ * `s.lockI` 记的是下单那一刻的 `s.i`；时钟推进到 `s.i > s.lockI` 时由 `advanceOneHour` 解开。
+ * 分派层（`main.js`）与渲染层（`render.js`）读**同一个**判据 —— 按钮画灰与真的点不动必须同源。
+ */
+export const pauseLocked = s => s.lockI >= 0 && s.i <= s.lockI;
 
 /** 当前游戏时刻（ms） */
 export const timeOf = s => GAME.start + s.i * HOUR_MS;
@@ -180,10 +188,8 @@ const isBankrupt = s => equity(s) <= 1e-9;
 
 /* ───────────────────────────── 滑点（P2-B1） ───────────────────────────── */
 
-/* σ 的缓存：键 = 币，值 = { day, v }。与资金费率那个 `sigmaCache` 同一个理由 ——
-   同一天内不必重扫 30 个日收盘。
-   ⚠️ **必须与 `sigmaCache` 分开**：那个装的是「小时收益 σ」（资金费率的归一化分母），
-   这个装的是「日收益 σ」（滑点的 σ_30日）—— 共用一个 Map 会串味。 */
+/* σ 的缓存：键 = 币，值 = { day, v } —— 同一天内不必重扫 30 个日收盘。
+   装的是「日收益 σ」（滑点的 σ_30日），也是 NPC 热度里位移标准化的分母（§73.5）。 */
 const daySigmaCache = new Map();
 
 /**
@@ -362,10 +368,125 @@ function absorbedImpact(s, sym, dir, impact) {
  * ⚠️ OTC 由各调用点自己在 `!otc` 分支里过滤（私下一口价不落公开盘口 —— 既有先例）。
  * @param {number} give **回吐比例**（2026-10-02）：开仓 / 加仓传 1（满额），**平仓 / 强平 /
  *   部分强平传 `SHOCK.closeGive`** —— 往返不再等量抵消，台阶永久留下 65%（见 `god.js`）。
+ * @param {'spot'|'fut'} [kind] **这一笔的产品线**（§73.6）—— 决定这笔台阶的衰减形态
+ *   （现货 perm 高、回补慢；合约 perm 低、回补快）。缺省按合约。
+ * @param {boolean} [player] 是不是**玩家自己的成交**（缺省是）。只有玩家的成交才给「热度」加料
+ *   （§73.5 的 k3 项）—— NPC 自己写的那些不该再喂热度，否则热度会自激。
  */
-function pushFlow(s, sym, dir, notional, give = 1) {
+function pushFlow(s, sym, dir, notional, give = 1, kind = 'fut', player = true) {
   const v = dir * give * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
-  if (addFlow(s, sym, v)) invalidateSigma();
+  if (addFlow(s, sym, v, shockParamsOf(kind))) invalidateSigma();
+  if (player && notional > 0) mktOf(s, sym).pv += notional;
+}
+
+/* ───────────────────── NPC 情绪 / 踩踏级联（§73.5 · 2026-10-02） ─────────────────────
+   起因：`pushFlow` 原来的调用者只有玩家自己的仓 ⇒ 市场上物理上**不存在踩踏**。
+   这一层给每个币补一组「NPC 净持仓 ＋ 情绪热度」：热度由**价格位移**与**玩家自己的成交**
+   一起烧起来，反过来驱动 NPC 顺势建仓（正反馈），恐慌时再触发踩踏级联（一条反向下台阶）。 */
+
+/** 热度只读给 UI（缺格时返回中性 `HEAT.base` —— 与 `mktOf` 的初值一致）。 */
+export const heatOf = (s, sym) => (s.mkt && s.mkt[sym] ? s.mkt[sym].heat : HEAT.base);
+
+const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/**
+ * 某个币的 NPC 情绪 / 持仓格子（懒建）：
+ *   `heat` ∈ [0,1]，0.5 中性；`npcLong` / `npcShort` 是 NPC 净持仓**名义价值**（USD）；
+ *   `npcLongAvg` / `npcShortAvg` 是平均入场价（算踩踏强平线用）；
+ *   `pv` 是**玩家本小时**的成交名义（每根 K 线结算一次，见 `tickMarket`）。
+ */
+function mktOf(s, sym) {
+  if (!s.mkt) s.mkt = {};
+  return s.mkt[sym] || (s.mkt[sym] = {
+    heat: HEAT.base, npcLong: 0, npcShort: 0, npcLongAvg: 0, npcShortAvg: 0, pv: 0,
+  });
+}
+
+/**
+ * **现货不参与级联**（§73.6）—— 玩家这一单给热度加料的倍率。
+ * 现货（含 OTC）是实物换手，没有杠杆盘、也就没有「散户追高被强平」那一环 ⇒ 倍率 0；
+ * 合约 / 杠杆按 `min(lev/5, 3)` 放大（5x 起跳，15x 及更高级顶格 3 倍）。
+ */
+function cascadeMulOf(s) {
+  const otc = chanOf(s) === 'otc';
+  const lev = otc ? 1 : Math.max(1, s.lev);
+  return shockKindOf(spotOf(s, otc), lev) === 'spot' ? 0 : Math.min(lev / 5, 3);
+}
+
+/**
+ * NPC 顺势建仓：把某一侧净持仓朝 `target` 靠 `NPC.speed`，**增量本身写进 `s.flow`**
+ * —— 这就是正反馈那条线（散户看到涨 → 追高 → 把价格再推一档）。`price` 是这一刻的标记价。
+ * ⚠️ `give = 1`：NPC 的建仓 / 减仓是**真实的市场买卖**，不走玩家侧的 `closeGive` 回吐口径；
+ * ⚠️ `player = false`：NPC 自己的成交不再喂热度，否则热度会自激。
+ */
+function stepNpc(s, sym, side, target, price) {
+  const m = mktOf(s, sym);
+  const long = side === 'long';
+  const key = long ? 'npcLong' : 'npcShort';
+  const avgKey = long ? 'npcLongAvg' : 'npcShortAvg';
+  const cur = m[key];
+  const next = cur + (Math.max(0, target) - cur) * NPC.speed;
+  const delta = next - cur;
+  if (!(Math.abs(delta) > 1e-9)) return;
+  m[key] = next;
+  if (delta > 0 && price > 0) m[avgKey] = (m[avgKey] * cur + price * delta) / next;   // 加仓 ⇒ 摊平均价
+  else if (next <= 1e-9) { m[key] = 0; m[avgKey] = 0; }                              // 减到零 ⇒ 均价清零
+  pushFlow(s, sym, long ? 1 : -1, Math.abs(delta), 1, 'fut', false);
+}
+
+/**
+ * **踩踏级联**（§73.5 第 4 步）：恐慌态（`heat < HEAT.panic`）下，NPC 多头的强平线被击穿 ⇒
+ * 整条多仓被动卖出（一根大阴线），并把热度再压一档 ⇒ 下一根更容易触发。空头镜像（逼空）。
+ *
+ * 强平线口径与玩家侧同一把尺子：距入场价 `1/lev − 维持保证金率`（= 18%）。
+ * ⚠️ 平仓那笔用 `give = 1`（全额反向）—— NPC 建仓时写的是正冲击、且已经衰减了一部分，
+ *    此刻的全额反向会**净剩一笔向下的位移**，那正是 §73.4 说的「过冲」的来源。
+ */
+function stampede(s, sym, m, price) {
+  if (m.heat >= HEAT.panic || !(price > 0)) return;
+  const drop = 1 / NPC.lev - NPC.maint;              // 距入场价多远爆（0.18 = 18%）
+  if (m.npcLong > 0 && m.npcLongAvg > 0 && price < m.npcLongAvg * (1 - drop)) {
+    const amt = m.npcLong;
+    m.npcLong = 0; m.npcLongAvg = 0;
+    m.heat = clamp01(m.heat - HEAT.panicDrop);
+    pushFlow(s, sym, -1, amt, 1, 'fut', false);
+  }
+  if (m.npcShort > 0 && m.npcShortAvg > 0 && price > m.npcShortAvg * (1 + drop)) {
+    const amt = m.npcShort;
+    m.npcShort = 0; m.npcShortAvg = 0;
+    m.heat = clamp01(m.heat + HEAT.panicDrop);       // 空头踩踏 = 逼空 ⇒ 热度反而上冲
+    pushFlow(s, sym, 1, amt, 1, 'fut', false);
+  }
+}
+
+/**
+ * 每根小时 K 线跑一次的市场情绪刻度（§73.5）—— 在 `advanceOneHour` 里、基础行情算完之后调用。
+ *
+ * ① 读**价格位移**（按日 σ 标准化）② 更新热度（位移 ＋ 玩家成交 × 品种倍率 − 均值回复）
+ * ③ NPC 顺势建仓（正反馈）④ 踩踏级联。
+ * ⚠️ 只对**当前币**跑（`s.sym`）：玩家只在这个币上下单，其余币的 NPC 状态冻结 ——
+ *    省掉「每个币每小时各跑一次」的整表开销，也不影响玩法（持仓的其它币走行情本身）。
+ */
+export function tickMarket(s, sym) {
+  const m = mktOf(s, sym);
+  const i = s.i;
+  /* ① 位移标准化：`d / 日σ` —— 2013 的 3% 与 2024 的 3% 不是同一件事（与滑点同一套归一化）。 */
+  const sig = dailySigma(sym, i);
+  const x = sig > 0 ? (factorFor(s, sym, i) - 1) / sig : 0;
+  /* ② 热度：位移 ＋ 玩家成交名义占比 × 品种倍率 − 均值回复。⚠️ 这里的读全在 ③④ 写流之前。 */
+  const liq = hourLiqBase(s, sym, i);
+  const pv = liq > 0 ? m.pv / liq : 0;
+  m.heat = clamp01(m.heat + HEAT.k1 * x - HEAT.k2 * (m.heat - HEAT.base) + HEAT.k3 * pv * cascadeMulOf(s));
+  m.pv = 0;
+  /* ③ NPC 顺势建仓：热度高于中性 ⇒ 净多头，低于中性 ⇒ 净空头。取不到深度就不建（不凭空造量）。 */
+  if (liq > 0) {
+    const target = NPC.mom * (m.heat - HEAT.base) * liq;
+    const price = markPrice(s, sym);
+    stepNpc(s, sym, 'long', target, price);
+    stepNpc(s, sym, 'short', -target, price);
+  }
+  /* ④ 踩踏级联。 */
+  stampede(s, sym, m, markPrice(s, sym));
 }
 
 /**
@@ -601,17 +722,18 @@ function applyFill(s, { sym, side, fill, margin, notional, lev, feeRate, spot, f
 }
 
 /**
- * 按比例下单。`frac` 是「用掉多少可用保证金」，对应操作区的 1/4 · 1/2 · 全部。
+ * **下单校验**（§73.9 · 2026-10-02）—— 纯判据，**一个字节的状态都不改**。
  *
- * 多仓（2026-09-28）：**同一个币只许一条仓位**，不同币可以同时持有（BTC 多 + ETH 空）。
- * 保证金一律从**当前所**的余额里出，各仓位互不担保（逐仓）。
+ * `openTrade` 与渲染层的 `canOpenAt` 读的是**同一个函数**：按钮该不该置灰、这一下点下去会不会
+ * 失败，两处不可能各算一遍（与 `hasFinancingAt` 三处同源同一纪律）。
+ * 所以凡是「这一单开不出来」的判据都必须落在这里，落账（`debit` / `applyFill`）一律留在 `openTrade`。
  *
- * **同币加仓（v13 · B4 / 方案 §5）**：同一枚币已有仓位时，同向的这一单**并进那条仓位**
- * （不新开第二条、不引入仓位槽 —— 「每币一条」这条不变量撑着 `posOf` / 持仓条 / 强平线 / 存档）。
- * 兼容性判据集中在下面 `prev` 那一段，反手一律拒绝、由玩家自己决定先平哪一边。
- * @returns {{ok:boolean, why?:string}}
+ * @param {number} frac 「用掉多少可用保证金」—— 操作区那 1/4 · 1/2 · 全部。
+ * @returns {{ok:false, why:string}
+ *   | {ok:true, lev:number, kind:'spot'|'fut', feeRate:number, mustUsdt:boolean, prev:object|null,
+ *      otc:boolean, isSpotOrder:boolean, margin:number, fee:number, notional:number, cost:number, fill:number}}
  */
-export function openTrade(s, side, frac = 1) {
+function openCheck(s, side, frac = 1) {
   if (s.over) return { ok: false, why: '本局已结束' };
 
   /* 停机维护（B24）：窗口内**只平不开** —— 平仓是逃生通道，不许被维护挡住（2020-03-13 那种暴跌里
@@ -705,6 +827,31 @@ export function openTrade(s, side, frac = 1) {
     return { ok: false, why: `${s.sym} 已触及供应量上限，无法继续买入` };
   }
 
+  return { ok: true, lev, kind, feeRate, mustUsdt, prev, otc, isSpotOrder, margin, fee, notional, cost, fill };
+}
+
+/**
+ * 渲染层用的**纯判据**（§73.9）：这一单此刻开不开得出来 —— 与 `openTrade` 同源，只是不落账。
+ * 金额档 `1/4` `1/2` `全仓` 的置灰就读它。
+ */
+export const canOpenAt = (s, side, frac = 1) => openCheck(s, side, frac).ok;
+
+/**
+ * 按比例下单（落账）。`frac` 是「用掉多少可用保证金」，对应操作区的 1/4 · 1/2 · 全部。
+ *
+ * 多仓（2026-09-28）：**同一个币只许一条仓位**，不同币可以同时持有（BTC 多 + ETH 空）。
+ * 保证金一律从**当前所**的余额里出，各仓位互不担保（逐仓）。
+ *
+ * **同币加仓（v13 · B4 / 方案 §5）**：同一枚币已有仓位时，同向的这一单**并进那条仓位**
+ * （不新开第二条、不引入仓位槽 —— 「每币一条」这条不变量撑着 `posOf` / 持仓条 / 强平线 / 存档）。
+ * 兼容性判据集中在 `openCheck` 里，反手一律拒绝、由玩家自己决定先平哪一边。
+ * @returns {{ok:boolean, why?:string}}
+ */
+export function openTrade(s, side, frac = 1) {
+  const c = openCheck(s, side, frac);
+  if (!c.ok) return { ok: false, why: c.why };
+  const { lev, kind, feeRate, mustUsdt, prev, otc, isSpotOrder, margin, fee, notional, cost, fill } = c;
+
   /* 扣账（v13）：`debit` **先扣 USDT、不足补 USD**（合约只认 USDT），并返回两格各扣了多少 ——
      那个 `mix` 就是「原路退回」的凭据，平仓时按同比例还回两格（见 `state.credit`）。
      ⚠️ 校验已在上面的 `margin + fee > cash` 拦过一次，这里返回 `null` 属兜底（理论不可达）。 */
@@ -749,7 +896,7 @@ export function openTrade(s, side, frac = 1) {
     side === 'long' ? 'long' : 'short');
 
   /* 订单冲击（方案 §2.6）：把这一笔的行情位移（`permImpactFor`，**无阈值死区**）沉淀成台阶
-     —— 从此处起价格上/下一个台阶，再按 Bouchaud 幂律慢慢回爬到 `SHOCK.floor` 地板。
+     —— 从此处起价格上/下一个台阶，再按 §73.3 的三段曲线（永久 ＋ 慢幂律 ＋ 快回）缓慢修复。
      ⚠️ 位移量走 `permImpactFor` 而**不是** `cost`：`cost` 带 10% 死区（成交代价用了它），
         拿它做位移会让小额单写进 0、池子里毫无痕迹 —— 见 `permImpactFor` 的注释。
      ⚠️ `SHOCK.share` 已由用户 2026-10-01 标定为 1：整笔位移都留在场上。
@@ -762,7 +909,7 @@ export function openTrade(s, side, frac = 1) {
         字段一并删掉 —— 它不再是选项，而是基础玩法的一部分。 */
   if (!otc) {
     const dir = side === 'long' ? 1 : -1;
-    pushFlow(s, s.sym, dir, notional);
+    pushFlow(s, s.sym, dir, notional, 1, shockKindOf(isSpotOrder, lev));
     /* 玩家自己的成交量（v17 · 2026-10-01）：这一笔从此在量柱上看得见，
        也进这家所**这条产品线**的 30 天量（v19 按所 / v20 按产品线 / v24 按币） */
     addPlayerVol(s, s.sym, notional, s.ex, kind);
@@ -809,6 +956,9 @@ export function closeTrade(s, why = '手动') {
   /* 平仓费走**开仓时那张表**（v12 · §11.3）：判据是仓位自己的 `isSpot`，
      不是玩家此刻的模式 —— 现货仓平仓不该按合约费率收，反之亦然。 */
   const pk = isSpot(pos) ? 'spot' : 'fut';       // 仓位自己的产品线（v20）：费率与 30 天量同源
+  /* 冲击形态品种（§73.6）与上面那条**产品线**不是一回事：现货保证金杠杆走现货通道、按现货费率，
+     但它是「有杠杆盘」的合成盘，冲击形态与级联都按合约那一档 —— 见 `shockKindOf`。 */
+  const sk = shockKindOf(isSpot(pos), pos.lev);
   const r = closePosition(pos, fill, feeRateOf(pos.ex, timeOf(s), pk, vol30Of(s, pos.ex, s.i, pk)));
   /* 平仓款**按 `pos.mix` 同比例退回两格**（v13 · 方案 §9.2 ③）——
      2013 年用美元开的仓，平掉回的还是美元：否则 Mt.Gox 会凭空空降一笔 USDT。 */
@@ -852,7 +1002,7 @@ export function closeTrade(s, why = '手动') {
         写完必须 `invalidateSigma()` —— 平仓从此**会**改动它之后的 K 线。 */
   if (!otc) {
     const dir = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, sym, dir, notional, SHOCK.closeGive);
+    pushFlow(s, sym, dir, notional, SHOCK.closeGive, sk);
     consumePool(s, sym, notional);        // 瞬时深度池（L1）：平仓同样是真实成交 ⇒ 也吃深度
   }
   /* 持仓抛压折价（v18 · 2026-10-01）：这一条仓位没了（`delete` 在上面）⇒ 折价随之释放。
@@ -892,7 +1042,7 @@ function forceLiquidate(s, pos, atPrice) {
      ⚠️ 强平多发生在**急跌那根**，这笔反向冲击会让兵败如山倒的 K 线更陡一档，是刻意的。 */
   {
     const dir = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive);
+    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive, shockKindOf(isSpot(pos), pos.lev));
     consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：强平也是真实成交 ⇒ 也吃深度
   }
 
@@ -948,7 +1098,10 @@ function endGame(s, reason) {
   if (!s.over) recordCareer(s, reason);
   s.over = { reason, at: s.i };
   s.paused = true;
-  const text = reason === OVER.SETTLED ? '活到了 2024-12-31，结算'
+  /* 结算文案的日期跟着**本局自己的终点**走（§73.7）：挑战局 2–4 个月就收摊，
+     再写死「2024-12-31」会与玩家刚经历的那一个月完全对不上。 */
+  const text = reason === OVER.SETTLED
+    ? `活到了 ${fmtDate(GAME.start + (s.endI - 1) * HOUR_MS, false)}，结算`
     : reason === OVER.GAVEUP ? '就此收摊 ｜ 本局结束'
     : '账户归零，游戏结束';
   pushLog(s, text, reason === OVER.SETTLED ? 'ok' : 'bad');
@@ -1245,11 +1398,15 @@ export function advanceOneHour(s) {
   if (s.over || s.pending) return;
   s.i += 1;
 
-  if (s.i >= GAME.candles) {
-    s.i = GAME.candles - 1;
+  /* 本局终点（§73.7）：经典全程 = `GAME.candles`（与改动前逐位相同），挑战局 = `s.endI`。 */
+  if (s.i >= s.endI) {
+    s.i = s.endI - 1;
     endGame(s, OVER.SETTLED);
     return;
   }
+
+  /* 暂停下单的锁**解开**（§73.8）：走满 1 游戏小时即可再下一笔。 */
+  if (s.lockI >= 0 && s.i > s.lockI) s.lockI = -1;
 
   // ── P2-A：在途转账到账 ＋ 玩家脉冲衰减 ──
   // ⚠️ **到账检查必须排在交易所归零之前**：钱已经在链上，不归任何一家所管。若排在归零之后，
@@ -1363,6 +1520,10 @@ export function advanceOneHour(s) {
   // ⚠️ 上一步可能已经进了「待领救济金」或「破产预警」的待决态：时钟停了，后续的资金费 / 强平都不该再跑。
   if (s.pending) return;
 
+  /* NPC 情绪 / 踩踏级联（§73.5）：基础行情（这一根的 K 线）算完之后跑一次 ——
+     它自己会往 `s.flow` 写 NPC 的成交，所以必须排在资金费 / 强平之前、玩家的流之后。 */
+  tickMarket(s, s.sym);
+
   // 持仓成本每 8 游戏小时结算一次（B26：永续扣资金费、现货保证金扣借贷利息，现货 1x 不扣）
   if (s.i % FUNDING.hours === 0 && settleFunding(s)) return;
 
@@ -1415,6 +1576,7 @@ export function rewindTo(s, to) {
   s.transfer = null;
   s.pulse = [];
   s.flow = {};
+  s.mkt = {};           // NPC 情绪 / 持仓（v26 · §73.5）同样是「进度」⇒ 回退时一并抹掉
   s.pool = {};          // 瞬时深度池（v23）同样是「进度」⇒ 回退时一并抹掉（与 s.flow 同口径）
   s.pvol = {};          // 玩家自己的成交量（v17）也是「进度」，回退时一并抹掉 —— 与 s.flow 同口径
   /* 持仓抛压折价（v18 / v25 疤痕）同样是「进度」⇒ 一并抹掉。⚠️ 漏掉它会让**没有持仓**的价格
@@ -1453,58 +1615,24 @@ export function rewindTo(s, to) {
 
 /* ───────────────────────── 资金费率与强平 ───────────────────────── */
 
-/* σ 的缓存：键 = 币，值 = { day, v }。结算每 8 游戏小时来一次，50x 下每秒 6 次 ——
-   不按天缓存的话，每次都要重扫 720 根 K 线。同一天内窗口滑动带来的偏差可以忽略
-   （σ 是 30 天的统计量，一天的位移改变不了它多少）。 */
-const sigmaCache = new Map();
-
 /**
- * 让两个 σ 缓存全部失效（订单冲击 · 方案 §2.6）。
+ * 让 σ 缓存失效（订单冲击 · 方案 §2.6）。
  *
  * ⚠️ **这是必须的，不是保险**：价格位移的系数是**逐根**的（一笔单只影响它之后的行情、还按幂律回爬），
- *    所以它**不是**一个能从收益率里约掉的全局常数 —— 相邻收益率、σ_30日、资金费率、滑点全都会变。
- *    不在写完 `s.flow` 之后清一次，就会算出「价格在动、波动率不动」这种不自洽的滑点与资金费。
+ *    所以它**不是**一个能从收益率里约掉的全局常数 —— 相邻收益率、σ_30日、滑点、以及 NPC 热度里
+ *    那个「位移 ÷ σ」的标准化分母**全都会变**。不在写完 `s.flow` 之后清一次，就会算出
+ *    「价格在动、波动率不动」这种不自洽的滑点。
  */
 export function invalidateSigma() {
   daySigmaCache.clear();
-  sigmaCache.clear();
-}
-
-/**
- * 近 30 天（`FUNDING.sigmaWindow` 根）的**小时收益标准差** —— 溢价归一化的分母（Batch 4 · B18）。
- * 用「相邻收盘价的变化率」的总体标准差（不是样本标准差），样本不足时退回 `FUNDING.sigmaDefault`。
- * @returns {number} σ ≥ `FUNDING.sigmaDefault` 的下限，保证分母永远不为 0
- */
-function hourlySigma(sym, i) {
-  const day = Math.floor(i / HOURS_PER_DAY);
-  const hit = sigmaCache.get(sym);
-  if (hit && hit.day === day) return hit.v;
-
-  const from = Math.max(0, i - FUNDING.sigmaWindow + 1);
-  let n = 0, sum = 0, sum2 = 0, prev = 0;
-  for (let k = from; k <= i; k++) {
-    const c = closeAt(sym, k);
-    if (!(c > 0)) { prev = 0; continue; }        // 洞/未上线：断开，不跨洞算收益
-    if (prev > 0) { const r = c / prev - 1; n++; sum += r; sum2 += r * r; }
-    prev = c;
-  }
-  let v = FUNDING.sigmaDefault;
-  if (n > 1) {
-    const mean = sum / n;
-    const va = Math.max(0, sum2 / n - mean * mean);
-    v = Math.max(FUNDING.sigmaDefault, Math.sqrt(va));
-  }
-  sigmaCache.set(sym, { day, v });
-  return v;
 }
 
 /**
  * 每 8 游戏小时一次的**持仓成本结算**（GDD §9.5）—— B26 起分成**两条互斥的路**：
  *
- *   - **永续（perp）**：资金费率 —— 应付的名义价值 × 费率从保证金里扣（应收则加回去）。
- *     溢价指数是**合成的**，口径与理由见 `positions.js` 的 `FUNDING` 注释（数据包里每个币只有
- *     一条真小时线，拿不到「合约价 vs 现货价」两条线），上限按年代走
- *     （2013–2018 → 0.5%、2019–2021 → 0.3%、2022 起 → 0.1%）。
+ *   - **永续（perp）**：资金费率 —— **拥挤成本**（§73.6）：应付的名义价值 × 费率从保证金里扣
+ *     （应收则加回去）。费率 = `clamp(FR.k × 持仓名义 ÷ 小时基准深度 × dir, ±FR.max)`，
+ *     口径与理由见 `positions.js` 的 `FR` 注释 —— 仓越大越贵，不再由行情动量决定。
  *   - **现货保证金（margin）**：借贷利息 —— `名义 × 日息 × (8/24)`。史实里 Bitfinex 的
  *     「杠杆」是用户间 P2P 借美元/借 BTC（出借方叫 Margin Funding Provider），按市场利率计息；
  *     日息**按年代取值**（`config.MARGIN.daily`）且**数字是合成值** ⇒ GDD 声明。
@@ -1519,7 +1647,6 @@ function settleFunding(s) {
   if (!syms.length) return false;
 
   const t = timeOf(s);
-  const cap = fundingPremiumCapAt(t);              // 溢价上限按年代，同一时刻所有币一样
   const daily = marginDailyRateAt(t);              // 借贷日息按年代，同一时刻所有所一样
 
   let fed = 0, grossP = 0;   // 永续：净支出（> 0 = 玩家付出）/ 参与结算的名义和
@@ -1541,9 +1668,12 @@ function settleFunding(s) {
     const mark = markPrice(s, sym);
     if (!(mark > 0)) continue;
 
-    const prev = closeAt(sym, s.i - FUNDING.window);
-    const sigma = hourlySigma(sym, s.i);
-    const rate = prev > 0 ? fundingRateOf(mark / prev - 1, sigma, cap) : fundingRateOf(0, sigma, cap);
+    /* 拥挤成本（§73.6 · 2026-10-02）：费率绑在**玩家持仓名义相对小时基准深度**上 ——
+       仓越大越贵，多头拥挤时多头付、空头拥挤时空头付。取不到深度就不收费（数据缺口不凭空造钱）。 */
+    const liq = hourLiqBase(s, sym, s.i);
+    if (!(liq > 0)) continue;
+    const dir = pos.side === 'long' ? 1 : -1;
+    const rate = Math.max(-FR.max, Math.min(FR.max, FR.k * (pos.size * mark / liq) * dir));
 
     const fee = fundingOf(pos, mark, rate);
     pos.margin -= fee;
@@ -1656,7 +1786,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   addPlayerVol(s, pos.sym, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
   {
     const dir = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive);
+    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive, shockKindOf(isSpot(pos), pos.lev));
     consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：部分强平也是真实成交 ⇒ 也吃深度
   }
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）

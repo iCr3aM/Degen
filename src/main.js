@@ -11,7 +11,7 @@ import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, cashCurAt, exchangeOf, hasFinan
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, equity, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma } from './core/engine.js';
+import { createClock, chanOf, equity, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
@@ -697,10 +697,21 @@ function dispatch(node) {
         一刀切会把设置页的音效 / 订单冲击 / 重开、以及三页常驻的暂停键一起冻死。
      ⚠️ 回顾态走自己的 `rv.paused`，且那一屏不碰账户 ⇒ 这里只在正常玩法下生效（`!rv`）。
      ⚠️ 给一条日志而不是静默吞掉：玩家按了键没反应时，「为什么」比「没反应」重要。 */
-  if (!rv && s.paused && (d.buy !== undefined || d.sell !== undefined
+  if (!rv && s.paused && (d.ex !== undefined || d.exok !== undefined
+    || d.chan !== undefined || d.buyu !== undefined)) {
+    pushLog(s, '已暂停 ｜ 先点顶栏「继续」再进行交易', 'info');
+    after();
+    return;
+  }
+
+  /* **下单一小时锁**（§73.8 · 2026-10-02 用户拍板）：暂停允许下单，但一笔成交后 `s.lockI = s.i`，
+     必须点「继续」走满 1 游戏小时（`s.i > s.lockI`）才能再动钱 —— 封堵
+     「疯狂点 继续/暂停 把同一根 K 线的行情切成多笔成交」。判据 `pauseLocked` 与渲染层置灰同源。
+     ⚠️ 与上面那条分开：上面那条讲「已暂停，先继续」，这条讲「刚成交过，等一小时」。 */
+  if (!rv && pauseLocked(s) && (d.buy !== undefined || d.sell !== undefined
     || d.act === 'long' || d.act === 'short' || d.act === 'close'
     || d.ex !== undefined || d.exok !== undefined || d.chan !== undefined || d.buyu !== undefined)) {
-    pushLog(s, '已暂停 ｜ 先点顶栏「继续」再进行交易', 'info');
+    pushLog(s, '刚成交 ｜ 走满 1 小时后再交易', 'info');
     after();
     return;
   }
@@ -864,7 +875,17 @@ function dispatch(node) {
     after();
     return;
   }
-  if (d.pause !== undefined) { if (!s.over) s.paused = !s.paused; after(); return; }
+  if (d.pause !== undefined) {
+    if (!s.over) {
+      const was = s.paused;
+      s.paused = !s.paused;
+      /* 从暂停点「继续」⇒ 速度强制回到 1x（§73.8 · 2026-10-02 用户拍板）：
+         否则玩家会把 100x 停在暂停前，一「继续」就瞬间冲过锁定的那一小时。 */
+      if (was && !s.paused) s.speed = 1;
+    }
+    after();
+    return;
+  }
   /* 结束遮罩上的「重新开始」：本局都已经结束了，没有必要再问一遍（Batch 4 起彻底直通）。 */
   if (d.restart !== undefined) return doRestart();
   if (d.wipe !== undefined) return onWipe();
@@ -892,12 +913,12 @@ function dispatch(node) {
     if (!pos || pos.side === side) {
       const r = openTrade(s, side, s.sizeFrac);
       if (!r.ok) pushLog(s, r.why, 'bad');
-      else { snd.open(); snd.buzz('light'); }
+      else { s.lockI = s.i; snd.open(); snd.buzz('light'); }
     } else {
       /* `why` 写玩家按下的那枚键：平多＝卖出（卖出手上的币）、平空＝买回（买回借出的币） */
       const r = closeTrade(s, side === 'long' ? '买回' : '卖出');
       if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
-      else { snd.close(); snd.buzz('light'); }
+      else { s.lockI = s.i; snd.close(); snd.buzz('light'); }
     }
     after();
     return;
@@ -905,14 +926,14 @@ function dispatch(node) {
   if (d.act === 'long' || d.act === 'short') {
     const r = openTrade(s, d.act, s.sizeFrac);
     if (!r.ok) pushLog(s, r.why, 'bad');
-    else { snd.open(); snd.buzz('light'); }
+    else { s.lockI = s.i; snd.open(); snd.buzz('light'); }
     after();
     return;
   }
   if (d.act === 'close') {
     const r = closeTrade(s);
     if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
-    else { snd.close(); snd.buzz('light'); }
+    else { s.lockI = s.i; snd.close(); snd.buzz('light'); }
     after();
     return;
   }
@@ -1083,7 +1104,7 @@ function godJump(target, label) {
     after();
     return;
   }
-  const to = Math.min(Math.max(target, floor), GAME.candles - 1);
+  const to = Math.min(Math.max(target, floor), s.endI - 1);
   if (to === s.i) {
     pushLog(s, `已经在这一刻：${label}`, 'info');
     showGod();

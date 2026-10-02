@@ -75,38 +75,49 @@ export const GAME = {
  *    再发一笔 $1,000 等于把挑战抹平（$10 开局尤其荒唐：救济金是爆赚 100 倍）。
  *    判定收口在 `engine.checkRuin`，别在别处另判。
  *
- * `from` / `to` 只是**显示用的年月**，不是时间数据 —— 真正的起点是 `at`。
+ * `from` / `to` 只是**显示用的年月**，不是时间数据 —— 真正的起点是 `at`、真正的终点是 `end`。
  * 全部起点都落在 UTC 零点（`GAME.start` 也是），所以 `s.i` 起点必为整数。
+ *
+ * ⚠️ **v26（§73.7 · 2026-10-02 用户拍板）**：挑战局不再陪跑到 2024-12 —— 时长收到 **2–4 个月**，
+ *    「要的就是快速来一把的感觉」。`end` 是**排他上界**（＝最后一根 K 线之后那一小时的序号），
+ *    结算点落在该局主题事件**之后**。经典全程的 `end` 就是 `GAME.end`，与改动前**逐位相同**。
+ * ⚠️ `end` 与 `at` 一样走 `Date.UTC`，且必须落在**整点**上（`scenarioEndIndex` 直接做除法）。
  */
 export const SCENARIOS = [
   {
     id: 'classic', name: '经典全程', from: '2013-01', to: '2024-12',
-    at: Date.UTC(2013, 0, 1), cash: 1000, ex: 'mtgox', challenge: false,
+    at: Date.UTC(2013, 0, 1), end: Date.UTC(2025, 0, 1),
+    cash: 1000, ex: 'mtgox', challenge: false,
     blurb: '从门头沟开盘走到币安收盘，12 年全程。',
   },
   {
-    id: 'winter', name: '门头沟寒冬', from: '2015-01', to: '2024-12',
-    at: Date.UTC(2015, 0, 1), cash: 1000, ex: 'bitfinex', challenge: true,
+    id: 'winter', name: '门头沟寒冬', from: '2015-01', to: '2015-04',
+    at: Date.UTC(2015, 0, 1), end: Date.UTC(2015, 4, 1),
+    cash: 1000, ex: 'bitfinex', challenge: true,
     blurb: '门头沟倒了、市场冰封，你带着 $1,000 从头再来。',
   },
   {
-    id: 'ico', name: 'ICO 狂潮', from: '2017-09', to: '2024-12',
-    at: Date.UTC(2017, 8, 1), cash: 1000, ex: 'binance', challenge: true,
+    id: 'ico', name: 'ICO 狂潮', from: '2017-09', to: '2017-12',
+    at: Date.UTC(2017, 8, 1), end: Date.UTC(2018, 0, 1),
+    cash: 1000, ex: 'binance', challenge: true,
     blurb: '站在 2017 年泡沫的起点，币安开业才一个多月。',
   },
   {
-    id: 'pre312', name: '312 前夜', from: '2020-02', to: '2024-12',
-    at: Date.UTC(2020, 1, 20), cash: 1000, ex: 'bitmex', challenge: true,
+    id: 'pre312', name: '312 前夜', from: '2020-02', to: '2020-04',
+    at: Date.UTC(2020, 1, 20), end: Date.UTC(2020, 4, 1),
+    cash: 1000, ex: 'bitmex', challenge: true,
     blurb: '距离「黑色星期四」还有 21 天，BitMEX 的 100x 合约就在手边。',
   },
   {
-    id: 'degen', name: '10u 战神', from: '2021-01', to: '2024-12',
-    at: Date.UTC(2021, 0, 1), cash: 10, ex: 'binance', challenge: true,
+    id: 'degen', name: '10u 战神', from: '2021-01', to: '2021-04',
+    at: Date.UTC(2021, 0, 1), end: Date.UTC(2021, 4, 1),
+    cash: 10, ex: 'binance', challenge: true,
     blurb: '牛市顶点，兜里只有 $10。',
   },
   {
-    id: 'luna', name: 'LUNA 归零周', from: '2022-05', to: '2024-12',
-    at: Date.UTC(2022, 4, 1), cash: 1000, ex: 'binance', challenge: true,
+    id: 'luna', name: 'LUNA 归零周', from: '2022-05', to: '2022-07',
+    at: Date.UTC(2022, 4, 1), end: Date.UTC(2022, 7, 1),
+    cash: 1000, ex: 'binance', challenge: true,
     blurb: 'UST 脱锚前 8 天。',
   },
 ];
@@ -122,6 +133,12 @@ export const isChallenge = id => scenarioOf(id).challenge;
 
 /** 年代开局的第一根小时 K 序号（`s.i` 的起点）—— 起点全落在 UTC 零点，必为整数 */
 export const scenarioStartIndex = id => Math.round((scenarioOf(id).at - GAME.start) / HOUR_MS);
+
+/**
+ * 本局的**终点**小时序号（`s.i` 的排他上界，§73.7）—— 走到它即结算，最后一根是 `endI − 1`。
+ * 经典全程 = `GAME.candles`（与改动前逐位相同）；挑战局 = 各主题事件之后 2–4 个月。
+ */
+export const scenarioEndIndex = id => Math.round((scenarioOf(id).end - GAME.start) / HOUR_MS);
 
 /**
  * 速度档（GDD §11）—— 2026-09-29 由 `1/2/5/10/20/50` 收窄为 **`1/5/10/50`**：
@@ -837,24 +854,6 @@ export function usdtPriceAt(t) {
 
 /** 数据包目录（public 下的静态资源，打包时原样拷贝到 dist/data/） */
 export const DATA_DIR = 'data';
-
-/**
- * 资金费率的**年代化溢价上限**（Batch 4 · B18，2026-09-29）。
- *
- * 史实依据：真实资金费率不是常数，不同年代的「癫狂程度」差一个数量级 ——
- *   - **2013 ~ 2018**：BitMEX 早期（XBTUSD 2016-05 上线）费率经常 >0.2%/8h（年化 >200%），
- *     2017 年 12 月那种行情里更是天天顶格 ⇒ 上限取 **0.5%/8h**
- *   - **2019 ~ 2021**：DeFi 夏季的高费率年代，狂热但比早期收敛 ⇒ **0.3%/8h**
- *   - **2022 起**：现代常态，92–93% 的时间贴在 0.01%/8h ⇒ **0.1%/8h**
- *
- * ⚠️ 它夹的是**溢价指数**（`positions.premiumOf`），不是最终费率；
- *    最终费率 = 溢价 + clamp(0.01% − 溢价, ±0.05%)，所以上界比这里略低一点（如 0.5% → 0.45%）。
- */
-export function fundingPremiumCapAt(t) {
-  if (t < Date.UTC(2019, 0, 1)) return 0.005;
-  if (t < Date.UTC(2022, 0, 1)) return 0.003;
-  return 0.001;
-}
 
 /**
  * 救济金（原场外配资 Batch 5 · B30，2026-10-01 用户拍板改版）—— **资产归零时**只能领一次的救命钱。

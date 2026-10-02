@@ -4,7 +4,8 @@
  * 位移只在**一个地方**生效：`market.candleAt`。
  * （markPrice / 权益 / 强平价 / 资金费 / K 线图 / HUD 涨跌幅全部经由它 ⇒ 下游一行都不用改。）
  *
- *   订单冲击 `s.flow[sym]` —— **逐根**衰减（Bouchaud 幂律，带 `SHOCK.floor` 地板）。**开仓、平仓、
+ *   订单冲击 `s.flow[sym]` —— **逐根**衰减（Bouchaud 幂律：永久分量 ＋ 慢幂律 ＋ 快回，§73.3）。
+ *   **开仓、平仓、
  *   强平**都写一笔；平仓 / 强平取持仓的反面方向，但**只回吐 `SHOCK.closeGive`**（2026-10-02 拍板）
  *   —— 往返不再等量抵消：一次完整往返净留开仓冲击的 **55.25%**，玩家每一笔成交都在图上留下台阶。
  *   C1（2026-09-29）起是**逐笔列表**（`[{v, at}, …]`，≤ `SHOCK.listMax` 笔），残存值按笔叠加。
@@ -43,14 +44,27 @@ export const SHOCK = {
    * 但那个比例来自**高频、小单**的样本；本作一笔单动辄吃掉当日流动量的 10%，用 0.35 会让位移
    * 小到一屏 60 根上只有约 2px ——「大额买入不影响 K 线」的观感就是从这里来的。
    * 故标定为 `1`：成交之后价格**就停在**那笔冲击的位置（`permImpactOf`，无阈值死区），
-   * 再按幂律衰减到 `SHOCK.floor` 地板。整局单向累积仍被 `riseMax`（+50%）兜住。
+   * 再按 §73.3 的「永久 ＋ 慢幂律 ＋ 快回」三段曲线缓慢修复。整局单向累积仍被 `riseMax` 兜住。
    *
    * ⚠️ 它与 `impactOf`（成交代价，含 `threshold` 死区）**不是同一个量**：那只决定这次成交付多贵
    *     （`fillPrice`），这里决定成交之后价格停在哪 —— 两者不得共用一条死区，见 `impact.js`。
    */
   share: 1,
-  /** Bouchaud propagator 的幂律指数 β ≈ 0.3（衰减极慢：100 小时后仍有 25%） */
-  beta: 0.3,
+  /**
+   * **永久分量占比**（§73.3 · 2026-10-02 拍板，取代原来的 `floor` 硬地板）。
+   *
+   * 文献（Bouchaud 2019 / Almgren–Chriss）里 metaorder 结束后位移先回落到峰值的约 2/3，
+   * 随后幂律衰减、收敛到**非零渐近值** ≈ 首日结束时的 1/2 ⇒ 取中值 0.5。曲线的渐近线**就是**它
+   * —— 不再有「2 小时锁死 85%」那种硬地板，取而代之的是「先快速回吐一部分，再极慢爬向 50%」。
+   * ⚠️ 三模式各自的取值见 `SHOCK_MODE`（§73.6）：现货实物换手痕迹更久（0.55）、合约 0.40。
+   */
+  perm: 0.5,
+  /** 慢幂律指数 β ≈ 0.3（Bouchaud propagator；720 小时后慢分量仍有 13.9%） */
+  betaSlow: 0.3,
+  /** 快回分量在「非永久部分」里的占比 —— 对应盘口即时回补（分钟~小时级） */
+  fastWeight: 0.2,
+  /** 快回指数（兜底值；真实取值按模式走 `SHOCK_MODE`：现货 1.2 / 合约 2.0） */
+  betaFast: 1.5,
   /**
    * 冲击池的**笔数上限**（C1，2026-09-29 拍板）。超出时把**最旧的那几笔**按「此刻的残存值」
    * 归并成一项 —— 它们的衰减最狠、残存最小，归并误差可忽略，而列表长度由此有了硬上界。
@@ -76,23 +90,11 @@ export const SHOCK = {
    */
   fallMax: -0.45,
   /**
-   * 衰减的**地板**（用户 2026-10-01 拍板「订单造成的 K 线要永久保留」；2026-10-02 由 0.3 → **0.85**）。
-   *
-   * 0.3 的病根在**真实时间尺度**上：1x 下 1 游戏小时 = 1 真实秒，而 `floor^(-1/β)` = 55.4 游戏小时
-   * ⇒ 玩家眼睁睁看着自己刚砸出来的台阶在 **56 真实秒**内滑回 30%，观感就是「冲击被市场抹掉了」。
-   * 抬到 0.85 后只回落 15% 就锁死：既有「市场消化一下」的呼吸感，又不会把玩家留下的痕迹擦掉。
-   * 整局的单向累积仍被 `riseMax` / `fallMax` 夹住，不会顶穿。
-   *
-   * ⚠️ 与它**配套**的是「A2 回填」作废（2026-10-01 拍板）：原来平仓会反向写回「**开仓**同向
-   *    残存值的一半」，那会把开仓的台阶主动推回去 —— 故 `giveBack` / `residualOfSide()` 一并删除。
-   */
-  floor: 0.85,
-  /**
    * 平仓 / 强平 / 部分强平**回吐**的比例（用户 2026-10-02 拍板 **0.35**）—— 决定「买卖往返在
    * K 线上永久留下多少台阶」。
    *
    * ⚠️ 口径：它是**相对残值**的比例，按的是平仓那一刻的分母。实测（`tools/_verify_impact.mjs`）
-   *    一次完整往返净留开仓冲击的 **55.25%** = 0.85（地板）× (1 − 0.35)；改动前这个数是 **0**。
+   *    一次完整往返净留开仓冲击的 **≈ 55.9%** = `decay(1 小时后)` × (1 − 0.35)；改动前这个数是 **0**。
    *
    * 改动前平仓写的是**等量反向**（等价于 `closeGive = 1`）：往返净值恒等于 0 ⇒ 右侧最新价永远
    * 回到原始路径 ⇒ 用户 2026-10-02 反馈的「明明已实现的线，卖出后直接还原、完全没有记忆、
@@ -112,10 +114,67 @@ export const SHOCK = {
   closeGive: 0.35,
 };
 
-/** 衰减因子：`e` = 距写入时刻经过的**游戏小时数**。前 1 小时不衰减，之后按 e^(−β) 回爬，最低 `SHOCK.floor` */
-export function decay(e) {
+/**
+ * 三模式的**冲击形态**参数（§73.6 · 2026-10-02 拍板）—— 现货与合约 / 杠杆的「质」差异之一。
+ *
+ *   - **现货**：你买走的是**实物**，换手痕迹更久（永久分量 0.55 偏高），盘口回补也慢（`betaFast` 1.2）；
+ *   - **合约 / 杠杆**：仓位是**合成**的，做市商库存回补快（`betaFast` 2.0），永久痕迹也浅（0.40）。
+ *
+ * ⚠️ 参数写在**每一笔**冲击上（`s.flow[sym]` 的每项自带 `perm` / `betaFast`），而不是读「此刻的模式」
+ *    —— 否则玩家平掉现货仓之后，那条早已写下的台阶会突然改用合约的衰减曲线。
+ */
+export const SHOCK_MODE = {
+  spot: { perm: 0.55, betaFast: 1.2 },
+  fut:  { perm: 0.40, betaFast: 2.0 },
+};
+
+/** 取某一笔成交（按产品线 `'spot'` / `'fut'`）的衰减参数；未知值一律按合约 */
+export const shockParamsOf = kind => (kind === 'spot' ? SHOCK_MODE.spot : SHOCK_MODE.fut);
+
+/**
+ * **市场情绪 / 热度**参数（§73.5 · 2026-10-02 拍板）—— NPC 那层「散户」的行为常数。
+ *
+ * 起因：`s.flow` 的写入者原来只有玩家自己的仓 ⇒ 物理上不存在踩踏。这一层给每个币补一组
+ * 「NPC 净持仓 ＋ 情绪热度」，热度由**价格位移**与**玩家自己的成交量**一起烧起来，
+ * 反过来驱动 NPC 顺势建仓（正反馈），恐慌时再触发踩踏级联（一条反向下台阶）。
+ *
+ * ⚠️ 初值**需实机调**（ROADMAP §73.5 原话）；这里只是让机制跑起来的量级。
+ * ⚠️ 现货不参与级联（§73.6）—— 见 `engine.cascadeMulOf`，玩家的现货单不给热度加料。
+ */
+export const HEAT = {
+  base: 0.5,        // 中性热度：均值回复的靶心，也是 NPC 净持仓的零点
+  k1: 0.12,         // 价格位移（标准化后）对热度的拉动 —— 冷静化：1σ 位移只挪 0.12，别一次就恐慌
+  k2: 0.05,         // 每小时的均值回复强度（把热度慢慢拉回 base）
+  k3: 0.5,          // 玩家本小时成交名义 ÷ 小时基准深度 对热度的拉动
+  panic: 0.25,      // 恐慌阈值：低于它才检查 NPC 强平（踩踏级联的入口）
+  greed: 0.75,      // 贪婪阈值（UI 三档字面用）
+  panicDrop: 0.12,  // 一次踩踏额外把热度再压一档（加速下一轮判定）
+};
+
+/**
+ * **NPC 散户**的行为参数（§73.5）。
+ * `mom` 是顺势持仓的靶心系数、`speed` 是每小时朝靶心靠的比例；
+ * `lev` / `maint` 用来算 NPC 多头的强平线（`1/lev − maint` = 距入场价多远爆），
+ * 踩踏就是「价格打到那条线 ⇒ NPC 整条多仓被动卖出」。
+ */
+export const NPC = { speed: 0.15, mom: 0.6, lev: 5, maint: 0.02 };
+
+/**
+ * 衰减因子：`e` = 距写入时刻经过的**游戏小时数**（§73.3 · 2026-10-02 重写）。
+ *
+ * 「**永久分量 ＋ 慢幂律 ＋ 快回**」三段叠加 —— 取代原来的「2 小时内滑到 85% 地板、此后永久不变」：
+ *   收敛到 `perm`（文献里 ≈ 首日冲击的一半），永远不会归零，所以玩家留下的台阶**永久**在图上。
+ * ⚠️ 过冲（先砸过头再修复）**不写在这里** —— 它由 NPC 恐慌盘的真实订单流产生（§73.4）。
+ * @param {number} e 经过的游戏小时数
+ * @param {{perm:number, betaFast:number}} [p] 该笔成交的形态参数（缺省用 `SHOCK` 的中性值）
+ */
+export function decay(e, p) {
   if (!(e > 1)) return 1;          // e ≤ 1（含 0 与负数）一律视为「刚开始」，不衰减
-  return Math.max(SHOCK.floor, Math.pow(e, -SHOCK.beta));
+  const perm = p?.perm ?? SHOCK.perm;
+  const betaFast = p?.betaFast ?? SHOCK.betaFast;
+  const slow = Math.pow(e, -SHOCK.betaSlow);
+  const fast = Math.pow(e, -betaFast);
+  return perm + (1 - perm) * ((1 - SHOCK.fastWeight) * slow + SHOCK.fastWeight * fast);
 }
 
 /**
@@ -132,7 +191,7 @@ export function residualAt(s, sym, j) {
   let v = 0;
   for (const p of list) {
     if (!p.v || j < p.at) continue;
-    v += p.v * decay(j - p.at);
+    v += p.v * decay(j - p.at, p);      // 每笔自带 `perm` / `betaFast`（§73.6 三模式形态）
   }
   return v;
 }
@@ -143,34 +202,39 @@ export function residualAt(s, sym, j) {
  * 超过 `SHOCK.listMax` 笔时，把最旧的那些按「此刻的残存值」压成一项（`collapse`）：
  * 它们在 `j = s.i` 处的值**精确守恒**，之后按「从此刻起算」的曲线衰减（略慢于真值，
  * 但都是残存最小的那几笔，误差可忽略），换来列表长度的硬上界。
+ * @param {{perm:number, betaFast:number}} [p] 这一笔的形态参数（§73.6）；缺省用 `SHOCK` 的中性值
  * @returns {boolean} 是否真的写进去了（Δ 为 0 时不写，避免无意义地刷存档）
  */
-export function addFlow(s, sym, delta) {
+export function addFlow(s, sym, delta, p) {
   if (!Number.isFinite(delta) || delta === 0) return false;
   if (!s.flow) s.flow = {};
   const list = s.flow[sym] || (s.flow[sym] = []);
-  list.push({ v: delta, at: s.i });
+  list.push({ v: delta, at: s.i, perm: p?.perm ?? SHOCK.perm, betaFast: p?.betaFast ?? SHOCK.betaFast });
   if (list.length > SHOCK.listMax) collapse(list, s.i);
   return true;
 }
 
-/** 把最旧的若干笔压成一项（只在超出上限时调用；`now` = 当前的 `s.i`） */
+/**
+ * 把最旧的若干笔压成一项（只在超出上限时调用；`now` = 当前的 `s.i`）。
+ * ⚠️ 归并后的那一项**借用最新一笔被归并者的形态参数**（`list[cut-1]`，即残存最大、最接近此刻的那笔）——
+ *    被归并的都是最旧、最接近永久分量的那几笔，两者曲线差异可忽略。
+ */
 function collapse(list, now) {
   const cut = list.length - (SHOCK.listMax - 1);
   let v = 0;
   for (let k = 0; k < cut; k++) {
     const p = list[k];
-    if (now >= p.at) v += p.v * decay(now - p.at);
+    if (now >= p.at) v += p.v * decay(now - p.at, p);
   }
   if (v === 0) list.splice(0, cut);
-  else list.splice(0, cut, { v, at: now });
+  else list.splice(0, cut, { v, at: now, perm: list[cut].perm, betaFast: list[cut].betaFast });
 }
 
 /**
  * 第 j 根上**持仓集中度**造成的抛压折价（2026-10-01 用户拍板）—— 恒为负值（0 = 没持有）。
  *
  * 与 `s.flow` 是**两套东西**，别混：
- *   `flow`     = 你**下单**那一刻砸出的台阶，按幂律衰减、带 `floor` 地板
+ *   `flow`     = 你**下单**那一刻砸出的台阶，按幂律衰减、收敛到永久分量 `perm`
  *   这里       = 你**持仓**本身带来的折价 —— 市场忌惮你随时砸盘，于是先给价格打个折。
  *                **不衰减**（只要你还没卖，这份忌惮就一直在），卖出后归零。
  *

@@ -7,7 +7,7 @@
  * 日期、行情、解锁币种全部由它派生（`format.fmtDate` / `market`），谁都不许另存一份时间。
  */
 
-import { cashCurAt, DEFAULT_SCENARIO, GAME, isChallenge, scenarioOf, scenarioStartIndex } from './config.js';
+import { cashCurAt, DEFAULT_SCENARIO, GAME, isChallenge, scenarioEndIndex, scenarioOf, scenarioStartIndex } from './config.js';
 import { isSpot } from './positions.js';
 
 /* ⚠️ v25（2026-10-02）：`s.overhang[sym]` 补一个 `scar`（**卖出疤痕**）——
@@ -72,8 +72,9 @@ import { isSpot } from './positions.js';
    ⚠️ v16（2026-10-01 · 用户拍板两项移除）：
    ① **限价挂单 `s.orders` 整体移除**（C8-B2 回滚）—— 改动前它是 v15 新增的键。
    ② **场外配资改版为「一次性救济金」**—— 删除 `s.loan`（在贷）字段与全部利息/到期/违约逻辑。
-   两处都动了状态形状，旧档对不上 ⇒ **弃档重开**（既有规范，不写迁移）。 */
-export const STATE_VERSION = 25;
+   两处都动了状态形状，旧档对不上 ⇒ **弃档重开**（既有规范，不写迁移）。
+   ⚠️ v26（2026-10-02 · §73）：新增 `s.endI`（本局终点）与 `s.mkt`（NPC 情绪 / 持仓）—— 同样弃档重开。 */
+export const STATE_VERSION = 26;
 
 /**
  * 开一局新的。
@@ -103,6 +104,15 @@ export function createState(scenId = DEFAULT_SCENARIO) {
 
     /** 当前处在全程第几根小时 K 线（0 = 2013-01-01 00:00 UTC；年代开局从 `i0` 起） */
     i: i0,
+
+    /**
+     * 本局的**终点**小时序号（v26 · §73.7）—— `advanceOneHour` 走到它即结算。
+     *
+     * 经典全程 = `GAME.candles`（2024-12-31 23:00 那根，与改动前逐位相同）；
+     * 挑战局 = 各主题事件之后 2–4 个月（用户 2026-10-02 拍板「要的就是快速来一把」）。
+     * ⚠️ 与 `i` 一样是**全程**序号，所有 `GAME.candles` 的夹取点都改读它。
+     */
+    endI: scenarioEndIndex(sc.id),
 
     /**
      * 本局的全局随机种子（S0 · 细粒度模拟的地基）—— 所有细刻度随机数的唯一源头
@@ -158,10 +168,12 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     pulse: [],
 
     /**
-     * 订单冲击池 —— `sym -> [{ v, at }, …]`：`v` = 该笔成交留下的冲击量（正 = 买上去、负 = 砸下来），
-     * `at` = 写入它的那个 `s.i`。行情位移 = `Σ v_k × decay(j − at_k)`，**逐根**衰减（Bouchaud 幂律，
-     * 带 `SHOCK.floor = 85%` 地板 ⇒ 台阶永久保留）。开仓 / 平仓 / 强平都写一笔，但**平仓那一侧只回吐
-     * `SHOCK.closeGive = 35%`**（2026-10-02）⇒ 一次完整往返净留开仓冲击的 **55.25%**，市场对玩家有记忆。
+     * 订单冲击池 —— `sym -> [{ v, at, perm, betaFast }, …]`：`v` = 该笔成交留下的冲击量
+     * （正 = 买上去、负 = 砸下来），`at` = 写入它的那个 `s.i`，`perm` / `betaFast` = **这一笔自己**的
+     * 衰减形态（§73.6：现货痕迹更久、合约回补更快 —— 随笔存，不随「此刻的模式」变）。
+     * 行情位移 = `Σ v_k × decay(j − at_k, 该笔参数)`，**逐根**衰减（Bouchaud 幂律：永久分量 ＋
+     * 慢幂律 ＋ 快回，§73.3 ⇒ 台阶永久保留）。开仓 / 平仓 / 强平都写一笔，但**平仓那一侧只回吐
+     * `SHOCK.closeGive = 35%`**（2026-10-02）⇒ 一次完整往返净留开仓冲击的 **≈ 55.9%**，市场对玩家有记忆。
      *
      * ⚠️ C1（2026-09-29）：由「单池 `{v, at}`」改成**逐笔列表**（≤ `SHOCK.listMax` 笔）——
      *    单池下第二次加仓会吃掉第一次的衰减进度。上限溢出时最旧的几笔按残存值归并成一项。
@@ -202,6 +214,21 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      * ⚠️ 与 `FLOAT`（结构性持仓折减）是两件事：那个是「你囤着不卖」，这个是「你刚把它吃掉了」。
      */
     pool: {},
+
+    /**
+     * **NPC 市场情绪 / 持仓**（v26 · §73.5 · 2026-10-02 拍板）—— `sym -> { heat, npcLong, npcShort,
+     * npcLongAvg, npcShortAvg }`。
+     *
+     *   `heat`        ∈ [0,1] 的市场热度：0.5 中性、1 极度贪婪、0 极度恐慌。由「价格位移」
+     *                 ＋ 「玩家自己的成交量」烧起来，并带均值回复（参数见 `HEAT`）。
+     *   `npcLong/Short`  NPC 净持仓**名义价值**（USD），`*Avg` 为它们的平均入场价。
+     *
+     * 它让市场**真的会自己动**：热度高 ⇒ NPC 顺周期追高（写正冲击），热度崩 ⇒ NPC 多头被强平
+     * （写负冲击）⇒ 「巨鲸砸盘 → 踩踏 → 缓慢修复」的级联。此前 `pushFlow` 的调用者只有玩家自己，
+     * 物理上不存在踩踏（§73.1 实测）。
+     * ⚠️ 与 `s.flow` / `overhang` 一样是**逐币**的；每根 K 线由 `engine.tickMarket` 推进一步。
+     */
+    mkt: {},
 
     /**
      * **玩家自己的成交量**（v17 新增 · v19 按所分账 · v20 按产品线分账 · v24 按币分账）——
@@ -270,6 +297,15 @@ export function createState(scenId = DEFAULT_SCENARIO) {
 
     /** 暂停 */
     paused: false,
+
+    /**
+     * **暂停下单的锁**（v26 · §73.8 · 2026-10-02 用户拍板）—— `s.i` 或 `-1`（未锁）。
+     *
+     * 封堵「暂停 → 下单 → 继续 → 立刻再暂停 → 再下单」把同一根 K 线切成多笔成交的漏洞：
+     * 暂停时允许下单，但**下单成功后**把当前 `s.i` 记在这里，所有「会动钱」的按钮置灰；
+     * 点继续 ⇒ 速度强制回到 1x，时钟推进到 `s.i > s.lockI`（走满 1 游戏小时）才解锁。
+     */
+    lockI: -1,
 
     /**
      * 已实现盈亏累计（含**全部**手续费与资金费），用于战后复盘。

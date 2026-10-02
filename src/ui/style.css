@@ -441,6 +441,38 @@ b, strong { font-weight: 600; }
 .chart-lock { color: var(--mut); }
 .chart-eta[hidden], .chart-lock[hidden] { display: none; }
 
+/* 市场热度（§73.5）：0–1 的条 ＋ 贪婪 / 中性 / 恐慌 三档字面 —— 与上面两枚同一套浮字底。
+   三档的着色只走语义色（涨绿 / 跌红 / 中性灰），与 K 线涨跌同一套语言。 */
+.chart-heat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(16, 19, 23, .72);   /* = --panel-2 的七成不透明，同 .chart-head */
+  font-size: calc(12px * var(--ui));
+  color: var(--mut);
+}
+.chart-heat u { text-decoration: none; }
+.chart-heat i {
+  display: block;
+  width: calc(40px * var(--ui));
+  height: calc(4px * var(--ui));
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+.chart-heat i::after {
+  content: '';
+  display: block;
+  height: 100%;
+  width: var(--heat, 50%);
+  background: var(--mut);
+}
+.chart-heat[data-heat="greedy"] { color: var(--up); }
+.chart-heat[data-heat="greedy"] i::after { background: var(--up); }
+.chart-heat[data-heat="panic"] { color: var(--down); }
+.chart-heat[data-heat="panic"] i::after { background: var(--down); }
+
 /* ══════════════ 持仓条（**常驻**） ══════════════
    无持仓时三格填 `--`，不再整条隐藏（2026-09-29）—— K 线区是全屏唯一的弹性块，
    持仓条一显一隐，K 线高度就会在每次开仓 / 平仓时来回跳。字号 13px 且行高由 `.num`
