@@ -8467,9 +8467,13 @@ F2 的不对称构成**单向棘轮**：买→卖会让价格净抬一档。它�
 
 | 文件 | 改动 |
 | --- | --- |
-| `src/core/engine.js` | `refreshOverhang(s, sym, give = 0)` 加疤痕：拆出 `prevScar` / `prevHold`，卖出时 `scar -= drop × (1 - give)`；平仓 / 强平 / 部分强平三处调用改传 `SHOCK.closeGive`；开仓 / 每日重算 / 交易所归零保持缺省 0（全额释放） |
+| `src/core/engine.js` | ① `refreshOverhang(s, sym, give = 0)` 加疤痕：拆出 `prevScar` / `prevHold`，卖出时 `scar -= drop × (1 - give)`；平仓 / 强平 / 部分强平三处调用改传 `SHOCK.closeGive`；开仓 / 每日重算 / 交易所归零保持缺省 0（全额释放）。② `rewindTo` 补清 `s.overhang` |
 | `src/core/state.js` | `STATE_VERSION` **24 → 25** ＋ 版本注记；`s.overhang` 字段注释补充 `scar` 口径 |
 | `src/core/god.js` | `SHOCK.closeGive` 注释补一条「抛压折价走同一个比例」 |
+
+⚠️ **连带修掉的一处同族疏漏**：`rewindTo`（回顾 / 上帝跳日期）清「进度」时列了
+`flow` / `pool` / `pvol`，**唯独漏了 `overhang`** —— 于是回退后**没有持仓**的价格仍被一条折价压着，
+而 `refreshOverhang` 的按日重算只遍历 `heldSyms`，永远洗不掉它。疤痕永久化后这条更明显，一并补上。
 
 ### 72.7 验收
 
