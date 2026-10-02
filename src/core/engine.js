@@ -225,6 +225,36 @@ export function dailySigma(sym, i) {
   return v;
 }
 
+/* σ 的**短窗**缓存（缺口 18 的波动率项用）—— 与 `daySigmaCache` 同形、同一条失效纪律。 */
+const daySigmaFastCache = new Map();
+
+/**
+ * 近 `HEAT.volWindow` 天「日收盘收益率」的总体标准差 —— 热度方程里**波动率项**的**分子**
+ * （缺口 18 · 2026-10-02 用户拍板 `kVol = 0.02`，口径与依据见 `god.HEAT.kVol` / `volWindow`）。
+ *
+ * ⚠️ **它是「另一个时间尺度上的同一个量」，不是第二个度量**：估计量（`sigmaOf` 的总体标准差）、
+ *    「日收盘」的定义（`d × 24 + 23` 那一根的收盘）**都与 `dailySigma` 逐字相同**，
+ *    只有窗口不同（`HEAT.volWindow` = 7 天 vs `SLIP.window` = 30 天）⇒ 两者之比就是
+ *    F&G「当前波动率 vs 近月均值」的那条**偏离**。
+ * ⚠️ **为什么不复用 `dailySigma`**：那个是 `σ_30日`，同时是滑点 / OTC 溢价的**分母** ——
+ *    改它的窗口会连带改成交代价。两把尺子必须各留一份缓存。
+ * ⚠️ 与 `dailySigma` 同一条纪律：它读 `closeAt`（**含位移**）⇒ `invalidateSigma()` 必须一起清，
+ *    否则会算出「价格在动、短窗波动率不动」的不自洽热度。
+ */
+function dailySigmaFast(sym, i) {
+  const day = dayIndexOf(i);
+  const hit = daySigmaFastCache.get(sym);
+  if (hit && hit.day === day) return hit.v;
+
+  const closes = [];
+  for (let d = day - HEAT.volWindow - 1; d < day; d++) {
+    closes.push(closeAt(sym, d * HOURS_PER_DAY + HOURS_PER_DAY - 1));
+  }
+  const v = sigmaOf(closes);
+  daySigmaFastCache.set(sym, { day, v });
+  return v;
+}
+
 /**
  * **玩家持仓占可交易浮筹的比例**（`0 ~ 1`）—— 「持仓影响市场」那份唯一的占比（`config.FLOAT`）。
  *
@@ -277,6 +307,9 @@ function hourLiqRaw(s, sym, i) {
    三样东西共用**一个** `exposure`、**一个**深度乘数：
      ① `hourLiqBase` 的折减（滑点 / 拆单笔数 / 瞬时深度池容量 / 资金费分母全部连带）
      ② OTC 点差放大（`otcPremiumFor`，`1 ÷ 深度乘数`）
+     ⚠️ ② 只覆盖**玩家侧**那半（`advSpreadMul`）。**市场级**那半（踩踏 / 逼空期间放大）是
+        另一个乘数 `heatSpreadMul`（缺口 11 · 2026-10-02 拍板），与 ② 相乘喂给同一个
+        `otcPremiumFor`。两者读的是**不同**的输入（玩家仓位 vs 市场热度），不得合并。
      ③ 预警日志（`advTick`，深度乘数首次 ≤ `ADV.warnMul` 时播一条，带闩锁）
 
    ⚠️ **口径**：`exposure` 只算**杠杆盘**（合约 / 现货保证金）的名义 —— 现货 1x 是**实物**，
@@ -828,7 +861,16 @@ export function tickMarket(s, sym) {
   const p1 = heatPriceAt(s, sym, i);
   const p0 = heatPriceAt(s, sym, i - HEAT.window);
   const x = sig > 0 && p1 > 0 && p0 > 0 ? (p1 / p0 - 1) / sig : 0;
-  /* ② 热度：收益（**被成交量有向放大**）− 均值回复。⚠️ 这里的读全在 ③④ 写流之前。
+  /* ①′ **波动率项**（缺口 18 · 2026-10-02 用户拍板 `kVol = 0.02`）—— F&G 的波动率子指标口径：
+     「当前波动率 vs 近月基线」的**偏离**，`σ_短` 高 ⇒ **恐惧**（推向 0）⇒ 符号为**负**。
+     ⚠️ 与上面那条价格项**不是同一个量**：价格项看的是「涨跌了多少」（带方向），本项看的是
+        「最近有多颠」（不带方向、只推离中性）—— 一次横盘巨震会让本项压低热度、价格项却近乎 0。
+     ⚠️ 夹到 `±1` 是防止「一周内 σ 翻十倍」这类极端比值把热度一杆子打到底；
+        再乘 `kVol = 0.02`（与 `k1` 等权）⇒ 它单独最多贡献 ±0.02/小时，量级与价格项同档。 */
+  const sigFast = dailySigmaFast(sym, i);
+  const volDev = sig > 0 && sigFast > 0
+    ? Math.max(-1, Math.min(1, sigFast / sig - 1)) : 0;
+  /* ② 热度：收益（**被成交量有向放大**）− 波动率偏离 − 均值回复。⚠️ 这里的读全在 ③④ 写流之前。
      ⚠️ 成交量进的是**放大器**而不是加数（2026-10-02 审计修）：`pv` 是无符号的成交名义，
         写成加数时一笔巨额**卖单**会把热度往上顶 ⇒ 砸盘被读成极度贪婪、散户反手做多、位移反向
         （实测 15x 砸掉当日量 100% ⇒ 位移 +13.2%）。现在它只放大 `k1·x` 的**方向**：
@@ -837,6 +879,7 @@ export function tickMarket(s, sym) {
   const liq = hourLiqBase(s, sym, i);
   const pv = liq > 0 ? m.pv / liq : 0;
   m.heat = clamp01(m.heat + HEAT.k1 * x * (1 + HEAT.k3 * Math.min(pv, 1) * cascadeMulOf(s))
+    - HEAT.kVol * volDev
     - HEAT.k2 * (m.heat - HEAT.base));
   m.pv = 0;
   /* ③ NPC 顺势建仓：热度高于中性 ⇒ 净多头，低于中性 ⇒ 净空头。取不到深度就不建（不凭空造量）。
@@ -1024,16 +1067,48 @@ const slipTag = (impact, count = 1) =>
   impact > 0 ? `｜滑点 ${fmtRate(impact, 2)}${count > 1 ? ` · ${count} 笔` : ''}` : '';
 
 /**
+ * **市场级** OTC 点差放大 —— 「级联 / 极端热度」期间大宗报价变宽
+ * （缺口 11 · 2026-10-02 用户拍板「**只补市场级，玩家侧不做**」· `HEAT.kSpread = 3`，
+ *  完整审计见 NEXT-STEPS §8.8.2 / §8.9.4）。
+ *
+ * ⚠️ **与 `advSpreadMul` 的分工**（缺一不可，两者相乘）：
+ *    · `advSpreadMul` 读的是**玩家自己**的仓位 —— 「你的仓相对这个小时的深度太大」；
+ *    · 本函数读的是**市场自己**的热度 —— 「市场正在踩踏 / 逼空」。
+ *    原来只有前者 ⇒ 市场级踩踏期间点差**完全不变**（玩家没动仓 ⇒ `mul === 1`）——
+ *    这正是缺口 11 里**真正**要补的那一半。
+ *
+ * ⚠️ **两端都触发，不是只贪**：文献（2025-10-10 崩盘：BTC 永续点差 0.02bps → **26.43bps**、
+ *    盘口深度 **−98.3%**）记的是**崩盘**；而崩盘在本作里把热度压向 `HEAT.panic`
+ *    （`stampede` 的 `m.heat -= HEAT.panicDrop`）。若只按 `heat > HEAT.greed` 触发，
+ *    **恰恰崩盘不触发** ⇒ 等于没补上这个缺口。故按「离中性 `HEAT.base` 多远」取两端：
+ *    贪婪侧到 1、恐慌侧到 0（`panic` / `greed` 对称地落在 `base = 0.5` 两侧）。
+ *
+ * ⚠️ **短时、有界**（两条文献约束）：热度逐小时更新、`k2 = 0.05` 的均值回复 ⇒ 放大随热度
+ *    回落迅速消解（做市商 35 分钟恢复九成流动性），**不是** `advPeakOf` 那种周级台阶；
+ *    上限 `1 + HEAT.kSpread = 4`，且常态（`heat ∈ [panic, greed]`）**恰好 1** ⇒ 与改动前逐位相同。
+ */
+function heatSpreadMul(s, sym) {
+  const h = heatOf(s, sym);
+  const t = h >= HEAT.greed
+    ? (h - HEAT.greed) / (1 - HEAT.greed)
+    : h <= HEAT.panic ? (HEAT.panic - h) / HEAT.panic : 0;
+  return t > 0 ? 1 + HEAT.kSpread * t : 1;
+}
+
+/**
  * 一次 OTC 成交的溢价（P2-B 修订 · §15.3）。
  * **复用同一个 `dailySigma`** —— 不需要第二套「市场有多慌」的度量，它本来就是现成的。
  * ⚠️ 取「**此刻**」而不是开仓时的：卖出面对的是当时的流动性，不是当初的（§15.3 ⑤）。
  * ⚠️ v19 起多一个 `notional`：大宗台的报价随**单笔规模**变宽（`OTC.sizeP` / `sizeCap`）。
+ * ⚠️ 本轮（2026-10-02）起多一个**市场级**乘数：`advSpreadMul`（玩家自己的仓）× `heatSpreadMul`
+ *    （市场级踩踏）—— 两个来源相乘，常态下**都恰好 1** ⇒ 与改动前逐位相同。
+ *    ⚠️ 不升 `STATE_VERSION`：本项**不新增任何存档字段**（`heat` 本来就在 `s.mkt[sym]` 里）。
  */
 const otcPremiumFor = (s, sym, notional) => {
   const p = otcPremiumOf(dailySigma(sym, s.i), timeOf(s), notional);
-  const mul = advSpreadMul(s, sym);
+  const mul = advSpreadMul(s, sym) * heatSpreadMul(s, sym);
   /* ⚠️ 放大之后再夹一次 `OTC.max`：那个 8% 是「任何年代、任何市况」的硬顶（`config.OTC`），
-     对抗性放大不该在它上面开第二个口子。档 0 时 `mul === 1` ⇒ 与改动前逐位相同。 */
+     放大不该在它上面开第二个口子。常态下 `mul === 1` ⇒ 与改动前逐位相同。 */
   return mul === 1 ? p : Math.min(OTC.max, p * mul);
 };
 
@@ -2096,6 +2171,7 @@ export function rewindTo(s, to) {
  */
 export function invalidateSigma() {
   daySigmaCache.clear();
+  daySigmaFastCache.clear();     // 短窗 σ 与 σ_30日 同源（都读 `closeAt`）⇒ 必须一起清
 }
 
 /**
