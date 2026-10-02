@@ -686,11 +686,24 @@ function draw(force = false) {
 function dispatch(node) {
   const d = node.dataset;
 
-  /* 通用轻点反馈（Batch 4 · B20）—— 除了**成交 / 重开**这两类有专属音的动作，其余键都响这一声。
-     逻辑：一次点击最多响一次，任何时刻都不会叠。 */
+  /* 通用反馈（Batch 4 · B20；2026-10-03 分区）—— 除了**成交 / 重开**这两类有专属反馈的动作，
+     其余键都响一声 ＋ 震一下：**一次点击最多响一次、震一次**，任何时刻都不会叠。
+     ⚠️ 2026-10-03 起**触感也挂在这里** —— 原来震动只在 7 处事件上触发，而玩家日常的
+        「切页 / 切币 / 点档位 / 换所」全都走的是这一行，摸不到任何反馈，手机的震动像坏了一样
+        （用户 Android 实机反馈）。这是那件事的首要修法，见 `sound.js` 震动段注释。
+     ⚠️ 音色按动作分档（切页 `tab` / 选中类 `pick` / 其余 `tap`）；震动同理（`pick` 比 `light` 略重）。
+        `buzz()` 内部有去抖与等级让路，同一次点击的声与震不会互相打断。 */
   if (d.act !== 'long' && d.act !== 'short' && d.act !== 'close'
     && d.buy === undefined && d.sell === undefined && d.reset === undefined
-    && d.intro === undefined) snd.tap();   // 开场两枚键已有专属的起手音（`snd.begin`），不叠轻点声
+    && d.intro === undefined
+    /* `exok`（换所二次确认的「确认」）**自带**成功 / 失败分档音（`pick` / `deny`，见下），
+       不必再叠一层通用点按声 —— 否则一次点击会响两声。 */
+    && d.exok === undefined) {   // 开场两枚键已有专属的起手音（`snd.begin`），不叠轻点声
+    if (d.tab !== undefined) { snd.tab(); snd.buzz('pick'); }
+    else if (d.sym !== undefined || d.lev !== undefined || d.mode2 !== undefined
+      || d.mode !== undefined || d.chan !== undefined || d.ex !== undefined) { snd.pick(); snd.buzz('pick'); }
+    else { snd.tap(); snd.buzz('light'); }
+  }
 
   /* ── 暂停闸门（本轮 ① · 操作逻辑审计）──────────────────────────────────
      **暂停时必须被拦住的只有「会动钱」的动作**：下单（`buy`/`sell`/`long`/`short`）、
@@ -783,6 +796,7 @@ function dispatch(node) {
   if (d.vol !== undefined) return onVol(Number(d.vol));
   if (d.market !== undefined) return onMarketToggle();
   if (d.vib !== undefined) return onVib(Number(d.vib));
+  if (d.vibtest !== undefined) return onVibTest();
   if (d.fx !== undefined) return onFx(Number(d.fx));
   if (d.colors !== undefined) return onColorToggle();
   if (d.reset !== undefined) return onReset(node);
@@ -816,7 +830,8 @@ function dispatch(node) {
   if (d.exok !== undefined) {
     closePicker();
     const r = switchExchange(s, d.exok);
-    if (!r.ok) pushLog(s, r.why, 'bad');
+    if (!r.ok) { pushLog(s, r.why, 'bad'); snd.deny(); snd.buzz('light'); }
+    else { snd.pick(); snd.buzz('pick'); }
     after();
     return;
   }
@@ -832,7 +847,7 @@ function dispatch(node) {
        否则会多出一条空串日志。 */
     /* 买 U 是一次**真实的主动操作**，值得一声反馈 —— 原来借用 `fundUp`，
        那个音在 T-1 随「资金费不再出声」一起删了，改接 `notice`（中性短上行）。 */
-    if (!r.ok) { pushLog(s, r.why, 'bad'); snd.tap(); } else snd.notice();
+    if (!r.ok) { pushLog(s, r.why, 'bad'); snd.deny(); snd.buzz('light'); } else snd.notice();
     after();
     return;
   }
@@ -842,6 +857,7 @@ function dispatch(node) {
        判据与渲染层、与 `engine.openTrade` 同源（`hasFinancingAt`），三处不各算一遍。 */
     if (levKind(s) === 'margin' && !hasFinancingAt(timeOf(s), s.ex)) {
       pushLog(s, '杠杆 暂不可用 ｜ 该所此刻没有融资业务', 'info');
+      snd.deny(); snd.buzz('light');   // 按得动却没反应最难受：给一声「不行」＋ 一记触感
       after();
       return;
     }
@@ -853,6 +869,7 @@ function dispatch(node) {
     const held = posOf(s, s.sym);
     if (held && want !== held.lev) {
       pushLog(s, `${s.sym} 已持 ${held.lev}x ｜ 加仓必须同杠杆 ｜ 先平仓再重开`, 'info');
+      snd.deny(); snd.buzz('light');   // 同上：这是一次被拒的选档，不该无声
       after();
       return;
     }
@@ -934,19 +951,20 @@ function dispatch(node) {
        `engine.openTrade` 那边本来就是对的（先 `posOf` 再判融资），这里补的是主入口。 */
     if (!pos && side === 'short' && levKind(s) === 'margin' && !hasFinancingAt(timeOf(s), s.ex)) {
       pushLog(s, '杠杆做空 暂不可用 ｜ 该所此刻没有融资业务', 'info');
+      snd.deny(); snd.buzz('light');
       after();
       return;
     }
     if (!pos || pos.side === side) {
       const r = openTrade(s, side, s.sizeFrac);
-      if (!r.ok) pushLog(s, r.why, 'bad');
+      if (!r.ok) { pushLog(s, r.why, 'bad'); snd.deny(); snd.buzz('light'); }
       else { s.lockI = s.i; snd.open(); snd.buzz('light'); }
     } else {
       /* `why` 写玩家按下的那枚键：平多＝卖出（卖出手上的币）、平空＝买回（买回借出的币）。
          ⚠️ 第三参 = **平掉多少**（2026-10-02 用户拍板）：金额档那 1/4 · 1/2 · 全部现在
             对「开仓」与「平仓」是同一个含义 —— 分批卖出 / 分批减仓从此走同一枚 `s.sizeFrac`。 */
       const r = closeTrade(s, side === 'long' ? '买回' : '卖出', s.sizeFrac);
-      if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
+      if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.deny(); snd.buzz('light'); }
       else { s.lockI = s.i; snd.close(); snd.buzz('light'); }
     }
     after();
@@ -954,7 +972,7 @@ function dispatch(node) {
   }
   if (d.act === 'long' || d.act === 'short') {
     const r = openTrade(s, d.act, s.sizeFrac);
-    if (!r.ok) pushLog(s, r.why, 'bad');
+    if (!r.ok) { pushLog(s, r.why, 'bad'); snd.deny(); snd.buzz('light'); }
     else { s.lockI = s.i; snd.open(); snd.buzz('light'); }
     after();
     return;
@@ -963,7 +981,7 @@ function dispatch(node) {
     /* 合约模式的「平仓」同样吃金额档（2026-10-02 用户拍板）：与杠杆「卖出」是一条路径 ——
        点 1/4 就减掉四分之一，点「全部」才是原来那个一键全平。 */
     const r = closeTrade(s, '手动', s.sizeFrac);
-    if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
+    if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.deny(); snd.buzz('light'); }
     else { s.lockI = s.i; snd.close(); snd.buzz('light'); }
     after();
     return;
@@ -2039,6 +2057,18 @@ function onVol(v) {
 function onVib(v) {
   snd.setVib(v);
   if (v) snd.buzz('light');   // 当场试一下力度，玩家不用猜「弱」到底多弱
+  after();
+}
+
+/**
+ * 震动自检（2026-10-03）：**无视档位**直接震一条加长模式。
+ * 为什么单独一枚键：档位再调都是几十毫秒，玩家在手机上摸不着时，分不清是「档位关着」、
+ * 「马达不响」还是「这个浏览器根本不支持」。这枚键走一条加长三连震，一按就知道硬件响不响；
+ * 顺便留一条日志，把「摸不着」最常见的两个原因直接说给玩家听。
+ */
+function onVibTest() {
+  snd.buzzTest();
+  pushLog(s, '震动自检 ｜ 没反应？多半是系统关了「触摸振动」，或浏览器不支持', 'info');
   after();
 }
 

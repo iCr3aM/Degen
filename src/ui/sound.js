@@ -91,24 +91,49 @@ export function setMarketOn(v) {
 
 /* ───────────────────────── 震动（移动端专属 · 2026-10-01） ─────────────────────────
  * 与音量**互不隶属**：关掉声音照样可以震，反之亦然（真实手机就是这么用的）。
- * 只用 `navigator.vibrate`，**零依赖、零资源**；不支持 / 被拒绝时静默跳过。 */
+ * 只用 `navigator.vibrate`，**零依赖、零资源**；不支持 / 被拒绝时静默跳过。
+ *
+ * ⚠️ 2026-10-03 修「Android 上摸不出来」（用户实机反馈）——三个真因：
+ *   ① **绝大多数操作根本不震**：原来只有 7 处会震（日志事件 / 预警 / 结算 / 开平仓），
+ *      而玩家日常的「切页 / 切币 / 点档位 / 换所」全都只走 `snd.tap()`。修法是把触感并进
+ *      `main.dispatch()` 的通用反馈（见那里的 `buzz` 调用）。
+ *   ② **弱档只有 12ms**：多数 Android 马达的有效最短时长在 20–40ms，12ms 常被驱动截断
+ *      ⇒ 摸不着。全部提到 ≥ 25ms。
+ *   ③ **连续 `navigator.vibrate()` 会互相取消**（新调用打断上一次的模式），而事件音 / 预警
+ *      常在同一秒里连发。修法：`buzz()` 里加一层**去抖 ＋ 等级让路**（见下）。 */
 
-/** 这台机器会不会真的震 —— 触屏设备 ＋ 有 `navigator.vibrate`。
- *  桌面浏览器即便有 `vibrate` 也是空转 ⇒ 设置页那一行在桌面上**整行不显示**。 */
+/** 这台机器会不会真的震 —— 有 `navigator.vibrate` ＋ 有触点或粗指针。
+ *  ⚠️ 2026-10-03：判定由「`pointer: coarse`」放宽到「`maxTouchPoints > 0` 或粗指针」——
+ *     Android 开了「桌面版网站」、接了鼠标、或部分浏览器报错时，`pointer: coarse` 会变 false，
+ *     原来会让设置页**整行消失**，玩家以为振动坏了（`buzz` 其实还在跑）。
+ *     桌面浏览器没有马达 ⇒ 仍然不建这一行（桌面的 `maxTouchPoints` 通常是 0）。 */
 export function vibSupported() {
   try {
-    return typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function'
-      && typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return false;
+    if (Number(navigator.maxTouchPoints) > 0) return true;
+    return typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
   } catch { return false; }
 }
 
-/** 力度 × 档位 → 震动模式（毫秒）：
- *  `light` 是「点一下」级别（新闻 / 上线 / 到账 / 开平仓），`heavy` 是「出事」级别（爆仓 / 灾难 / 预警 / 结束）。
- *  弱档一次短震，强档三下（起-停-起）—— 三下是**可辨的**，一次长震与一次短震在口袋里分不出来。 */
+/* 等级 × 力度 → 震动模式（毫秒）。
+ *   `light` = 点一下（通用点按 / 开关）　`pick` = 选中（切页 / 切币 / 换所 / 选档）　`heavy` = 出事（爆仓 / 灾难 / 预警）。
+ * ⚠️ 时长一律 ≥ 25ms —— 更短的模式在多数 Android 马达上会被截断到摸不出（文件头 ②）。
+ * ⚠️ 强档用「三下（起-停-起）」：一次长震与一次短震在口袋里分不出来，三下才是可辨的。 */
 const VIB = {
-  light: [0, [12], [16, 45, 16]],
-  heavy: [0, [35], [55, 70, 55]],
+  light: [0, [25], [18, 50, 18]],
+  pick: [0, [35], [24, 55, 24]],
+  heavy: [0, [60], [50, 60, 50]],
 };
+const VIB_RANK = { light: 0, pick: 1, heavy: 2 };
+
+/* 「试一下」用的一条加长模式（**不走档位**）：玩家点它就能确认硬件到底响不响 ——
+   档位再调也都是几十毫秒，试不出来时很难分清是「关着」还是「手机不震」。 */
+const VIB_TEST = [80, 60, 80, 60, 120];
+
+const VIB_GAP = 60;        // 同一等级两震之间的最小间隔（墙钟毫秒，与 `MARKET_GAP` 同一口径）
+let vibLastAt = 0;         // 上次真正下发的时刻
+let vibLastKind = '';      // 上次下发的等级
+let vibBusyUntil = 0;      // 上一次模式播完的时刻（在这之前只准更高等级打断）
 
 export const getVib = () => prefs.vib;
 
@@ -117,13 +142,29 @@ export function setVib(v) {
   writePrefs();
 }
 
-/** 震一下。`kind` = `'light'`（默认）或 `'heavy'`。 */
+/** 「试一下」：无视档位、无视音量，直接震一条加长模式（它就是用来确认硬件的）。 */
+export function buzzTest() {
+  try { if (navigator.vibrate) navigator.vibrate(VIB_TEST.slice()); } catch { /* 忽略 */ }
+}
+
+/** 震一下。`kind` = `'light'`（默认）/ `'pick'` / `'heavy'`。
+ *  两条让路规则（文件头 ③）：① 上一次还在震时，只有**更高等级**能打断它；
+ *  ② 同一等级连发按 `VIB_GAP` 去抖（连点 20 下不该震 20 下）。 */
 export function buzz(kind = 'light') {
   if (!prefs.vib) return;
+  const k = VIB[kind] === undefined ? 'light' : kind;
+  const pat = VIB[k][prefs.vib];
+  if (!pat) return;
+  const now = performance.now();
+  const rank = VIB_RANK[k];
+  if (now < vibBusyUntil && rank <= (VIB_RANK[vibLastKind] ?? -1)) return;
+  if (k === vibLastKind && now - vibLastAt < VIB_GAP) return;
   try {
-    const pat = VIB[kind] || VIB.light;
-    if (navigator.vibrate) navigator.vibrate(pat[prefs.vib] || 0);
+    if (navigator.vibrate) navigator.vibrate(pat);
   } catch { /* 忽略：有的浏览器在无用户手势时会抛 */ }
+  vibLastAt = now;
+  vibLastKind = k;
+  vibBusyUntil = now + pat.reduce((a, b) => a + b, 0);
 }
 
 /* ───────────────────────── 音频上下文 ＋ 主总线 ───────────────────────── */
@@ -247,6 +288,18 @@ export const begin = () => { tone({ f: 392, dur: 0.12, type: 'sine', gain: 0.05 
 
 /** 通用轻点：所有按钮的默认反馈，短到几乎只是一声「嗒」 */
 export const tap = () => tone({ f: 1200, dur: 0.025, type: 'triangle', gain: 0.02 });
+
+/** 切页（交易 / 资产 / 设置）：一记更闷更短的声，与「点按」区分开 —— 玩家不看屏也知道换页了。 */
+export const tab = () => tone({ f: 660, dur: 0.03, type: 'sine', gain: 0.03 });
+
+/** 选中（切币 / 换所 / 选杠杆档 / 切粒度）：轻微上行二音，听感是「咔哒一下换到位」。 */
+export const pick = () => {
+  tone({ f: 880, dur: 0.035, type: 'triangle', gain: 0.03 });
+  tone({ f: 1174, dur: 0.05, type: 'triangle', gain: 0.028, at: 0.03 });
+};
+
+/** 被拒（开仓失败 / 条件不满足）：一记短促下行 —— 原来失败也走 `tap`，**与成功同声**，分不出对错。 */
+export const deny = () => tone({ f: 220, to: 165, dur: 0.12, type: 'square', gain: 0.03 });
 
 /** 开仓：上行两度 */
 export const open = () => { tone({ f: 523, dur: 0.09, type: 'triangle', gain: 0.05 }); tone({ f: 784, dur: 0.1, type: 'triangle', gain: 0.05, at: 0.07 }); };

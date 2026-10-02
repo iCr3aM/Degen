@@ -82,6 +82,17 @@ function moneySlot(key, n, { sign = false } = {}) {
 const setText = (n, v) => { if (n.textContent !== v) n.textContent = v; };
 const setCls = (n, v) => { if (n.className !== v) n.className = v; };
 
+/** 重挂一个动画类，让那条 CSS 动画重播一遍（沿用总资产闪烁的既有做法，2026-10-03 提成函数）。
+ *  `remove` 之后必须**强制一次样式重算**，否则同一帧内 `add` 回去浏览器会认为「没变过」。 */
+function replay(n, cls) {
+  n.classList.remove(cls);
+  void n.offsetWidth;
+  n.classList.add(cls);
+}
+
+/** 换值闪一下（`.flash`）：持仓条 / 总资产那一套。 */
+const flash = n => replay(n, 'flash');
+
 /**
  * 日志条显示几行（2026-10-03 用户拍板 **2**）—— 见 `logline` 的构建处。
  * ⚠️ 恒定行数（不是「有内容才长高」）：变高会带着 K 线区／下方内容一起跳。
@@ -445,6 +456,14 @@ export function mount(root) {
   const { row: vibRow, map: vibBtns } = vibSupported()
     ? segRow('震动', 'vib', [['0', '关'], ['1', '弱'], ['2', '强']])
     : { row: null, map: new Map() };
+  /* 震动「试一下」（2026-10-03 用户实机反馈「手机上感觉不到震动」）：
+     档位那三枚都是几十毫秒的模式，玩家摸不着时分不清是「档位关着」还是「手机不震」。
+     这枚键走一条**加长三连震**（`sound.js` 的 `buzzTest`），一按就能确认硬件到底响不响。 */
+  if (vibRow) {
+    const vibTest = el('button', 'set-btn', '试一下');
+    vibTest.dataset.vibtest = '';
+    vibRow.append(vibTest);
+  }
   const { row: fxRow, map: fxBtns } = segRow('动效', 'fx', [['0', '关'], ['1', '减弱'], ['2', '全']]);
   /* 新手提示（v11 · ③）：管破产预警遮罩这类**引导**内容（开局叙事不受它管）。 */
   const hintBtn = el('button', 'set-btn on', '开');
@@ -800,8 +819,13 @@ export function update(refs, s, view) {
       : `${p.sym} ${p.side === 'long' ? '多' : '空'} ${p.lev}x`);
     setCls(refs.posSide, 'num ' + (p.side === 'long' ? 'side-long' : 'side-short'));
     const pnl = unrealizedOf(s, p.sym);
-    setText(refs.posPnl, moneySlot('pospnl', pnl, { sign: true }));
+    const pnlText = moneySlot('pospnl', pnl, { sign: true });
+    setText(refs.posPnl, pnlText);
     setCls(refs.posPnl, 'num sign ' + (pnl >= 0 ? 'up' : 'down'));
+    /* 未实现盈亏换值闪一下（2026-10-03）：与总资产同一副观感、同一条 `.flash` 重挂机制。
+       ⚠️ 只在**显示值真的变了**的帧上闪 —— `moneySlot` 自带门槛迟滞，数字抖动不会一直触发。
+          `setCls` 整写 `className` 会把上一帧的 `.flash` 擦掉，所以这一下必须排在其后。 */
+    if (pnlText !== refs._posPnlText) { refs._posPnlText = pnlText; flash(refs.posPnl); }
     /* 第三格**只剩保证金率**（Batch 2 · B9，2026-09-29）：原来这里是「保证金率 / 强平价」，
        格宽只有 1/3 屏，两个数一串必然被 `text-overflow` 截掉尾巴（用户实机发现）。
        强平价已搬到 K 线的开仓线左端标签，这一格终于能完整放下一个数。
@@ -811,6 +835,7 @@ export function update(refs, s, view) {
     if (!canLiquidate(p)) {
       setText(refs.posRate, '--');
       setCls(refs.posRate, 'num mut');
+      refs._rateDanger = false;   // 不可强平 ⇒ 没有「红区」这回事，复位（换仓后重新判）
     } else {
       const rate = posMark == null ? 0 : marginRateOf(p, posMark);
       setText(refs.posRate, fmtRate(rate));
@@ -822,13 +847,22 @@ export function update(refs, s, view) {
          分档（与 `main.js` 那声预警同一个判据，不各写一份）：
            `> 0.5` 绿 · 安全 ｜ `0.2 ~ 0.5` 金 · 注意 ｜ `≤ 0.2` 红 · 危险 */
       const safe = safetyOf(p, posMark ?? 0);
-      setCls(refs.posRate, 'num ' + (safe <= 0.2 ? 'down' : safe <= 0.5 ? 'gold' : 'up'));
+      const danger = safe <= 0.2;
+      setCls(refs.posRate, 'num ' + (danger ? 'down' : safe <= 0.5 ? 'gold' : 'up'));
+      /* **进红区**那一刻脉冲一次（2026-10-03）：与 `main.js` 那声预警**同源同判据**
+         （`safetyOf <= 0.2`）—— 它出声、这里出画，两边指的是同一件事。
+         ⚠️ 只在**跨进**那一刻触发，回到注意区之上就复位 —— 否则会贴着阈值一直闪。 */
+      if (danger !== refs._rateDanger) {
+        refs._rateDanger = danger;
+        if (danger) flash(refs.posRate);
+      }
     }
   } else {
     for (const n of [refs.posSide, refs.posPnl, refs.posRate]) {
       setText(n, '--');
       setCls(n, 'num mut');
     }
+    refs._rateDanger = false;   // 空仓：红区状态复位，下一张仓重新判「进没进红区」
   }
 
   /* 日志条：显示**最近两条**（`LOG_ROWS`，2026-10-03）。时间用**事件发生那一刻**的
@@ -848,6 +882,7 @@ export function update(refs, s, view) {
       setText(cell.time, '');
       setText(cell.text, r === 0 ? '—' : '');
       setCls(cell.text, 'mut');
+      cell._key = '';                           // 清签名：下一格新日志仍算「新的一条」，要滑入
       continue;
     }
     /* ⚠️ 类别一律走 `tagOf`（老存档没有 `tag` 字段、新闻到点要衰老）—— 不要直接读 `e.tag`。 */
@@ -860,6 +895,12 @@ export function update(refs, s, view) {
     setCls(cell.text, kindClsOf(e.kind));
     /* `mkt` = 全市场级事件（爆仓潮 / 归零 / 停机…）⇒ 加 2px 左边框 ＋ 淡红底，一眼抓住。 */
     setCls(cell.row, tg === 'mkt' ? 'lg-row alert' : 'lg-row');
+    /* 来了**新的一条**就从下方滑入（落点 6c）：这两行是常驻节点，靠签名比对触发。
+       ⚠️ 必须排在 `setCls(cell.row, …)` 之后 —— 那一行整写 `className`，会把上一帧的 `.in` 擦掉。
+       ⚠️ 首帧（`_key` 未定义）只记签名、**不播** —— 否则开机那一帧两行一起滑一次。 */
+    const key = `${tg}|${e.at ?? s.i}|${e.text}`;
+    if (cell._key === undefined) cell._key = key;
+    else if (key !== cell._key) { cell._key = key; replay(cell.row, 'in'); }
   }
 
   /* **下单一小时锁**（§73.8 · 2026-10-02 用户拍板）：一笔成交后 `s.lockI = s.i`，
