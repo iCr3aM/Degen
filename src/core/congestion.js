@@ -169,7 +169,7 @@ export function blockWaitMinutes(congestion) {
  * ⚠️ 它**不是平衡杠杆** —— 每多 1 个确认只多 10 分钟，在 1 根 K 线的粒度下多数时候看不见。
  *    它的价值是弹层里能写出「Bitfinex · 3 个确认」，把玩家推向 BitMEX（1 个确认最快）这个史实偏好。
  */
-const CONFIRMATIONS = { mtgox: 2, bitfinex: 3, bitmex: 1, binance: 2 };
+const CONFIRMATIONS = { bitfinex: 3, bitmex: 1, binance: 2 };
 
 export const confirmationsOf = exId => CONFIRMATIONS[exId] ?? 2;
 

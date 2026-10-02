@@ -11,11 +11,11 @@
  * 所有会变的数字都挂在 `refs` 上，`update()` 是唯一的写入口。
  */
 
-import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
+import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, canCloseAt, canOpenAt, chanOf, equity, exPrice, futuresAvailable, heatOf, longShareOf, markPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { HEAT } from '../core/god.js';
-import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
+import { canLiquidate, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
@@ -269,11 +269,11 @@ export function mount(root) {
   }
   /* 模式键（U1 · ROADMAP §21.4；v9 · §15.6 N3 加条件）：铺在**「金额」行末尾**
      （用户裁决 —— 不新增行，保住 431px 固定块）。
-     与通道键 / 粒度小字同一约定：**字面即现状**（显示「现货」就是现货模式）。
-     ⚠️ v9 起它决定的是**整张杠杆表 ＋ 整行动作键的字面**（现货＝买入/卖出、合约＝做多/做空/平仓），
+     与通道键 / 粒度小字同一约定：**字面即现状**（显示「杠杆」就是杠杆模式）。
+     ⚠️ v9 起它决定的是**整张杠杆表 ＋ 整行动作键的字面**（杠杆＝买入/卖出、合约＝做多/做空/平仓），
         不再是「只影响 1x 做多」那一个小开关。
      ⚠️ 该所此刻**没有合约**时整枚不出现（`futuresAvailable`）——「没有的选项不显示」。 */
-  const tradeModeBtn = el('button', 'opt', '现货');
+  const tradeModeBtn = el('button', 'opt', '杠杆');
   tradeModeBtn.dataset.mode2 = 'toggle';
   fracRow.append(tradeModeBtn);
 
@@ -297,8 +297,8 @@ export function mount(root) {
   shortBtn.dataset.act = 'short';
   const closeBtn = el('button', 'act flat', '平仓');
   closeBtn.dataset.act = 'close';
-  /* 现货模式那两枚（v9 · §15.3 N4）：借 U 买入＝多、借币卖出＝空。
-     ⚠️ 「卖出」**同时是平多**（现货模式没有独立的「平仓」键）—— 反向那一枚自己承担平仓：
+  /* 杠杆模式那两枚（v9 · §15.3 N4）：借 U 买入＝多、借币卖出＝空。
+     ⚠️ 「卖出」**同时是平多**（杠杆模式没有独立的「平仓」键）—— 反向那一枚自己承担平仓：
         手上没有仓位时它是开仓，持有反向仓时它是平仓（分派逻辑见 `main.js` 的 `d.buy` / `d.sell`）。
      ⚠️ 与 做多/做空/平仓 **互斥显示**：模式一变，这五枚里只留三枚（「没有的选项不显示」）。
         两组在 DOM 里的顺序已经排好，隐藏一组不会打乱剩下那组的次序。 */
@@ -727,7 +727,7 @@ export function update(refs, s, view) {
   /* 第二行平时是费率；**有在途转账时临时换成倒计时**（P2-A）——
      顶栏只有 46px 余量（375px 屏），「拥堵 严重」这类词根本放不下，
      所以拥堵状态词只出现在选所弹层里，顶栏这一行只承担倒计时。
-     ⚠️ 费率**着色**（本轮 ④）：四家所差一个数量级（Mt.Gox 0.60% ↔ BitMEX 0.05%），
+     ⚠️ 费率**着色**（本轮 ④）：三家所差一个数量级（Bitfinex 0.20% ↔ BitMEX 0.05%），
         而这一行是全屏唯一显示它的地方 —— 不区分就等于把成本藏起来了。
         两档门槛直接落在真实数据上（≥0.20% 红 / ≥0.10% 金 / 其余留 mut 灰），
         与 `.pick-head` 的拥堵状态词同一套「两档门槛」写法，不引入新体系。
@@ -743,14 +743,14 @@ export function update(refs, s, view) {
     setText(refs.exRate, '维护中');
     setCls(refs.exRate, 'down');
   } else {
-    /* 费率随**下单模式**切换（v12 · 方案 §11.3）：现货与合约是两张表，顶栏必须显示玩家
-       接下来真正会被收的那一档 —— OTC 恒为现货，所以也要算进去。
-       （着色那三档是按**现货**费率定的门槛：Mt.Gox 0.60% 红 / Bitfinex 0.20% 红 /
-        BitMEX 0.05% 灰 / Binance 0.10% 金，合约费率普遍更低 ⇒ 落到灰档，不误导。） */
+    /* 费率随**下单模式**切换（v12 · 方案 §11.3）：杠杆与合约是两张表，顶栏必须显示玩家
+       接下来真正会被收的那一档 —— OTC 跟随模式，所以也要算进去。
+       （着色那两档是按**杠杆**费率定的门槛：Bitfinex 0.20% 红 /
+        BitMEX 0.05% 灰 / Binance 0.04% 灰，合约费率普遍更低 ⇒ 落到灰档，不误导。） */
     /* v19：带上这家所**近 30 天**的成交量 —— 顶栏必须显示玩家**现在真的会付**的那一档，
-       否则巨鲸看着 0.60% 却被收了 0.53%，账对不上。
+       否则巨鲸看着 0.20% 却被收了 0.13%，账对不上。
        ⚠️ v20：成交量也按**产品线**分账 ⇒ 这里取的 `kind` 必须与 `openTrade` 同源（一处算、两处用）。 */
-    const fk = chanOf(s) !== 'otc' && s.mode === 'fut' ? 'fut' : 'spot';
+    const fk = s.mode === 'fut' ? 'fut' : 'margin';
     const fr = feeRateOf(s.ex, now, fk, vol30Of(s, s.ex, s.i, fk));
     setText(refs.exRate, `费率 ${fmtRate(fr, 2)}`);
     setCls(refs.exRate, fr >= 0.002 ? 'down' : fr >= 0.001 ? 'gold' : '');
@@ -791,11 +791,11 @@ export function update(refs, s, view) {
   if (cur) {
     const p = cur;
     const posMark = exPrice(s, p.sym, p.ex);   // 缺口 10：本仓按**它自己那家所**的本所价
-    setText(refs.posSide, isSpot(p)
-      /* 字面（v9 · §15.6 N4）：现货写「买入 / 卖出」—— 与操作区那两枚键一一对应。
-         原来这里笼统写「现货」两个字，是因为现货恒为 1x 做多；§15.6 N2 起现货**也带杠杆、
-         也能做空**，光写「现货」就说不清方向与倍数了。
-         ⚠️ **倍数只在 lev > 1 时写**（用户 2026-10-01）：普通现货（1x）写个 `1x` 会与杠杆现货混同。 */
+    setText(refs.posSide, isMargin(p)
+      /* 字面（v9 · §15.6 N4）：杠杆写「买入 / 卖出」—— 与操作区那两枚键一一对应。
+         原来这里笼统写「现货」两个字，是因为当年杠杆恒为 1x 做多；§15.6 N2 起杠杆**也带倍数、
+         也能做空**，光写「杠杆」就说不清方向与倍数了。
+         ⚠️ **倍数只在 lev > 1 时写**（用户 2026-10-01）：杠杆 1x 写个 `1x` 会与带杠杆的混同。 */
       ? `${p.sym} ${p.side === 'long' ? '买入' : '卖出'}${p.lev > 1 ? ` ${p.lev}x` : ''}`
       : `${p.sym} ${p.side === 'long' ? '多' : '空'} ${p.lev}x`);
     setCls(refs.posSide, 'num ' + (p.side === 'long' ? 'side-long' : 'side-short'));
@@ -805,8 +805,8 @@ export function update(refs, s, view) {
     /* 第三格**只剩保证金率**（Batch 2 · B9，2026-09-29）：原来这里是「保证金率 / 强平价」，
        格宽只有 1/3 屏，两个数一串必然被 `text-overflow` 截掉尾巴（用户实机发现）。
        强平价已搬到 K 线的开仓线左端标签，这一格终于能完整放下一个数。
-       现货 **1x** 没有维持保证金率这一说 —— 只有币价归零才归零本金（GDD §9.1），填 `--`。
-       ⚠️ v9（§15.3 N5）：判据从「是不是现货」换成 `canLiquidate` —— 现货**杠杆**仓照样有强平线。 */
+       杠杆 **1x** 没有维持保证金率这一说 —— 只有币价归零才归零本金（GDD §9.1），填 `--`。
+       ⚠️ v9（§15.3 N5）：判据从「是不是杠杆 1x」换成 `canLiquidate` —— 杠杆 > 1 仓照样有强平线。 */
     if (!canLiquidate(p)) {
       setText(refs.posRate, '--');
       setCls(refs.posRate, 'num mut');
@@ -866,46 +866,49 @@ export function update(refs, s, view) {
   const locked = pauseLocked(s);
 
   /* 模式键（U1 · §21.4；v9 · §15.6 N3）：字面是**当前**模式。`合约` 时走 `.on` ——
-     与通道键同一约定：偏离默认态（现货）才高亮，让玩家一眼看见「我这一单是合约」。
-     ⚠️ **该所此刻没有合约时整枚不出现**，且一切按现货处理。
+     与通道键同一约定：偏离默认态（杠杆）才高亮，让玩家一眼看见「我这一单是合约」。
+     ⚠️ **该所此刻没有合约时整枚不出现**，且一切按杠杆处理。
         `s.mode` 的回退在 `engine.normalizeLeverage` 里做 —— 渲染层**只读不写**状态。 */
   const futAvail = futuresAvailable(s);
-  const fut = futAvail && s.mode !== 'spot';
+  const fut = futAvail && s.mode !== 'margin';
   refs.tradeModeBtn.hidden = !futAvail;
-  refs.tradeModeBtn.textContent = fut ? '合约' : '现货';
+  refs.tradeModeBtn.textContent = fut ? '合约' : '杠杆';
   refs.tradeModeBtn.classList.toggle('on', fut);
-  /* **持仓时不许切模式**（2026-10-02 用户拍板）：现货仓与合约仓不能并存（`posGate`）——
-     切过去只会看见一排按不动的动作键，自相矛盾。两个方向都锁（合约仓也不许切回现货），
+  /* **持仓时不许切模式**（2026-10-02 用户拍板）：杠杆仓与合约仓不能并存（`posGate`）——
+     切过去只会看见一排按不动的动作键，自相矛盾。两个方向都锁（合约仓也不许切回杠杆），
      先平仓再切。⚠️ 暂停 / 锁定期**照旧放行**：它只改「下一单的参数」，不动钱（见下面 `frozen` 那段）。 */
   refs.tradeModeBtn.disabled = !!cur;
 
   /* 该所此刻开没开**融资**（v10）—— 一个数决定两件事：「卖出」能不能开空、杠杆行是不是置灰。
-     ⚠️ 只查**现货表**，与当前模式无关 —— 合约做空是保证金交易，不需要借币。 */
+     ⚠️ 只查**杠杆表**，与当前模式无关 —— 合约做空是保证金交易，不需要借币。 */
   const canLev = hasFinancingAt(now, s.ex);
 
   /* 动作行（v9 · §15.3 N4）：「没有的选项不显示」——
-     现货三枚（盘口 / 买入 / 卖出）、合约四枚（盘口 / 做多 / 做空 / 平仓），两组互斥。
+     杠杆三枚（盘口 / 买入 / 卖出）、合约四枚（盘口 / 做多 / 做空 / 平仓），两组互斥。
      「盘口」是换成交通道的空心键，两种模式都在。 */
-  const spotMode = !fut;
-  refs.buyBtn.hidden = !spotMode;
-  refs.sellBtn.hidden = !spotMode;
-  refs.longBtn.hidden = spotMode;
-  refs.shortBtn.hidden = spotMode;
-  refs.closeBtn.hidden = spotMode;
+  const marginMode = !fut;
+  refs.buyBtn.hidden = !marginMode;
+  refs.sellBtn.hidden = !marginMode;
+  refs.longBtn.hidden = marginMode;
+  refs.shortBtn.hidden = marginMode;
+  refs.closeBtn.hidden = marginMode;
 
   /* 杠杆档：可选档位随「时间 ＋ 所选交易所 ＋ 模式」变化，签名变了才重建按钮。
      ⚠️ v9：两张表的上限不同（§15.1），切模式必须换一张 —— 所以 `kind` 要进签名。 */
-  const kind = fut ? 'fut' : 'spot';
+  const kind = fut ? 'fut' : 'margin';
   const opts = leverageOptionsAt(now, s.ex, kind);
-  /* 「有、但此刻点不动」的一行（v10 · ②）：现货模式下该所没有融资 ⇒ 可选档只剩一个 `1x`。
+  /* 「有、但此刻点不动」的一行（v10 · ②）：杠杆模式下该所没有融资 ⇒ 可选档只剩一个 `1x`。
      **保留可见**（换所时不再忽隐忽现、K 线高度不跳），但整行走 `.off`（更暗 ＋ 虚线），
      点一下由 `main.js` 给一条「暂不可用 ｜ 为什么」。
      ⚠️ 用 `aria-disabled` 而不是 `disabled` —— 后者会连 `pointerdown` 一起吞掉，点了零反馈。 */
-  const levOff = kind === 'spot' && !canLev;
+  const levOff = kind === 'margin' && !canLev;
+  /* OTC 通道跟随模式（`engine.marginOf`），但杠杆**封顶 `OTC.levMax`**（2026-10-03 拍板）——
+     超过封顶的档位（如 Bitfinex 2021 的 10x）在 OTC 下置灰，与 `main.js` 的夹取口径同源。 */
+  const otcCap = chanOf(s) === 'otc' ? OTC.levMax : Infinity;
   /* 签名里带上**仓位自己的倍数**（`cur.lev`）：开仓 / 平仓都会让这一行重建 ——
      持仓期间除 `cur.lev` 那一格之外一律置灰，不重建就会烙着旧的「都能点」。
      （`s.lev` 本来也进签名，但持仓时它与 `cur.lev` 恒等，所以另加这一段。） */
-  const sig = kind + ':' + opts.join(',') + '#' + s.lev + (levOff ? '!' : '') + '@' + (cur ? cur.lev : '-');
+  const sig = kind + ':' + opts.join(',') + '#' + s.lev + (levOff ? '!' : '') + '@' + (cur ? cur.lev : '-') + '&' + otcCap;
   if (sig !== refs._levSignature) {
     refs._levSignature = sig;
     refs.levRow.querySelectorAll('.opt').forEach(n => n.remove());
@@ -913,7 +916,7 @@ export function update(refs, s, view) {
     for (const v of opts) {
       const b = el('button', 'opt', v + 'x');
       b.dataset.lev = String(v);
-      if (levOff) {
+      if (levOff || v > otcCap) {
         /* 置灰时**不给 `.on`** —— 蓝底 ＋ 虚线会长成第三种没有定义过的样子 */
         b.classList.add('off');
         b.setAttribute('aria-disabled', 'true');
@@ -939,7 +942,7 @@ export function update(refs, s, view) {
   /* 主按钮可用性。
      ⚠️ `lockedUI`（结束 / 待借贷决策）下一律不可用 —— 待决态只留遮罩上那两枚按钮。
      · 合约模式：做多 / 做空 —— 空仓可开、**同向可加仓**；反向那一枚禁用（先用平仓键平掉再反手）
-     · 现货模式（v9）：买入 / 卖出 **手上有仓位时也照样可用** —— 反向那一枚就是平仓、
+     · 杠杆模式（v9）：买入 / 卖出 **手上有仓位时也照样可用** —— 反向那一枚就是平仓、
        同向那一枚是**加仓**（v13 · B4，并进同一条仓位；同一个币仍然只许一条）。
 
      ⚠️ **暂停闸门**（本轮 ④）：暂停时**所有会动钱的操作**都画成禁用（`.act:disabled` 的 .45）——
@@ -964,10 +967,10 @@ export function update(refs, s, view) {
   refs.longBtn.disabled = !waiting && !(tradable && (!cur || dir === 'long'));
   refs.shortBtn.disabled = !waiting && !(tradable && (!cur || dir === 'short'));
   refs.closeBtn.disabled = !waiting && (!cur || lockedUI || frozen || locked);
-  /* 现货模式这两枚**四件事共用**：空仓开仓 / 同向加仓 / 反向平仓 —— 所以只要 `tradable` 就能点。
+  /* 杠杆模式这两枚**四件事共用**：空仓开仓 / 同向加仓 / 反向平仓 —— 所以只要 `tradable` 就能点。
      「卖出」唯一的例外见下（空仓且该所没有融资 ⇒ 开不出空单，那时才禁）。 */
   refs.buyBtn.disabled = !waiting && !tradable;
-  /* 「卖出」＝开现货空单（要借币，v10）：该所没有融资时**空仓不许开空**。
+  /* 「卖出」＝开杠杆空单（要借币，v10）：该所没有融资时**空仓不许开空**。
      ⚠️ 判据只看 `dir === null`：手上压着一张空单时「卖出」是**加仓**（B4）、
         压着一张多单时它是**平多**，两件事都不需要借币 ⇒ 必须能点。
      ⚠️ 这种「点不动」同样走 `aria-disabled` ＋ `.off`（理由同杠杆行），点一下给一条解释。 */
@@ -1015,9 +1018,9 @@ export function update(refs, s, view) {
           一个 $1,000 开局的玩家不该看见自己用不了的东西
        ② 权益够、但**当前币**还没开通 OTC ⇒ 可见但禁用（灰框）——
           这一级存在的意义就是「切币时按钮不再忽隐忽现」，所以不能藏
-       ③ **手上有仓位** ⇒ 禁用（2026-10-02 审计修）：OTC 只能平现货，
-          「杠杆仓 ＋ 切到 OTC」会让这一枚仓当场平不掉（`closeCheck`）——
-          与「持仓不许切现货 / 合约」同一条规矩：**会改变这一笔交易身份的开关，持仓期间一律锁住**。
+       ③ **手上有仓位** ⇒ 禁用（2026-10-02 审计修）：通道是**这一笔交易身份**的一部分，
+          加仓必须同通道（`posGate`）——「盘口仓 ＋ 切到 OTC」会让这一枚仓加不了仓。
+          与「持仓不许切杠杆 / 合约」同一条规矩：**会改变这一笔交易身份的开关，持仓期间一律锁住**。
        ④ 其余 ⇒ 可用
      字面与高亮都跟着**生效通道**走 —— 看 `chanOf` 而不是 `s.chan`，
      否则会出现「键藏起来了、单子却还在走 OTC」这种玩家看不见的通道。 */
@@ -1152,7 +1155,7 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true, ns = '',
   const effY = drawChart(canvas, {
     candles: win.candles,
     vols: win.vols,
-    /* 玩家自己那一段（v20 · 现货 / 合约分色）—— 只换色不改高度，`chart.js` 把它叠画在柱底。
+    /* 玩家自己那一段（v20 · 杠杆 / 合约分色）—— 只换色不改高度，`chart.js` 把它叠画在柱底。
        ⚠️ `own=false`（回顾页）时 `win.pvols` 全是 `null`，`chart.js` 自己会跳过。 */
     pvols: win.pvols,
     /* 槽位数（= 视野要的根数）：柱宽按它算、柱子右对齐，币种刚上线时才不会一根撑满屏（B22）。 */
@@ -1172,7 +1175,7 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true, ns = '',
     levels,
     entry: cur ? cur.entry : null,
     side: cur ? cur.side : null,
-    /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。现货 1x 没有强平价 ⇒ 传 null。 */
+    /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。杠杆 1x 没有强平价 ⇒ 传 null。 */
     liq: cur && canLiquidate(cur) ? liquidationPrice(cur) : null,
     cssW: view.chartW,
     cssH: view.chartH,
@@ -1255,52 +1258,46 @@ function syncChart(refs, s, view, sym, cur, mark) {
 function posListSignature(s) {
   return heldSyms(s).map(sym => {
     const p = s.positions[sym];
-    return `${sym}:${p.side}:${p.lev}:${isSpot(p) ? 's' : 'f'}:${p.entry}:${unrealizedOf(s, sym).toFixed(2)}`;
+    return `${sym}:${p.side}:${p.lev}:${isMargin(p) ? 'm' : 'f'}:${p.entry}:${unrealizedOf(s, sym).toFixed(2)}`;
   }).join('|');
 }
 
 /**
- * 按**普通现货 / 杠杆现货 / 合约**三组列出全部持仓（§6.2 ④；本轮 ⑦ 由两组拆成三组）——
+ * 按**杠杆 / 合约**两组列出全部持仓（§6.2 ④；2026-10-03「全程只做杠杆与合约」由三组并回两组）——
  * 用途是**跨币复盘**：一行一个币，「方向 ＋ 杠杆 ＋ 开仓价」在左、未实现盈亏在右。
  *
- * ⚠️ 现货为什么再拆一刀（用户 2026-09-29 拍板）：**普通现货（1x）与杠杆现货的风险不是一回事** ——
- *    前者只有币价归零才归零本金（`canLiquidate` 为假，永远没有强平线），后者借了钱 / 币、
- *    有维持保证金、会被强平。混在一组里，「哪些仓会被强平」这个最重要的问题一眼看不出来。
  * ⚠️ 与交易页那条持仓条不是重复（§14.7）：那条只看当前币、承担「风险仪表」的职责。
  * ⚠️ **开仓价**本轮加进来（用户拍板）：跨币复盘时「这笔单是贵还是便宜」必须能就地看出来，
  *    否则只有盈亏数字，换个币就不知道成本在哪。格式化走 `fmtLogPrice` —— 与日志串同一口径。
  */
 function buildPosList(box, s) {
   box.textContent = '';
-  const cash = [];   // 普通现货：1x
-  const sLev = [];   // 杠杆现货：借来的钱 / 币，有强平线
+  const mgn = [];    // 杠杆：借钱 / 借币，带杠杆的有强平线；1x 只有币价归零才归零本金
   const fut = [];    // 合约
   for (const sym of heldSyms(s)) {
     const p = s.positions[sym];
-    if (!isSpot(p)) fut.push(sym);
-    else if (p.lev > 1) sLev.push(sym);
-    else cash.push(sym);
+    if (isMargin(p)) mgn.push(sym); else fut.push(sym);
   }
 
-  if (!cash.length && !sLev.length && !fut.length) {
+  if (!mgn.length && !fut.length) {
     box.append(el('div', 'pcard prow mut', '暂无持仓'));
     return;
   }
 
-  for (const [label, syms] of [['普通现货', cash], ['杠杆现货', sLev], ['合约', fut]]) {
+  for (const [label, syms] of [['杠杆', mgn], ['合约', fut]]) {
     if (!syms.length) continue;
     box.append(el('h4', null, label));
     const card = el('div', 'pcard');
     for (const sym of syms) {
       const p = s.positions[sym];
       const pnl = unrealizedOf(s, sym);
-      /* 方向字面与交易页持仓条一一对应（v9 · §15.6 N4）：现货写「买入 / 卖出」、合约写「多 / 空」。 */
-      const dirText = isSpot(p)
+      /* 方向字面与交易页持仓条一一对应（v9 · §15.6 N4）：杠杆写「买入 / 卖出」、合约写「多 / 空」。 */
+      const dirText = isMargin(p)
         ? `${p.side === 'long' ? '买入' : '卖出'}${p.lev > 1 ? ` ${p.lev}x` : ''}`
         : `${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
-      /* 现货多一行**币量**（用户 2026-10-01「花多少钱买了多少枚币」）——
-         杠杆现货 / 合约的 `size` 只是名义的折算，玩家不看这个数，所以不报。 */
-      const qtyText = isSpot(p) ? ` · ${fmtQty(p.size)} 枚` : '';
+      /* 杠杆多一行**币量**（用户 2026-10-01「花多少钱买了多少枚币」）——
+         合约的 `size` 只是名义的折算，玩家不看这个数，所以不报。 */
+      const qtyText = isMargin(p) ? ` · ${fmtQty(p.size)} 枚` : '';
       const row = el('div', 'prow');
       row.append(
         el('b', null, sym),
@@ -1399,8 +1396,8 @@ export function renderLoan(root, s) {
  * ⚠️ 这一帧只画一次（`s.paused` 期间不再有 `onFrame`），不需要去重重建。
  *
  * ⚠️ **标题与正文都改过（2026-10-02 审计修）**，两处各修一个毛病：
- *   ① 台头原来写「破产预警」—— 但这张遮罩服务的**六条 `warn` 锚点**里只有 Mt.Gox 归零
- *      （2014-02-25）真是「破产」，其余五条是崩盘 / 挤兑 / 算法稳定币脱锚（2018-11-15、
+ *   ① 台头原来写「破产预警」—— 但这张遮罩服务的**六条 `warn` 锚点**里只有 2014-02-25
+ *      那条交易所归零真是「破产」，其余五条是崩盘 / 挤兑 / 算法稳定币脱锚（2018-11-15、
  *      2020-03-12、2022-05-09、2022-11-11、2016-05-17）—— 统一口径改成**风险预警**。
  *   ② 正文原来是 `标题 ＋ 「将在 7 天后发生」`，而锚点的 `title` 全是**已经发生过的口吻**
  *      （「全球资产一起被抛售换现金」）—— 一句过去时 + 一句将来时并排，读起来自相矛盾。
@@ -1478,11 +1475,11 @@ export function pickExchange(s, anchor) {
     /* 上行：名字 ＋ **两张费率**（v12 · 方案 §11.3）；下行：这家所自己的事
        （通道 / 到账预估 / 为什么不能选）。
        ⚠️ 合约那一档只在**该所此刻真有合约**时显示（`futSteps` 首档已开）——
-          直接调 `feeRateOf(..., 'fut')` 会在没有合约的年份回落到现货值，
-          于是 2013 年的 Mt.Gox 会凭空显示一行「合约 0.60%」。 */
+          直接调 `feeRateOf(..., 'fut')` 会在没有合约的年份回落到杠杆值，
+          于是 2013 年的 BitMEX 会凭空显示一行「合约 0.05%」。 */
     const { rail, n } = transferPlan(s, ex.id);
     const futOn = ex.futSteps != null && ex.futSteps[0].from <= t;
-    const feeTxt = `费率 ${fmtRate(feeRateOf(ex.id, t, 'spot'), 2)}`
+    const feeTxt = `费率 ${fmtRate(feeRateOf(ex.id, t, 'margin'), 2)}`
       + (futOn ? `｜合约 ${fmtRate(feeRateOf(ex.id, t, 'fut'), 2)}` : '');
     const l1 = el('div', 'pick-l1');
     l1.append(el('b', null, ex.name), el('u', null, feeTxt));
@@ -1653,7 +1650,7 @@ export function openIntro(scenId) {
 
   /* 年代（M1 · 2026-10-01）：开场白必须**说清这一局从哪年开始** —— 否则年代局的开场
      与经典全程一字不差，玩家分不清自己选的那一局到底生效了没有。
-     ⚠️ 经典全程那三行**一字不改**（门头沟 / 币安都是玩家看惯的旧文案），其余年代走下面那支。 */
+     ⚠️ 经典全程那三行**一字不改**（Bitfinex / 币安都是玩家看惯的旧文案），其余年代走下面那支。 */
   const sc = scenarioOf(scenId);
   const money = `$${sc.cash.toLocaleString('en-US')}`;
 
@@ -1664,9 +1661,9 @@ export function openIntro(scenId) {
   box.append(el('h3', null, 'Degen · 加密交易员'));
   if (sc.id === 'classic') {
     box.append(el('p', null,
-      `2013 年 1 月，你带着 ${money} 走进门头沟。\n`
+      `2013 年 1 月，你带着 ${money} 走进 Bitfinex。\n`
       + '这里没有救世主：行情 24 小时不睡，交易所会说没就没。\n'
-      + '从门头沟活到币安，撑到 2024 年底 —— 那就叫赢。'));
+      + '从 Bitfinex 活到币安，撑到 2024 年底 —— 那就叫赢。'));
   } else {
     const at = new Date(sc.at);
     /* ⚠️ **同一笔钱只说一次**：`winter` / `degen` 的副题（`blurb`）本身就是「你只有多少钱」这句叙事，
@@ -1903,20 +1900,19 @@ export function openScenPick() {
  * 有哪些模块、机制怎么咬合、深度在哪。**不是教程**（怎么点由新手引导负责），
  * 所以全文没有一步操作指令，只有「这里有什么、它为什么存在」。
  *
- * 六块：一局是什么 / 三个工具 / 两条通道 / 你的成交会改变行情 / 市场会自己动 / 两种收场。
+ * 六块：一局是什么 / 两个工具 / 两条通道 / 你的成交会改变行情 / 市场会自己动 / 两种收场。
  * 每块一行小标题 ＋ 一段说明，超长时内部滚动（`.about`），「返回」留在滚区之外。
  */
 const ABOUT = [
   ['一局是什么',
     '2013 年 1 月 → 2024 年 12 月，行情就是 BTC / ETH / XRP / DOGE / SOL 的真实历史小时线。'
     + '从 $1,000 起步，赚到多少都算你的 —— 活到 2024-12-31 收盘即通关，爆仓清零即收场。'],
-  ['三个工具',
-    '现货：拿钱买币，不付利息、不因维持线爆仓。'
-    + '现货杠杆：借钱买币 / 借币做空，按日计息，维持线 15%。'
+  ['两个工具',
+    '杠杆：借钱买币 / 借币做空，按日计息，维持线 15%；1x 是最低档，不计息、不参与强平。'
     + '合约：USDT 本位永续，每 8 小时一次资金费，维持线 0.5% 起。倍数越高，强平线越近。'],
   ['两条通道',
     '盘口吃冲击与滑点，单子越大越贵；OTC 是私下一口价的大宗通道（单笔 ≥ 当年门槛，$1 万起逐年抬升），'
-    + '不吃滑点、但带一笔溢价。有持仓时，通道 / 现货合约 / 交易所都会锁住 —— 先平仓再换。'],
+    + '不吃滑点、但带一笔溢价（杠杆封顶 5x，可双向）。有持仓时，通道 / 杠杆合约 / 交易所都会锁住 —— 先平仓再换。'],
   ['你的成交会改变行情',
     '每一笔都会在市场里留下永久的位移（买抬价、卖压价），持仓本身还带来抛压折价。'
     + '所以分批建仓、分批卖出（金额档 1/4 · 1/2 · 全部）是躲开冲击的正经打法 —— 同一根 K 线里不能连下。'],

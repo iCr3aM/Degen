@@ -582,6 +582,39 @@ QuantEngines 的分档）**都落在 5–20% ADV**，取中位 **8%**。
 **影响面**：只有「经典全程」的 2013-01 ~ 2016-05 段与「门头沟寒冬」（2015 年代局）受影响；
 其余四个年代局（2017-09 起）与 2016-05-13 之后**逐位不变**。
 
+#### 5.5.5 落地记录 · 第 8 批（做减法：删 Mt.Gox ＋ 去「现货」概念 · 2026-10-03）
+
+**状态**：✅ 已落地。`STATE_VERSION 30 → 31`（**无迁移，旧档弃**；键改名使旧档的 `spot` / `mtgox` 读不到）。
+
+**用户拍板（原文）**：「去掉 mtg 交易所，并且游戏全程只有杠杆与合约（删除现货交易）……」
+纠正与补充：**1x 保留**（「1 倍杠杆应该也算杠杆吧，只是没有现货这个概念了」）；一次性全做完。
+
+**做减法三件（一次做完）**：
+1. **删 Mt.Gox** —— `EXCHANGES` / `MIN_NOTIONAL_STEPS` / `FEE_TIERS` 三处表项、`congestion.CONFIRMATIONS`
+   的 `mtgox: 2` 全删；`GAME.ex` 与 classic / winter / ico 三局开局所 → **Bitfinex**（同为 2013-01-01
+   开业 ⇒ 经典全程无空档）；场景 `winter` 名 → 「冰封寒冬」。`collapseExchange` 因此**无 `close` 所触发**
+   —— 只失效、不删代码（保留其「整所归零」通路，防将来再加）。
+2. **全局改名 `spot → margin`**（内部 id ＋ 用户可见文案一次改透）：`isSpot → isMargin`、
+   `spotOf → marginOf`、`spotSteps → marginSteps`、`fees.spot → fees.margin`、`s.mode = 'spot' → 'margin'`、
+   `stat.spot → stat.margin`、`pvol.kind='spot' → 'margin'`、`SHOCK_MODE.spot → coin`（冲击形态 `'spot'`
+   本就指「实物换手」，改名 `'coin'` 与「杠杆 1x」对齐）、`PV_SPOT → PV_MARGIN`、CSS `--pv-spot → --pv-margin`。
+   `isMargin` / `marginOf` 的**形状与语义不变**，只是名字不再是「现货」。
+3. **OTC 改判 → 大宗通道 · 跟随模式**：`marginOf(s, otc) => s.mode !== 'fut'`（去掉 `!!otc ||`），
+   杠杆**封顶 `OTC.levMax = 5`**（机构借贷口径），**允许做空**；OTC 单笔下限由「保证金」改判「名义」
+   （`margin * lev < otcMin` ⇒ 堵住「拉高杠杆绕过门槛」）。`main.onChan` 不再把杠杆归 1，改为夹到 5x；
+   `render` 的杠杆行对 `> otcCap` 的档位置灰（与 `main` 夹取同源）。
+
+**保留不动**（用户口径）：**1x 仍是杠杆通道最低档**（不计息、不参与强平；`canLiquidate = lev > 1` 口径不变）；
+`FLOAT` / 抛压折价仍走 `capturedOf`（杠杆多头驱动）；「现货 ETF」等**史实名词**一字不改。
+
+**文案同步**（用户可见）：ABOUT 两条工具（杠杆 / 合约）、模式键「杠杆 / 合约」、持仓分组「杠杆 / 合约」、
+日志「杠杆做空 暂不可用」「先平仓再切换杠杆 / 合约」「先平仓再切换通道」、开盘白与开局日志
+「2013 年 1 月，Bitfinex」、称号徽章「现货党 → 杠杆党」。
+
+**验证**：`npm run build` ✅（`✓ built`，26 modules）。全仓 `grep 'spot|Mt.Gox|门头沟'` 仅剩下
+**文档**（GDD / ROADMAP / TRADEMODEL / NEXT-STEPS 的历史记录）与 `state.js` 的 v31 迁移注释、
+各处「本作没有现货概念」的解释性注释，以及 `review.js / anchors.js` 的**史实「现货 ETF」**——均为刻意保留。
+
 ---
 
 ## 六、复核清单（动手前必须先跑的一件事 ＋ 一件已结案）

@@ -8,7 +8,7 @@
  */
 
 import { cashCurAt, DEFAULT_SCENARIO, GAME, isChallenge, scenarioEndIndex, scenarioOf, scenarioStartIndex } from './config.js';
-import { isSpot } from './positions.js';
+import { isMargin } from './positions.js';
 
 /* ⚠️ v29（2026-10-02 · NEXT-STEPS §五 · 提案 B 档 1「收流动性」）：
    新增 `s.adv` —— **对抗性流动性的峰值台阶**（`sym -> { v, at }`，`v` = 有效 exposure）。
@@ -29,7 +29,7 @@ import { isSpot } from './positions.js';
 
    ⚠️ v25（2026-10-02）：`s.overhang[sym]` 补一个 `scar`（**卖出疤痕**）——
    由 `{ v, at }` 改为 `{ v, at, scar }`（`v` = 持仓折价 ＋ 疤痕，恒 ≤ 0）。
-   病根（K 线位移审计实测）：平掉一条 $50M 现货多头后 `overhang` 整条被删 ⇒ 释放的 −1.71% 折价
+   病根（K 线位移审计实测）：平掉一条 $50M 杠杆多头后 `overhang` 整条被删 ⇒ 释放的 −1.71% 折价
    远大于平仓那一笔只回吐 −1.21% 的冲击（`SHOCK.closeGive`）⇒ **卖出之后价格反而比持仓时更高**
    （实测 +0.49%），「买 → 立刻平」成了白赚一档的套利。
    修法：卖出只释放 `SHOCK.closeGive`，其余 `1 − closeGive` 压成 `scar` 永久留下 ——
@@ -69,18 +69,18 @@ import { isSpot } from './positions.js';
                     供 M2 的「交易档案」与 M3 的「称号」消费。它**不参与任何玩法判定**。
 
    ⚠️ v20（2026-10-01）：`s.pvol` **再改形状** —— 由 `pvol[i][exId] = { u, b }` 改为
-   `pvol[i][exId][kind] = { u, b }`（`kind` = `'spot'` / `'fut'`）。
-   现货与合约是两张费率表，30 天量必须各算各的，否则「拿现货刷量把合约费率刷低」。
+   `pvol[i][exId][kind] = { u, b }`（`kind` = `'margin'` / `'fut'`）。
+   杠杆与合约是两张费率表，30 天量必须各算各的，否则「拿杠杆刷量把合约费率刷低」。
    量柱读的是**全所 × 两条产品线的 `u` 之和**，观感不变。
 
    ⚠️ v19（2026-10-01）：`s.pvol` **改形状** —— 由「每根一个美元数字」改为
    **按交易所分账 ＋ 两口径**（`pvol[i][exId] = { u, b }`：`u` 美元名义额 / `b` BTC 等值）。
-   服务「成交量阶梯手续费」（近 30 天滚动量越大、费率越低）：阶梯按**所**计算，
-   Mt.Gox 的 13 档还只认 **BTC 枚数**。量柱读的是全所合计的 `u`，观感不变。
+   服务「成交量阶梯手续费」（近 30 天滚动量越大、费率越低）：阶梯按**所**计算。
+   量柱读的是全所合计的 `u`，观感不变。
 
    ⚠️ v18（2026-10-01）：新增 `s.overhang` —— **持仓抛压折价**（`sym -> { v, at }`）。
    囤币从此真的挤占流通盘：占比越大，价格被压得越低（不衰减），你的买卖也越难。
-   同时 `capturedOf` 口径收窄为**现货实物多头**（合约 / 杠杆永续不挤占现货流通盘）。
+   同时 `capturedOf` 口径收窄为**杠杆通道多头**（合约多头是衍生品，不挤占实物流通盘）。
    ⚠️ 后一条虽未改字段，但改了同一份数在 §15.1 闸门里的语义 ⇒ 一并弃档，避免新旧档行为不一致。
 
    ⚠️ v17（2026-10-01）：新增 `s.pvol` —— **玩家自己的成交额**（按小时记账，喂给量柱）。
@@ -98,8 +98,13 @@ import { isSpot } from './positions.js';
    且 `save()` 是整份 `JSON.stringify(s)` ⇒ 它**确实落盘**，所以必须升版本号。）
    ⚠️ v30（2026-10-02 · NEXT-STEPS 第 6 批 · 缺口 3/5/16）：新增三样账本 ——
    ① `s.fund`（**保险基金**，全局一个池）；② `s.mkt[sym].npcFund`（**对手方池**，玩家资金费的对手方）；
-   ③ `s.stat.liqNotional`（**全市场级爆仓量**，只含强平潮）。形状变了 ⇒ 弃档重开。 */
-export const STATE_VERSION = 30;
+   ③ `s.stat.liqNotional`（**全市场级爆仓量**，只含强平潮）。形状变了 ⇒ 弃档重开。
+
+   ⚠️ v31（2026-10-03 · 「全程只做杠杆与合约」）：**去掉 Mt.Gox 与「现货」概念**，
+   `pos.spot` / `s.mode='spot'` / `stat.spot` / `pvol.kind='spot'` / `fees.spot` 一律改名为 `margin`；
+   开局所由 `mtgox` 改为 `bitfinex`；`SHOCK_MODE.spot` → `coin`。
+   形状本身只是**键改名**，但旧档里的 `spot` 键在新代码里读不到 ⇒ 语义上等同弃档，故一并升版本号。 */
+export const STATE_VERSION = 31;
 
 /**
  * 开一局新的。
@@ -145,7 +150,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      */
     seed: GAME.seed,
 
-    /** 当前所在的交易所 id（见 `config.EXCHANGES`）—— 经典全程是 Mt.Gox，年代局各按 `SCENARIOS[].ex` */
+    /** 当前所在的交易所 id（见 `config.EXCHANGES`）—— 经典全程是 Bitfinex，年代局各按 `SCENARIOS[].ex` */
     ex: sc.ex,
 
     /**
@@ -153,7 +158,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      *
      *     `books[exId] = { usd, usdt }`
      *
-     * - **按所分账**（GDD §7.2）：Mt.Gox 归零时只清它自己那一格，玩家早搬走的钱安然无恙。
+     * - **按所分账**（GDD §7.2）：某所归零时只清它自己那一格，玩家早搬走的钱安然无恙。
      * - **两格**（v13 新增）：`usd` = 美元法币、`usdt` = 稳定币。开局那 $1,000 是**美元**
      *   —— 2013 年世界上还没有 USDT（Tether 2014-11 才在 Omni 上发币），
      *   当年入金、电汇、结算全部走法币。要玩合约得先在资产页「买 U」。
@@ -182,7 +187,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      *    `erc20` / `trc20`）。两个字段目前都只供展示与排查，账目本身在发起那一刻就已经结清。
      * ⚠️ **v13 再加 `cur`**（方案 §2.3）：这笔钱是 `'usd'` 还是 `'usdt'` —— 由发起时的年代定
      *    （`config.cashCurAt`，与通道同步：电汇时代搬美元、链上时代搬 U）。到账时进新所的**那一格**，
-     *    否则 2013 年的 Mt.Gox 会凭空冒出一笔 USDT。
+     *    否则 2013 年的所会凭空冒出一笔 USDT。
      */
     transfer: null,
 
@@ -195,7 +200,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     /**
      * 订单冲击池 —— `sym -> [{ v, at, perm, betaFast }, …]`：`v` = 该笔成交留下的冲击量
      * （正 = 买上去、负 = 砸下来），`at` = 写入它的那个 `s.i`，`perm` / `betaFast` = **这一笔自己**的
-     * 衰减形态（§73.6：现货痕迹更久、合约回补更快 —— 随笔存，不随「此刻的模式」变）。
+     * 衰减形态（§73.6：实物换手痕迹更久、合约回补更快 —— 随笔存，不随「此刻的模式」变）。
      * 行情位移 = `Σ v_k × decay(j − at_k, 该笔参数)`，**逐根**衰减（Bouchaud 幂律：永久分量 ＋
      * 慢幂律 ＋ 快回，§73.3 ⇒ 台阶永久保留）。开仓 / 平仓 / 强平都写一笔，但**平仓那一侧只回吐
      * `SHOCK.closeGive = 35%`**（2026-10-02）⇒ 一次完整往返净留开仓冲击的 **≈ 55.9%**，市场对玩家有记忆。
@@ -216,7 +221,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      * `sym -> { at: [], v: [], scar: [] }`（三条平行数组，按 `at` 升序、**只许追加**，
      * 取值 = 最后一个 `at <= j` 的那一项，见 `god.stepValueAt`）。`v` 恒 ≤ 0。
      *
-     * 「你的现货实物多头占了多少可交易浮筹」越大，市场越忌惮你随时砸盘 ⇒ 价格被压一个**持续的**
+     * 「你的杠杆通道多头占了多少可交易浮筹」越大，市场越忌惮你随时砸盘 ⇒ 价格被压一个**持续的**
      * 折价（`−FLOAT.overhangMax × share`，最狠 −20%）。与 `s.flow` 不同：它**不衰减** —— 只要你
      * 还没卖，这份忌惮就一直在。
      *
@@ -257,7 +262,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      *
      * ⚠️ 由 `engine.advTick` **每小时**写一次（不在读路径上写）：`openCheck` / `closeCheck`
      *    是纯判据、`render.js` 每帧都调，在那里写状态等于「渲染即改存档」。
-     * ⚠️ 只算**杠杆盘**（合约 / 现货保证金）：现货 1x 是实物，走 `FLOAT` 那条浮筹折减，
+     * ⚠️ 只算**杠杆盘**（合约 / 杠杆 > 1）：杠杆 1x 是实物，走 `FLOAT` 那条浮筹折减，
      *    两边不重复计（§5.3）。
      */
     adv: {},
@@ -313,20 +318,20 @@ export function createState(scenId = DEFAULT_SCENARIO) {
 
     /**
      * **玩家自己的成交量**（v17 新增 · v19 按所分账 · v20 按产品线分账 · v24 按币分账）——
-     * `pvol[sym][i][exId][kind] = { u, b }`，`kind` = `'spot'` / `'fut'`：
+     * `pvol[sym][i][exId][kind] = { u, b }`，`kind` = `'margin'` / `'fut'`：
      *   - `u` = 该小时、该币、在这家所、这条产品线上成交的**美元名义额**
      *     （含杠杆：100x / 保证金 $1,000 ⇒ 计 $100,000）
-     *   - `b` = 同一笔的 **BTC 等值**（`u ÷ 当时 BTC 价`）—— Mt.Gox 的档位是按 **BTC 枚数**分的
+     *   - `b` = 同一笔的 **BTC 等值**（`u ÷ 当时 BTC 价`）
      *
      * ⚠️ **最外层必须是币**（v24，2026-10-02）：`s.i` 是全币种共用的小时序号，
      *    少了这一层，在 BTC 买的这一笔会同时出现在另外四个币的同一根量柱上（用户反馈的 K 线污染）。
      *
      * 三个消费方，口径各取一格：
      *   ① **量柱**（`view.windowFor`）—— 读**当前币 × 全所 × 两条产品线合计的 `u`**，
-     *      现货 / 合约**分段着色**（`view` 拿 `sym` 直接取本币那一格，别的币看不见）；
+     *      杠杆 / 合约**分段着色**（`view` 拿 `sym` 直接取本币那一格，别的币看不见）；
      *   ② **成交量阶梯手续费**（`engine.vol30Of` → `config.feeRateOf`）—— 按**所 × 产品线**
-     *      汇总近 30 天，且**跨币汇总**（VIP 档不分币对），Mt.Gox 取 `b`、其余三家取 `u`；
-     *   ③ **卡位维度**：现货与合约各攒各的，跨产品线不互相打折。
+     *      汇总近 30 天，且**跨币汇总**（VIP 档不分币对），三家都取 `u`；
+     *   ③ **卡位维度**：杠杆与合约各攒各的，跨产品线不互相打折。
      *
      * 它按**根**记账并进存档，否则成交那小时一翻页，柱子就「缩回去」了
      * —— 与订单冲击「永久保留」同一条口径。
@@ -344,11 +349,11 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     sym: 'BTC',
 
     /**
-     * 下单模式（U1 · ROADMAP §21.4）—— `'spot'`（现货，默认）或 `'fut'`（合约）。
-     * ⚠️ 它只决定**「1x 做多」**这一种组合的语义：`'spot'` ⇒ 现货（不强平、不付资金费）；
-     *    `'fut'` ⇒ 合约（也付资金费、也有强平价）。**做空与任何 ≥2x 恒为合约**（与模式无关），
-     *    因为那两种本来就需要维持保证金 —— 见 `engine.openTrade()` 里那个 `spot` 表达式。
-     * ⚠️ OTC 通道恒为现货（不随它变）。
+     * 下单模式（U1 · ROADMAP §21.4）—— `'margin'`（杠杆，默认）或 `'fut'`（合约）。
+     * ⚠️ 它决定这一单走**哪条产品线**：`'margin'` ⇒ 杠杆通道；`'fut'` ⇒ 合约通道。
+     *    本作没有现货概念 —— 杠杆通道的最低档就是 1x（1x 不计息、不参与强平）。
+     *    ⚠️ 做空需融资（`hasFinancingAt`）时才算数；≥2x 恒有维持保证金 —— 见 `engine.openTrade()`。
+     * ⚠️ OTC 通道**跟随它**（2026-10-03 改判）：走 OTC 时沿用当前模式，但杠杆封顶 `OTC.levMax`。
      */
     mode: GAME.mode,
 
@@ -418,7 +423,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      *   `open`   开仓笔数（含加仓那一笔，＝成功调用 `openTrade` 的次数）
      *   `win` / `loss` 平仓回合数，按**回合净额**（毛盈亏 − 开仓费 − 平仓费）的正负分桶
      *   `liq`    被强平的笔数（逐步强平与整条强平都算一笔）
-     *   `spot` / `fut`  开仓笔数按产品线分桶（`引擎` 的 `isSpotOrder` 判据）
+     *   `margin` / `fut`  开仓笔数按产品线分桶（`引擎` 的 `isMarginOrder` 判据）
      *   `maxLev` 用过的最高杠杆（含 1x；开局就是 1）
      *   `syms`   交易过的币（`sym -> true`）—— 称号「单一信仰 / 五币全通」读它
      *   `move`   成功换所次数 —— 称号「搬家达人」读它
@@ -431,7 +436,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      */
     stat: {
       open: 0, win: 0, loss: 0, liq: 0,
-      spot: 0, fut: 0, maxLev: 1,
+      margin: 0, fut: 0, maxLev: 1,
       syms: {}, move: 0, god: false, loan: 0,
       liqNotional: 0,
     },
@@ -523,7 +528,7 @@ export const slotOf = (s, cur, ex = s.ex) => bookOf(s, ex)[cur] ?? 0;
 /**
  * **这一单能用多少钱**（`openTrade` 的保证金基数）。
  * - `mustUsdt`（合约）：只认 USDT —— USDT 本位永续，保证金必须是 U。
- * - 否则（现货 / OTC）：两格之和，先扣 U 不足补美元（见 `debit`）。
+ * - 否则（杠杆 / OTC）：两格之和，先扣 U 不足补美元（见 `debit`）。
  */
 export const spendableOf = (s, mustUsdt = false) => {
   const b = bookOf(s);
@@ -554,7 +559,7 @@ export function debit(s, amount, mustUsdt = false) {
 
 /**
  * **入账** —— 按 `mix`（当初扣的那两笔）的**比例**分回两格：平仓原路退回。
- *   2013 年那 $1,000 是美元 ⇒ 平仓回的还是美元（否则 Mt.Gox 会凭空空降 USDT）。
+ *   2013 年那 $1,000 是美元 ⇒ 平仓回的还是美元（否则会凭空空降 USDT）。
  * 盈利 / 亏损按同比例放大缩小（两格一起长、一起缩），不会凭空改变资产构成。
  *
  * ⚠️ `mix` 缺失或两格全 0（老档、贷款、转账到账）⇒ **整笔进 USDT** ——
@@ -583,8 +588,8 @@ export const heldSyms = s => Object.keys(s.positions);
  *
  * 四条口径：
  *   - 只有**多头方向**算数：空头并没有把币从市场里拿走
- *   - 只有**现货**算数（v18 · 2026-10-01 用户拍板）：**合约 / 永续多头是衍生品，现货一枚都没动**。
- *     原来不分现货与合约、一律计入，是本次收窄前的口径。判据走 `isSpot`（开仓时写死在仓位上的字段）。
+ *   - 只有**杠杆通道**算数（v18 · 2026-10-01 用户拍板）：**合约多头是衍生品，实物一枚都没动**。
+ *     原来不分产品线、一律计入，是本次收窄前的口径。判据走 `isMargin`（开仓时写死在仓位上的字段）。
  *   - **OTC 买来的币不算**（§15.3：对手方私下一口价，不从市场拿走流通量）
  *   - 没持仓 ⇒ 0
  *
@@ -593,7 +598,7 @@ export const heldSyms = s => Object.keys(s.positions);
  */
 export function capturedOf(s, sym) {
   const pos = s.positions[sym];
-  if (!pos || !isSpot(pos) || pos.side !== 'long' || pos.otc) return 0;
+  if (!pos || !isMargin(pos) || pos.side !== 'long' || pos.otc) return 0;
   return pos.size;
 }
 
@@ -641,7 +646,7 @@ export const LOG_TAG_DEFAULT = { info: 'sys', ok: 'sys', bad: 'sys', news: 'news
  *    且时间戳停在最后一次点击 —— 正是「只留最新一次的那条」。
  *    只在**相邻**时折叠（中间夹了别的日志就各留一条），所以时间线不会被压平。
  * ⚠️ 判据只用 `text`、**不含** `kind` / `tag`：同一句话在不同入口可能一个 `info` 一个 `bad`
- *    （如「现货做空 暂不可用」主入口是 `info`、引擎兜底是 `bad`），带上它们判就会漏合并。
+ *    （如「杠杆做空 暂不可用」主入口是 `info`、引擎兜底是 `bad`），带上它们判就会漏合并。
  *
  * @param {string} text 正文
  * @param {'info'|'ok'|'bad'|'news'} [kind] 正文颜色档（`ok` 绿 / `bad` 红 / 其余灰 / `news` 提亮）

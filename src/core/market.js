@@ -177,27 +177,27 @@ export function volumeAt(sym, i) {
 }
 
 /**
- * 玩家自己的成交额源 —— 由 `main.js`（唯一的接线层）注入 `i => { spot, fut }`（美元名义额）。
+ * 玩家自己的成交额源 —— 由 `main.js`（唯一的接线层）注入 `i => { margin, fut }`（美元名义额）。
  *
  * ⚠️ 与 `factorSource` 同一范式：market.js 是最底层的数据读取者，**不该知道 `s` 长什么样**，
  *    所以这里只留一个注入点，由接线层把 `s.pvol` 递进来。未注入时恒返回 0 ⇒ 量柱与
  *    「数据包逐位相同」—— 离线断言靠这一条。
- * ⚠️ v20 起**按产品线分开返回**（现货 / 合约两段，画布上分色叠画）—— 高度合计仍与
+ * ⚠️ v20 起**按产品线分开返回**（杠杆 / 合约两段，画布上分色叠画）—— 高度合计仍与
  *    改动前**逐位相同**（= 两条线之和），只有颜色分开了。
  * ⚠️ v24（2026-10-02）起**再要一个 `sym`**：`s.pvol` 的最外层是币种 ⇒ 同一根小时序号
  *    在五个币上各有一格，不按币取就会把「BTC 那一笔」画到 ETH 的量柱上（K 线污染）。
  */
 let playerVolSource = null;
 
-/** 注入玩家成交量源 `(sym, i) => {spot, fut}`；不传 = 解除（回到只有数据包份额的量柱） */
+/** 注入玩家成交量源 `(sym, i) => {margin, fut}`；不传 = 解除（回到只有数据包份额的量柱） */
 export function bindPlayerVolSource(fn) { playerVolSource = fn || null; }
 
 /** 空样本：**共用一个冻结对象**，免得每帧给没成交的小时都造一个临时对象（热路径） */
-const NO_PV = Object.freeze({ spot: 0, fut: 0 });
+const NO_PV = Object.freeze({ margin: 0, fut: 0 });
 
 /**
  * `sym` 这个币第 i 根 K 线上**玩家自己**贡献的成交额（美元），按产品线分开 ——
- * 加在包内份额折算出的市场成交额之上。未注入 / 该小时没成交 ⇒ `{ spot: 0, fut: 0 }`。
+ * 加在包内份额折算出的市场成交额之上。未注入 / 该小时没成交 ⇒ `{ margin: 0, fut: 0 }`。
  * @param {string} sym 正在画的那个币 —— 玩家在别的币上的成交**不进**这一格
  */
 export function playerVolOf(sym, i) {

@@ -117,7 +117,7 @@ function dayBar(sym, d, upto, own = true) {
   const z = Math.min(d * HOURS_PER_DAY + HOURS_PER_DAY - 1, upto, r[1] - 1);
   if (a > z) return null;
   let o = null, h = -Infinity, l = Infinity, c = null, share = 0;
-  const pv = own ? { spot: 0, fut: 0 } : null;
+  const pv = own ? { margin: 0, fut: 0 } : null;
   for (let k = a; k <= z; k++) {
     const cc = candleAt(sym, k);
     if (!cc) continue;
@@ -130,7 +130,7 @@ function dayBar(sym, d, upto, own = true) {
        v24 起还要认币（`pvol` 按币分账 —— 别把别的币的成交并进这一根） */
     if (pv) {
       const p = playerVolOf(sym, k);
-      if (p.spot) pv.spot += p.spot;
+      if (p.margin) pv.margin += p.margin;
       if (p.fut) pv.fut += p.fut;
     }
   }
@@ -142,7 +142,7 @@ function dayBar(sym, d, upto, own = true) {
 /**
  * 出一帧要画的 K 线与量柱。这是渲染层唯一的入口，也是**唯一**会写回记录的地方
  * （夹取后的 `right` / `count` 必须落回记录，否则玩家一直往同一边拖时数字会越滚越大）。
- * @returns {{candles:Array, vols:Array<number>, pvols:Array<{spot:number,fut:number}>,
+ * @returns {{candles:Array, vols:Array<number>, pvols:Array<{margin:number,fut:number}>,
  *            mode:string, count:number, slots:number, locked:boolean, yPx:number, right:number}}
  *   `right` 一并返回（P2-C）：锚点刻度要把「小时序号」换算成视野里的槽位，得知道最右那根是第几根。
  *   `slots` ＝ 本帧**要画的槽位数**（＝ `count`）。
@@ -166,7 +166,7 @@ export function windowFor(sym, i, cssW, own = true, ns = '') {
       candles.push(bar);
       /* 日线的量 = **已过小时的份额之和** × 当天真实总量（Batch 4 · B15）：
          整天 = 份额和约 1 ⇒ 拿回全量；今天 = 只算已过的那几个小时 ⇒ 柱子随小时推进逐格抬升。 */
-      vols.push(bar.share * (liqOf(sym, d) || 0) + (bar.pv ? bar.pv.spot + bar.pv.fut : 0));
+      vols.push(bar.share * (liqOf(sym, d) || 0) + (bar.pv ? bar.pv.margin + bar.pv.fut : 0));
       pvols.push(bar.pv);
     }
   } else {
@@ -179,7 +179,7 @@ export function windowFor(sym, i, cssW, own = true, ns = '') {
       /* 市场那一份 ＋ **玩家自己那一份**（v17）—— 玩家砸出的天量从此在图上看得到。
          v24：这一份**只认本币**（`pvol[sym]`）—— 在 BTC 买的量不该出现在 ETH 的柱子上。 */
       const pv = own ? playerVolOf(sym, k) : null;
-      vols.push((share > 0 ? share * (liqOf(sym, dayIndexOf(k)) || 0) : 0) + (pv ? pv.spot + pv.fut : 0));
+      vols.push((share > 0 ? share * (liqOf(sym, dayIndexOf(k)) || 0) : 0) + (pv ? pv.margin + pv.fut : 0));
       pvols.push(pv);
     }
   }

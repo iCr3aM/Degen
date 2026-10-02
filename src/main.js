@@ -7,7 +7,7 @@
  *   main.js 是唯一把两边连起来的地方（也是唯一允许读时钟的地方）
  */
 
-import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, cashCurAt, exchangeOf, hasFinancingAt, isChallenge, maxLeverageAt, scenarioOf, scenarioStartIndex } from './core/config.js';
+import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, cashCurAt, exchangeOf, hasFinancingAt, isChallenge, maxLeverageAt, scenarioOf, scenarioStartIndex } from './core/config.js';
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
@@ -311,20 +311,20 @@ async function boot() {
   /* ⚠️ v19 起 `pvol[i]` 是**按所分账**的对象（`{ exId: … }`），v20 起再按**产品线**分账
      （`pvol[i][exId][kind] = { u, b }`），v24（2026-10-02）**最外层再套一层币种**
      （`pvol[sym][i][exId][kind]`）。量柱要的是**当前这个币 × 全所 × 两条产品线各自合计的 `u`**
-     —— 现货一段、合约一段，画布上分色叠画；两段之和与 v19 的单一数字**逐位相同**。
+     —— 杠杆一段、合约一段，画布上分色叠画；两段之和与 v19 的单一数字**逐位相同**。
      ⚠️ `sym` 这一层是必须的：`s.i` 是全币种共用的小时序号，不按币隔离的话
         「你在 BTC 买的这一笔」会在 ETH / XRP / DOGE / SOL 的同一根柱子上一起冒出来。 */
   bindPlayerVolSource((sym, i) => {
     const bySym = s.pvol && s.pvol[sym];
     const cell = bySym && bySym[i];
     if (!cell) return null;
-    let spot = 0, fut = 0;
+    let margin = 0, fut = 0;
     for (const id in cell) {
       const byKind = cell[id];
-      if (byKind.spot) spot += byKind.spot.u;
+      if (byKind.margin) margin += byKind.margin.u;
       if (byKind.fut) fut += byKind.fut.u;
     }
-    return (spot || fut) ? { spot, fut } : null;
+    return (margin || fut) ? { margin, fut } : null;
   });
 
   refs = mount(root);
@@ -576,8 +576,8 @@ function soundFromTick(s) {
   /* 安全垫跌破 **0.2（红区）**：**进入**那一刻响一次，回到注意区之上后重置（不然每帧都在响）。
      与持仓条第三格**同一个判据**（本轮 ⑥ 起两边都走 `safetyOf`，不再各写一个阈值）——
      原来是拿保证金率绝对值卡 `< 5%`，那会让 100x 仓位一开出来就响（它开出来就只有 1%）。
-     ⚠️ 不可强平的仓位（现货 1x）没有维持保证金率这一说，跳过 —— 判据统一走 `canLiquidate`
-        （v9 · §15.4：现货带杠杆后 1x 以外也能强平，`isSpot` 已经不回答这个问题）。 */
+     ⚠️ 不可强平的仓位（杠杆 1x，实物换手）没有维持保证金率这一说，跳过 —— 判据统一走 `canLiquidate`
+        （v9 · §15.4：杠杆 1x 以外都能强平，`isMargin` 已经不回答这个问题）。 */
   for (const sym of heldSyms(s)) {
     const pos = s.positions[sym];
     if (!canLiquidate(pos)) { warnedSyms.delete(sym); continue; }
@@ -689,7 +689,7 @@ function dispatch(node) {
      **暂停时必须被拦住的只有「会动钱」的动作**：下单（`buy`/`sell`/`long`/`short`）、
      平仓（`close`）、换所（`ex` 弹层 ＋ `exok` 二次确认）、盘口 ⇄ OTC 切换（`chan`）、
      **买 U（`buyu`）**。
-     其余一律**照常可用**（用户 2026-09-29 拍板）：杠杆档 / 金额档 / 现货合约 / 切币 /
+     其余一律**照常可用**（用户 2026-09-29 拍板）：杠杆档 / 金额档 / 杠杆合约 / 切币 /
      粒度 / 切页 / 日志浮层 / 设置页（音量·行情音·震动·动效·新手提示·重开）/ 上帝面板 / 暂停键本身。
      理由：那些只改「下一单的参数」，此时既没有行情在走、也没有一笔单会成交 ——
      拦它们只会让玩家以为界面坏了。
@@ -830,13 +830,10 @@ function dispatch(node) {
     return;
   }
   if (d.lev !== undefined) {
-    /* OTC 通道只有现货 ⇒ 杠杆被锁在 1x。这里只给一条日志、**不改 s.lev** ——
-       他切回盘口时那个杠杆还在，不必重新点一遍（Batch 5 的 `数据不擅自改` 口径）。 */
-    if (chanOf(s) === 'otc') { pushLog(s, 'OTC 通道只有现货，杠杆固定 1x', 'info'); after(); return; }
     /* 该所此刻没有融资 ⇒ 杠杆行是**置灰不可点**的（v10 · ②）。它挂的是 `aria-disabled` 而不是
        `disabled`，正是为了能让这一下走到这里 —— 给一句「暂不可用 ｜ 为什么」，而不是毫无反应。
        判据与渲染层、与 `engine.openTrade` 同源（`hasFinancingAt`），三处不各算一遍。 */
-    if (levKind(s) === 'spot' && !hasFinancingAt(timeOf(s), s.ex)) {
+    if (levKind(s) === 'margin' && !hasFinancingAt(timeOf(s), s.ex)) {
       pushLog(s, '杠杆 暂不可用 ｜ 该所此刻没有融资业务', 'info');
       after();
       return;
@@ -852,31 +849,34 @@ function dispatch(node) {
       after();
       return;
     }
-    /* 上限取**本单走的那张表**（§15.1）—— 现货档位与合约档位是两套数，不能拿一张去夹另一张。 */
-    s.lev = Math.max(1, Math.min(want, maxLeverageAt(timeOf(s), s.ex, levKind(s))));
+    /* 上限取**本单走的那张表**（§15.1）—— 杠杆档位与合约档位是两套数，不能拿一张去夹另一张。
+       ⚠️ OTC 通道跟随模式（杠杆表），但再叠一道 `OTC.levMax`（5x）封顶 —— 与 `engine.openCheck`
+          同源，否则界面会显示一个下不出单的档位。 */
+    const cap = Math.min(maxLeverageAt(timeOf(s), s.ex, levKind(s)), chanOf(s) === 'otc' ? OTC.levMax : Infinity);
+    s.lev = Math.max(1, Math.min(want, cap));
     after();
     return;
   }
   if (d.speed !== undefined) { s.speed = Number(d.speed); after(); return; }
-  /* 模式切换（U1 · ROADMAP §21.4；v9 · §15.6 N3）：现货 ⇄ 合约。它决定的是**整张杠杆表**
-     与**整行动作键的字面**（现货＝买入/卖出、合约＝做多/做空/平仓），见 `engine.spotOf` / `levKind`。
+  /* 模式切换（U1 · ROADMAP §21.4；v9 · §15.6 N3）：杠杆 ⇄ 合约。它决定的是**整张杠杆表**
+     与**整行动作键的字面**（杠杆＝买入/卖出、合约＝做多/做空/平仓），见 `engine.marginOf` / `levKind`。
      ⚠️ `data-mode2`（操作区那枚模式键），不是 `data-mode`（那是 K 线粒度小字）。
      ⚠️ 该所此刻**没有合约**时这枚键根本不显示，但**状态机不靠 DOM 兜底**（同 `onChan`）：
         少了这一行，`s.mode` 就会切到一张不存在的杠杆表上。 */
   if (d.mode2 !== undefined) {
     if (!futuresAvailable(s)) return;
-    /* **持仓时不许切模式**（2026-10-02 用户拍板）：现货仓与合约仓不能并存（`posGate`），
+    /* **持仓时不许切模式**（2026-10-02 用户拍板）：杠杆仓与合约仓不能并存（`posGate`），
        切过去只会得到一排按不动的「做多 / 做空 / 平仓」。两个方向都锁 ——
-       合约仓也不许切回现货，一律先平仓再切。
+       合约仓也不许切回杠杆，一律先平仓再切。
        ⚠️ 渲染层已经把这一枚画成 `disabled`，这一行是**状态机不靠 DOM 兜底**（同 `onChan`）。 */
     if (posOf(s, s.sym)) {
-      pushLog(s, `${s.sym} 有持仓 ｜ 先平仓再切换现货 / 合约`, 'info');
+      pushLog(s, `${s.sym} 有持仓 ｜ 先平仓再切换杠杆 / 合约`, 'info');
       after();
       return;
     }
-    s.mode = s.mode === 'spot' ? 'fut' : 'spot';
-    /* 切模式后重新夹取杠杆：两张表的上限不同（如 Binance 现货 3x / 合约 125x），
-       不夹的话从合约切回现货会带着一个现货拿不到的档位（`engine.normalizeLeverage` 顺带兜住模式）。 */
+    s.mode = s.mode === 'margin' ? 'fut' : 'margin';
+    /* 切模式后重新夹取杠杆：两张表的上限不同（如 Binance 杠杆 5x / 合约 125x），
+       不夹的话从合约切回杠杆会带着一个杠杆拿不到的档位（`engine.normalizeLeverage` 顺带兜住模式）。 */
     normalizeLeverage(s);
     after();
     return;
@@ -910,8 +910,8 @@ function dispatch(node) {
   if (d.restart !== undefined) return doRestart();
   if (d.wipe !== undefined) return onWipe();
 
-  /* 现货模式那两枚动作键（v9 · §15.3 N4）：**买入＝借 U 做多、卖出＝借币做空**。
-     ⚠️ 反向那一枚**自己承担平仓**（现货模式没有独立的「平仓」键）：
+  /* 杠杆模式那两枚动作键（v9 · §15.3 N4）：**买入＝借 U 做多、卖出＝借币做空**。
+     ⚠️ 反向那一枚**自己承担平仓**（杠杆模式没有独立的「平仓」键）：
           空仓 ⇒ 开仓；**同向 ⇒ 加仓**（v13 · B4，`openTrade` 内部并进那条仓位）；
           反向 ⇒ 平掉它。
      ⚠️ 合约模式下这两枚不显示，同样挡一次 —— 否则会从一个不该存在的入口开出一张合约单。 */
@@ -921,12 +921,12 @@ function dispatch(node) {
     const pos = posOf(s, s.sym);
     /* ⚠️ **融资判据必须排在「有没有仓位」之后**（2026-09-29 修 bug）：手上压着一张多仓时，
        「卖出」是**平多**，平仓不需要借币 ⇒ 与融资无关。原来这条写在 `posOf` **之前**，
-       于是在 Mt.Gox（现货只有 1x、无融资）买进现货之后**再也卖不出去**，还误报
-       「现货做空 暂不可用 ｜ 该所此刻没有融资业务」——那是开空才需要的条件。
+       于是在一个只有 1x、无融资的所里买进之后**再也卖不出去**，还误报
+       「杠杆做空 暂不可用 ｜ 该所此刻没有融资业务」——那是开空才需要的条件。
        现在只拦「**空仓开空**」这一种，判据与渲染层 `sellOff = !dir && !canLev` 完全一致。
        `engine.openTrade` 那边本来就是对的（先 `posOf` 再判融资），这里补的是主入口。 */
-    if (!pos && side === 'short' && levKind(s) === 'spot' && !hasFinancingAt(timeOf(s), s.ex)) {
-      pushLog(s, '现货做空 暂不可用 ｜ 该所此刻没有融资业务', 'info');
+    if (!pos && side === 'short' && levKind(s) === 'margin' && !hasFinancingAt(timeOf(s), s.ex)) {
+      pushLog(s, '杠杆做空 暂不可用 ｜ 该所此刻没有融资业务', 'info');
       after();
       return;
     }
@@ -953,7 +953,7 @@ function dispatch(node) {
     return;
   }
   if (d.act === 'close') {
-    /* 合约模式的「平仓」同样吃金额档（2026-10-02 用户拍板）：与现货「卖出」是一条路径 ——
+    /* 合约模式的「平仓」同样吃金额档（2026-10-02 用户拍板）：与杠杆「卖出」是一条路径 ——
        点 1/4 就减掉四分之一，点「全部」才是原来那个一键全平。 */
     const r = closeTrade(s, '手动', s.sizeFrac);
     if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
@@ -1000,9 +1000,9 @@ function onSym(sym) {
 function onChan() {
   if (!otcUnlocked(s) || !otcOpenFor(s)) return;
   /* **持仓时不换通道**（2026-10-02 审计修 · 用户要求「检查类似的情况」）：
-     OTC 只能平现货，所以「持一张杠杆仓 ＋ 切到 OTC」会让这一枚仓**当场平不掉**
-     （`closeCheck` 会回「OTC 只能平现货，杠杆仓请走盘口」）—— 玩家得先切回盘口才发现。
-     与「持仓不许切现货 / 合约」是同一条规矩：**会改变这一笔交易身份的开关，持仓期间一律锁住**。
+     通道是这一笔交易身份的一部分 —— 加仓必须同通道（`posGate` 第 ③ 档），
+     持仓期间切通道只会得到一张「按得动、下不出去」的表。
+     与「持仓不许切杠杆 / 合约」是同一条规矩：**会改变这一笔交易身份的开关，持仓期间一律锁住**。
      ⚠️ 渲染层已把这一枚画成 `disabled`；这一行是**状态机不靠 DOM 兜底**。 */
   if (posOf(s, s.sym)) {
     pushLog(s, `${s.sym} 有持仓 ｜ 先平仓再切换通道`, 'info');
@@ -1010,9 +1010,10 @@ function onChan() {
     return;
   }
   s.chan = chanOf(s) === 'otc' ? 'book' : 'otc';
-  /* 切到 OTC 就把杠杆归 1：OTC 只有现货，让操作区当场显示 1x 比事后再拒绝更直白。
-     切回盘口**不还原**原来的杠杆 —— 那需要多存一个字段，而 `1x` 是个安全的默认值。 */
-  if (s.chan === 'otc') s.lev = 1;
+  /* 切到 OTC 就把杠杆夹到 `OTC.levMax`（5x）：大宗通道跟随模式，但机构借贷口径封顶 5x ——
+     超过封顶的档位在操作区当场置灰（`render` 与这里同源），比事后再拒绝更直白。
+     切回盘口**不还原**原来的杠杆 —— 那需要多存一个字段，而封顶值是个安全的默认。 */
+  if (s.chan === 'otc' && s.lev > OTC.levMax) s.lev = OTC.levMax;
   after();
 }
 
@@ -1074,7 +1075,7 @@ function onGodCash(node) {
     after();
     return;
   }
-  /* 归零后的**负账本一并清零**（2026-09-30 裁决）：逐仓的浮亏与「1x 现货空单」的亏损是
+  /* 归零后的**负账本一并清零**（2026-09-30 裁决）：逐仓的浮亏与「1x 杠杆空单」的亏损是
      **无上限**写进账本的（`credit` 允许负额，见 `engine.closeTrade`），普通玩法由 `isBankrupt`
      终局接住，而上帝模式「归零不退出」会把它原样留在资产页（长局抽检实测最坏 −$74 万一格）。
      不清的话，玩家补完钱会发现净值仍是负的，且那一格**永远还不清**。 */
@@ -1118,7 +1119,7 @@ function onGodGo() {
  * 跳日期 —— **向前 = 时间自然流过；向后 = 回到过去**（2026-09-30 裁决）。
  *
  * 向前 ⇒ 逐小时重放（`advanceOneHour`）：不能只改 `s.i`，那等于把这段时间里的事件白送
- *        （Mt.Gox 归零、币解锁、杠杆阶梯、强平、资金费、转账到账），
+ *        （交易所灾难、币解锁、杠杆阶梯、强平、资金费、转账到账），
  *        而且玩家的持仓必须**真的走过**这段时间。
  * 向后 ⇒ 倒放没有定义（行情与事件都是单向累积的），改走 `godRewind`：
  *        保留资金、清空持仓，直接把时钟落到那一刻。
@@ -1493,7 +1494,7 @@ function enterReview() {
   rv = { i: 0, sym: 'BTC', speed: 100, paused: false, seen: new Set(), log: [], auto: false, autoMode: null };
   rvAcc = 0;
   resetView('BTC', RV_NS);                       // 视野回默认（上次回顾留下的姿势不带到这一次）
-  pushRv('开盘 · 2013 年 1 月，门头沟', 'info', 0);
+  pushRv('开盘 · 2013 年 1 月，Bitfinex', 'info', 0);
   syncRvMode(true);                              // ⑧：起手就是 1 日线（巡航段看日线才看得完 12 年）
   rvStart();
   draw(true);
@@ -1871,7 +1872,7 @@ function onIntro(kind) {
  * 开局写一条**真实发生的事**（Batch 5 · B24）：日志条原来是写死的「等待开盘…」兜底，
  * 可此刻行情其实已经在跑 —— 文案与实况自相矛盾。这条日志把空态填掉，
  * 时间戳取 `s.i = 0`（`pushLog` 自己取），语义正确。读档续玩不补（与开场弹窗同一判据）。
- * ⚠️ 年月与交易所必须跟着**本局年代**走（M1）：2021 年的局里写「2013 年 1 月，门头沟」，
+ * ⚠️ 年月与交易所必须跟着**本局年代**走（M1）：2021 年的局里写「2013 年 1 月，Bitfinex」，
  *    就是在第一行日志上自相矛盾。
  */
 function beginGame() {
@@ -1889,7 +1890,7 @@ function beginGame() {
 /** 开局那条日志的文字（M1）：经典全程沿用旧文案，其余年代按 `SCENARIOS[].at / ex` 现拼。 */
 function openLogText() {
   const sc = scenarioOf(s.scen);
-  if (sc.id === 'classic') return '开盘 · 2013 年 1 月，门头沟';
+  if (sc.id === 'classic') return '开盘 · 2013 年 1 月，Bitfinex';
   const at = new Date(sc.at);
   return `开盘 · ${at.getUTCFullYear()} 年 ${at.getUTCMonth() + 1} 月，${exchangeOf(sc.ex).name}`;
 }

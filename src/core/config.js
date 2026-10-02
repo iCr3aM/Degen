@@ -27,13 +27,12 @@ export const GAME = {
    * ⚠️ **平衡性实测（2026-10-01）**：开局资金是**纯缩放旋钮**，不是难度旋钮 ——
    *    12 种玩法 × 5 档本金全时间线跑下来，归零率 / 归零时点 / 回撤曲线与它**完全无关**，
    *    终值近似严格成正比（本金 ×10 ⇒ 终值 ×9.63，规模惩罚约 4%，来自 `FLOAT` 抛压折价
-   *    与 `SHOCK` 订单冲击）。唯一的非比例项是 $20 电汇（$1000 时占 2.0%）与 Mt.Gox
-   *    按 BTC 枚数计费的首档（$1000 → 0.60%、$3000 → 0.53%，差 0.07pp，仅首笔）。
+   *    与 `SHOCK` 订单冲击）。唯一的非比例项是 $20 电汇（$1000 时占 2.0%）。
    *    ⇒ 取 $1,000 是**叙事与节奏**的选择（「我只有一千块」），不是平衡的选择。
    */
   cash: 1000,
-  /** 开局资金放在哪家交易所（GDD §7.2：2013 年只有 Mt.Gox 一个选择） */
-  ex: 'mtgox',
+  /** 开局资金放在哪家交易所（GDD §7.2）—— 本作全程只做杠杆与合约，开局站在 Bitfinex */
+  ex: 'bitfinex',
   /**
    * 维持保证金率的**兜底值** 0.5%（B18 起不再是「全所恒定值」）——
    * 真实取值按「所 × 工具 × 名义档」走 `maintRateAt()`，这里只服务
@@ -48,12 +47,13 @@ export const GAME = {
   seed: 1,
 
   /**
-   * 默认下单模式（U1 · ROADMAP §21.4）—— `'spot'`（现货）或 `'fut'`（合约）。
-   * 开局默认 **`'spot'`**：玩家不动操作区那枚「模式」键时，「1x 做多」就是现货 ——
-   * 与改动前的自动判定（`side === 'long' && lev === 1`）**逐位相同**，开局观感一字不变。
+   * 默认下单模式（U1 · ROADMAP §21.4）—— `'margin'`（杠杆）或 `'fut'`（合约）。
+   * 开局默认 **`'margin'`**：玩家不动操作区那枚「模式」键时，走的是**杠杆通道**。
+   * ⚠️ 本作**没有现货这个概念**：「杠杆」只是最低 1x 的一档（1x 不计息、不参与强平），
+   *    真正的分野是 `margin`（借贷口径）与 `fut`（永续口径）两条产品线。
    * ⚠️ 这里只是**默认值**；真实生效的模式存在 `s.mode` 里（入存档，玩家可随时切换）。
    */
-  mode: 'spot',
+  mode: 'margin',
 };
 
 /* ══════════════ 年代开局（挑战模式 · M1 · 2026-10-01 用户拍板「6 局全要」） ══════════════
@@ -87,20 +87,20 @@ export const SCENARIOS = [
   {
     id: 'classic', name: '经典全程', from: '2013-01', to: '2024-12',
     at: Date.UTC(2013, 0, 1), end: Date.UTC(2025, 0, 1),
-    cash: 1000, ex: 'mtgox', challenge: false,
-    blurb: '从门头沟开盘走到币安收盘，12 年全程。',
+    cash: 1000, ex: 'bitfinex', challenge: false,
+    blurb: '从 Bitfinex 开盘走到币安收盘，12 年全程。',
   },
   {
-    id: 'winter', name: '门头沟寒冬', from: '2015-01', to: '2015-04',
+    id: 'winter', name: '冰封寒冬', from: '2015-01', to: '2015-04',
     at: Date.UTC(2015, 0, 1), end: Date.UTC(2015, 4, 1),
     cash: 1000, ex: 'bitfinex', challenge: true,
-    blurb: '门头沟倒了、市场冰封，你带着 $1,000 从头再来。',
+    blurb: '行情冰封、信心尽失，你带着 $1,000 从头再来。',
   },
   {
     id: 'ico', name: 'ICO 狂潮', from: '2017-09', to: '2017-12',
     at: Date.UTC(2017, 8, 1), end: Date.UTC(2018, 0, 1),
-    cash: 1000, ex: 'binance', challenge: true,
-    blurb: '站在 2017 年泡沫的起点，币安开业才一个多月。',
+    cash: 1000, ex: 'bitfinex', challenge: true,
+    blurb: '2017 年 ICO 狂潮，Bitfinex 上只有 3.3x —— 但泡沫管够。',
   },
   {
     id: 'pre312', name: '312 前夜', from: '2020-02', to: '2020-04',
@@ -245,15 +245,19 @@ export const COINS = [
 export const coinOf = sym => COINS.find(c => c.sym === sym) || null;
 
 /**
- * 四家交易所（GDD §7.1 / §7.2）—— 全是**史实里的真名**，玩家一眼能对上当年的新闻。
+ * 三家交易所（GDD §7.1 / §7.2）—— 全是**史实里的真名**，玩家一眼能对上当年的新闻。
+ *
+ * ⚠️ **Mt.Gox 已从本作移除**（2026-10-03 用户拍板「全程只做杠杆与合约」）——
+ *    它当年只做现货 1x、没有融资也没有合约，与「全程杠杆 / 合约」的定位不符。
+ *    开局所随之改为 **Bitfinex**（同为 2013-01-01 开业，经典全程无空档）。
  *
  * 每家字段：
  *   - `open` / `close`：开业与归零时刻（`close: null` = 活到现在）。
  *     `close` 不只是「不能再用」的标记，还是**归零事件**的触发点（见 `engine.advanceOneHour`）：
- *     到点那一刻，该所余额清零、挂在该所的持仓一并作废。Mt.Gox 的 2014-02-25 就是本作最重的一记闷棍。
- *   - `spotSteps`：**现货融资**（margin）的杠杆上限阶梯，升序取「最后一个 `from <= t`」。
+ *     到点那一刻，该所余额清零、挂在该所的持仓一并作废。
+ *   - `marginSteps`：**杠杆**（借贷口径）的杠杆上限阶梯，升序取「最后一个 `from <= t`」。
  *   - `futSteps` ：**合约**（线性 USDT 本位永续）的杠杆上限阶梯；**`null` ＝ 该所永不提供合约**。
- *   - `fees`     ：**吃单费率的两张年代阶梯**（`spot` / `fut`），升序取「最后一个 `from <= t`」，
+ *   - `fees`     ：**吃单费率的两张年代阶梯**（`margin` / `fut`），升序取「最后一个 `from <= t`」，
  *                  `null` ＝ 该所那个时刻还没有这类产品。开仓与平仓各收一次（单边、不区分 Maker/Taker）。
  *   - `hack`     ：**被盗削减**事件（B21 · 可选）—— `{ at, cut }`：到点把该所**两格余额各 ×(1 − cut)**，
  *                  **不动持仓、不动其他所**（与 `close` 的整所归零是两回事）。
@@ -262,44 +266,29 @@ export const coinOf = sym => COINS.find(c => c.sym === sym) || null;
  *   - `dev`      ：**本所价偏移**（缺口 10 · 2026-10-03 拍板）—— `{ basis, amp, cap }`：
  *                  本所价 = 基准价 × (1 + 基差 + 噪声)，夹在 `±cap`。口径与取值依据见 `god.exDevOf`。
  *
- * ⚠️ **现货与合约是两回事，费率也必须是两张表**（v12 · 方案 §11.0 偏离①）：
+ * ⚠️ **杠杆与合约是两回事，费率也必须是两张表**（v12 · 方案 §11.0 偏离①）：
  *    改动前每家只有一个 `fee`，于是 BitMEX 的 **0.05%（衍生品）** 与 Binance 的 **0.04%（合约）**
- *    被当成了现货费率套用到全部场景 —— 四个数字里三个偏离史实（§11.0 偏离②）。
+ *    被当成了统一费率套用到全部场景 —— 四个数字里三个偏离史实（§11.0 偏离②）。
  *    史实出处见方案 §11.9，**不要凭记忆改这些数字**。
  *
- * ⚠️ **两张表是两回事**（v9 · 方案 §15，2026-09-29 拍板）：史实上「现货融资上限」与「合约上限」
- *    从来不是同一个数 —— Bitfinex 现货 3.3x / 合约 100x，BitMEX 没有现货 / 合约 100x。
- *    改动前它们被混成一张 `steps`，于是 2013 年在 Mt.Gox 也能看到 100x 这种笑话。
+ * ⚠️ **两张表是两回事**（v9 · 方案 §15，2026-09-29 拍板）：史实上「杠杆上限」与「合约上限」
+ *    从来不是同一个数 —— Bitfinex 杠杆 3.3x / 合约 100x，BitMEX 没有杠杆 / 合约 100x。
  *
  * 史实出处（2026-09-29 二次核实，勿再凭记忆改动）：
- *   Mt.Gox   2014-02-25 停止一切交易（本项目以这天为归零点），此前**仅现货 1x、无融资**
- *   Bitfinex 现货 2013 年上线即 3.3x（＝初始保证金 30%）；2020-01-30 → 5x；2021-02-17 → 10x（官方公告）。
+ *   Bitfinex 杠杆 2013 年上线即 3.3x（＝初始保证金 30%）；2020-01-30 → 5x；2021-02-17 → 10x（官方公告）。
  *            合约 **2019-09-02** 才上线（`BTCF0/USDt0`：USDT 抵押、逐仓、最高 100x）
- *   BitMEX   没有现货（本作把它的现货抽象为 1x）；合约 **2016-05-13** `XBTUSD` 永续上线才给到 100x
+ *   BitMEX   没有杠杆（本作把它的杠杆抽象为 1x）；合约 **2016-05-13** `XBTUSD` 永续上线才给到 100x
  *            （2015-10 的 100x 属于季度交割合约，本作实现的是线性 USDT 本位永续，故挂在永续上线日）
- *   Binance  2017-07-14 上线，起初仅现货 1x；2019-07-11 保证金交易上线（3:1），2019-11-19 放到 5x。
+ *   Binance  2017-07-14 上线，起初仅 1x；2019-07-11 保证金交易上线（3:1），2019-11-19 放到 5x。
  *            合约 **2019-09-13** 上线（BTCUSDT 永续，首日 20x）→ 2019-10-18 起 125x → 2021-07-19 起限 20x
  *
  * ⚠️ **所有合约上线日都在 USDT 发行（2014-11）之后** ⇒ 「合约保证金必须 USDT」堵不死玩家的路（§15.2）。
  */
 export const EXCHANGES = [
   {
-    id: 'mtgox', name: 'Mt.Gox',
-    open: Date.UTC(2013, 0, 1), close: Date.UTC(2014, 1, 25),
-    spotSteps: [{ from: Date.UTC(2013, 0, 1), max: 1 }],
-    futSteps: null,
-    /* 史实：小户 **0.60% 起**，按最近 720 小时（30 天）滚动成交量阶梯递减、最低 0.25%
-       （13 档的明细见下面的 `FEE_TIERS.mtgox`）；**买卖双方都收**（本作只有单笔市价成交，记单边一次）。
-       这里的 `0.006` 是**首档（基准）**，阶梯由 `feeRateOf` 按 30 天量打折。 */
-    fees: { spot: [{ from: Date.UTC(2013, 0, 1), v: 0.006 }], fut: null },
-    /* 本所价偏移（缺口 10 · 2026-10-03 拍板）—— `{ basis, amp, cap }`，见 `god.exDevOf`。
-       史实「Gox 溢价」：2013-12 门头沟价比 Bitstamp / BTC-e 高 $21–34（约 2–3%）。 */
-    dev: { basis: 0.020, amp: 0.0040, cap: 0.030 },
-  },
-  {
     id: 'bitfinex', name: 'Bitfinex',
     open: Date.UTC(2013, 0, 1), close: null,
-    spotSteps: [
+    marginSteps: [
       { from: Date.UTC(2013, 0, 1),  max: 3.3 },
       { from: Date.UTC(2020, 0, 30), max: 5 },
       { from: Date.UTC(2021, 1, 17), max: 10 },
@@ -311,9 +300,9 @@ export const EXCHANGES = [
     hack: { at: Date.UTC(2016, 7, 2), cut: 0.36067 },
     /* 史实：Maker 0.10% / **Taker 0.20%** —— 本作只有市价吃单 ⇒ 取 0.20%。
        「合约」侧：Bitfinex 的杠杆史实上是**保证金交易**（trading fee ＋ 借币利息），
-       没有独立的合约费率档 ⇒ **沿用现货 taker 0.20%**（§11.2，是史实而非近似）。 */
+       没有独立的合约费率档 ⇒ **沿用杠杆 taker 0.20%**（§11.2，是史实而非近似）。 */
     fees: {
-      spot: [{ from: Date.UTC(2013, 0, 1), v: 0.002 }],
+      margin: [{ from: Date.UTC(2013, 0, 1), v: 0.002 }],
       fut: [{ from: Date.UTC(2019, 8, 2), v: 0.002 }],
     },
     dev: { basis: 0.001, amp: 0.0013, cap: 0.008 },
@@ -321,7 +310,7 @@ export const EXCHANGES = [
   {
     id: 'bitmex', name: 'BitMEX',
     open: Date.UTC(2014, 0, 1), close: null,
-    spotSteps: [{ from: Date.UTC(2014, 0, 1), max: 1 }],
+    marginSteps: [{ from: Date.UTC(2014, 0, 1), max: 1 }],
     futSteps: [{ from: Date.UTC(2016, 4, 13), max: 100 }],
     /* 史实（B24 · 2026-09-30 联网复核修正）：2020-03-13「黑色星期四」BitMEX 因 DDoS / 技术故障
        停机，实测窗口 **02:16–03:00 UTC（约 44 分钟）**，恰好在最需要平仓的暴跌里 ——
@@ -329,13 +318,13 @@ export const EXCHANGES = [
        ⚠️ 本作的时刻一律是**整点**（`s.i` 就是小时序号，停机/恢复日志用 `===` 判等），
           所以窗口取整到 **02:00–03:00** —— 44 分钟无法在小时网格上表达。 */
     halts: [{ from: Date.UTC(2020, 2, 13, 2), to: Date.UTC(2020, 2, 13, 3) }],
-    /* 现货 0.05% flat（该所现货市场一直很小）。
+    /* 杠杆 0.05% flat（该所杠杆市场一直很小）。
        衍生品 **Taker 0.075% / Maker −0.025%（返佣）** —— 2016-05 XBTUSD 永续上线起的经典档位；
        现代降到 base 0.05%/0.05% ⇒ **2021-01 起 0.05%**（⚠️ 切换时刻为近似，方案 §11.2）。
        ⚠️ 0.075% 那一段的实际起点是永续上线日（`futSteps` 首档 2016-05-13），阶梯写 2014-01
           只为与方案 §11.2 的表述一致 —— 取不到合约的年份，这条阶梯根本不会被查到。 */
     fees: {
-      spot: [{ from: Date.UTC(2014, 0, 1), v: 0.0005 }],
+      margin: [{ from: Date.UTC(2014, 0, 1), v: 0.0005 }],
       fut: [
         { from: Date.UTC(2014, 0, 1),  v: 0.00075 },
         { from: Date.UTC(2021, 0, 1),  v: 0.0005 },
@@ -346,7 +335,7 @@ export const EXCHANGES = [
   {
     id: 'binance', name: 'Binance',
     open: Date.UTC(2017, 6, 14), close: null,
-    spotSteps: [
+    marginSteps: [
       { from: Date.UTC(2017, 6, 14),  max: 1 },
       { from: Date.UTC(2019, 6, 11),  max: 3 },
       { from: Date.UTC(2019, 10, 19), max: 5 },
@@ -358,10 +347,10 @@ export const EXCHANGES = [
       { from: Date.UTC(2019, 9, 18), max: 125 },
       { from: Date.UTC(2021, 6, 19), max: 20 },
     ],
-    /* 现货 **0.10% maker / 0.10% taker**（2017-07 上线即此价；BNB 抵扣属「持平台币」玩法，不做）。
+    /* 杠杆 **0.10% maker / 0.10% taker**（2017-07 上线即此价；BNB 抵扣属「持平台币」玩法，不做）。
        合约 USDT-M 永续 **Maker 0.02% / Taker 0.04%** ⇒ 合约上线日 2019-09-13 起 0.04%。 */
     fees: {
-      spot: [{ from: Date.UTC(2017, 6, 14), v: 0.001 }],
+      margin: [{ from: Date.UTC(2017, 6, 14), v: 0.001 }],
       fut: [{ from: Date.UTC(2019, 8, 13), v: 0.0004 }],
     },
     dev: { basis: 0, amp: 0.0003, cap: 0.002 },
@@ -375,16 +364,16 @@ export const exchangeOf = id => EXCHANGES.find(e => e.id === id) || null;
 export const haltedAt = (t, exId) =>
   !!exchangeOf(exId)?.halts?.some(h => t >= h.from && t < h.to);
 
-/** 取某家交易所某一类的杠杆阶梯（`kind`：`'spot'` 现货融资 / `'fut'` 合约）；该所不提供时为 `null`
+/** 取某家交易所某一类的杠杆阶梯（`kind`：`'margin'` 杠杆 / `'fut'` 合约）；该所不提供时为 `null`
  *  ⚠️ 不导出（2026-10-02 审计）：它只服务本文件的 `maxLeverageAt` / `hasLeverageKindAt`
  *     与 `leverageOptionsAt` —— 对外那几件事都由它们转述，别再开一个裸阶梯的入口。 */
-const stepsOf = (ex, kind = 'spot') => (kind === 'fut' ? ex.futSteps : ex.spotSteps);
+const stepsOf = (ex, kind = 'margin') => (kind === 'fut' ? ex.futSteps : ex.marginSteps);
 
 /**
  * 某家交易所**此刻**提不提供该类杠杆（v9 · §15.3 N3）—— 判据 = 阶梯存在且首档已生效。
- * UI 用它决定那枚「现货 / 合约」模式键出不出现（＝「没有的选项不显示」）。
+ * UI 用它决定那枚「杠杆 / 合约」模式键出不出现（＝「没有的选项不显示」）。
  */
-export function hasLeverageKindAt(t, exId, kind = 'spot') {
+export function hasLeverageKindAt(t, exId, kind = 'margin') {
   const ex = exchangeOf(exId);
   if (!ex) return false;
   const steps = stepsOf(ex, kind);
@@ -392,7 +381,7 @@ export function hasLeverageKindAt(t, exId, kind = 'spot') {
 }
 
 /** 某一时刻、某家交易所、某一类的最高杠杆（该所不提供这一类时返回 1） */
-export function maxLeverageAt(t, exId, kind = 'spot') {
+export function maxLeverageAt(t, exId, kind = 'margin') {
   const ex = exchangeOf(exId);
   if (!ex) return 1;
   const steps = stepsOf(ex, kind);
@@ -403,16 +392,16 @@ export function maxLeverageAt(t, exId, kind = 'spot') {
 }
 
 /**
- * 某家交易所**此刻**开没开**融资**（借 U 买入 / 借币卖出）—— v10 · 现货做空的**史实判据**。
+ * 某家交易所**此刻**开没开**融资**（借 U 买入 / 借币卖出）—— v10 · 杠杆做空的**史实判据**。
  *
- * 判据只有一条：**现货表的上限 > 1**。上限 1 就是「用自己的钱买币」，交易所不做出借方；
- * 有 3x / 5x 才说明它真的把钱借给你 —— 而**做空必须先借到币**，借不到就没有现货空单。
- *   - 借不到 ⇒ Mt.Gox（全期）、BitMEX 现货、Binance 2017-07～2019-07-11
+ * 判据只有一条：**杠杆表的上限 > 1**。上限 1 就是「用自己的钱买币」，交易所不做出借方；
+ * 有 3x / 5x 才说明它真的把钱借给你 —— 而**做空必须先借到币**，借不到就没有杠杆空单。
+ *   - 借不到 ⇒ BitMEX 杠杆、Binance 2017-07～2019-07-11
  *   - 借得到 ⇒ Bitfinex（2013 起 3.3x）、Binance（2019-07-11 起 3x）
  *
  * ⚠️ **与合约无关**：合约做空是保证金交易，不需要借币，照旧只按 `futSteps` 判。
  */
-export const hasFinancingAt = (t, exId) => maxLeverageAt(t, exId, 'spot') > 1;
+export const hasFinancingAt = (t, exId) => maxLeverageAt(t, exId, 'margin') > 1;
 
 /**
  * 可选杠杆档位：从 1 到当前上限，取这几个常用值（GDD §18.1 的杠杆选择器）。
@@ -423,7 +412,7 @@ export const hasFinancingAt = (t, exId) => maxLeverageAt(t, exId, 'spot') > 1;
 const LEV_LADDER = [1, 2, 3, 5, 10, 20, 50, 100, 125];
 
 /** 某一时刻、某家交易所、某一类可选的杠杆档位（1 与上限必在列表内） */
-export function leverageOptionsAt(t, exId, kind = 'spot') {
+export function leverageOptionsAt(t, exId, kind = 'margin') {
   const max = maxLeverageAt(t, exId, kind);
   const out = LEV_LADDER.filter(v => v <= max);
   if (!out.includes(max)) out.push(max);   // 上限不是整数档时直接补进来（Bitfinex 史实 3.3x）
@@ -437,11 +426,11 @@ export function leverageOptionsAt(t, exId, kind = 'spot') {
  * 史实上这三件事都不成立（方案 §12.1① / §12.3① 的 🔴 条目），本轮按「所 × 工具 × 名义档」重排：
  *
  *   - **永续（`perp`）**：Binance 真实四档（越小越松、越大越严）；BitMEX / Bitfinex / 其余恒 0.5%
- *   - **现货保证金（`margin`）**：Bitfinex 史实的 **15%（权益口径）**（CFTC Docket 16-19 原文
+ *   - **杠杆（`margin`）**：Bitfinex 史实的 **15%（权益口径）**（CFTC Docket 16-19 原文
  *     `equity … fell below 15% → forcibly liquidated`）；本项目把它**统一套到所有 margin 仓**
  *     （含 Binance 2019-07 起的保证金交易）并声明为近似 —— Binance 自家是另一套分档，不另立一张表
  *
- * ⚠️ **工具性质由仓位自己决定**（`positions.instrumentOf`）：`spot` 表 + `lev > 1` ⇒ `margin`、
+ * ⚠️ **工具性质由仓位自己决定**（`positions.instrumentOf`）：`margin` 表 + `lev > 1` ⇒ `margin`、
  *    `fut` 表 ⇒ `perp`。2016-05-13 之前世界上没有永续（BitMEX XBTUSD 是人类第一个），
  *    所以那年头的「杠杆」全是借钱买币 —— 这一条正是 B26 与 B18 共用同一次改动的理由。
  *
@@ -449,7 +438,7 @@ export function leverageOptionsAt(t, exId, kind = 'spot') {
  *    **清算费 0.5% 无一手出处**（检索到 0.5% 与 1.25–2.5% 两说）⇒ GDD 声明为合成值。
  */
 export const MARGIN = {
-  /** 现货保证金的维持保证金率（权益口径）—— CFTC Docket 16-19 史实 */
+  /** 杠杆仓的维持保证金率（权益口径）—— CFTC Docket 16-19 史实 */
   maint: 0.15,
   /**
    * **借贷日息**（B26）—— 史实只有「用户间 P2P 按市场利率计息」这个形态（Bitfinex 的
@@ -486,14 +475,12 @@ export const MIN_NOTIONAL = 1;
  * 与 `EXCHANGES[].fees` 同一套「升序取最后一个 `from <= t`」读法。
  *
  * 史实核对（2026-10-01，web.archive.org 历史快照 ＋ 官方接口元数据；**未证实处已在注释里标明**）：
- *   - **Mt.Gox**：查不到任何**下单**门槛 —— 官方 FAQ 那一档只有「最小**提现** 0.01 BTC」，
- *     答的不是同一个问题 ⇒ 沿用浮点保底 **$1**（`fut: null`，Mt.Gox 全期无合约）。
  *   - **Bitfinex**：官方 FAQ 原文只说各交易对最小单「定期调整、与其价值相称」，
  *     目标约 **$10–25 等值**（具体数值出自二手文献 Brauneis et al. 2018）⇒ 取**保守下沿 $10**。
- *     永续（2019-09-02 起）**无史料** ⇒ 沿用现货的 $10。
+ *     永续（2019-09-02 起）**无史料** ⇒ 沿用杠杆的 $10。
  *   - **BitMEX**：`XBTUSD` 永续 **1 张 = 1 USD 名义**、`lotSize = 1` ⇒ 最小 **$1**（一手接口元数据）。
- *     现货（本作把 BitMEX 的现货抽象为 1x）无史料 ⇒ 同样 $1。
- *   - **Binance 现货**：`MIN_NOTIONAL` 2021 快照 = **$10**、2024 快照 = **$5**（一手字段）。
+ *     杠杆（本作把 BitMEX 的杠杆抽象为 1x）无史料 ⇒ 同样 $1。
+ *   - **Binance 杠杆**：`MIN_NOTIONAL` 2021 快照 = **$10**、2024 快照 = **$5**（一手字段）。
  *     ⚠️ 它的**引入确切日期不可考**（只能由快照反推约 2019）⇒ 首档直接挂**开业日 2017-07-14**，
  *     宁可保守（早年也按 $10 卡）。早年真实的最小名义按 BTC 计价（0.001 BTC）、随币价浮动，
  *     本作**不做「按币价浮动的门槛」**。
@@ -504,20 +491,16 @@ export const MIN_NOTIONAL = 1;
  *    **只影响「极小单被拒」这一件事**，不参与任何平衡。
  */
 const MIN_NOTIONAL_STEPS = {
-  mtgox: {
-    spot: [{ from: Date.UTC(2013, 0, 1), v: 1 }],
-    fut: null,
-  },
   bitfinex: {
-    spot: [{ from: Date.UTC(2013, 0, 1), v: 10 }],
+    margin: [{ from: Date.UTC(2013, 0, 1), v: 10 }],
     fut: [{ from: Date.UTC(2019, 8, 2), v: 10 }],
   },
   bitmex: {
-    spot: [{ from: Date.UTC(2016, 4, 13), v: 1 }],
+    margin: [{ from: Date.UTC(2016, 4, 13), v: 1 }],
     fut: [{ from: Date.UTC(2016, 4, 13), v: 1 }],
   },
   binance: {
-    spot: [{ from: Date.UTC(2017, 6, 14), v: 10 }, { from: Date.UTC(2024, 0, 1), v: 5 }],
+    margin: [{ from: Date.UTC(2017, 6, 14), v: 10 }, { from: Date.UTC(2024, 0, 1), v: 5 }],
     fut: [{ from: Date.UTC(2019, 8, 13), v: 5 }, { from: Date.UTC(2023, 10, 2), v: 20 }],
   },
 };
@@ -530,12 +513,12 @@ const MIN_NOTIONAL_STEPS = {
  *
  * @param {string} exId 交易所 id
  * @param {number} t    时刻（毫秒）—— 门槛是**年代阶梯**，同一家所不同年份可能不同
- * @param {'spot'|'fut'} kind 产品。**判据与费率同源**：由这一单**自己的性质**决定
- *   （`engine.openTrade` 的 `isSpotOrder`），不是由玩家此刻站在哪个页面决定。
+ * @param {'margin'|'fut'} kind 产品。**判据与费率同源**：由这一单**自己的性质**决定
+ *   （`engine.openTrade` 的 `isMarginOrder`），不是由玩家此刻站在哪个页面决定。
  * @returns {number} ≥ `MIN_NOTIONAL` 的正数
  */
-export function minNotionalAt(exId, t, kind = 'spot') {
-  const ladder = MIN_NOTIONAL_STEPS[exId]?.[kind === 'fut' ? 'fut' : 'spot'];
+export function minNotionalAt(exId, t, kind = 'margin') {
+  const ladder = MIN_NOTIONAL_STEPS[exId]?.[kind === 'fut' ? 'fut' : 'margin'];
   if (!ladder) return MIN_NOTIONAL;
   let v = null;
   for (const s of ladder) { if (s.from <= t) v = s.v; else break; }
@@ -582,8 +565,7 @@ export function marginDailyRateAt(t) {
  * 于是「巨鲸」和「散户」付同样的费率 —— 本轮把这条史实补上（巨鲸规模才看得见，散户落在首档）。
  *
  * 分档口径（`unit`）：
- *   - `btc` —— Mt.Gox 史实就是**按 BTC 枚数**分档（0–100 枚 0.60% 起，13 档递减到 0.25%）
- *   - `usd` —— 其余三家按**美元名义额**分档（Binance 的 VIP、Bitfinex / BitMEX 的 30 天成交量）
+ *   - `usd` —— 三家按**美元名义额**分档（Binance 的 VIP、Bitfinex / BitMEX 的 30 天成交量）
  *
  * 表形与 `BINANCE_MARGIN_TIERS` 同构：升序，取**第一个 `vol <= upTo`** 的档；超出末档取末档。
  * `null` ⇒ 该类不吃阶梯（`feeRateOf` 按既有回落链处理）。
@@ -592,34 +574,14 @@ export function marginDailyRateAt(t) {
  *    这样 BitMEX 合约 2021-01 那次基准下调（0.075% → 0.05%）会**自动**传导到全部档位，
  *    不必为每个年代各写一张阶梯。首档恒等于基准（折扣 = 1）⇒ 小额散户的费率**逐位不变**。
  *
- * ⚠️ **史实可靠性**（勿凭记忆改动）：Mt.Gox 的 13 档是**确证**的（英文 Bitcoin Wiki 记「近 720 小时
- *    滚动窗口」，2026-10-01 联网复核）；Bitfinex 2013–2018 的档表**无一手存档**，BitMEX / Binance
+ * ⚠️ **史实可靠性**（勿凭记忆改动）：Bitfinex 2013–2018 的档表**无一手存档**，BitMEX / Binance
  *    的档表来自**现行档位** ⇒ 这三家是「按当代档位取形、幅度为近似」（GDD §11.3 已声明）。
  */
 const FEE_TIERS = {
-  mtgox: {
-    unit: 'btc',
-    spot: [
-      { upTo: 100,      v: 0.006  },
-      { upTo: 200,      v: 0.0055 },
-      { upTo: 500,      v: 0.0053 },
-      { upTo: 1000,     v: 0.005  },
-      { upTo: 2000,     v: 0.0046 },
-      { upTo: 5000,     v: 0.0043 },
-      { upTo: 10000,    v: 0.004  },
-      { upTo: 25000,    v: 0.003  },
-      { upTo: 50000,    v: 0.0029 },
-      { upTo: 100000,   v: 0.0028 },
-      { upTo: 250000,   v: 0.0027 },
-      { upTo: 500000,   v: 0.0026 },
-      { upTo: Infinity, v: 0.0025 },
-    ],
-    fut: null,
-  },
   bitfinex: {
     unit: 'usd',
     /* Taker 0.20% 起、随 30 天量降到 0.055%（Maker 侧同样递减，本作只有市价单 ⇒ 只取 taker）。 */
-    spot: [
+    margin: [
       { upTo: 5e5,      v: 0.002   },
       { upTo: 1.5e6,    v: 0.0018  },
       { upTo: 3e6,      v: 0.0016  },
@@ -629,11 +591,11 @@ const FEE_TIERS = {
       { upTo: 5e7,      v: 0.0008  },
       { upTo: Infinity, v: 0.00055 },
     ],
-    fut: null,          // 与费率同一条回落链：合约沿用现货档（史实上本就是同一张表）
+    fut: null,          // 与费率同一条回落链：合约沿用杠杆档（史实上本就是同一张表）
   },
   bitmex: {
     unit: 'usd',
-    spot: null,         // 现货 0.05% flat —— 该所现货市场一直很小，史实无阶梯
+    margin: null,       // 杠杆 0.05% flat —— 该所杠杆市场一直很小，史实无阶梯
     fut: [
       { upTo: 1e6,      v: 0.00075 },   // 经典期基准（2021-01 起基准降到 0.05%，折扣比不变）
       { upTo: 5e6,      v: 0.0005  },
@@ -643,7 +605,7 @@ const FEE_TIERS = {
   },
   binance: {
     unit: 'usd',
-    spot: [
+    margin: [
       { upTo: 2e7,      v: 0.001   },   // VIP0–2：吃单一律 0.100%
       { upTo: 5e7,      v: 0.0006  },   // VIP3
       { upTo: 1.5e8,    v: 0.00031 },   // VIP4–5
@@ -659,11 +621,11 @@ const FEE_TIERS = {
   },
 };
 
-/** 该所 / 该类别的阶梯表；该类没有 ⇒ 回落到现货那类（与费率本身的回落链同向） */
+/** 该所 / 该类别的阶梯表；该类没有 ⇒ 回落到杠杆那类（与费率本身的回落链同向） */
 function tierTableOf(exId, kind) {
   const t = FEE_TIERS[exId];
   if (!t) return null;
-  return (kind === 'fut' ? (t.fut || t.spot) : t.spot) || null;
+  return (kind === 'fut' ? (t.fut || t.margin) : t.margin) || null;
 }
 
 /**
@@ -671,16 +633,16 @@ function tierTableOf(exId, kind) {
  *
  * @param {string} exId 交易所 id
  * @param {number} t    时刻（毫秒）—— 费率是**年代阶梯**，同一家所不同年份可能不同
- * @param {'spot'|'fut'} kind 现货 / 合约。**调用方必须传对**：一笔单走哪一张表由那笔单自己的
- *   性质决定（现货仓走 `spot`、合约仓走 `fut`，判据 `positions.isSpot`），不是由玩家此刻站在哪个页面决定。
+ * @param {'margin'|'fut'} kind 杠杆 / 合约。**调用方必须传对**：一笔单走哪一张表由那笔单自己的
+ *   性质决定（杠杆仓走 `margin`、合约仓走 `fut`，判据 `positions.isMargin`），不是由玩家此刻站在哪个页面决定。
  * @param {{u:number,b:number}|number|null} vol 该所**近 30 天**的成交量（`engine.vol30Of` 的返回）：
  *   传对象时按该所自己的 `unit` 取（`btc` → `b`，`usd` → `u`）；传数字时直接当那个口径用。
  *   不传 / 传 0 ⇒ 落在首档（无折扣）。
  *
- * 回落链：该类的阶梯取不到 ⇒ **回落到现货**（Bitfinex 的「合约」本就没有独立费率档）；
- * 现货也取不到（该所那时还没开业）⇒ **0**（不收钱，而不是崩）。`fut: null` 同理回落到现货。
+ * 回落链：该类的阶梯取不到 ⇒ **回落到杠杆**（Bitfinex 的「合约」本就没有独立费率档）；
+ * 杠杆也取不到（该所那时还没开业）⇒ **0**（不收钱，而不是崩）。`fut: null` 同理回落到杠杆。
  */
-export function feeRateOf(exId, t, kind = 'spot', vol = null) {
+export function feeRateOf(exId, t, kind = 'margin', vol = null) {
   const ex = exchangeOf(exId);
   if (!ex) return 0;
   const at = (ladder) => {
@@ -690,7 +652,7 @@ export function feeRateOf(exId, t, kind = 'spot', vol = null) {
     return v;
   };
   const fut = kind === 'fut' ? at(ex.fees.fut) : null;
-  const base = fut != null ? fut : at(ex.fees.spot);
+  const base = fut != null ? fut : at(ex.fees.margin);
   if (base == null) return 0;
 
   /* 成交量阶梯（v19）：返回「折扣比 × 基准」。首档恒等于基准 ⇒ 小额散户**逐位不变**。 */
@@ -720,8 +682,8 @@ export function feeRateOf(exId, t, kind = 'spot', vol = null) {
  *    这里合并显示，但本注释就是「它其实是两层」的存档处 —— 将来别误以为只有链上费。
  * ⚠️ **`wire` 不吃拥堵**（方案 §11.6）：链堵不堵与银行慢不慢是两件事，用同一个 `congestionOf`
  *    会串味。它的「慢」由 `hours` 这个固定区间自己给，不接 `arrivalCandles`。
- * ⚠️ **不实现「改搬 BTC」**（B17）：本作账本是美元/USDT 记价，搬币在模型上等价于「电汇 ＋ 两次现货费」。
- * ⚠️ **不模拟 Mt.Gox 那 22 个月的电汇积压**（B15）：那等于本局结束；退化为固定定额费 ＋ 数天到账。
+ * ⚠️ **不实现「改搬 BTC」**（B17）：本作账本是美元/USDT 记价，搬币在模型上等价于「电汇 ＋ 两次杠杆费」。
+ * ⚠️ **不模拟 Mt.Gox 那 22 个月的电汇积压**（B15，该所已从本作移除）：那等于本局结束；退化为固定定额费 ＋ 数天到账。
  */
 export const TRANSFER_RAILS = [
   {
@@ -880,7 +842,7 @@ export const DATA_DIR = 'data';
  *    反而净赚一笔，破产从惩罚变成重开按键。改成**固定 $1,000** 后语义变干净：
  *    **破产 = 回到起点**（钱回到开局水平，白掉的是这几年时间）。
  *
- *    实测（15 次破产全部领救济金 → 换所 → 全仓现货死拿）：2014 破产领 $1,000 走到 2024 收盘是
+ *    实测（15 次破产全部领救济金 → 换所 → 全仓杠杆死拿）：2014 破产领 $1,000 走到 2024 收盘是
  *    **$138.8K**，2016 破产是 **$183.8K** —— 翻盘能力充足，但相对「没破产」的终值仍损失 87–99%，
  *    惩罚没有失效。
  *
@@ -930,7 +892,7 @@ export const SUPPLY_SHARE = {
  * —— `capturedOf` 只被 §15.1 的买入闸门读过一眼，价格与分母两条通路都看不见持仓。
  *
  * 下面两个通道共用同一个**占比**：
- *   `share = 现货实物多头枚数 ÷ (当年真实流通量 × frac)`，夹在 [0, 1]
+ *   `share = 杠杆多头枚数 ÷ (当年真实流通量 × frac)`，夹在 [0, 1]
  *   ① **深度折减**：`share` 越大 ⇒ 可交易浮筹越薄 ⇒ 你自己后续买卖的滑点越大（`hourLiqOf` 的分母）
  *   ② **抛压折价**：`share` 越大 ⇒ 市场越忌惮你随时砸盘 ⇒ 价格被压一个持续的折价（`god.factorFor`）
  *
@@ -961,7 +923,7 @@ export const FLOAT = {
  * 不另立第二把尺子、不新开第二个池、不写第二条点差公式）。它进的是 `hourLiqBase` 里**已有的
  * 那个折减位置** —— 与 `FLOAT` 的浮筹折减**相乘、同处**。
  *
- * 与 `FLOAT` 的分工（§5.3）：`FLOAT` 是「**现货实物**枚数 ÷ 浮筹」（囤货，**存量**）；
+ * 与 `FLOAT` 的分工（§5.3）：`FLOAT` 是「**杠杆多头**枚数 ÷ 浮筹」（囤货，**存量**）；
  * 这里是「**杠杆盘**名义 ÷ 小时流动性」（瞬时压力）。两者口径不同，必须都留。
  *
  * 分档（§5.1）：
@@ -1011,10 +973,14 @@ export const ADV = {
  * OTC（场外交易 / 大宗交易，P2-B3 · GDD §15.3）—— 大额单子的**逃生门**：
  * 对手方私下一口价成交，**不吃滑点**，代价是一笔溢价。
  *
- * 形态（2026-09-29 拍板，勿擅改）：**只有现货 1x** —— 不做杠杆、不做空。
- *   ① 现实里 OTC 就是现货大宗撮合，没有「OTC 永续」这种东西；
- *   ② 若 OTC 能上 100x，它就是「无滑点 ＋ 高杠杆」的纯优解，§14.3 那套滑点对大户直接失效。
- *   ⇒ 仓位打 `spot` 标（`positions.isSpot` 读的就是它），**零新增仓位类型**。
+ * 形态（2026-10-03 用户拍板改判）：**大宗通道、跟随当前模式** —— 走 OTC 时不再强制 1x，
+ *   而是**沿用玩家当前的 `s.mode`**（杠杆 / 合约），但杠杆**封顶 `OTC.levMax = 5`**、
+ *   且**允许做空**（机构间的大宗撮合本就是双向的）。
+ *   ① 现实里 OTC 台做的就是「大宗撮合」，机构借贷口径的杠杆上限约 5x（见 `levMax`）；
+ *   ② 若 OTC 能跟着合约上 100x，它就成了「无滑点 ＋ 高杠杆」的纯优解，§14.3 那套滑点对大户直接失效
+ *      —— 封顶 5x 正是为了堵住这一条。
+ *   ⇒ 仓位的 `margin` 标记由 `s.mode` 决定（`engine.marginOf`），与普通单走同一套性质。
+ *      ⚠️ 「1x」仍算杠杆通道的最低档（本作没有现货概念），不计息、不参与强平。
  *
  * ⚠️ `unlock` / `min` 两个门槛（2026-10-02 · 调研①拍板）**已由绝对美元常量改为年代表**
  *    （`OTC.unlock` / `OTC.min` ＋ `otcUnlockAt(t)` / `otcMinAt(t)`）——
@@ -1088,6 +1054,10 @@ export const OTC = {
   sizeP: 0.5,       // 规模倍数的指数（v19）：平方根律，与 §14.3 滑点同形
   sizeCap: 4,       // 规模倍数上限（v19）：本笔名义 = 16 × min 时顶格
   max: 0.08,        // 溢价硬上限 8%（任何年代、任何市况）
+  /* 大宗通道的**杠杆封顶**（2026-10-03 拍板）—— OTC 跟随当前模式，但机构借贷口径约 5x：
+     现实里机构间的场外融资（prime brokerage / margin lending）上限约 5–10x，取保守的 5x。
+     ⚠️ 它是**第二道上限**：与 `leverageOptionsAt(t, exId, kind)` 的当场上限取小值。 */
+  levMax: 5,
 };
 
 /** 几何插值（两端锚定，同 §15.2 日流动性的写法）—— `base` / `min` / `unlock` 三张表共用一处口径 */

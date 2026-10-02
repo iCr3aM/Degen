@@ -257,7 +257,7 @@ export const close = () => { tone({ f: 784, dur: 0.09, type: 'triangle', gain: 0
 /** 新闻 / 锚点播报：两声**定音**音铃（与 `notice` 的一声滑音上行区分） */
 export const news = () => { tone({ f: 880, dur: 0.11, type: 'sine', gain: 0.045 }); tone({ f: 1174, dur: 0.2, type: 'sine', gain: 0.045, at: 0.12 }); };
 
-/** 交易所灾难（Mt.Gox 归零 / Bitfinex 被盗削减）：比 `liq` 更闷更慢 —— 听感是「塌方」而非「被打穿」 */
+/** 交易所灾难（交易所归零 / Bitfinex 被盗削减）：比 `liq` 更闷更慢 —— 听感是「塌方」而非「被打穿」 */
 export const crash = () => { tone({ f: 196, to: 98, dur: 0.5, type: 'sawtooth', gain: 0.06 }); tone({ f: 392, to: 196, dur: 0.32, type: 'triangle', gain: 0.05 }); };
 
 /** 中性提示：币种上线 / 交易所开张 / BitMEX 恢复 / 转账到账 / **买 U 成功** —— 一声短上行 */

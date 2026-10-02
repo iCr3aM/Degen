@@ -21,7 +21,7 @@ import { HEAT, NPC, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParams
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
-  equityOf, isLiquidatable, isSpot, liquidationPrice, maintRateOf, openPosition, pnlOf,
+  equityOf, isLiquidatable, isMargin, liquidationPrice, maintRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
   FUNDING, FR, INSURE, fundingOf, canLiquidate, paysFunding, paysInterest, shockKindOf,
 } from './positions.js';
@@ -79,7 +79,7 @@ export function markPrice(s, sym = s.sym) {
  *
  *     exPrice = markPrice × exDevOf(所, 币, 小时)
  *
- * `exDevOf`（`god.js`）= **长期基差 ＋ 小噪声**：门头沟史实溢价 +2%、Bitfinex +0.1%，其余 ≈0；
+ * `exDevOf`（`god.js`）= **长期基差 ＋ 小噪声**：Bitfinex +0.1%，其余 ≈0；
  * 再叠一层逐小时白噪声（幅度按所压在一次往返手续费之内 ⇒ 不可套利）。
  *
  * ⚠️ **口径（拍板）**：成交 / 盈亏 / 强平 / 保证金**一律读本仓所在所（`pos.ex`）的本所价** ——
@@ -279,7 +279,7 @@ function dailySigmaFast(sym, i) {
 /**
  * **玩家持仓占可交易浮筹的比例**（`0 ~ 1`）—— 「持仓影响市场」那份唯一的占比（`config.FLOAT`）。
  *
- *   分子 = `capturedOf`（**现货实物多头**的枚数）
+ *   分子 = `capturedOf`（**杠杆通道多头**的枚数）
  *   分母 = 当年真实流通量 × `FLOAT.frac`（可交易浮筹）
  *
  * ⚠️ 取不到流通量（该币不在清单里 / `manifest` 未加载 / 该币此刻还没上线）⇒ 返回 0、**不折减**：
@@ -337,7 +337,7 @@ function hourLiqRaw(s, sym, i) {
         施加一笔位移 `permImpactOf(pushK × (exposure − t2), σ)`，**折进 `s.mkt[sym].npcDrift`
         同一张台阶表**（不新开第二条价格通道）。它走的是**当前**持仓（`advCurExposureOf`，疤痕不算）。
 
-   ⚠️ **口径**：`exposure` 只算**杠杆盘**（合约 / 现货保证金）的名义 —— 现货 1x 是**实物**，
+   ⚠️ **口径**：`exposure` 只算**杠杆盘**（合约 / 杠杆 > 1）的名义 —— 杠杆 1x 是**实物**，
       它走的是 `FLOAT` 那条「浮筹折减」通道（§5.3），两处不能重复计。
    ⚠️ **撤走的深度要一周才回来**（`ADV.halfHours`）：只按当前持仓算的话，玩家一平仓深度立刻复原，
       「撤流动性」就变成一句空话。所以留一条 `s.adv[sym] = { v, at }` 的**峰值台阶**：
@@ -359,12 +359,12 @@ function advPeakOf(s, sym, i) {
  *
  * ⚠️ 档 1 与档 2 的判据**故意不同**：档 1（撤深度）走 `advExposureOf`（含疤痕 —— 撤走的深度
  *    一周才回来），档 2（推价）走**本函数**（只看当前持仓 —— 平仓即停止施压，§5.1「疤痕不算」）。
- * ⚠️ 只算**杠杆盘**（合约 / 现货保证金）：现货 1x 是实物，走 `FLOAT` 那条浮筹折减（§5.3）。
+ * ⚠️ 只算**杠杆盘**（合约 / 杠杆 > 1）：杠杆 1x 是实物，走 `FLOAT` 那条浮筹折减（§5.3）。
  */
 function advCurExposureOf(s, sym, raw) {
   if (!(raw > 0)) return 0;
   const pos = s.positions[sym];
-  if (!pos || (pos.spot && pos.lev === 1)) return 0;
+  if (!pos || (pos.margin && pos.lev === 1)) return 0;
   const mark = markPrice(s, sym);
   return mark > 0 ? pos.size * mark / raw : 0;
 }
@@ -622,8 +622,8 @@ function absorbedImpact(s, sym, dir, impact) {
  * ⚠️ OTC 由各调用点自己在 `!otc` 分支里过滤（私下一口价不落公开盘口 —— 既有先例）。
  * @param {number} give **回吐比例**（2026-10-02）：开仓 / 加仓传 1（满额），**平仓 / 强平 /
  *   部分强平传 `SHOCK.closeGive`** —— 往返不再等量抵消，台阶永久留下 65%（见 `god.js`）。
- * @param {'spot'|'fut'} [kind] **这一笔的产品线**（§73.6）—— 决定这笔台阶的衰减形态
- *   （现货 perm 高、回补慢；合约 perm 低、回补快）。缺省按合约。
+ * @param {'margin'|'fut'} [kind] **这一笔的产品线**（§73.6）—— 决定这笔台阶的衰减形态
+ *   （1x 实物 perm 高、回补慢；有杠杆盘回补快）。缺省按合约。
  * @param {boolean} [player] 是不是**玩家自己的成交**（缺省是）。只有玩家的成交才给「热度」加料
  *   （§73.5 的 k3 项）—— NPC 自己写的那些不该再喂热度，否则热度会自激。
  */
@@ -766,14 +766,15 @@ function positionNotionalOf(s, sym) {
 }
 
 /**
- * **现货不参与级联**（§73.6）—— 玩家这一单给热度加料的倍率。
- * 现货（含 OTC）是实物换手，没有杠杆盘、也就没有「散户追高被强平」那一环 ⇒ 倍率 0；
- * 合约 / 杠杆按 `min(lev/5, 3)` 放大（5x 起跳，15x 及更高级顶格 3 倍）。
+ * **实物换手不参与级联**（§73.6）—— 玩家这一单给热度加料的倍率。
+ * 杠杆 1x（含 OTC 1x）是实物换手，没有杠杆盘、也就没有「散户追高被强平」那一环 ⇒ 倍率 0；
+ * 合约 / 杠杆 > 1 按 `min(lev/5, 3)` 放大（5x 起跳，15x 及更高级顶格 3 倍）。
  */
 function cascadeMulOf(s) {
   const otc = chanOf(s) === 'otc';
-  const lev = otc ? 1 : Math.max(1, s.lev);
-  return shockKindOf(spotOf(s, otc), lev) === 'spot' ? 0 : Math.min(lev / 5, 3);
+  /* OTC 跟随模式但杠杆封顶（2026-10-03）：与 `openCheck` 同一口径。 */
+  const lev = otc ? Math.max(1, Math.min(s.lev, OTC.levMax)) : Math.max(1, s.lev);
+  return shockKindOf(marginOf(s, otc), lev) === 'coin' ? 0 : Math.min(lev / 5, 3);
 }
 
 /**
@@ -981,8 +982,8 @@ function adl(s, sym, m, price, need) {
  *    用户拍板）：全额反向（`give = 1`）在一根内是一笔向下的位移、级联在图上「砸一波再修复」，
  *    但不再像写 `s.flow` 那样留下 40% 的永久台阶、无界累积（那会把报价顶死在 `riseMax`）。
  *    详见 `pushNpcShock` 与 `god.NPC.shockHalf`。
- * ⚠️ **按模式门控**（§73.6 · 2026-10-02 审计修）：级联的燃料是**杠杆盘**，实物现货换手没有被
- *    强制平仓的对手方 ⇒ `cascadeMulOf` 为 0（真现货 1x）时整条不跑。
+ * ⚠️ **按模式门控**（§73.6 · 2026-10-02 审计修）：级联的燃料是**杠杆盘**，实物换手（杠杆 1x）
+ *    没有被强制平仓的对手方 ⇒ `cascadeMulOf` 为 0 时整条不跑。
  *
  * ⚠️ **v30（第 6 批）在两处强平分支上各挂了一笔账**（自愿止损波**不挂**，见下）：
  *    · **缺口 16**：`liqNotional`（只含强平）→ `s.stat.liqNotional`；达阈值播「爆仓潮」日志。
@@ -1107,7 +1108,7 @@ export function tickMarket(s, sym) {
         写成加数时一笔巨额**卖单**会把热度往上顶 ⇒ 砸盘被读成极度贪婪、散户反手做多、位移反向
         （实测 15x 砸掉当日量 100% ⇒ 位移 +13.2%）。现在它只放大 `k1·x` 的**方向**：
         砸盘放大的是「变冷」、追高放大的是「变热」，量级再大也不翻转符号。
-     ⚠️ `cascadeMulOf` 仍是模式权重：现货实物换手（无杠杆盘）⇒ 0，玩家的现货量不给热度加料（§73.6）。 */
+     ⚠️ `cascadeMulOf` 仍是模式权重：实物换手（杠杆 1x / 无杠杆盘）⇒ 0，玩家的量不给热度加料（§73.6）。 */
   const liq = hourLiqBase(s, sym, i);
   const pv = liq > 0 ? m.pv / liq : 0;
   m.heat = clamp01(m.heat + HEAT.k1 * x * (1 + HEAT.k3 * Math.min(pv, 1) * cascadeMulOf(s))
@@ -1156,7 +1157,7 @@ function heatPriceAt(s, sym, i) {
 }
 
 /**
- * 重算并写下**持仓抛压折价**（`s.overhang[sym]`，v18 · 2026-10-01 拍板）—— 每次现货实物多头
+ * 重算并写下**持仓抛压折价**（`s.overhang[sym]`，v18 · 2026-10-01 拍板）—— 每次杠杆通道多头
  * 增减（开 / 加仓、平仓、强平、部分强平、交易所归零）之后调用，外加每日按流通量退坡重算。
  *
  * 写的是**台阶表** `{ at: [], v: [], scar: [] }`（三条平行数组，按 `at` 升序，**只许追加**；
@@ -1165,7 +1166,7 @@ function heatPriceAt(s, sym, i) {
  *
  * ⚠️ **疤痕 `scar`**（v25 · 2026-10-02）—— 卖出只释放一部分，其余永久留下：
  *    折算与 `s.flow` 的 `SHOCK.closeGive` **同一个比例**（买→卖往返不再等量抵消）。
- *    起因是实测缺陷：平掉一条 $50M 现货多头后，`overhang` 整条消失 ⇒ 释放的 −1.71% 折价
+ *    起因是实测缺陷：平掉一条 $50M 杠杆多头后，`overhang` 整条消失 ⇒ 释放的 −1.71% 折价
  *    远大于平仓那一笔只回吐 −1.21% 的冲击 ⇒ **卖出之后价格反而比持仓时更高**（实测 +0.49%），
  *    「买→立刻平」成了白赚一档的套利。现在卖出只释放 `give`（= `closeGive`），
  *    其余 `1 − give` 压成 `scar` 永久留在场上（与「订单造成的 K 线永久保留」同一哲学）。
@@ -1228,9 +1229,9 @@ function refreshOverhang(s, sym, give = 0) {
  *    （私下一口价不落公开盘口，与「不写冲击池」同一先例）—— OTC 的过滤放在调用点。
  * ⚠️ v19 起**按所分账**（`pvol[i][exId]`）：成交量阶梯手续费算的是「你在**这家所**近 30 天做了多少」，
  *    跨所搬钱后要重新攒量 —— 与真实交易所的 VIP 档按所计算一致。
- * ⚠️ v20 起再按**产品线**分账（`pvol[sym][i][exId][kind]`，`kind` = `'spot'` / `'fut'`）：
- *    现货与合约是两张费率表（`config.fees.spot` / `fut`），30 天量当然也得各算各的 ——
- *    混在一起会出现「靠现货刷量把合约费率刷低」这种现实里不存在的事。
+ * ⚠️ v20 起再按**产品线**分账（`pvol[sym][i][exId][kind]`，`kind` = `'margin'` / `'fut'`）：
+ *    杠杆与合约是两张费率表（`config.fees.margin` / `fut`），30 天量当然也得各算各的 ——
+ *    混在一起会出现「靠杠杆刷量把合约费率刷低」这种现实里不存在的事。
  *    量柱读的是**当前币 × 全所 × 两条产品线的 `u` 之和**。
  * ⚠️ v24（2026-10-02）**最外层补 `sym`**：`s.i` 是全币种共用的小时序号，只按它记账会让
  *     「在 BTC 买的这一笔」同时出现在 ETH / XRP / DOGE / SOL 的同一根量柱上（用户反馈的 K 线污染）。
@@ -1245,7 +1246,7 @@ function addPlayerVol(s, sym, notional, exId, kind) {
   const byKind = cell[exId] || (cell[exId] = {});
   const e = byKind[kind] || (byKind[kind] = { u: 0, b: 0 });
   e.u += notional;
-  /* BTC 等值另一格（Mt.Gox 的档位是**按 BTC 枚数**分的）。取不到 BTC 价就只留美元那一格。 */
+  /* BTC 等值另一格（量化记录用）。取不到 BTC 价就只留美元那一格。 */
   const bp = closeAt('BTC', s.i);
   if (bp > 0) e.b += notional / bp;
 }
@@ -1257,11 +1258,11 @@ function addPlayerVol(s, sym, notional, exId, kind) {
  * 与真实交易所的「30 天滚动成交量」同口径：**含窗口两端、按小时求和**，
  * 且**跨币汇总** —— VIP 档算的是「你在**这家所**做了多少」，不分币对（BTC 的量与 ETH 的量一起进档）。
  * 复杂度 O(币数 × 720)、与局长度无关（只扫窗口，不扫全程）。
- * ⚠️ `kind` 默认 `'spot'` 只为「旧调用点忘改也能跑」兜底，四个调用点全都显式传。
- * @param {'spot'|'fut'} kind 这一单自己的产品线（与 `feeRateOf` 的 `kind` 同源）
+ * ⚠️ `kind` 默认 `'margin'` 只为「旧调用点忘改也能跑」兜底，四个调用点全都显式传。
+ * @param {'margin'|'fut'} kind 这一单自己的产品线（与 `feeRateOf` 的 `kind` 同源）
  * @returns {{u:number,b:number}} 两个口径的合计（美元名义额 / BTC 等值）
  */
-export function vol30Of(s, exId, i, kind = 'spot') {
+export function vol30Of(s, exId, i, kind = 'margin') {
   let u = 0, b = 0;
   if (!s.pvol) return { u, b };
   const from = Math.max(0, i - 30 * HOURS_PER_DAY + 1);
@@ -1362,39 +1363,36 @@ const otcPremiumFor = (s, sym, notional) => {
 /* ───────────────────────────── 交易动作 ───────────────────────────── */
 
 /**
- * 这笔开仓是不是**现货**（U1 · ROADMAP §21.4；v9 · §15.6 N2/N4 改判）——
+ * 这笔开仓是不是走**杠杆通道**（U1 · ROADMAP §21.4；v9 · §15.6 N2/N4 改判）——
  * 开仓那一刻算一次，写进仓位后**固定不变**。
  *
- * 规则（两件事，与 `side` / `lev` 无关）：
- *   - **OTC 通道恒为现货**（§15.3：私下一口价买现货，与模式无关）；
- *   - 否则**只看模式**：`'spot'` ⇒ 现货、`'fut'` ⇒ 合约。
- *
- * ⚠️ 改动前它还要附加「1x 做多」这两个条件（`s.mode === 'spot' && side === 'long' && lev === 1`），
- *    §15.6 N2 起**现货也带杠杆与做空** ⇒ 那两条整条作废 ——
- *    Bitfinex 2013 年开的 3.3x 空单从此是**现货融资**（不付资金费、但照样有强平线），不是合约。
+ * 规则（与 `side` / `lev` 无关）：**只看模式** —— `s.mode !== 'fut'` ⇒ 杠杆通道、`'fut'` ⇒ 合约。
+ * ⚠️ **OTC 跟随模式**（2026-10-03 改判）：走 OTC 时不再强制 1x，而是沿用玩家当前模式
+ *    （杠杆 / 合约），只是杠杆封顶 `OTC.levMax`、且允许做空。故这里不再有 `!!otc ||` 那一支。
+ * ⚠️ 本作没有现货概念 —— 杠杆通道的最低档就是 1x（1x 不计息、不参与强平）。
  */
-const spotOf = (s, otc) => !!otc || s.mode !== 'fut';
+const marginOf = (s, otc) => s.mode !== 'fut';
 
-/** 本单走哪张杠杆表（§15.1 的两张表）：合约走 `'fut'`，其余一律走 `'spot'`（现货融资）。
+/** 本单走哪张杠杆表（§15.1 的两张表）：合约走 `'fut'`，其余一律走 `'margin'`（杠杆借贷）。
  *  ⚠️ 导出给 `main.js` 那枚杠杆键用（§15.6）—— 两处各写一遍迟早会不一致。 */
-export const levKind = s => (s.mode === 'fut' ? 'fut' : 'spot');
+export const levKind = s => (s.mode === 'fut' ? 'fut' : 'margin');
 
 /**
  * 同币加仓的**兼容性闸门**（v13 · B4 / 方案 §5.2）—— `openTrade` 在**下单那一刻**过这道闸。
  *
  * 四项各给一句明确文案，不静默失败：
  *   · 反方向 ⇒ 引导玩家自己「先平仓」（不替他反手：反手是一笔新仓，该由他决定）
- *   · 性质不同（现货 / 合约）⇒ 两张杠杆表、两种费率，混在一条仓里算不出强平价
- *   · 通道不同（盘口 / OTC）⇒ 成交价口径不同，且 OTC 恒 1x
+ *   · 性质不同（杠杆 / 合约）⇒ 两张杠杆表、两种费率，混在一条仓里算不出强平价
+ *   · 通道不同（盘口 / OTC）⇒ 成交价口径不同
  *   · 杠杆不同 ⇒ 加权均价对两种杠杆没有意义（D4 已拍板）
  *
  * @returns {string|null} 拒绝理由；`null` = 放行
  */
-function posGate(s, sym, side, spotOrder, otc, lev) {
+function posGate(s, sym, side, marginOrder, otc, lev) {
   const prev = posOf(s, sym);
   if (!prev) return null;
   if (prev.side !== side) return `${sym} 已有${prev.side === 'long' ? '多' : '空'}单 ｜ 反手请先平仓`;
-  if (isSpot(prev) !== spotOrder) return `${sym} 已有${isSpot(prev) ? '现货' : '合约'}仓 ｜ 加仓请先切回同一模式`;
+  if (isMargin(prev) !== marginOrder) return `${sym} 已有${isMargin(prev) ? '杠杆' : '合约'}仓 ｜ 加仓请先切回同一模式`;
   if (!!prev.otc !== otc) return `${sym} 已有${prev.otc ? 'OTC' : '盘口'}仓 ｜ 加仓请先切回同一通道`;
   if (prev.lev !== lev) return `${sym} 已持 ${prev.lev}x ｜ 加仓必须同杠杆 ｜ 先平仓再重开`;
   return null;
@@ -1412,7 +1410,7 @@ function posGate(s, sym, side, spotOrder, otc, lev) {
  * ⚠️ `mix` **两格各自累加**：平仓按合计比例退回，等价于两笔各按原比例退。
  * ⚠️ `pos.i` 不更新：它是「这条仓位什么时候开的」，加仓不改出生时刻。
  */
-function applyFill(s, { sym, side, fill, margin, notional, lev, feeRate, spot, fee, mix, otc = false }) {
+function applyFill(s, { sym, side, fill, margin, notional, lev, feeRate, marginMode, fee, mix, otc = false }) {
   const prev = posOf(s, sym);
   let pos = prev;
   if (pos) {
@@ -1424,7 +1422,7 @@ function applyFill(s, { sym, side, fill, margin, notional, lev, feeRate, spot, f
     pos.openFee += fee;
     pos.mix = { usd: pos.mix.usd + mix.usd, usdt: pos.mix.usdt + mix.usdt };
   } else {
-    pos = openPosition(sym, side, fill, margin, lev, feeRate, spot);
+    pos = openPosition(sym, side, fill, margin, lev, feeRate, marginMode);
     pos.i = s.i;
     pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
     pos.openFee = fee;
@@ -1444,8 +1442,8 @@ function applyFill(s, { sym, side, fill, margin, notional, lev, feeRate, spot, f
  *
  * @param {number} frac 「用掉多少可用保证金」—— 操作区那 1/4 · 1/2 · 全部。
  * @returns {{ok:false, why:string}
- *   | {ok:true, lev:number, kind:'spot'|'fut', feeRate:number, mustUsdt:boolean, prev:object|null,
- *      otc:boolean, isSpotOrder:boolean, margin:number, fee:number, notional:number, cost:number, fill:number}}
+ *   | {ok:true, lev:number, kind:'margin'|'fut', feeRate:number, mustUsdt:boolean, prev:object|null,
+ *      otc:boolean, isMarginOrder:boolean, margin:number, fee:number, notional:number, cost:number, fill:number}}
  */
 function openCheck(s, side, frac = 1) {
   if (s.over) return { ok: false, why: '本局已结束' };
@@ -1457,18 +1455,17 @@ function openCheck(s, side, frac = 1) {
     return { ok: false, why: `${exchangeOf(s.ex)?.name ?? s.ex} 维护中 ｜ 暂时不能开仓` };
   }
 
-  /* 通道（P2-B3 · §15.3）：OTC 是**现货大宗**，没有做空这一说（空头要借币、要维持保证金，
-     都不是「私下一口价买现货」能承接的）。 */
+  /* 通道（P2-B3 · §15.3；2026-10-03 改版）：OTC 是**大宗通道**，跟随玩家当前的 `s.mode`
+     （杠杆 / 合约都可走），且**允许做空** —— 它只是一口价的大宗撮合，与盘口同一条产品线。 */
   const otc = chanOf(s) === 'otc';
-  if (otc && side === 'short') return { ok: false, why: 'OTC 通道只有现货，不能做空' };
 
-  /* 现货做空要先**借到币**（v10 · 史实口径）：该所此刻没有融资市场就借不到 ⇒ 空单无从谈起。
-     判据是 `hasFinancingAt`（＝现货表上限 > 1）—— Mt.Gox / BitMEX 现货 / 2019-07 前的 Binance
-     只有 1x，也就是「用自己的钱买币」，没有任何出借方。
+  /* 杠杆做空要先**借到币**（v10 · 史实口径）：该所此刻没有融资市场就借不到 ⇒ 空单无从谈起。
+     判据是 `hasFinancingAt`（＝杠杆表上限 > 1）—— BitMEX / 2019-07 前的 Binance 只有 1x，
+     也就是「用自己的钱买币」，没有任何出借方。
      ⚠️ 只拦**开仓**：已在场的仓位照常持有，平仓也不受影响（否则旧档里那张空单会被关在里面）。
-     ⚠️ 也**因此**根除了「1x 现货空单没有强平线」：那种仓位从源头就开不出来了。 */
-  if (side === 'short' && spotOf(s, otc) && !hasFinancingAt(timeOf(s), s.ex)) {
-    return { ok: false, why: '现货做空 暂不可用 ｜ 该所此刻没有融资业务' };
+     ⚠️ 也**因此**根除了「1x 杠杆空单没有强平线」：那种仓位从源头就开不出来了。 */
+  if (side === 'short' && marginOf(s, otc) && !hasFinancingAt(timeOf(s), s.ex)) {
+    return { ok: false, why: '杠杆做空 暂不可用 ｜ 该所此刻没有融资业务' };
   }
 
   const coin = coinOf(s.sym);
@@ -1478,28 +1475,30 @@ function openCheck(s, side, frac = 1) {
   const price = exPrice(s, s.sym, s.ex);   // 缺口 10：按**当前所在所**的本所价成交
   if (!(price > 0)) return { ok: false, why: '当前没有可成交的价格' };
 
-  // 杠杆上限与费率都取**玩家当前所在的交易所**（GDD §7.1）。OTC 一律 1x（= 现货）
-  const lev = otc ? 1 : Math.max(1, Math.min(s.lev, maxLeverageAt(timeOf(s), s.ex, levKind(s))));
-  /* 费率是**两张表**（v12 · 方案 §11.3）：这一单走 `spot` 还是 `fut` 由**它自己的性质**定
-     （`spotOf` 只看模式 / OTC），与玩家此刻翻到哪一页无关 —— 否则切个页面就能换费率。 */
-  const isSpotOrder = spotOf(s, otc);
+  /* 杠杆上限与费率都取**玩家当前所在的交易所**（GDD §7.1）。2026-10-03：OTC 不再是「锁定 1x、只做多的通道」，
+     而是**大宗通道跟随模式** —— 杠杆 = 玩家设的值，同时受「该所此刻的上限」与 `OTC.levMax` 双重封顶
+     （大宗私下一口价，杠杆给不到盘口那么高）。非 OTC 不受第二条限制。 */
+  const lev = Math.max(1, Math.min(s.lev, maxLeverageAt(timeOf(s), s.ex, levKind(s)), otc ? OTC.levMax : Infinity));
+  /* 费率是**两张表**（v12 · 方案 §11.3）：这一单走 `margin` 还是 `fut` 由**它自己的性质**定
+     （`marginOf` 只看模式），与玩家此刻翻到哪一页无关 —— 否则切个页面就能换费率。 */
+  const isMarginOrder = marginOf(s, otc);
   /* ⚠️ `kind` 一处算好、三处共用（费率 / 30 天量 / 记量柱）—— v20 起这三者必须同源，
-     否则会出现「按合约费率收钱、却把量记到现货账上」这种自相矛盾。 */
-  const kind = isSpotOrder ? 'spot' : 'fut';
+     否则会出现「按合约费率收钱、却把量记到杠杆账上」这种自相矛盾。 */
+  const kind = isMarginOrder ? 'margin' : 'fut';
   /* 费率带上这家所**近 30 天、这一条产品线**的成交量（v19 · 阶梯手续费）：巨鲸买单便宜、散户落在首档。
      ⚠️ 取的是**本笔之前**的量 —— 这一笔自己不该把自己打进下一档。 */
   const feeRate = feeRateOf(s.ex, timeOf(s), kind, vol30Of(s, s.ex, s.i, kind));
   /* 这一单能动用多少钱（v13 · 方案 §9.2 ②）：**合约只认 USDT**（USDT 本位永续，
-     保证金必须是 U），现货 / OTC 是两格之和（扣的时候先扣 U、不足补美元）。
-     所以 2013 年那 $1,000 美元可以买现货，但要玩合约得先在资产页「买 U」。 */
-  const mustUsdt = !isSpotOrder;
+     保证金必须是 U），杠杆 / OTC 是两格之和（扣的时候先扣 U、不足补美元）。
+     所以 2013 年那 $1,000 美元可以开杠杆，但要玩合约得先在资产页「买 U」。 */
+  const mustUsdt = !isMarginOrder;
   const cash = spendableOf(s, mustUsdt);
 
   /* ── 同币加仓的兼容性闸门（v13 · B4 / 方案 §5.2）──
      这一单若与已有仓位冲突，**必须在动账之前**拒绝（下面一旦 `debit`，钱就已经扣了）。
      四项判据集中在 `posGate` 里（与渲染层同源，三处不各算一遍）。 */
   const prev = posOf(s, s.sym);
-  const gate = posGate(s, s.sym, side, isSpotOrder, otc, lev);
+  const gate = posGate(s, s.sym, side, isMarginOrder, otc, lev);
   if (gate) return { ok: false, why: gate };
 
   // 保证金 = 可用余额 × frac；开仓费按名义价值另收，所以要让「保证金 + 费 ≤ 余额」
@@ -1513,18 +1512,19 @@ function openCheck(s, side, frac = 1) {
   /* 单笔最小名义（2026-09-30 建闸 · 2026-10-01 丙案改按「所 × 产品 × 年代」取值）：
      余额只剩浮点残值时上面那条**拦不住**（`margin > 0` 恒真），会建出一张点不掉的幽灵持仓。
      `MIN_NOTIONAL`（$1）降级为**浮点保底**，真实门槛走 `config.minNotionalAt` ——
-     产品口径与费率**同源**（都用这一单自己的 `isSpotOrder`），所以切页面换不出不同的门槛。 */
-  const minNotional = Math.max(MIN_NOTIONAL, minNotionalAt(s.ex, timeOf(s), isSpotOrder ? 'spot' : 'fut'));
+     产品口径与费率**同源**（都用这一单自己的 `isMarginOrder`），所以切页面换不出不同的门槛。 */
+  const minNotional = Math.max(MIN_NOTIONAL, minNotionalAt(s.ex, timeOf(s), isMarginOrder ? 'margin' : 'fut'));
   if (!(margin * lev >= minNotional)) {
     return { ok: false, why: `下单金额太小 ｜ 单笔名义需 ≥ ${fmtMoneyShort(minNotional)}` };
   }
 
-  /* OTC 的门槛（§15.3）：单笔名义 ≥ 当年门槛。锁定 1x ⇒ 名义 = 保证金。
+  /* OTC 的门槛（§15.3）：单笔名义 ≥ 当年门槛。2026-10-03 起 OTC 带杠杆 ⇒ 按**名义**（`margin × lev`）
+     比对，否则「把杠杆拉高、保证金压到门槛以下」就能绕开大宗通道的最低规模。
      ⚠️ 门槛逐年化（`otcMinAt`，2013 $1 万 → 2016 $10 万 → 2020 $25 万）：绝对常量在 2013 = 1.8 天全市场
         成交量，会把早期 OTC 变成死内容。
-     ⚠️ 门槛只卡**买入**，不卡平仓 —— 卡平仓会把玩家困在一条「币价跌下来、名义已不足门槛」的仓位上。 */
+     ⚠️ 门槛只卡**开仓**，不卡平仓 —— 卡平仓会把玩家困在一条「币价跌下来、名义已不足门槛」的仓位上。 */
   const otcMin = otcMinAt(timeOf(s));
-  if (otc && margin < otcMin) return { ok: false, why: `OTC 单笔最少 ${fmtMoney(otcMin)}` };
+  if (otc && margin * lev < otcMin) return { ok: false, why: `OTC 单笔最少 ${fmtMoney(otcMin)}` };
 
   /* 成交价（P2-B1 / P2-B3）：盘口价 ± 代价 —— 买抬、卖压，**永远对玩家不利**。
      代价有两种，同一时刻只有一种成立：盘口是平方根冲击、OTC 是「基准点差 × 市况倍数」（不吃滑点）。
@@ -1544,7 +1544,7 @@ function openCheck(s, side, frac = 1) {
     return { ok: false, why: `${s.sym} 已触及供应量上限，无法继续买入` };
   }
 
-  return { ok: true, lev, kind, feeRate, mustUsdt, prev, otc, isSpotOrder, margin, fee, notional, cost, fill };
+  return { ok: true, lev, kind, feeRate, mustUsdt, prev, otc, isMarginOrder, margin, fee, notional, cost, fill };
 }
 
 /**
@@ -1567,7 +1567,7 @@ export const canOpenAt = (s, side, frac = 1) => openCheck(s, side, frac).ok;
 export function openTrade(s, side, frac = 1) {
   const c = openCheck(s, side, frac);
   if (!c.ok) return { ok: false, why: c.why };
-  const { lev, kind, feeRate, mustUsdt, prev, otc, isSpotOrder, margin, fee, notional, cost, fill } = c;
+  const { lev, kind, feeRate, mustUsdt, prev, otc, isMarginOrder, margin, fee, notional, cost, fill } = c;
 
   /* 扣账（v13）：`debit` **先扣 USDT、不足补 USD**（合约只认 USDT），并返回两格各扣了多少 ——
      那个 `mix` 就是「原路退回」的凭据，平仓时按同比例还回两格（见 `state.credit`）。
@@ -1580,32 +1580,32 @@ export function openTrade(s, side, frac = 1) {
   s.realized -= fee;
   s.lev = lev;
 
-  const spot = isSpotOrder;
+  const marginMode = isMarginOrder;
   /* ── 落账（新开 or 并进已有仓位）── */
   const pos = applyFill(s, {
-    sym: s.sym, side, fill, margin, notional, lev, feeRate, spot, fee, mix, otc,
+    sym: s.sym, side, fill, margin, notional, lev, feeRate, marginMode, fee, mix, otc,
   });
 
   /* 笔数（C8-B1）：同一份代价，报出它相当于拆成了几笔。OTC 是私下一口价、不吃滑点 ⇒ 不报。 */
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(s, s.sym, s.i), cost);
   const tag = otc ? `｜OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
-  /* 字面跟着模式走（v9 · §15.6 N4「没有的选项不显示」的同一条口径）：现货模式的操作键是
+  /* 字面跟着模式走（v9 · §15.6 N4「没有的选项不显示」的同一条口径）：杠杆模式的操作键是
      **买入 / 卖出**，日志若还写「做多 / 做空」，就与玩家刚按下的那枚键对不上了。 */
-  const verb = spot ? (side === 'long' ? '买入' : '卖出') : (side === 'long' ? '做多' : '做空');
+  const verb = marginMode ? (side === 'long' ? '买入' : '卖出') : (side === 'long' ? '做多' : '做空');
   /* 手续费必须**写进日志**（本轮 ② · 用户拍板）：它已经真的从余额里扣掉了（上面那两行），
      玩家却只看到「保证金 $1,000.0」——账对不上。`fee` 就是本笔按名义价值收的那一次。
      ★ 加仓（B4）：字面换成「加仓 ＋ 追加保证金」，并补一个**加权后的均价** ——
        否则玩家只能看到「这笔按 $13.5 成的」，看不到自己整条仓位现在的成本在哪。 */
   const qty = notional / fill;                 // 本次成交拿到的币量（加仓时是这一笔的量）
   /* 三类表述（用户 2026-10-01，两轮拍板）：
-     · **普通现货**（现货 1x）：**不写 `1x`** —— 它没有「倍数」这回事，写了反而与前两类混同；
+     · **杠杆 1x**：**不写 `1x`** —— 它是最低档、没有「倍数」可言，写了反而与前两类混同；
        币量**提到最前** ⇒「买入 N 枚 SYM｜花费 $X」，正文就不再重复币量；
-     · **杠杆现货 / 合约**：带倍数，正文报「保证金 ＋ 名义」（币量不参与结算，玩家也不看它）。 */
-  const plainSpot = spot && lev === 1;
-  const head = plainSpot
+     · **带杠杆 / 合约**：带倍数，正文报「保证金 ＋ 名义」（币量不参与结算，玩家也不看它）。 */
+  const plainMargin = marginMode && lev === 1;
+  const head = plainMargin
     ? `${prev ? '加仓' : verb} ${fmtQty(qty)} 枚 ${s.sym}`
     : (prev ? `加仓 ${s.sym} ${lev}x` : `${verb} ${s.sym} ${lev}x`);
-  const line = plainSpot
+  const line = plainMargin
     ? `${prev ? '追加' : '花费'} ${fmtMoneyShort(margin)}`
     : `${prev ? '追加保证金' : '保证金'} ${fmtMoneyShort(margin)} · 名义 ${fmtMoneyShort(notional)}`;
   const avg = prev ? `｜均价 ${fmtLogPrice(pos.entry)}` : '';
@@ -1626,7 +1626,7 @@ export function openTrade(s, side, frac = 1) {
         字段一并删掉 —— 它不再是选项，而是基础玩法的一部分。 */
   if (!otc) {
     const dir = side === 'long' ? 1 : -1;
-    pushFlow(s, s.sym, dir, notional, 1, shockKindOf(isSpotOrder, lev));
+    pushFlow(s, s.sym, dir, notional, 1, shockKindOf(isMarginOrder, lev));
     /* 玩家自己的成交量（v17 · 2026-10-01）：这一笔从此在量柱上看得见，
        也进这家所**这条产品线**的 30 天量（v19 按所 / v20 按产品线 / v24 按币） */
     addPlayerVol(s, s.sym, notional, s.ex, kind);
@@ -1634,13 +1634,13 @@ export function openTrade(s, side, frac = 1) {
        与上面 `addFlow` 同步过滤 OTC（此处就在 `!otc` 分支内）。 */
     consumePool(s, s.sym, notional);
   }
-  /* 持仓抛压折价（v18 · 2026-10-01）：这一单若**加厚了现货实物多头**，市场对你的忌惮随之变重。
+  /* 持仓抛压折价（v18 · 2026-10-01）：这一单若**加厚了杠杆实物多头**，市场对你的忌惮随之变重。
      合约 / OTC 不改变 `capturedOf` ⇒ 值没变时函数内部自己会跳过（不写、不冲 σ 缓存）。 */
   refreshOverhang(s, s.sym);
   /* 交易统计（v21）—— 只喂 M2 的「交易档案」与 M3 的「称号」，不参与任何判定。
      ⚠️ 记在**成功落账之后**：被闸门拦下 / 资金不足 / 低于最小名义的那些单不算一笔。 */
   s.stat.open += 1;
-  if (spot) s.stat.spot += 1; else s.stat.fut += 1;
+  if (marginMode) s.stat.margin += 1; else s.stat.fut += 1;
   if (lev > s.stat.maxLev) s.stat.maxLev = lev;
   s.stat.syms[s.sym] = true;
   return { ok: true };
@@ -1655,7 +1655,7 @@ export function openTrade(s, side, frac = 1) {
  * @param {number} frac **平掉仓位的比例**（0–1）—— 操作区那 1/4 · 1/2 · 全部。
  *   `1` = 全平（2026-10-02 之前唯一的行为）。
  * @returns {{ok:false, why:string}
- *   | {ok:true, pos:object, otc:boolean, f:number, pk:'spot'|'fut', feeRate:number,
+ *   | {ok:true, pos:object, otc:boolean, f:number, pk:'margin'|'fut', feeRate:number,
  *      closeSize:number, notional:number, cost:number, fill:number}}
  */
 function closeCheck(s, frac = 1) {
@@ -1666,16 +1666,14 @@ function closeCheck(s, frac = 1) {
   const price = exPrice(s, sym, pos.ex);   // 缺口 10：按**本仓所在所**的本所价平仓（与开仓同源）
   if (!(price > 0)) return { ok: false, why: '当前没有可成交的价格' };
 
-  /* OTC 通道**只平现货**（1x 做多）—— 杠杆仓一律走盘口（§15.3 的通道语义）。
-     反过来没有任何限制：**盘口可以平任何仓位**，包括 OTC 买来的现货 ——
-     所以 OTC 买入的仓位永远不会「只能用它自己的通道才能出手」。 */
+  /* 通道（§15.3；2026-10-03 改版）：OTC 是**大宗通道**，与盘口同一条产品线，什么仓位都能平 ——
+     通道只决定「这一笔成交走哪条路」（溢价 / 冲击形态），不再限制可平的仓位类型。 */
   const otc = chanOf(s) === 'otc';
-  if (otc && !isSpot(pos)) return { ok: false, why: 'OTC 只能平现货，杠杆仓请走盘口' };
 
   const f = Math.max(1e-6, Math.min(1, frac));
-  /* 平仓费走**开仓时那张表**（v12 · §11.3）：判据是仓位自己的 `isSpot`，
-     不是玩家此刻的模式 —— 现货仓平仓不该按合约费率收，反之亦然。 */
-  const pk = isSpot(pos) ? 'spot' : 'fut';       // 仓位自己的产品线（v20）：费率与 30 天量同源
+  /* 平仓费走**开仓时那张表**（v12 · §11.3）：判据是仓位自己的 `isMargin`，
+     不是玩家此刻的模式 —— 杠杆仓平仓不该按合约费率收，反之亦然。 */
+  const pk = isMargin(pos) ? 'margin' : 'fut';   // 仓位自己的产品线（v20）：费率与 30 天量同源
   const feeRate = feeRateOf(pos.ex, timeOf(s), pk, vol30Of(s, pos.ex, s.i, pk));
   const closeSize = pos.size * f;
   const notional = closeSize * price;
@@ -1729,7 +1727,7 @@ export function closeTrade(s, why = '手动', frac = 1) {
   const backMargin = pos.margin * f;
   const net = backMargin + pnl - fee;
   /* 平仓款**按 `pos.mix` 同比例退回两格**（v13 · 方案 §9.2 ③）——
-     2013 年用美元开的仓，平掉回的还是美元：否则 Mt.Gox 会凭空空降一笔 USDT。 */
+     2013 年用美元开的仓，平掉回的还是美元：否则那家所会凭空空降一笔 USDT。 */
   credit(s, pos.ex, net, { usd: pos.mix.usd * f, usdt: pos.mix.usdt * f });
   s.realized += pnl - fee;
   /* 交易统计（v21）：按**本笔回合净额**（毛盈亏 − 本笔分摊的开仓费 − 平仓费）分胜负 ——
@@ -1784,13 +1782,13 @@ export function closeTrade(s, why = '手动', frac = 1) {
      ⚠️ 分批减仓时，这一笔写的仍是**本笔名义**该有的位移（冲击按成交额走，不按仓位的比例）。 */
   if (!otc) {
     const d = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, sym, d, notional, SHOCK.closeGive, shockKindOf(isSpot(pos), pos.lev));
+    pushFlow(s, sym, d, notional, SHOCK.closeGive, shockKindOf(isMargin(pos), pos.lev));
     consumePool(s, sym, notional);        // 瞬时深度池（L1）：平仓同样是真实成交 ⇒ 也吃深度
   }
   /* 持仓抛压折价（v18 · 2026-10-01）：这一条仓位没了（`delete` 在上面）⇒ 折价随之释放。
      ⚠️ **只释放 `SHOCK.closeGive`**（v25 · 2026-10-02）：与上面那一笔回吐同一个比例，
         否则折价一次性归零会让「卖出之后比持仓时更贵」（见 `refreshOverhang` 的疤痕注释）。
-     走上一步的**只有现货实物多头** —— 平掉一张合约仓时 `capturedOf` 本来就没变，函数内部会跳过。 */
+     走上一步的**只有杠杆实物多头** —— 平掉一张合约仓时 `capturedOf` 本来就没变，函数内部会跳过。 */
   refreshOverhang(s, sym, SHOCK.closeGive);
 
   if (checkRuin(s)) return { ok: false, why: s.over.reason };
@@ -1823,7 +1821,7 @@ function forceLiquidate(s, pos, atPrice) {
   const notional = pos.size * atPrice;                // 实际成交名义（强平价上的那笔量）
   /* 玩家自己的成交量（v17 · 2026-10-01）：强平也是一笔真实成交 ⇒ 记进当根 K 线的量柱。
      取 `size × atPrice`，与 `closeTrade` 同口径；产品线取**仓位自己**的那条（v20）。 */
-  addPlayerVol(s, pos.sym, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
+  addPlayerVol(s, pos.sym, notional, pos.ex, isMargin(pos) ? 'margin' : 'fut');
   /* 订单冲击（2026-10-01 拍板）：强平同样是**卖出 / 买回**，写一笔与开仓方向相反的台阶 ——
      与 `closeTrade` 完全同一公式、同一方向（平多打压 −1、平空推高 +1），且同样**只回吐
      `SHOCK.closeGive`**（2026-10-02）：强平是「被动平仓」，若按满额反向写，玩家爆一次仓就能把
@@ -1831,7 +1829,7 @@ function forceLiquidate(s, pos, atPrice) {
      ⚠️ 强平多发生在**急跌那根**，这笔反向冲击会让兵败如山倒的 K 线更陡一档，是刻意的。 */
   {
     const dir = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive, shockKindOf(isSpot(pos), pos.lev));
+    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive, shockKindOf(isMargin(pos), pos.lev));
     consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：强平也是真实成交 ⇒ 也吃深度
   }
 
@@ -1848,7 +1846,7 @@ function forceLiquidate(s, pos, atPrice) {
   s.realized -= pos.margin - back;                     // 真实现金变动 = 丢掉保证金、收回退款
   s.stat.liq += 1;                                     // 统计（v21）：逐步强平与整条强平都各算一笔
   delete s.positions[pos.sym];
-  refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：爆掉的现货实物多头同 `closeGive` 比例释放折价
+  refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：爆掉的杠杆实物多头同 `closeGive` 比例释放折价
 }
 
 /**
@@ -1874,7 +1872,7 @@ function recordCareer(s, reason) {
     peak,
     realized: s.realized,
     open: s.stat.open, win: s.stat.win, loss: s.stat.loss, liq: s.stat.liq,
-    spot: s.stat.spot, fut: s.stat.fut, maxLev: s.stat.maxLev,
+    margin: s.stat.margin, fut: s.stat.fut, maxLev: s.stat.maxLev,
     move: s.stat.move, god: s.stat.god, loan: s.stat.loan,
     syms: Object.keys(s.stat.syms),
     /* M4：抽稀后的资金曲线（首尾必留）—— 分享卡拿它画那条线。 */
@@ -2078,7 +2076,7 @@ export function switchExchange(s, id) {
  * 所以正常情况下不可能有仓位挂在别处，这个判据是最后一道防线）。
  *
  * ⚠️ **在途的转账不受影响**（P2-A 陷阱②）：那笔钱已经离开 `books`、正躺在链上。
- *    实现上无需额外处理 —— 但**这个效果是刻意的**：Mt.Gox 归零前一根发起转账仍然救得回来，
+ *    实现上无需额外处理 —— 但**这个效果是刻意的**：交易所归零前一根发起转账仍然救得回来，
  *    既是对「提前跑」的奖励，也避免「我都点跑了还被吞」的挫败感。
  * @returns {boolean} 是否因此结束了本局
  */
@@ -2093,7 +2091,7 @@ function collapseExchange(s, ex) {
     if (pos.ex !== ex.id) continue;
     margin += pos.margin;
     delete s.positions[sym];
-    refreshOverhang(s, sym);        // v18：被这家所一起带走的现货实物多头，折价随之归零
+    refreshOverhang(s, sym);        // v18：被这家所一起带走的杠杆实物多头，折价随之归零
   }
   if (margin) s.realized -= margin;
 
@@ -2115,7 +2113,7 @@ function collapseExchange(s, ex) {
 function applyHackCut(s, ex) {
   /* ⚠️ 必须是 `ensureBook`：`bookOf` 在「这所还没去过」时返回**冻结的** `ZERO_BOOK`，
      下面那两行 ×= 会直接抛 `TypeError: Cannot assign to read only property`。
-     只要玩家在 2016-08-02 之前没去过 Bitfinex（例如 Mt.Gox 归零后直接搬去 BitMEX），
+     只要玩家在 2016-08-02 之前没去过 Bitfinex（例如某家所归零后直接搬去 BitMEX），
      到点整个游戏就崩 —— 2026-10-01 平衡性模拟里实测复现。 */
   const book = ensureBook(s, ex.id);
   const lost = (book.usd + book.usdt) * ex.hack.cut;
@@ -2203,7 +2201,7 @@ export function advanceOneHour(s) {
   if (s.transfer && s.i >= s.transfer.arriveAt) {
     const tr = s.transfer;
     /* 进**当初搬的那一格**（v13 · 方案 §9.2 ①）：2013 年电汇搬的是美元，2014-11 后链上搬的是 U。
-       少了这一条，Mt.Gox 会凭空到账一笔 2013 年根本不存在的 USDT。 */
+       少了这一条，那家所会凭空到账一笔 2013 年根本不存在的 USDT。 */
     ensureBook(s, tr.to)[tr.cur] += tr.amount;
     s.transfer = null;
     const to = exchangeOf(tr.to);
@@ -2216,7 +2214,7 @@ export function advanceOneHour(s) {
      ⚠️ 台阶只影响 `at` 之后的 K 线 ⇒ 按日刷新**不会**重标定历史（与 `s.flow` 逐根约束同一纪律）。 */
   if (s.i % HOURS_PER_DAY === 0) for (const sym of heldSyms(s)) refreshOverhang(s, sym);
 
-  // 交易所归零（目前只有 Mt.Gox 2014-02-25）：提前 7 天预警，到点余额清零、该所仓位作废。
+  // 交易所归零（由 `EXCHANGES[].close` 触发）：提前 7 天预警，到点余额清零、该所仓位作废。
   // 预警只在「玩家此刻就待在那家所」时出现 —— 已经搬走的人不需要被吓一跳。
   const t = timeOf(s);
   for (const ex of EXCHANGES) {
@@ -2233,7 +2231,7 @@ export function advanceOneHour(s) {
   }
 
   /* ═══════════ 历史时刻入日志（本轮 · 用户 2026-09-30 拍板「新闻也要写入日志串」）═══════════
-     下面三类都是**一局内只说一次**的历史时刻，一律用 `===` 判等（同 Mt.Gox 归零预警的写法），
+     下面三类都是**一局内只说一次**的历史时刻，一律用 `===` 判等（同交易所归零预警的写法），
      天然只命中一次，不需要任何「已播过」状态位。
      ⚠️ 顺序即日志条的**先后**：`pushLog` 把最新的插在队首，同一个小时里最后写的那句才是
         日志条上显示的那句。新闻放在最前 —— 它是个 24 小时的「填充态」，该让位给同一小时里
@@ -2248,7 +2246,7 @@ export function advanceOneHour(s) {
   if (rnews) pushLog(s, rnews.rt, 'news');
 
   for (const ex of EXCHANGES) {
-    /* 开张：只报「开局之后才开」的所 —— Mt.Gox / Bitfinex 在 2013-01-01 就在，
+    /* 开张：只报「开局之后才开」的所 —— Bitfinex 在 2013-01-01 就在，
        `s.i` 那根永远不会等于 0（`advanceOneHour` 先自增），开局界面因此天然干净。 */
     if (ex.open > GAME.start && t === ex.open) pushLog(s, `${ex.name} 上线 ｜ 可在此交易`, 'ok');
     // 停机维护（B24 · BitMEX 2020-03-13）：窗口内**只平不开**
@@ -2256,14 +2254,14 @@ export function advanceOneHour(s) {
       if (t === h.from) pushLog(s, `${ex.name} 停机维护 ｜ 只能平仓，不能开仓`, 'bad', 'mkt');
       if (t === h.to) pushLog(s, `${ex.name} 恢复交易`, 'ok');
     }
-    /* 杠杆阶梯：**首档 > 1x** 才叫「这类杠杆上线」（1x 就是纯现货，不是杠杆，不播）；
-       其后每一档都是「上限调整」。Mt.Gox / BitMEX / Binance 的现货首档是 1x ⇒ 只在开张时取到。 */
-    for (const [steps, label] of [[ex.spotSteps, '现货'], [ex.futSteps, '合约']]) {
+    /* 杠杆阶梯：**首档 > 1x** 才叫「这类杠杆上线」（1x 是最低档、不算上线，不播）；
+       其后每一档都是「上限调整」。BitMEX / Binance 的杠杆首档是 1x ⇒ 只在开张时取到。 */
+    for (const [steps, label] of [[ex.marginSteps, '杠杆'], [ex.futSteps, '合约']]) {
       if (!steps) continue;
       steps.forEach((st, k) => {
         if (t !== st.from) return;
-        if (k > 0) pushLog(s, `${ex.name} ${label}杠杆上限调整为 ${st.max}x`, 'info');
-        else if (st.max > 1) pushLog(s, `${ex.name} ${label}杠杆上线 ｜ 最高 ${st.max}x`, 'ok');
+        if (k > 0) pushLog(s, `${ex.name} ${label}上限调整为 ${st.max}x`, 'info');
+        else if (st.max > 1) pushLog(s, `${ex.name} ${label}上线 ｜ 最高 ${st.max}x`, 'ok');
       });
     }
   }
@@ -2293,9 +2291,9 @@ export function advanceOneHour(s) {
   /* 破产预警（v11 · ③）：会**直接弄死人**（交易所归零）或**重创杠杆仓**（大级别崩盘）的历史事件，
      提前 7 天（`anchors.WARN_LEAD_HOURS`）弹遮罩 ＋ 暂停，给玩家挪仓 / 降杠杆的准备时间。
      ⚠️ **只有新手提示开着才打断**（`s.hintOn`）—— 老手在开场选了「我是老手」，自己扛。
-        但 Mt.Gox 那条**交易所级**预警日志不受它管（就在上面那个循环里，只在「你此刻就待在那家所」
+        但那条**交易所级**预警日志不受它管（就在上面那个循环里，只在「你此刻就待在那家所」
         时才出现）—— 所以老手不是完全没有提示，只是没有那记强制暂停。
-     ⚠️ **不写日志**：遮罩本身就是那条提醒；再 push 一条，Mt.Gox 那一格就会同时出现两条同义警告，
+     ⚠️ **不写日志**：遮罩本身就是那条提醒；再 push 一条，那一格就会同时出现两条同义警告，
         违反「同一事件描述一局内最多一次」。`warnAnchorAt` 用 `===` 判等，天然只命中一次。 */
   if (s.hintOn) {
     const a = warnAnchorAt(s.i);
@@ -2317,7 +2315,7 @@ export function advanceOneHour(s) {
      排在 `tickMarket` 之后 —— 玩家的 `pv` 刚被清掉、持仓也刚跟着这一根的行情更新过。 */
   advTick(s);
 
-  // 持仓成本每 8 游戏小时结算一次（B26：永续扣资金费、现货保证金扣借贷利息，现货 1x 不扣）
+  // 持仓成本每 8 游戏小时结算一次（B26：永续扣资金费、杠杆保证金扣借贷利息，杠杆 1x 不扣）
   if (s.i % FUNDING.hours === 0 && settleFunding(s)) return;
 
   liquidateAll(s);
@@ -2338,7 +2336,7 @@ export function advanceOneHour(s) {
  * ⚠️ **为什么向后不重放**：目标时刻的行情、杠杆阶梯、费率、流动性、币是否已上线**全是 `s.i` 的纯函数**
  *    （`config.*At(t)` 一族），而所有**累积型**状态（持仓 / 在途转账 / 救济金 / 资金曲线 /
  *    日志 / 冲击池 / 待决遮罩）在这里已经全部清空 ⇒ 重放没有任何东西可产出。
- *    反过来，重放**有害**：Mt.Gox 归零（2014-02-25）、Bitfinex 被盗削减（2016-08-02）这些事件会在
+ *    反过来，重放**有害**：Bitfinex 被盗削减（2016-08-02）这类事件会在
  *    重放途中把「保留的资金」吃掉 —— 那笔钱本来是在**跳转之后**才放的。
  *
  * **资金口径**：跳转前**所有交易所两格之和**（各所原样相加，**不做任何折算**），全部落到跳转后的
@@ -2384,7 +2382,7 @@ export function rewindTo(s, to) {
   s.realized = 0;
   /* 交易统计（v21）也属于「进度」⇒ 一并清空。唯独 `god`（是否开过上帝模式）留着 ——
      它是「这一局不干净」的**永久标记**，回退一百次也不该被洗白。 */
-  s.stat = { open: 0, win: 0, loss: 0, liq: 0, spot: 0, fut: 0, maxLev: 1, syms: {}, move: 0, god: s.stat.god, loan: 0, liqNotional: 0 };
+  s.stat = { open: 0, win: 0, loss: 0, liq: 0, margin: 0, fut: 0, maxLev: 1, syms: {}, move: 0, god: s.stat.god, loan: 0, liqNotional: 0 };
   s.eq = [];
   s.loaned = false;
   s.pending = null;
@@ -2435,13 +2433,13 @@ export function invalidateSigma() {
  *     **不含 `dir`**：方向只在 `fundingOf` 里出现一次（v30 · 缺口 3 修掉原来的双重 `dir` bug）。
  *     费率由**全市场多空失衡**（`longShareOf`，含玩家自己的名义）驱动，玩家可真收可付；
  *     「仓位越大越贵 / 越赚」自动保持，不再由行情动量决定。口径见 `positions.js` 的 `FR` 注释。
- *   - **现货保证金（margin）**：借贷利息 —— `名义 × 日息 × (8/24)`。史实里 Bitfinex 的
+ *   - **杠杆（margin）**：借贷利息 —— `名义 × 日息 × (8/24)`。史实里 Bitfinex 的
  *     「杠杆」是用户间 P2P 借美元/借 BTC（出借方叫 Margin Funding Provider），按市场利率计息；
  *     日息**按年代取值**（`config.MARGIN.daily`）且**数字是合成值** ⇒ GDD 声明。
  *     2016-05-13 之前世界上没有永续，那时的杠杆仓全落进这一支。
  *
  * ⚠️ **两条路各写一条日志**（标签不同、不能合并成一条）：`paysInterest` 与 `paysFunding` 互斥，
- *    同时持有两种仓位时玩家需要分别看到两笔成本的费率。现货 1x 两样都不付。
+ *    同时持有两种仓位时玩家需要分别看到两笔成本的费率。杠杆 1x 两样都不付。
  * @returns {boolean} 是否因结算后总权益归零而结束本局
  */
 function settleFunding(s) {
@@ -2452,11 +2450,11 @@ function settleFunding(s) {
   const daily = marginDailyRateAt(t);              // 借贷日息按年代，同一时刻所有所一样
 
   let fed = 0, grossP = 0;   // 永续：净支出（> 0 = 玩家付出）/ 参与结算的名义和
-  let ied = 0, grossM = 0;   // 现货保证金：应付利息 / 借来的名义和
+  let ied = 0, grossM = 0;   // 杠杆保证金：应付利息 / 借来的名义和
   for (const sym of syms) {
     const pos = s.positions[sym];
 
-    /* ── 现货保证金：借贷利息（B26）── */
+    /* ── 杠杆保证金：借贷利息（B26）── */
     if (paysInterest(pos)) {
       const fee = pos.notional * daily * (FUNDING.hours / 24);
       pos.margin -= fee;
@@ -2466,7 +2464,7 @@ function settleFunding(s) {
       continue;
     }
 
-    if (!paysFunding(pos)) continue;                 // 现货 1x：两样都不付
+    if (!paysFunding(pos)) continue;                 // 杠杆 1x：两样都不付
     const mark = exPrice(s, sym, pos.ex);            // 缺口 10：资金费也按**本仓所在所**的本所价
     if (!(mark > 0)) continue;
 
@@ -2523,11 +2521,11 @@ function settleFunding(s) {
 
 /**
  * 逐仓强平：每个仓位各自用**当根 K 线的高低点**判定（见文件头注释）。
- * 现货仓位跳过 —— 只有币价归零才归零本金，不因维持保证金率被强平（GDD §9.1）。
- * ⚠️ v9（§15.3 N5）：判据从「是不是现货」换成 `canLiquidate` —— 现货从 §15.6 起**也带杠杆**，
- *    而「借来的钱要还」⇒ **现货杠杆仓照样强平**，只有现货 1x 才是那个无强平的特例。
+ * 杠杆 1x 仓位跳过 —— 只有币价归零才归零本金，不因维持保证金率被强平（GDD §9.1）。
+ * ⚠️ v9（§15.3 N5）：判据从「是不是杠杆 1x」换成 `canLiquidate` —— 杠杆从 §15.6 起**也带倍数**，
+ *    而「借来的钱要还」⇒ **杠杆 > 1 仓位照样强平**，只有杠杆 1x 才是那个无强平的特例。
  * ⚠️ B18/B26：维持线本身也不再是常数 —— `maintRateOf(pos)` 按「所 × 工具 × 名义档」取
- *    （Binance 永续四档、现货保证金恒 15%），所以早期 3.3x 杠杆仓会明显比现在更容易爆。
+ *    （Binance 永续四档、杠杆保证金恒 15%），所以早期 3.3x 杠杆仓会明显比现在更容易爆。
  * ⚠️ **2026-10-01 起不再是「一穿线就整条打掉」**：触线只走**部分强平**一档（`partialLiquidate`），
  *    只有权益真跌到 ≤ 0（或剩余不足最小名义）才整条 `forceLiquidate`。见 `PARTIAL_TARGET`。
  * @returns {boolean} 是否因此结束了本局
@@ -2605,10 +2603,10 @@ function liquidateAll(s) {
 function partialLiquidate(s, pos, frac, atPrice) {
   const r = reducePosition(pos, frac, atPrice);
   const notional = r.closedNotional;
-  addPlayerVol(s, pos.sym, notional, pos.ex, isSpot(pos) ? 'spot' : 'fut');
+  addPlayerVol(s, pos.sym, notional, pos.ex, isMargin(pos) ? 'margin' : 'fut');
   {
     const dir = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive, shockKindOf(isSpot(pos), pos.lev));
+    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive, shockKindOf(isMargin(pos), pos.lev));
     consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：部分强平也是真实成交 ⇒ 也吃深度
   }
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
@@ -2688,19 +2686,19 @@ export function createClock(s, cb) {
  * 当前可用杠杆档位随「时间 ＋ 所选交易所 ＋ 模式」变化，
  * 切换币种 / 换所 / 走时间 / 切模式后都要夹取一次。
  *
- * ⚠️ v9（§15.6 N3）：**该所此刻没有合约时，模式强制退回现货** —— 否则玩家会带着 `'fut'`
+ * ⚠️ v9（§15.6 N3）：**该所此刻没有合约时，模式强制退回杠杆** —— 否则玩家会带着 `'fut'`
  *    停在一家根本不提供合约的交易所上：模式键已经藏起来了，单子却还在按合约口径下。
- * ⚠️ 夹取必须用**当前模式那一张表**（§15.1）：从 125x 的合约切回现货，杠杆必须掉到现货上限。
+ * ⚠️ 夹取必须用**当前模式那一张表**（§15.1）：从 125x 的合约切回杠杆，杠杆必须掉到杠杆上限。
  */
 export function normalizeLeverage(s) {
-  if (!futuresAvailable(s)) s.mode = 'spot';
+  if (!futuresAvailable(s)) s.mode = 'margin';
   const max = maxLeverageAt(timeOf(s), s.ex, levKind(s));
   if (s.lev > max) s.lev = max;
   if (s.lev < 1) s.lev = 1;
 }
 
 /**
- * 当前所**此刻**有没有合约（v9 · §15.3 N3）—— UI 用它决定那枚「现货 / 合约」模式键出不出现。
+ * 当前所**此刻**有没有合约（v9 · §15.3 N3）—— UI 用它决定那枚「杠杆 / 合约」模式键出不出现。
  * 判据 = 该所 `futSteps` 非 `null` **且**首档已生效（`config.hasLeverageKindAt`）。
  */
 export const futuresAvailable = s => hasLeverageKindAt(timeOf(s), s.ex, 'fut');

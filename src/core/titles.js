@@ -4,7 +4,7 @@
  * 输入是 `core/careers.js` 的**一条档案记录**，输出「主称号 ＋ 徽章」：
  *
  *     titleOf(rec)   →  '百倍战神'                （一局一枚）
- *     badgesOf(rec)  →  ['现货党', '钻石手', …]   （0–10 枚）
+ *     badgesOf(rec)  →  ['杠杆党', '钻石手', …]   （0–10 枚）
  *
  * 档案页（`render.js` 的 `careerRow`）与分享图（M4 `ui/shareCard.js`）**共用这里** ⇒
  * 同一局在哪儿看都是同一枚称号，不会两处各写一份判断（LESS IS MORE 的硬要求）。
@@ -55,7 +55,7 @@ export function titleOf(rec) {
 
 /**
  * 徽章 —— 10 枚，按固定顺序排列。
- * ⚠️ 成对的判据（躺平/现货党、百倍玩家/杠杆赌徒、单一信仰/五币全通）用 `else if` **互斥**，
+ * ⚠️ 成对的判据（躺平/杠杆党、百倍玩家/杠杆赌徒、单一信仰/五币全通）用 `else if` **互斥**，
  *    避免一行里冒出两枚意思相近的标签（LESS IS MORE）。
  */
 export function badgesOf(rec) {
@@ -63,7 +63,7 @@ export function badgesOf(rec) {
   const symCount = Array.isArray(rec.syms) ? rec.syms.length : 0;
 
   if (rec.open === 0) out.push('躺平');
-  else if (rec.fut === 0) out.push('现货党');
+  else if (rec.fut === 0) out.push('杠杆党');
 
   if (rec.maxLev >= 100) out.push('百倍玩家');
   else if (rec.maxLev >= 20) out.push('杠杆赌徒');

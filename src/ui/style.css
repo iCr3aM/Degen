@@ -36,9 +36,9 @@
   --gold: #ffc44d;
   /* ── v20（2026-10-01）玩家自己成交额的量柱色 ─────────────────────
      量柱本体是「涨跌色 × .30」，玩家自己那一段改成**不透明的专色**（见 `chart.js`）：
-     现货一枚蓝（与主色同相，读作「你自己的」）、合约一枚金（与开仓价那根虚线同相，
+     杠杆一枚蓝（与主色同相，读作「你自己的」）、合约一枚金（与开仓价那根虚线同相，
      读作「带杠杆的那一类」）。两者与涨跌绿红都不撞，缩到 1px 也还分得开。 */
-  --pv-spot: #4da3ff;
+  --pv-margin: #4da3ff;
   --pv-fut: #ffc44d;
   /* ── T-1 新增 token（2026-10-01）：**彩色填充上的文字色** ──────────────
      全项目原本只有这 4 个魔数没有名字（各出现 1–2 次）。只做同名值替换 ⇒
@@ -250,7 +250,7 @@ b, strong { font-weight: 600; }
 }
 .top .ic.exbtn b { font-size: calc(12px * var(--ui)); font-weight: 600; }
 .top .ic.exbtn u { text-decoration: none; font-size: calc(12px * var(--ui)); color: var(--mut); }
-/* 费率着色（本轮 ④）：四家所差 5 倍（Mt.Gox 0.20% ↔ Binance 0.04%），这一行是全屏唯一显示它的地方。
+/* 费率着色（本轮 ④）：三家所差 5 倍（Bitfinex / BitMEX 0.20% ↔ Binance 0.04%），这一行是全屏唯一显示它的地方。
    ⚠️ 同样要写到 `.top .ic.exbtn u`（0,3,1）这一级 —— 全局 `.gold` / `.down`（0,1,0）够不着。 */
 .top .ic.exbtn u.gold { color: var(--gold); }
 .top .ic.exbtn u.down { color: var(--down); }
@@ -669,7 +669,7 @@ b, strong { font-weight: 600; }
   opacity: .55;
   cursor: default;
 }
-/* 同上（v10 · ②）：「有、但此刻点不动」的主操作键（现货空单借不到币时的「卖出」）。
+/* 同上（v10 · ②）：「有、但此刻点不动」的主操作键（杠杆做空借不到币时的「卖出」）。
    实心色块没有边框可虚，改用**压暗 ＋ 去色**——把红/绿压成灰，一眼看出它不是一枚能按的键。
    ⚠️ 规则写在 `.act:active` 之后，同优先级下由源码顺序取胜，按压态不会把去色顶掉。 */
 .act.off { opacity: .28; filter: grayscale(.7); cursor: default; }
@@ -742,7 +742,7 @@ canvas.curve {
   border: 1px solid var(--line);
 }
 
-/* 持仓列表：按**现货 / 合约**分组（组名走 `h4`），组内是一个 `.pcard`，行与行之间一条细线。
+/* 持仓列表：按**杠杆 / 合约**分组（组名走 `h4`），组内是一个 `.pcard`，行与行之间一条细线。
    用途是**跨币复盘** —— 与交易页那条「只看当前币」的持仓条不是重复（§14.7）。 */
 .plist { margin-top: 8px; padding-bottom: 8px; }
 .plist h4 {

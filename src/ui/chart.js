@@ -51,8 +51,8 @@ const THEME_VARS = {
   FG: '--fg',        // 正文
   GOLD: '--gold',    // 开仓价
   LINE: '--line',    // 网格线
-  PV_SPOT: '--pv-spot',   // 量柱里**玩家自己的现货**那一段（v20）
-  PV_FUT: '--pv-fut',     // 量柱里**玩家自己的合约**那一段（v20）
+  PV_MARGIN: '--pv-margin',   // 量柱里**玩家自己的杠杆**那一段（v20）
+  PV_FUT: '--pv-fut',         // 量柱里**玩家自己的合约**那一段（v20）
   /* M4 分享卡（`shareCard.js`）借这里的取色 —— 底色与面板色，K 线自己用不上，
      但分享卡要跟主题同源（红涨绿跌对调时它也得跟着翻）。 */
   BG: '--bg',
@@ -105,13 +105,13 @@ function axisLabel(p) {
  * @param {object} o
  *   candles  Array<{o,h,l,c}>  视野内的小时线（或日线聚合），已按时间升序，最后一个是当前根
  *   vols     Array<number>     与 `candles` 一一对齐的**绝对美元成交额**（0 = 该根无成交）
- *   pvols    Array<{spot,fut}> 与 `candles` 一一对齐的**玩家自己那一份**（v20）：
- *                              `spot + fut` 恒 ≤ `vols[k]`，只用来把量柱的下半段**换个色**画出来
- *                              （现货 / 合约各一色）—— 不给高度、不改归一化口径。
+ *   pvols    Array<{margin,fut}> 与 `candles` 一一对齐的**玩家自己那一份**（v20）：
+ *                              `margin + fut` 恒 ≤ `vols[k]`，只用来把量柱的下半段**换个色**画出来
+ *                              （杠杆 / 合约各一色）—— 不给高度、不改归一化口径。
  *   mark     number            当前价（画水平线）
  *   entry    number|null       持仓开仓价
  *   side     'long'|'short'|null
- *   liq      number|null       强平价（现货传 null）
+ *   liq      number|null       强平价（杠杆 1x 传 null）
  *   slots    number            本帧视野的**槽位数**（= `view.js` 的 `count`）。
  *                              ⚠️ 不等于 `candles.length`：币种刚上线时可用根数少于 `count`，
  *                              柱宽必须按槽位算、柱子**右对齐**，否则开局那 1 根 K 线会撑满整屏（B22）。
@@ -298,7 +298,7 @@ export function drawChart(canvas, o) {
 
   // ── 玩家自己那一段：**只换色、不改高度**（v20 · 用户 2026-10-01 拍板） ──
   // 高度仍按同一把尺（`vscale` / `volH`）量，所以柱顶一格不动；变的是**下半段**的色相：
-  //   现货 = `--pv-spot`、合约 = `--pv-fut`，两段从基线往上叠（现货在下、合约在上）。
+  //   杠杆 = `--pv-margin`、合约 = `--pv-fut`，两段从基线往上叠（杠杆在下、合约在上）。
   // ⚠️ 为什么原来的玩家量「看不见」（2026-10-01 诊断结论）：柱高按**视野内 P90** 归一化
   //    （B29），一屏 68 根小时线里市场自己的成交额动辄几万到几十亿美元，玩家那一笔被压到
   //    十几像素 —— **不是没接进来，而是被同一根柱子里的市场量淹了**。分色之后即使高度不变，
@@ -309,18 +309,18 @@ export function drawChart(canvas, o) {
     for (let k = 0; k < n; k++) {
       const p = PV[k];
       if (!p) continue;
-      const tot = p.spot + p.fut;
+      const tot = p.margin + p.fut;
       if (!(tot > 0)) continue;
       const barH = Math.max(1, Math.round(Math.min(1, V[k] / vscale) * volH));
       // 玩家的整段高度（封在柱内 —— `tot ≤ V[k]` 数学上恒成立，这里是浮点兜底）
       const hAll = Math.min(barH, Math.max(1, Math.round(Math.min(1, tot / vscale) * volH)));
       let seg;
-      if (p.spot > 0 && p.fut > 0) {
+      if (p.margin > 0 && p.fut > 0) {
         // 两段都有：按占比切，两段各留 1px 最小可见高度
-        const hs = Math.max(1, Math.min(hAll - 1, Math.round(hAll * (p.spot / tot))));
-        seg = [[T.PV_SPOT, hs], [T.PV_FUT, hAll - hs]];
+        const hs = Math.max(1, Math.min(hAll - 1, Math.round(hAll * (p.margin / tot))));
+        seg = [[T.PV_MARGIN, hs], [T.PV_FUT, hAll - hs]];
       } else {
-        seg = [[p.spot > 0 ? T.PV_SPOT : T.PV_FUT, hAll]];
+        seg = [[p.margin > 0 ? T.PV_MARGIN : T.PV_FUT, hAll]];
       }
       let y = bot;
       for (const [col, sh] of seg) {

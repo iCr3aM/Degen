@@ -27,17 +27,16 @@ import { maintRateAt } from './config.js';
  * @param {number} margin 保证金
  * @param {number} lev    杠杆
  * @param {number} feeRate 费率（开仓按名义价值收一次）
- * @param {boolean} spot 是否现货（U1 · ROADMAP §21.4）—— 由调用方按 `s.mode` / 通道算好传进来，
- *   开仓那一刻**定死**在仓位上（`isSpot` 读的就是它）。见 `engine.openTrade()` 里的表达式。
+ * @param {boolean} marginMode 是否走**杠杆通道**（U1 · ROADMAP §21.4）—— 由调用方按 `s.mode` / 通道算好传进来，
+ *   开仓那一刻**定死**在仓位上（`isMargin` 读的就是它）。见 `engine.openTrade()` 里的表达式。
  */
-export function openPosition(sym, side, price, margin, lev, feeRate, spot = false) {
+export function openPosition(sym, side, price, margin, lev, feeRate, marginMode = false) {
   const notional = margin * lev;
   return {
     sym,
     side,
     lev,
-    spot,                 // 现货标记（U1）：一旦开仓就固定，不再随 `s.mode` 变
-    margin,
+    margin: marginMode,   // 杠杆标记（U1）：一旦开仓就固定，不再随 `s.mode` 变
     entry: price,
     size: notional / price,
     notional,
@@ -78,7 +77,7 @@ export function isLiquidatable(pos, price) {
  * 拿一个固定阈值（如 5%）去卡，高杠杆仓位会**常年贴在红区**，颜色就不带信息了。
  * 归一化之后「同一个 `safetyOf` 在任何杠杆下含义相同」：0.5 = 垫子用掉一半。
  *
- * ⚠️ 不可强平的仓位（现货 1x）恒返回 `1`：它没有维持线这一说，也就永远不进入注意 / 危险区。
+ * ⚠️ 不可强平的仓位（杠杆 1x）恒返回 `1`：它没有维持线这一说，也就永远不进入注意 / 危险区。
  */
 export function safetyOf(pos, price) {
   if (!canLiquidate(pos)) return 1;
@@ -155,71 +154,72 @@ export function reduceFraction(pos, price, target = 1.5) {
   return Math.max(0, Math.min(1, f));
 }
 
-/* ───────────────────────── 现货 / 合约（GDD §9.1） ───────────────────────── */
+/* ───────────────────────── 杠杆 / 合约（GDD §9.1） ───────────────────────── */
 
 /**
- * 现货判定（U1 · 2026-09-29 改判，ROADMAP §21.4；v9 · §15.6 再改）—— **读仓位自己的 `spot` 标记**。
+ * 杠杆通道判定（U1 · 2026-09-29 改判，ROADMAP §21.4；v9 · §15.6 再改）—— **读仓位自己的 `margin` 标记**。
  *
  * ⚠️ 它不再由 `side / lev` 推出来。开仓那一刻由 `engine.openTrade()` 按 `s.mode` 算好写进仓位，
  *    之后**固定不变** —— 玩家中途切换模式不会改变已有仓位的性质（那才符合直觉）。
- *    `'spot'` 模式下的任何单 ⇒ 现货；`'fut'` 模式下的任何单 ⇒ 合约；OTC 通道**恒为现货**。
+ *    `'margin'` 模式下的任何单 ⇒ 杠杆通道；`'fut'` 模式下的任何单 ⇒ 合约通道。
+ *    ⚠️ **本作没有现货概念**：1x 仍是杠杆通道的最低档，只是不计息、不参与强平。
  *
  * ⚠️ **v9 起它只回答一个问题：「这笔单是怎么开的」**。改动前它同时承担着两件事
- *    （不付资金费 ＋ 不被强平），而现货从 §15.6 起**也带杠杆**了 ——
- *    于是「是现货」不再等价于「不会被强平」，那两件事各自拆成了下面两个更窄的判据。
+ *    （不付资金费 ＋ 不被强平），而杠杆通道从 §15.6 起**也带杠杆**了 ——
+ *    于是「是杠杆单」不再等价于「不会被强平」，那两件事各自拆成了下面两个更窄的判据。
  */
-export const isSpot = pos => !!(pos && pos.spot);
+export const isMargin = pos => !!(pos && pos.margin);
 
 /**
  * 这个仓位要不要参与**资金费率**结算（v9 · §15.3 N5）—— **只有永续要**。
- * 现货融资（margin）不吃资金费，改为**借贷利息**（B26 · 见 `paysInterest`），
+ * 杠杆融资（margin）不吃资金费，改为**借贷利息**（B26 · 见 `paysInterest`），
  * 两者在引擎里是同一次结算的两个分支，不是同一笔钱。
  */
-export const paysFunding = pos => !isSpot(pos);
+export const paysFunding = pos => !isMargin(pos);
 
 /**
  * 这个仓位会不会被**强平**（v9 · §15.3 N5）—— 引擎的强平循环拿它当判据。
  *   - 合约：恒可（走维持保证金率那一套）
- *   - 现货：**只有带杠杆（`lev > 1`）才可** —— 借来的钱要还，所以要维持保证金
- *   - 现货 1x：只有币价归零才归零本金，不因维持线被强平（GDD §9.1）
+ *   - 杠杆：**只有带杠杆（`lev > 1`）才可** —— 借来的钱要还，所以要维持保证金
+ *   - 杠杆 1x：只有币价归零才归零本金，不因维持线被强平（GDD §9.1）
  */
-export const canLiquidate = pos => !isSpot(pos) || pos.lev > 1;
+export const canLiquidate = pos => !isMargin(pos) || pos.lev > 1;
 
 /* ───────────── 工具性质与维持保证金率（B18 / B26 · 2026-09-30） ───────────── */
 
 /**
  * 这条仓位**是什么工具**（B26）—— 史实上「借钱买币」与「永续合约」是两种东西：
  *
- *   - `'margin'`：**现货保证金借贷** —— `spot` 表 + `lev > 1`（Bitfinex 2013-04 起 3.3x、
+ *   - `'margin'`：**杠杆借贷** —— `margin` 表 + `lev > 1`（Bitfinex 2013-04 起 3.3x、
  *     Binance 2019-07-11 起 3x）。借来的钱 / 币要还，按**借贷日息**计息，
  *     维持线走 Bitfinex 史实的 **15%（权益口径）**。
  *   - `'perp'`：**线性 USDT 本位永续** —— `fut` 表的任何仓位。吃 8 小时资金费、维持线 0.5% 起。
  *
  * ⚠️ 2016-05-13 之前世界上**没有永续**（BitMEX 的 XBTUSD 是人类第一个）——
  *    那年头的「杠杆」全是借钱买币，所以早期仓位一律落进 `'margin'` 这一支。
- * ⚠️ 与 `engine.levKind(s)`（`'spot'` / `'fut'`，回答「走哪张杠杆表」）是**同一条分界**，
+ * ⚠️ 与 `engine.levKind(s)`（`'margin'` / `'fut'`，回答「走哪张杠杆表」）是**同一条分界**，
  *    这里回答的是「它是什么工具」—— 两个问题答案一一对应，所以不需要另立一张年代表。
  */
-export const instrumentOf = pos => (isSpot(pos) && pos.lev > 1 ? 'margin' : 'perp');
+export const instrumentOf = pos => (isMargin(pos) && pos.lev > 1 ? 'margin' : 'perp');
 
 /**
- * 这一笔订单 / 仓位的**冲击形态品种**（§73.6）—— 决定走 `SHOCK_MODE.spot` 还是 `fut` 那一套
+ * 这一笔订单 / 仓位的**冲击形态品种**（§73.6）—— 决定走 `SHOCK_MODE.coin` 还是 `fut` 那一套
  * `perm` / `betaFast`，也决定它参不参与 NPC 级联。
  *
- * 三档的唯一分界是「**有没有杠杆盘**」，不是「走不走现货模式」：
- *   - 真现货 1x（`spot && lev ≤ 1`）⇒ `'spot'`（实物换手、无杠杆盘 ⇒ 痕迹久、不级联）；
- *   - 合约（`mode='fut'`）与**现货保证金杠杆**（`spot && lev > 1`）⇒ `'fut'`（合成盘、有杠杆盘）。
+ * 两档的唯一分界是「**有没有杠杆盘**」，不是「走不走杠杆模式」：
+ *   - 杠杆 1x（`margin && lev ≤ 1`）⇒ `'coin'`（实物换手、无杠杆盘 ⇒ 痕迹久、不级联）；
+ *   - 合约（`mode='fut'`）与**杠杆 > 1**（`margin && lev > 1`）⇒ `'fut'`（合成盘、有杠杆盘）。
  *
- * ⚠️ 与 `isSpot` / `instrumentOf` **不是同一件事**：那两个回答「是不是现货通道 / 什么工具」，
- *    这里回答「它的冲击长什么样」。现货模式带杠杆（Bitfinex 2013 的 margin）是现货通道，
- *    却属于杠杆盘 —— 这正是用户要的「现货 / 合约 / 杠杆三个手感不同」的那第三档。
+ * ⚠️ 与 `isMargin` / `instrumentOf` **不是同一件事**：那两个回答「是不是杠杆通道 / 什么工具」，
+ *    这里回答「它的冲击长什么样」。杠杆 1x 是实物换手，杠杆 > 1 才是合成盘 —— 这正是模型要的
+ *    「1x 与带杠杆两个手感不同」的分界。
  */
-export const shockKindOf = (spot, lev) => (spot && lev <= 1 ? 'spot' : 'fut');
+export const shockKindOf = (margin, lev) => (margin && lev <= 1 ? 'coin' : 'fut');
 
 /**
  * 维持线最多吃掉初始保证金的**一半**（＝爆仓前至少留一半垫子）。
  *
- * ⚠️ **为什么必须有这一条**（2026-10-02 审计修）：杠杆阶梯（`spotSteps` / `futSteps`）与
+ * ⚠️ **为什么必须有这一条**（2026-10-02 审计修）：杠杆阶梯（`marginSteps` / `futSteps`）与
  *    Binance 的维持档（`BINANCE_MARGIN_TIERS`）是两张**互不知道对方**的表。名义额一大，
  *    维持档就会追平甚至超过 `1/杠杆` —— 实测两个格子：
  *      · Binance 永续 20x、名义 ≥ $500 万 ⇒ 维持 5% = 1/20 ⇒ `强平价 ≡ 开仓价`，**开仓即强平**
@@ -232,7 +232,7 @@ const MAINT_MAX_SHARE = 0.5;
 
 /**
  * 该仓位此刻的**维持保证金率**（B18）—— 按「所 × 工具 × 名义档」取。
- * 只依赖仓位自己的字段（`ex` / `notional` / `spot` / `lev`），**不需要外部时刻**。
+ * 只依赖仓位自己的字段（`ex` / `notional` / `margin` / `lev`），**不需要外部时刻**。
  */
 export function maintRateOf(pos) {
   const m = maintRateAt(pos.ex, pos.notional, instrumentOf(pos));
@@ -241,14 +241,14 @@ export function maintRateOf(pos) {
 }
 
 /**
- * 这个仓位要不要付**借贷利息**（B26）—— 只有现货保证金要。
+ * 这个仓位要不要付**借贷利息**（B26）—— 只有杠杆仓要。
  * 与 `paysFunding` 互斥，两者合起来覆盖全部可强平的仓位。
  */
 export const paysInterest = pos => instrumentOf(pos) === 'margin';
 
 /* ───────────────────────── 资金费率（GDD §9.5） ───────────────────────── */
 
-/** 持仓成本（永续资金费 / 现货保证金利息）的**结算周期**：每 8 游戏小时一次。 */
+/** 持仓成本（永续资金费 / 杠杆借贷利息）的**结算周期**：每 8 游戏小时一次。 */
 export const FUNDING = {
   hours: 8,
 };
