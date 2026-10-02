@@ -110,7 +110,7 @@ export const SCENARIOS = [
     blurb: '距离「黑色星期四」还有 21 天，BitMEX 的 100x 合约就在手边。',
   },
   {
-    id: 'degen', name: '10u 战神', from: '2021-01', to: '2021-04',
+    id: 'degen', name: '10U 战神', from: '2021-01', to: '2021-04',
     at: Date.UTC(2021, 0, 1), end: Date.UTC(2021, 4, 1),
     cash: 10, ex: 'binance', challenge: true,
     blurb: '牛市顶点，兜里只有 $10。',

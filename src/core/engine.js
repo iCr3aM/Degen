@@ -1369,7 +1369,8 @@ const otcPremiumFor = (s, sym, notional) => {
  * 规则（与 `side` / `lev` 无关）：**只看模式** —— `s.mode !== 'fut'` ⇒ 杠杆通道、`'fut'` ⇒ 合约。
  * ⚠️ **OTC 跟随模式**（2026-10-03 改判）：走 OTC 时不再强制 1x，而是沿用玩家当前模式
  *    （杠杆 / 合约），只是杠杆封顶 `OTC.levMax`、且允许做空。故这里不再有 `!!otc ||` 那一支。
- * ⚠️ 本作没有现货概念 —— 杠杆通道的最低档就是 1x（1x 不计息、不参与强平）。
+ * ⚠️ 本作没有现货概念 —— 杠杆通道的最低档就是 1x（**1x 多头**无借入 ⇒ 不计息、不参与强平；
+ *    1x 空头借了全额币，照常计息、照常有强平线。口径见 `positions.borrowedOf`）。
  */
 const marginOf = (s, otc) => s.mode !== 'fut';
 
@@ -1452,7 +1453,7 @@ function openCheck(s, side, frac = 1) {
      真被挡住的玩家就是这么绝望的，但本作不打算把「无法平仓」也一起复刻成必然爆仓）。
      ⚠️ 只拦开仓，`closeTrade` 一个字都不动。 */
   if (haltedAt(timeOf(s), s.ex)) {
-    return { ok: false, why: `${exchangeOf(s.ex)?.name ?? s.ex} 维护中 ｜ 暂时不能开仓` };
+    return { ok: false, why: `${exchangeOf(s.ex)?.name ?? s.ex} 停机维护 ｜ 暂时不能开仓` };
   }
 
   /* 通道（P2-B3 · §15.3；2026-10-03 改版）：OTC 是**大宗通道**，跟随玩家当前的 `s.mode`
@@ -1525,7 +1526,7 @@ function openCheck(s, side, frac = 1) {
         成交量，会把早期 OTC 变成死内容。
      ⚠️ 门槛只卡**开仓**，不卡平仓 —— 卡平仓会把玩家困在一条「币价跌下来、名义已不足门槛」的仓位上。 */
   const otcMin = otcMinAt(timeOf(s));
-  if (otc && margin * lev < otcMin) return { ok: false, why: `OTC 单笔最少 ${fmtMoney(otcMin)}` };
+  if (otc && margin * lev < otcMin) return { ok: false, why: `OTC 单笔最少 ${fmtMoneyShort(otcMin)}` };
 
   /* 成交价（P2-B1 / P2-B3）：盘口价 ± 代价 —— 买抬、卖压，**永远对玩家不利**。
      代价有两种，同一时刻只有一种成立：盘口是平方根冲击、OTC 是「基准点差 × 市况倍数」（不吃滑点）。
@@ -1922,7 +1923,7 @@ function checkRuin(s) {
 
   /* 挑战模式（年代开局）**不发救济金**（用户 2026-10-01 拍板）—— 归零即终局。
      理由：年代与本金都是玩家自己挑的，再发一笔 $1,000 等于把挑战抹平 ——
-     「10u 战神」那一局领一次就是**暴赚 100 倍**，破产反倒成了正收益。
+     「10U 战神」那一局领一次就是**暴赚 100 倍**，破产反倒成了正收益。
      ⚠️ 必须排在 `s.loaned` 之前：挑战局连遮罩都不弹，直接结束。 */
   if (isChallenge(s.scen)) {
     endGame(s, OVER.LIQUIDATED);
@@ -2034,7 +2035,7 @@ export function switchExchange(s, id) {
   const t = timeOf(s);
   if (t < ex.open) return { ok: false, why: `${ex.name} 还没开业` };
   if (ex.close != null && t >= ex.close) return { ok: false, why: `${ex.name} 已经归零` };
-  if (heldSyms(s).length) return { ok: false, why: '有持仓，先全部平仓再换所' };
+  if (heldSyms(s).length) return { ok: false, why: '有持仓 ｜ 先平仓再换所' };
   if (s.transfer) return { ok: false, why: '上一笔转账还没到账' };
 
   const from = s.ex;
@@ -2156,7 +2157,7 @@ export function takeLoan(s) {
      原来只把 `paused` 放开，玩家若在 50x 下被爆仓、点「领取救济金」，会在**自己没反应过来**时
      又连飞几十个游戏小时。救命钱到账这一刻必须让玩家重新握回速度盘。 */
   s.speed = 1;
-  pushLog(s, `领取救济金 ${fmtMoney(amount)} ｜ 无需偿还`, 'info', 'trade');
+  pushLog(s, `领取救济金 ${fmtMoney(amount)} ｜ 不用还`, 'info', 'trade');
   return { ok: true };
 }
 
