@@ -94,7 +94,8 @@ export function safetyOf(pos, price) {
  * 由 margin + dir×(P − entry)×size = maintRate × notional 解出：
  *   P = entry + dir × (maintRate × notional − margin) / size
  * 数值上等于「逆向波动 1/杠杆 − 维持保证金率」后的价格，与 GDD §10 一致。
- * ⚠️ B18 起 `maintRate` 由 `maintRateOf(pos)` 给（Binance 按名义分档、margin 恒 15%）。
+ * ⚠️ B18 起 `maintRate` 由 `maintRateOf(pos)` 给（Binance 永续按名义分档；Binance 杠杆按杠杆档换
+ *    保证金水平；其余 margin 恒 15% —— 见 `config.maintRateAt`）。
  */
 export function liquidationPrice(pos) {
   const dir = pos.side === 'long' ? 1 : -1;
@@ -214,7 +215,7 @@ export const canLiquidate = pos => !isMargin(pos) || borrowedOf(pos) > 0;
  *
  *   - `'margin'`：**杠杆借贷** —— 有借入的仓（`borrowedOf > 0`，即 `lev > 1` 或**任何空头**；
  *     Bitfinex 2013-04 起 3.3x、Binance 2019-07-11 起 3x）。借来的钱 / 币要还，按**借贷日息**计息，
- *     维持线走 Bitfinex 史实的 **15%（权益口径）**。
+ *     维持线按所取：Bitfinex 走史实的 **15%（权益口径）**，Binance 走保证金水平换算的 **9–12%**。
  *   - `'perp'`：**线性 USDT 本位永续** —— `fut` 表的任何仓位。吃 8 小时资金费、维持线 0.5% 起。
  *
  * ⚠️ 2016-05-13 之前世界上**没有永续**（BitMEX 的 XBTUSD 是人类第一个）——
@@ -259,7 +260,7 @@ const MAINT_MAX_SHARE = 0.5;
  * 只依赖仓位自己的字段（`ex` / `notional` / `margin` / `lev`），**不需要外部时刻**。
  */
 export function maintRateOf(pos) {
-  const m = maintRateAt(pos.ex, pos.notional, instrumentOf(pos));
+  const m = maintRateAt(pos.ex, pos.notional, instrumentOf(pos), pos.lev);
   const open = 1 / pos.lev;                       // 开仓时的保证金率
   return m < open ? m : open * MAINT_MAX_SHARE;   // 退化格：见 MAINT_MAX_SHARE
 }

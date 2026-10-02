@@ -428,8 +428,10 @@ export function leverageOptionsAt(t, exId, kind = 'margin') {
  *
  *   - **永续（`perp`）**：Binance 真实四档（越小越松、越大越严）；BitMEX / Bitfinex / 其余恒 0.5%
  *   - **杠杆（`margin`）**：Bitfinex 史实的 **15%（权益口径）**（CFTC Docket 16-19 原文
- *     `equity … fell below 15% → forcibly liquidated`）；本项目把它**统一套到所有 margin 仓**
- *     （含 Binance 2019-07 起的保证金交易）并声明为近似 —— Binance 自家是另一套分档，不另立一张表
+ *     `equity … fell below 15% → forcibly liquidated`）；
+ *     **Binance 杠杆另立一张表**（2026-10-03 发布前审计修）：它不吃名义分档，而吃**保证金水平**
+ *     阈值（逐仓 3x ≤ 1.18 / 5x ≤ 1.15 / 10x ≤ 1.05），换算成维持率 ≈ 9–12%（见
+ *     `BINANCE_MARGIN_LEV_TIERS`）—— 此前「一家所的分档套给所有所」是审计发现的偏差项
  *
  * ⚠️ **工具性质由仓位自己决定**（`positions.instrumentOf`）：有借入（`lev > 1` 或**任何空头**）
  *    ⇒ `margin`、其余 ⇒ `perp`。2016-05-13 之前世界上没有永续（BitMEX XBTUSD 是人类第一个），
@@ -539,14 +541,45 @@ const BINANCE_MARGIN_TIERS = [
 ];
 
 /**
- * 该所 / 该工具 / 该名义档的维持保证金率（B18 + B26）。
+ * Binance **杠杆（现货杠杆）** 的强平口径 —— 与上面的永续分档**不是一套东西**（2026-10-03 发布前审计）。
+ *
+ * 永续吃「**名义价值分档**」的维持率；现货杠杆吃的是**保证金水平**阈值
+ * `Maint. Level = 资产 ÷ (负债 ＋ 利息)`，逐仓模式下按杠杆给不同的水位线：
+ *   3x ⇒ ≤ 1.18、5x ⇒ ≤ 1.15、10x ⇒ ≤ 1.05（Binance 官方口径，本作杠杆最高只到 5x）。
+ * 换算到本作的「维持率 = 仓位权益 ÷ 名义」（同 `positions.js` 文件头口径），做多一侧：
+ *   `m = (1 − 1/杠杆) × (L − 1)`  ⇒ 2x→9%、3x→12%、4x→11.25%、5x→12%
+ *   （对应逆向波动 −41% / −21.3% / −13.75% / −8%，随杠杆单调收紧）。
+ *
+ * ⚠️ **对照 Bitfinex 史实的 15%**（CFTC Docket 16-19）：同一杠杆下 Binance 杠杆的维持线更低、
+ *    **强平更晚**（3x：−21.3% vs 本作此前统一套 Bitfinex 的 −18.3%）—— 这正是本表要修掉的偏差。
+ * ⚠️ 它是**做多一侧**的等效值：做空（借币）的保证金水平算式不同，机构上会得到偏高的维持率；
+ *    本作沿用 `positions.js` 既有的「多空同一维持率」简化，不为此再分叉。
+ * ⚠️ `lev ≤ 1` 退回 `MARGIN.maint`：Binance 杠杆最低 3x，本作早年把 `max: 1` 当占位档，
+ *    那时的 1x 空头仍按 Bitfinex 口径走。
+ */
+const BINANCE_MARGIN_LEV_TIERS = [
+  { upToLev: 3,  ml: 1.18 },
+  { upToLev: 5,  ml: 1.15 },
+  { upToLev: 10, ml: 1.05 },
+];
+
+function binanceMarginMaint(lev) {
+  if (!Number.isFinite(lev) || lev <= 1) return MARGIN.maint;
+  let ml = 1.05;
+  for (const t of BINANCE_MARGIN_LEV_TIERS) if (lev <= t.upToLev) { ml = t.ml; break; }
+  return Math.max(0, (1 - 1 / lev) * (ml - 1));
+}
+
+/**
+ * 该所 / 该工具 / 该档的维持保证金率（B18 + B26）。
  * @param {string} exId 交易所 id
  * @param {number} notional 名义价值 —— 只有 Binance 永续按它分档
  * @param {'perp'|'margin'} kind 工具性质（`positions.instrumentOf` 提供）
+ * @param {number} lev 杠杆 —— 只有 Binance 杠杆按它换保证金水平阈值（见上表）
  * @returns {number} 比率；缺省回落到 `GAME.maintRate`（0.5%）
  */
-export function maintRateAt(exId, notional, kind = 'perp') {
-  if (kind === 'margin') return MARGIN.maint;
+export function maintRateAt(exId, notional, kind = 'perp', lev = 0) {
+  if (kind === 'margin') return exId === 'binance' ? binanceMarginMaint(lev) : MARGIN.maint;
   if (exId !== 'binance') return GAME.maintRate;
   const n = Number.isFinite(notional) && notional > 0 ? notional : 0;
   for (const t of BINANCE_MARGIN_TIERS) if (n < t.upTo) return t.rate;

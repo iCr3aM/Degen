@@ -103,6 +103,25 @@ for (const ex of ['bitfinex', 'bitmex', 'binance']) {
   }
 }
 
+/* ── 1b · F3 复核：Binance 杠杆不再沿用 Bitfinex 的 15%（2026-10-03 审计修） ── */
+section('1b · Binance 杠杆维持线（F3 修复复核 · 按保证金水平阈值换算）');
+{
+  const mkPos = (ex, lev) => {
+    const p = P.openPosition('BTC', 'long', 30000, NOTIONAL / lev, lev, 0.0004, true);
+    p.ex = ex;
+    return p;
+  };
+  const bi3 = P.maintRateOf(mkPos('bitfinex', 3));
+  const bn2 = P.maintRateOf(mkPos('binance', 2));
+  const bn3 = P.maintRateOf(mkPos('binance', 3));
+  const bn5 = P.maintRateOf(mkPos('binance', 5));
+  console.log(`  2x→${f(bn2 * 100, 2)}%  3x→${f(bn3 * 100, 2)}%  5x→${f(bn5 * 100, 2)}%  ｜ Bitfinex 3x→${f(bi3 * 100, 2)}%`);
+  check('Binance 杠杆 2x 维持 = 9%（保证金水平 1.18 换算）', Math.abs(bn2 - 0.09) < 1e-9, `实得 ${f(bn2, 4)}`);
+  check('Binance 杠杆 3x 维持 = 12%（不再沿用 Bitfinex 15%）', Math.abs(bn3 - 0.12) < 1e-9, `实得 ${f(bn3, 4)}`);
+  check('Binance 杠杆 5x 维持 = 12%', Math.abs(bn5 - 0.12) < 1e-9, `实得 ${f(bn5, 4)}`);
+  check('同杠杆下 Binance 杠杆强平更晚（维持线更低）', bn3 < bi3, `binance ${f(bn3 * 100, 2)}% < bitfinex ${f(bi3 * 100, 2)}%`);
+}
+
 /* ═══════════════════ 2 · openCheck 全分支可达性 ═══════════════════ */
 section('2 · 下单拒绝分支穷举（每一条 `why` 是否可达 / 是否合理）');
 const seen = new Map();
