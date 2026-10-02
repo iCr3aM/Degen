@@ -8,10 +8,18 @@
  *   **开仓、平仓、
  *   强平**都写一笔；平仓 / 强平取持仓的反面方向，但**只回吐 `SHOCK.closeGive`**（2026-10-02 拍板）
  *   —— 往返不再等量抵消：一次完整往返净留开仓冲击的 **55.25%**，玩家每一笔成交都在图上留下台阶。
- *   C1（2026-09-29）起是**逐笔列表**（`[{v, at}, …]`，≤ `SHOCK.listMax` 笔），残存值按笔叠加。
+ *   C1（2026-09-29）起是**逐笔列表**（`[{v, at}, …]`），残存值按笔叠加。
+ *   ⚠️ 2026-10-02 起**不再有笔数上限**（原来的 `listMax = 8` ＋ `collapse` 已删，见 `SHOCK`）。
  *
- *   持仓抛压折价 `s.overhang[sym]` —— 单笔**不衰减**的折价，由「你的现货实物多头占了多少可交易
- *   浮筹」算出（`FLOAT`，2026-10-01）。它与 `s.flow` 相加成同一个系数 —— 见 `overhangAt`。
+ *   持仓抛压折价 `s.overhang[sym]` —— **台阶表** `{ at:[], v:[], scar:[] }`，不衰减的折价，
+ *   由「你的现货实物多头占了多少可交易浮筹」算出（`FLOAT`，2026-10-01）。它与 `s.flow`
+ *   相加成同一个系数 —— 见 `overhangAt`。
+ *
+ * ⚠️ **位移层的硬纪律（2026-10-02）**：`s.flow` / `s.overhang` / `s.mkt[sym].npcDrift`
+ *    三者写入时，`at` 只许等于**写入那一刻的 `s.i`**、只许**追加**，绝不回头改已画出的根。
+ *    违反它 = 玩家看到「已经画出来的 K 线过几个小时又恢复了」＋「整屏重标定的断层」
+ *    （三个实例：`refreshOverhang` 重盖 `at` / `syncNpcDrift` 每小时重盖 `at` / `collapse` 盖在 `now`）。
+ *    见 NEXT-STEPS §九。
  *
  * ⚠️ 上帝模式（`s.god`）**没有任何价格能力**（2026-09-29 瘦身）：它只剩「跳日期 ＋ 填资金 ＋ 归零不退出」，
  *    与普通模式的差别**仅此三条**。原来那两套价格能力已整体删除 ——
@@ -65,12 +73,18 @@ export const SHOCK = {
   fastWeight: 0.2,
   /** 快回指数（兜底值；真实取值按模式走 `SHOCK_MODE`：现货 1.2 / 合约 2.0） */
   betaFast: 1.5,
-  /**
-   * 冲击池的**笔数上限**（C1，2026-09-29 拍板）。超出时把**最旧的那几笔**按「此刻的残存值」
-   * 归并成一项 —— 它们的衰减最狠、残存最小，归并误差可忽略，而列表长度由此有了硬上界。
-   * 8 笔足够覆盖「一次分 1/4 · 1/2 · 全平」这类连续操作，不至于把更早的痕迹抹掉。
-   */
-  listMax: 8,
+  /* ⚠️ **原 `listMax = 8` 的笔数上限在 2026-10-02 整体删除**（NEXT-STEPS §九 根因 ③）。
+   *
+   * 旧机制：池子超过 8 笔就把最旧的几笔按「此刻的残存值」压成**一项、`at` 盖成 `now`**。
+   * 它自称「在 `j = s.i` 处精确守恒」，但归并项的 `at = now` ⇒ **所有 `j < now` 的根，
+   * 这几笔的残值直接归零**。而 `decay` 的渐近线是 `perm ≈ 0.5 ≠ 0`，被抹掉的量并不小：
+   * 实测一笔 $4M 的巨鲸单反复往返、第 9 笔触发归并后，`j = 400…426` 的残值
+   * **从 0.012220 逐位变成 0.000000**、显示价**整段回到原始数据** ——
+   * 这正是玩家反馈的「已经画出来的 K 线，过几个小时又恢复了」。
+   *
+   * 现在只做**精确归并**（`addFlow` 里同一根小时、同一形态参数的几笔相加 ——
+   * `at` / `perm` / `betaFast` 三项全同 ⇒ 逐位等价），**列表长度不再设硬上界**。
+   * 条数 = 「有成交的小时数」，正常一局是几百条量级；换来的是「历史永不回头改写」这条硬纪律。 */
   /**
    * 价格位移的**上侧硬夹**（B1，2026-09-29 拍板；2026-10-02 由 +50% 收到 **+20%**）。
    *
@@ -217,10 +231,11 @@ export const HEAT = {
  *    10x ⇒ 强平线收到 **8%**，与「BTC 单日 −14.3% 引发 $19B 强平」的史实量级对得上。
  *
  * ⚠️ **散户的连续冲击记成 `npcDrift`，不写 `s.flow`**（2026-10-02 审计修，用户拍板）。
- *    原来每小时把建仓增量 `pushFlow` 进冲击池 ⇒ 与 `collapse` 的漏值叠加（见 `collapse` 注释），
+ *    原来每小时把建仓增量 `pushFlow` 进冲击池 ⇒ 与旧实现归并时的漏值叠加，
  *    恒定单向流量让残存值**线性发散**（实测 400 小时后 0.754，早就顶死 `riseMax`），
  *    同时把玩家自己的 8 笔历史一笔笔挤出去。改成**有界价位偏移**：
- *    `v = ±permImpactOf(|净持仓| ÷ 流动性, σ)`，存进 `s.mkt[sym].npcDrift = { v, at }`，
+ *    `v = ±permImpactOf(|净持仓| ÷ 流动性, σ)`，存进 `s.mkt[sym].npcDrift` 的**台阶表**
+ *    `{ at: [], v: [] }`（v27 · 只追加，见 `engine.syncNpcDrift`）——
  *    与 `overhangAt` 同一套「逐根台阶」范式（`j >= at` 才生效，绝不重标历史 K 线）。
  *    ⚠️ 分母取**日**流动性（`liqOf`）而不是逐小时的基准深度 —— 净持仓是个**存量**，
  *       拿逐小时（带成交量份额抖动）的**流量**当分母会让偏移无意义地逐小时跳。
@@ -232,7 +247,18 @@ export const HEAT = {
  *    **几块钱的残尾**当成一次真强平，白送一次 `panicDrop` 热度跳变（实测：「幽灵强平」）。
  *    所以小于「千分之一日流动性」的仓位一律**直接归零**（连均价一起清）。
  */
-export const NPC = { speed: 0.15, mom: 0.15, lev: 10, maint: 0.02, floor: 0.001 };
+export const NPC = {
+  speed: 0.15, mom: 0.15, lev: 10, maint: 0.02, floor: 0.001,
+  /**
+   * `npcDrift` 台阶表落台阶的**门槛**（2026-10-02 加，NEXT-STEPS §九 根因 ②）。
+   *
+   * `syncNpcDrift` 每小时都会算出新的偏移，但**只有当它与上一级台阶的差 ≥ 这个值、或符号翻转**
+   * 才真的落一级。否则每一小时都往表里塞一条 `at = s.i` ⇒ 表长度 = 游戏小时数（十万条量级），
+   * 且本来就没变的偏移被反复写成「此刻的台阶」，历史逐小时变脸。
+   * 取 0.2% ⇒ 显示价上肉眼可见的偏移才落一级，一局正常几十~几百级。
+   */
+  driftEps: 0.002,
+};
 
 /**
  * 衰减因子：`e` = 距写入时刻经过的**游戏小时数**（§73.3 · 2026-10-02 重写）。
@@ -272,11 +298,14 @@ export function residualAt(s, sym, j) {
 }
 
 /**
- * 把一笔成交的永久冲击**追加**进池子（不再与旧值归并 —— 见 `residualAt`）。
+ * 把一笔成交的永久冲击**追加**进池子。
  *
- * 超过 `SHOCK.listMax` 笔时，把最旧的那些按「此刻的残存值」压成一项（`collapse`）：
- * 它们在 `j = s.i` 处的值**精确守恒**，之后按「从此刻起算」的曲线衰减（略慢于真值，
- * 但都是残存最小的那几笔，误差可忽略），换来列表长度的硬上界。
+ * 唯一允许的缩短方式：**同一根小时 ＋ 同一形态参数**的若干笔直接相加 —— `at` / `perm` /
+ * `betaFast` 三项全同 ⇒ `decay(j − at)` 完全相同 ⇒ 合并**逐位等价**，不损失任何精度。
+ *
+ * ⚠️ **绝不做「改 `at`」的归并**（2026-10-02，NEXT-STEPS §九 根因 ③）：任何把 `at` 往后挪的
+ *    压缩都会让所有 `j < 新 at` 的根**丢掉这几笔的残值** —— 图上就是「已经画出来的 K 线
+ *    过几个小时又恢复了」。列表长度因此不再设硬上界（条数 = 有成交的小时数）。
  * @param {{perm:number, betaFast:number}} [p] 这一笔的形态参数（§73.6）；缺省用 `SHOCK` 的中性值
  * @returns {boolean} 是否真的写进去了（Δ 为 0 时不写，避免无意义地刷存档）
  */
@@ -284,25 +313,39 @@ export function addFlow(s, sym, delta, p) {
   if (!Number.isFinite(delta) || delta === 0) return false;
   if (!s.flow) s.flow = {};
   const list = s.flow[sym] || (s.flow[sym] = []);
-  list.push({ v: delta, at: s.i, perm: p?.perm ?? SHOCK.perm, betaFast: p?.betaFast ?? SHOCK.betaFast });
-  if (list.length > SHOCK.listMax) collapse(list, s.i);
+  const perm = p?.perm ?? SHOCK.perm;
+  const betaFast = p?.betaFast ?? SHOCK.betaFast;
+  const tail = list[list.length - 1];
+  if (tail && tail.at === s.i && tail.perm === perm && tail.betaFast === betaFast) tail.v += delta;
+  else list.push({ v: delta, at: s.i, perm, betaFast });
   return true;
 }
 
 /**
- * 把最旧的若干笔压成一项（只在超出上限时调用；`now` = 当前的 `s.i`）。
- * ⚠️ 归并后的那一项**借用最新一笔被归并者的形态参数**（`list[cut-1]`，即残存最大、最接近此刻的那笔）——
- *    被归并的都是最旧、最接近永久分量的那几笔，两者曲线差异可忽略。
+ * 「逐根台阶表」取第 j 根的值 == **最后一个 `at <= j`** 的那一项（没有 ⇒ 0）。
+ *
+ * 表形状：`{ at: number[], v: number[], scar?: number[] }` —— **三条平行数组**，按 `at` 升序。
+ * 用平行数组而不是 `[{ at, v, scar }]`：持仓折价的**按日重算**会让表长到数千项
+ * （一趟全周期约 4400 天），对象形式在存档里约 45 字符/项，平行数组只约 18 字符/项。
+ *
+ * ⚠️ **位移层的硬纪律（2026-10-02 起）**：凡写 `s.flow` / `s.overhang` / `s.mkt[sym].npcDrift`，
+ *    `at` **只许等于写入那一刻的 `s.i`、只许追加** —— 任何一次「回头改 `at`」都会让
+ *    **已经画出来的根**在玩家眼皮底下变形（NEXT-STEPS §九 的三个根因全部出自这一条）。
+ * @param {{at:number[], v:number[], scar?:number[]}} tab
+ * @param {number} j 小时序号（可以是历史根）
+ * @param {'v'|'scar'} key 取哪一条平行数组
  */
-function collapse(list, now) {
-  const cut = list.length - (SHOCK.listMax - 1);
-  let v = 0;
-  for (let k = 0; k < cut; k++) {
-    const p = list[k];
-    if (now >= p.at) v += p.v * decay(now - p.at, p);
+function stepValueAt(tab, j, key = 'v') {
+  if (!tab) return 0;
+  const at = tab.at;
+  const arr = tab[key];
+  if (!arr || !at.length) return 0;
+  let lo = 0, hi = at.length - 1, hit = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (at[mid] <= j) { hit = mid; lo = mid + 1; } else hi = mid - 1;
   }
-  if (v === 0) list.splice(0, cut);
-  else list.splice(0, cut, { v, at: now, perm: list[cut].perm, betaFast: list[cut].betaFast });
+  return hit < 0 ? 0 : arr[hit];
 }
 
 /**
@@ -313,27 +356,34 @@ function collapse(list, now) {
  *   这里       = 你**持仓**本身带来的折价 —— 市场忌惮你随时砸盘，于是先给价格打个折。
  *                **不衰减**（只要你还没卖，这份忌惮就一直在），卖出后归零。
  *
- * ⚠️ 存成 `{ v, at }` 台阶、而不是「按当前持仓实时算」，是**必须**的：`factorFor` 会被
- *    每一根（含历史）调到，若按当前持仓实时算，玩家一买入**整条历史 K 线都会被重新标定**
+ * ⚠️ 存成**逐根台阶**（而不是「按当前持仓实时算」）是**必须**的：`factorFor` 会被每一根
+ *    （含历史）调到，若按当前持仓实时算，玩家一买入**整条历史 K 线都会被重新标定**
  *    （与 `s.flow` 逐根约束同一个理由）。`at` 之前的 K 线一律不受影响。
+ *
+ * ⚠️ 2026-10-02 起是**台阶表** `{ at:[], v:[], scar:[] }`（NEXT-STEPS §九 根因 ①）——
+ *    原来只有**单条** `{ v, at }`：每次重算都用新 `at` 覆盖旧 `at`，于是 `[旧 at, 新 at)`
+ *    这一整段已画出的历史**全部丢掉折价**、逐位打回。实测一笔 $4M 的单反复往返后，
+ *    被回头改写的根从 1 涨到 **40/40**，主犯就是这里。
  */
 function overhangAt(s, sym, j) {
-  const o = s.overhang && s.overhang[sym];
-  return o && j >= o.at ? o.v : 0;
+  return stepValueAt(s.overhang && s.overhang[sym], j);
 }
 
 /**
  * 第 j 根上**NPC 散户净持仓**对价格的偏移（2026-10-02 · §73.5 审计修）—— 恒 ≤ 0 或 ≥ 0（0 = 无仓位）。
  *
- * 与 `overhangAt` **同一套「逐根台阶」范式**（`{ v, at }`，`j >= at` 才生效）：散户的仓位每小时
- * 都在动，若按「当前持仓实时算」，玩家一升级就会把**整条历史 K 线重新标定**（与 `s.flow` 同一条红线）。
+ * 与 `overhangAt` **同一套「逐根台阶」范式**（`j >= at` 才生效）：散户的仓位每小时都在动，
+ * 若按「当前持仓实时算」，玩家一升级就会把**整条历史 K 线重新标定**（与 `s.flow` 同一条红线）。
+ *
+ * ⚠️ 2026-10-02 起也是**台阶表**（NEXT-STEPS §九 根因 ②）—— 原来只有单条 `{ v, at }`，
+ *    而 `syncNpcDrift` **每小时无条件重盖 `at = s.i`** ⇒ 上一根 K 线每小时自己变一次。
+ *    现在由写入侧按门槛落台阶（见 `engine.syncNpcDrift`），历史一根都不动。
  *
  * ⚠️ 它是**有界**的（值 = `permImpactOf(|净持仓| ÷ 流动性, σ)`，而净持仓被 `NPC.mom` 封顶），
  *    这是它**不能**写成 `s.flow` 一笔笔累加的原因 —— 见 `NPC` 的注释。
  */
 function npcDriftAt(s, sym, j) {
-  const d = s.mkt && s.mkt[sym] && s.mkt[sym].npcDrift;
-  return d && j >= d.at ? d.v : 0;
+  return stepValueAt(s.mkt && s.mkt[sym] && s.mkt[sym].npcDrift, j);
 }
 
 /**
@@ -349,8 +399,8 @@ export function playerFactor(s, sym, j) {
  * 第 j 根的**价格位移系数** —— `market.candleAt` 唯一要乘的那个数。
  * 没有任何位移时恒等于 1（⇒ 与数据包逐位相同）。
  *
- * 三个来源相加：**订单冲击**（逐笔、幂律衰减）＋ **持仓抛压折价**（单笔、不衰减）
- *             ＋ **NPC 散户净持仓偏移**（有界、逐根台阶）。
+ * 三个来源相加：**订单冲击**（逐笔、幂律衰减）＋ **持仓抛压折价**（台阶表、不衰减）
+ *             ＋ **NPC 散户净持仓偏移**（有界、台阶表）。
  *
  * **两侧同时夹**（B1，2026-09-29；2026-10-02 收紧为 `SHOCK.fallMax` / `SHOCK.riseMax`）。
  */

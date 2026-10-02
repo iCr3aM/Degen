@@ -10,7 +10,15 @@
 import { cashCurAt, DEFAULT_SCENARIO, GAME, isChallenge, scenarioEndIndex, scenarioOf, scenarioStartIndex } from './config.js';
 import { isSpot } from './positions.js';
 
-/* ⚠️ v25（2026-10-02）：`s.overhang[sym]` 补一个 `scar`（**卖出疤痕**）——
+/* ⚠️ v27（2026-10-02 · NEXT-STEPS §九）：`s.overhang[sym]` 与 `s.mkt[sym].npcDrift` 由
+   **单条 `{ v, at }`** 改为**台阶表**（三条 / 两条平行数组，只追加、绝不重盖）——
+   修「已经画出来的 K 线过几个小时又恢复」的两个根因（`refreshOverhang` 重盖 `at` /
+   `syncNpcDrift` 每小时无条件重盖 `at`）。位移层随之新增硬纪律：`at` 只许等于写入那一刻的 `s.i`。
+   · `s.overhang[sym] = { at: [], v: [], scar: [] }`（`v` = 持仓折价 ＋ 疤痕，恒 ≤ 0）；
+   · `s.mkt[sym].npcDrift = { at: [], v: [] }`（仅在实际偏移变化 ≥ `NPC.driftEps` 时落一级）。
+   动了状态形状 ⇒ 一并升版本号，旧档走既有的「丢弃重开」路径。
+
+   ⚠️ v25（2026-10-02）：`s.overhang[sym]` 补一个 `scar`（**卖出疤痕**）——
    由 `{ v, at }` 改为 `{ v, at, scar }`（`v` = 持仓折价 ＋ 疤痕，恒 ≤ 0）。
    病根（K 线位移审计实测）：平掉一条 $50M 现货多头后 `overhang` 整条被删 ⇒ 释放的 −1.71% 折价
    远大于平仓那一笔只回吐 −1.21% 的冲击（`SHOCK.closeGive`）⇒ **卖出之后价格反而比持仓时更高**
@@ -74,7 +82,7 @@ import { isSpot } from './positions.js';
    ② **场外配资改版为「一次性救济金」**—— 删除 `s.loan`（在贷）字段与全部利息/到期/违约逻辑。
    两处都动了状态形状，旧档对不上 ⇒ **弃档重开**（既有规范，不写迁移）。
    ⚠️ v26（2026-10-02 · §73）：新增 `s.endI`（本局终点）与 `s.mkt`（NPC 情绪 / 持仓）—— 同样弃档重开。 */
-export const STATE_VERSION = 26;
+export const STATE_VERSION = 27;
 
 /**
  * 开一局新的。
@@ -175,8 +183,10 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      * 慢幂律 ＋ 快回，§73.3 ⇒ 台阶永久保留）。开仓 / 平仓 / 强平都写一笔，但**平仓那一侧只回吐
      * `SHOCK.closeGive = 35%`**（2026-10-02）⇒ 一次完整往返净留开仓冲击的 **≈ 55.9%**，市场对玩家有记忆。
      *
-     * ⚠️ C1（2026-09-29）：由「单池 `{v, at}`」改成**逐笔列表**（≤ `SHOCK.listMax` 笔）——
-     *    单池下第二次加仓会吃掉第一次的衰减进度。上限溢出时最旧的几笔按残存值归并成一项。
+     * ⚠️ C1（2026-09-29）：由「单池 `{v, at}`」改成**逐笔列表** ——
+     *    单池下第二次加仓会吃掉第一次的衰减进度。
+     *    v27（2026-10-02）起**不再有笔数上限**（原 `SHOCK.listMax = 8` ＋ 归并已删）：
+     *    只做「同一根小时、同一形态参数」的**精确归并**，`at` 只许等于写入那一刻的 `s.i`。
      *
      * ⚠️ 与 `pulse` 是两套东西，别混：
      *    `pulse`  = 「链上转账造成的拥堵」→ 只影响**转账延迟**，不动价格
@@ -185,8 +195,9 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     flow: {},
 
     /**
-     * **持仓抛压折价**（v18 · 2026-10-01 拍板 · v25 补 `scar`）——
-     * `sym -> { v, at, scar }`，`v` 恒 ≤ 0、`v = 0` 且 `scar = 0` 时不存键。
+     * **持仓抛压折价**（v18 · 2026-10-01 拍板 · v25 补 `scar` · v27 改台阶表）——
+     * `sym -> { at: [], v: [], scar: [] }`（三条平行数组，按 `at` 升序、**只许追加**，
+     * 取值 = 最后一个 `at <= j` 的那一项，见 `god.stepValueAt`）。`v` 恒 ≤ 0。
      *
      * 「你的现货实物多头占了多少可交易浮筹」越大，市场越忌惮你随时砸盘 ⇒ 价格被压一个**持续的**
      * 折价（`−FLOAT.overhangMax × share`，最狠 −20%）。与 `s.flow` 不同：它**不衰减** —— 只要你
@@ -200,6 +211,9 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      *
      * ⚠️ 存 `at` 是**必须**的：`god.factorFor` 每一根（含历史）都会被调到，若按当前持仓实时算，
      *    玩家一买入 **整条历史 K 线都会被重新标定**（与 `s.flow` 逐根约束同一个理由）。
+     * ⚠️ v27 起 `at` **只许追加、绝不重盖**（NEXT-STEPS §九 根因 ①）：旧实现每次覆盖成单条
+     *    `{ v, at: s.i }`、归零时还 `delete` 整条 ⇒ `[旧 at, 新 at)` 整段历史一起丢掉折价，
+     *    正是「已画出的 K 线又恢复了」。归零现在也追加一级 `v = 0` 的台阶。
      * ⚠️ 与 `FLOAT.frac` 是一对：口径与量级见 `config.FLOAT` 的长注释。
      */
     overhang: {},
@@ -217,11 +231,15 @@ export function createState(scenId = DEFAULT_SCENARIO) {
 
     /**
      * **NPC 市场情绪 / 持仓**（v26 · §73.5 · 2026-10-02 拍板）—— `sym -> { heat, npcLong, npcShort,
-     * npcLongAvg, npcShortAvg }`。
+     * npcLongAvg, npcShortAvg, npcDrift }`。
      *
      *   `heat`        ∈ [0,1] 的市场热度：0.5 中性、1 极度贪婪、0 极度恐慌。由「价格位移」
      *                 ＋ 「玩家自己的成交量」烧起来，并带均值回复（参数见 `HEAT`）。
      *   `npcLong/Short`  NPC 净持仓**名义价值**（USD），`*Avg` 为它们的平均入场价。
+     *   `npcDrift`（v27 · 2026-10-02）散户净持仓造成的**有界价位偏移**，存成**台阶表**
+     *                 `{ at: [], v: [] }`（只追加、取值 = 最后一个 `at <= j` 的那一项）。
+     *                 仅当偏移变化 ≥ `NPC.driftEps` 时才落一级 —— 旧实现每小时无条件重盖
+     *                 `at = s.i`（NEXT-STEPS §九 根因 ②）。
      *
      * 它让市场**真的会自己动**：热度高 ⇒ NPC 顺周期追高（写正冲击），热度崩 ⇒ NPC 多头被强平
      * （写负冲击）⇒ 「巨鲸砸盘 → 踩踏 → 缓慢修复」的级联。此前 `pushFlow` 的调用者只有玩家自己，

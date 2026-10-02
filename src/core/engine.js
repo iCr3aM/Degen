@@ -420,7 +420,7 @@ const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
  * 某个币的 NPC 情绪 / 持仓格子（懒建）：
  *   `heat` ∈ [0,1]，0.5 中性；`npcLong` / `npcShort` 是 NPC 净持仓**名义价值**（USD）；
  *   `npcLongAvg` / `npcShortAvg` 是平均入场价（算踩踏强平线用）；
- *   `npcDrift` 是散户净持仓造成的**有界价位偏移** `{ v, at }`（见 `god.npcDriftAt`）；
+ *   `npcDrift` 是散户净持仓造成的**有界价位偏移**台阶表 `{ at: [], v: [] }`（见 `god.npcDriftAt`）；
  *   `pv` 是**玩家本小时**的成交名义（每根 K 线结算一次，见 `tickMarket`）。
  */
 function mktOf(s, sym) {
@@ -445,9 +445,9 @@ function cascadeMulOf(s) {
  * NPC 顺势建仓：把某一侧净持仓朝 `target` 靠 `NPC.speed`。
  *
  * ⚠️ **不再 `pushFlow`**（2026-10-02 审计修，用户拍板）。原来每小时把建仓增量写进冲击池：
- *    `collapse` 归并同向流量时会把它按权重 1 重新计时（`decay(e≤1) = 1`）⇒ 恒定单向流量让
- *    残存值**线性发散**（实测 400 小时后 0.754，早就顶死 `riseMax` +20%，12 年里 99% 的时间
- *    被钉在夹子上），同时把玩家自己的 8 笔历史一笔笔挤出去。
+ *    旧实现的归并会把它按权重 1 重新计时（`decay(e≤1) = 1`）⇒ 恒定单向流量让残存值**线性发散**
+ *    （实测 400 小时后 0.754，早就顶死 `riseMax` +20%，12 年里 99% 的时间被钉在夹子上），
+ *    同时把玩家自己的 8 笔历史一笔笔挤出去。
  *    现在只更新持仓，价位偏移由 `syncNpcDrift` 依据**净持仓大小**重算 —— 有界、不累积。
  * ⚠️ **残尾要归零**（2026-10-02 审计修，`NPC.floor`）：`speed` 是「朝靶心靠 15%」的渐近式，
  *    净持仓永远只是**趋近** 0 而不等于 0（每小时 ×0.85）⇒ 一个 $1 的残尾 + 早年的低均价
@@ -488,14 +488,21 @@ function stepNpc(s, sym, side, target, price, floor) {
  *    显示的价位偏移变成一根跟着量能形状抖的噪声。`npcDrift` 是**存量**的仓位折算，该用日尺子 ——
  *    一天之内恒定，与靶心 `target` 的口径也才对得上。
  *
- * ⚠️ 存成 `{ v, at: s.i }` 台阶（与 `s.overhang` 同范式）：`at` 之前的 K 线一律不受影响。
+ * ⚠️ 存成**台阶表** `{ at: [], v: [] }`（与 `s.overhang` 同范式，见 `god.stepValueAt`）：
+ *    `at` 之前的 K 线一律不受影响。**只在偏移真的变了（差 ≥ `NPC.driftEps`）时才落一级**
+ *    —— 旧实现每小时无条件把 `npcDrift` 重盖成 `at = s.i`（NEXT-STEPS §九 根因 ②）⇒
+ *    上一根 K 线每小时自己变一次（「已画出的根又恢复了」）。表长度 = 级数、不是游戏小时数。
  */
 function syncNpcDrift(s, sym, i, sig) {
   const m = mktOf(s, sym);
   const net = m.npcLong - m.npcShort;
   const liqDay = liqOf(sym, dayIndexOf(i));
   const q = liqDay > 0 ? Math.abs(net) / liqDay : 0;
-  m.npcDrift = { v: net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig), at: i };
+  const v = net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig);
+  const tab = m.npcDrift || (m.npcDrift = { at: [], v: [] });
+  const n = tab.at.length;
+  if (n && Math.abs(v - tab.v[n - 1]) < NPC.driftEps) return;   // 变得看不见：不落级、不动历史
+  tab.at.push(i); tab.v.push(v);
 }
 
 /**
@@ -594,7 +601,8 @@ function heatPriceAt(s, sym, i) {
  * 重算并写下**持仓抛压折价**（`s.overhang[sym]`，v18 · 2026-10-01 拍板）—— 每次现货实物多头
  * 增减（开 / 加仓、平仓、强平、部分强平、交易所归零）之后调用，外加每日按流通量退坡重算。
  *
- * 写的是 `{ v, at, scar }`：`v` = 这一刻的价格折价（恒 ≤ 0）＝ **持仓折价 ＋ 疤痕**，
+ * 写的是**台阶表** `{ at: [], v: [], scar: [] }`（三条平行数组，按 `at` 升序，**只许追加**；
+ * 见 `god.stepValueAt`）：`v` = 该级台阶的价格折价（恒 ≤ 0）＝ **持仓折价 ＋ 疤痕**，
  * `v = −FLOAT.overhangMax × share + scar`。
  *
  * ⚠️ **疤痕 `scar`**（v25 · 2026-10-02）—— 卖出只释放一部分，其余永久留下：
@@ -609,8 +617,12 @@ function heatPriceAt(s, sym, i) {
  *    · **按日重算**（`give = 0`）也不产生 —— 流通量逐年增长让同一份持仓的占比自然退坡，
  *      那是「稀释」不是「卖出」，不该留疤。
  *
- * `share = 0` 且无疤痕时才**删掉整条记录**。**值没变时一个字节都不写** —— 否则每点一次都会刷存档，
- * 还会连带把 σ 缓存白冲一遍。
+ * ⚠️ **归零也要追加一级 `v = 0` 的台阶，绝不删整条表**（2026-10-02 修，NEXT-STEPS §九 根因 ①）：
+ *    旧实现把新值写成**单条** `{ v, at: s.i, scar }` 覆盖旧值 ⇒ `[旧 at, 新 at)` 整段历史
+ *    一起丢掉折价；`share = 0` 时更是直接 `delete` ⇒ 早于此刻的根全部「恢复原价」。
+ *    这正是玩家反馈的「已经画出来的 K 线过几个小时又恢复了」。现在**只追加、绝不重盖**：
+ *    `at` 恒等于写入那一刻的 `s.i`，任何 `j < at` 的根取值永不受影响。
+ *    值没变时一个字节都不写 —— 否则每点一次都会刷存档，还会连带把 σ 缓存白冲一遍。
  *
  * ⚠️ 它是**逐根台阶**（`at` 之前的 K 线不受影响）⇒ 必须 `invalidateSigma()`，与 `s.flow` 同一条纪律。
  * ⚠️ 与 `s.flow` **方向可能相反**（买入把价抬上去、占比上升把价压下来）：两者相加后才是最终位移，
@@ -620,10 +632,11 @@ function heatPriceAt(s, sym, i) {
  */
 function refreshOverhang(s, sym, give = 0) {
   if (!s.overhang) s.overhang = {};
-  const prev = s.overhang[sym];
-  /* 上一刻拆成两块：`scar` = 卖出留下的永久疤痕，`prev.v − scar` = 那一刻的持仓折价 */
-  const prevScar = prev ? (prev.scar ?? 0) : 0;
-  const prevHold = prev ? prev.v - prevScar : 0;
+  const prevTab = s.overhang[sym];
+  const n = prevTab ? prevTab.at.length : 0;
+  /* 上一级台阶拆成两块：`scar` = 卖出留下的永久疤痕，`v − scar` = 那一级的持仓折价 */
+  const prevScar = n ? prevTab.scar[n - 1] : 0;
+  const prevHold = n ? prevTab.v[n - 1] - prevScar : 0;
 
   const share = floatShareOf(s, sym, s.i);
   const hold = share > 0 ? -FLOAT.overhangMax * share : 0;
@@ -635,13 +648,10 @@ function refreshOverhang(s, sym, give = 0) {
   }
 
   const v = hold + scar;
-  if (v === 0) {
-    if (!prev) return;                     // 本来就没折价：不写、不动 σ
-    delete s.overhang[sym];
-  } else {
-    if (prev && prev.v === v && prevScar === scar) return;   // 值没变：不写、不动 σ
-    s.overhang[sym] = { v, at: s.i, scar };
-  }
+  if (n === 0 && v === 0) return;                                 // 本来就没折价：不建表、不动 σ
+  if (n && prevTab.v[n - 1] === v && prevScar === scar) return;   // 值没变：不写、不动 σ
+  const tab = prevTab || (s.overhang[sym] = { at: [], v: [], scar: [] });
+  tab.at.push(s.i); tab.v.push(v); tab.scar.push(scar);
   invalidateSigma();
 }
 
