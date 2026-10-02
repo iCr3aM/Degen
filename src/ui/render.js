@@ -805,8 +805,9 @@ export function update(refs, s, view) {
     /* 第三格**只剩保证金率**（Batch 2 · B9，2026-09-29）：原来这里是「保证金率 / 强平价」，
        格宽只有 1/3 屏，两个数一串必然被 `text-overflow` 截掉尾巴（用户实机发现）。
        强平价已搬到 K 线的开仓线左端标签，这一格终于能完整放下一个数。
-       杠杆 **1x** 没有维持保证金率这一说 —— 只有币价归零才归零本金（GDD §9.1），填 `--`。
-       ⚠️ v9（§15.3 N5）：判据从「是不是杠杆 1x」换成 `canLiquidate` —— 杠杆 > 1 仓照样有强平线。 */
+       **1x 多头**（无借入）没有维持保证金率这一说 —— 只有币价归零才归零本金（GDD §9.1），填 `--`。
+       ⚠️ v9（§15.3 N5）：判据从「是不是杠杆 1x」换成 `canLiquidate` —— 杠杆 > 1 仓照样有强平线。
+       ⚠️ 2026-10-03：判据再收窄成「有没有借入」—— **1x 空头借了全额币，这格要显示保证金率**。 */
     if (!canLiquidate(p)) {
       setText(refs.posRate, '--');
       setCls(refs.posRate, 'num mut');
@@ -1175,7 +1176,7 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true, ns = '',
     levels,
     entry: cur ? cur.entry : null,
     side: cur ? cur.side : null,
-    /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。杠杆 1x 没有强平价 ⇒ 传 null。 */
+    /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。1x 多头（无借入）没有强平价 ⇒ 传 null。 */
     liq: cur && canLiquidate(cur) ? liquidationPrice(cur) : null,
     cssW: view.chartW,
     cssH: view.chartH,
@@ -1272,7 +1273,7 @@ function posListSignature(s) {
  */
 function buildPosList(box, s) {
   box.textContent = '';
-  const mgn = [];    // 杠杆：借钱 / 借币，带杠杆的有强平线；1x 只有币价归零才归零本金
+  const mgn = [];    // 杠杆：借钱 / 借币；有借入的（含 1x 空头）计息、有强平线，1x 多头无
   const fut = [];    // 合约
   for (const sym of heldSyms(s)) {
     const p = s.positions[sym];
@@ -1908,7 +1909,7 @@ const ABOUT = [
     '2013 年 1 月 → 2024 年 12 月，行情就是 BTC / ETH / XRP / DOGE / SOL 的真实历史小时线。'
     + '从 $1,000 起步，赚到多少都算你的 —— 活到 2024-12-31 收盘即通关，爆仓清零即收场。'],
   ['两个工具',
-    '杠杆：借钱买币 / 借币做空，按日计息，维持线 15%；1x 是最低档，不计息、不参与强平。'
+    '杠杆：借钱买币 / 借币做空，按借入量计日息，维持线 15%；1x 是最低档，多头不借不计息、不参与强平。'
     + '合约：USDT 本位永续，每 8 小时一次资金费，维持线 0.5% 起。倍数越高，强平线越近。'],
   ['两条通道',
     '盘口吃冲击与滑点，单子越大越贵；OTC 是私下一口价的大宗通道（单笔 ≥ 当年门槛，$1 万起逐年抬升），'

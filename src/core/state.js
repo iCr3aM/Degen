@@ -351,7 +351,8 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     /**
      * 下单模式（U1 · ROADMAP §21.4）—— `'margin'`（杠杆，默认）或 `'fut'`（合约）。
      * ⚠️ 它决定这一单走**哪条产品线**：`'margin'` ⇒ 杠杆通道；`'fut'` ⇒ 合约通道。
-     *    本作没有现货概念 —— 杠杆通道的最低档就是 1x（1x 不计息、不参与强平）。
+     *    本作没有现货概念 —— 杠杆通道的最低档就是 1x（1x 多头不计息、不参与强平；
+     *    1x 空头借全额币 ⇒ 照常计息、照常有强平线）。
      *    ⚠️ 做空需融资（`hasFinancingAt`）时才算数；≥2x 恒有维持保证金 —— 见 `engine.openTrade()`。
      * ⚠️ OTC 通道**跟随它**（2026-10-03 改判）：走 OTC 时沿用当前模式，但杠杆封顶 `OTC.levMax`。
      */

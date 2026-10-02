@@ -36,7 +36,8 @@ export function openPosition(sym, side, price, margin, lev, feeRate, marginMode 
     sym,
     side,
     lev,
-    margin: marginMode,   // 杠杆标记（U1）：一旦开仓就固定，不再随 `s.mode` 变
+    isMargin: marginMode,   // 杠杆通道标记（U1）：一旦开仓就固定，不再随 `s.mode` 变
+    margin,                 // 数值保证金（USDT）—— 别与上面的布尔标记混为一谈
     entry: price,
     size: notional / price,
     notional,
@@ -77,7 +78,7 @@ export function isLiquidatable(pos, price) {
  * 拿一个固定阈值（如 5%）去卡，高杠杆仓位会**常年贴在红区**，颜色就不带信息了。
  * 归一化之后「同一个 `safetyOf` 在任何杠杆下含义相同」：0.5 = 垫子用掉一半。
  *
- * ⚠️ 不可强平的仓位（杠杆 1x）恒返回 `1`：它没有维持线这一说，也就永远不进入注意 / 危险区。
+ * ⚠️ 不可强平的仓位（1x 多头，无借入）恒返回 `1`：它没有维持线这一说，也就永远不进入注意 / 危险区。
  */
 export function safetyOf(pos, price) {
   if (!canLiquidate(pos)) return 1;
@@ -157,18 +158,37 @@ export function reduceFraction(pos, price, target = 1.5) {
 /* ───────────────────────── 杠杆 / 合约（GDD §9.1） ───────────────────────── */
 
 /**
- * 杠杆通道判定（U1 · 2026-09-29 改判，ROADMAP §21.4；v9 · §15.6 再改）—— **读仓位自己的 `margin` 标记**。
+ * 杠杆通道判定（U1 · 2026-09-29 改判，ROADMAP §21.4；v9 · §15.6 再改）—— **读仓位自己的 `isMargin` 标记**。
  *
  * ⚠️ 它不再由 `side / lev` 推出来。开仓那一刻由 `engine.openTrade()` 按 `s.mode` 算好写进仓位，
  *    之后**固定不变** —— 玩家中途切换模式不会改变已有仓位的性质（那才符合直觉）。
  *    `'margin'` 模式下的任何单 ⇒ 杠杆通道；`'fut'` 模式下的任何单 ⇒ 合约通道。
- *    ⚠️ **本作没有现货概念**：1x 仍是杠杆通道的最低档，只是不计息、不参与强平。
+ *    ⚠️ **本作没有现货概念**：1x 仍是杠杆通道的最低档。1x **多头**没有借入 ⇒ 不计息、不参与强平；
+ *       1x **空头**做空必须借币、借的是全额 ⇒ 照常计息、照常有强平线（见 `borrowedOf`）。
  *
  * ⚠️ **v9 起它只回答一个问题：「这笔单是怎么开的」**。改动前它同时承担着两件事
  *    （不付资金费 ＋ 不被强平），而杠杆通道从 §15.6 起**也带杠杆**了 ——
  *    于是「是杠杆单」不再等价于「不会被强平」，那两件事各自拆成了下面两个更窄的判据。
  */
-export const isMargin = pos => !!(pos && pos.margin);
+export const isMargin = pos => !!(pos && pos.isMargin);
+
+/**
+ * 这一笔**借了多少**（2026-10-03 用户拍板 · 「按借入量统一口径」）—— 同一个量同时决定
+ * 「要不要计息」与「能不能被强平」，两件事从此只有一个根因：**借了钱 / 币就要还**。
+ *
+ * 史实口径（Bitfinex 借贷）：
+ *   - **多头**借的是美元：借入 = `名义 − 保证金`（1x ⇒ 0，等于现货买入、不付息）
+ *   - **空头**借的是币：做空必须**借币卖出** ⇒ 借入 = **全额名义**（1x 空头照样付借币息、照样有强平线）
+ *
+ * ⚠️ 它**不需要存字段**：`借入 ÷ 名义` 在这个仓位的一生里是常数 —— 部分强平让两者同比例缩小，
+ *    利息只减 `margin`、不动 `notional` ⇒ 由 `notional` / `lev` / `side` 现算即可，与仓位同步衰老。
+ * ⚠️ 合约（非 `isMargin`）借入恒 0：它不借钱，只付资金费。
+ */
+export const borrowedOf = pos => {
+  if (!isMargin(pos)) return 0;
+  if (pos.side === 'short') return pos.notional;
+  return pos.notional * (1 - 1 / pos.lev);
+};
 
 /**
  * 这个仓位要不要参与**资金费率**结算（v9 · §15.3 N5）—— **只有永续要**。
@@ -180,41 +200,45 @@ export const paysFunding = pos => !isMargin(pos);
 /**
  * 这个仓位会不会被**强平**（v9 · §15.3 N5）—— 引擎的强平循环拿它当判据。
  *   - 合约：恒可（走维持保证金率那一套）
- *   - 杠杆：**只有带杠杆（`lev > 1`）才可** —— 借来的钱要还，所以要维持保证金
- *   - 杠杆 1x：只有币价归零才归零本金，不因维持线被强平（GDD §9.1）
+ *   - 杠杆：**有借入才可** —— 借来的钱 / 币要还，所以要维持保证金（见 `borrowedOf`）
+ *   - 1x 多头：借入为 0，只有币价归零才归零本金，不因维持线被强平（GDD §9.1）
+ *   - 1x 空头：借了全额币 ⇒ **可强平**（币价涨到约 +85% 时维持线触底）
+ * ⚠️ 2026-10-03 起判据从 `lev > 1` 换成 `borrowedOf > 0`：把「1x 空头」也纳进来（史实如此）。
  */
-export const canLiquidate = pos => !isMargin(pos) || pos.lev > 1;
+export const canLiquidate = pos => !isMargin(pos) || borrowedOf(pos) > 0;
 
 /* ───────────── 工具性质与维持保证金率（B18 / B26 · 2026-09-30） ───────────── */
 
 /**
  * 这条仓位**是什么工具**（B26）—— 史实上「借钱买币」与「永续合约」是两种东西：
  *
- *   - `'margin'`：**杠杆借贷** —— `margin` 表 + `lev > 1`（Bitfinex 2013-04 起 3.3x、
- *     Binance 2019-07-11 起 3x）。借来的钱 / 币要还，按**借贷日息**计息，
+ *   - `'margin'`：**杠杆借贷** —— 有借入的仓（`borrowedOf > 0`，即 `lev > 1` 或**任何空头**；
+ *     Bitfinex 2013-04 起 3.3x、Binance 2019-07-11 起 3x）。借来的钱 / 币要还，按**借贷日息**计息，
  *     维持线走 Bitfinex 史实的 **15%（权益口径）**。
  *   - `'perp'`：**线性 USDT 本位永续** —— `fut` 表的任何仓位。吃 8 小时资金费、维持线 0.5% 起。
  *
  * ⚠️ 2016-05-13 之前世界上**没有永续**（BitMEX 的 XBTUSD 是人类第一个）——
  *    那年头的「杠杆」全是借钱买币，所以早期仓位一律落进 `'margin'` 这一支。
- * ⚠️ 与 `engine.levKind(s)`（`'margin'` / `'fut'`，回答「走哪张杠杆表」）是**同一条分界**，
- *    这里回答的是「它是什么工具」—— 两个问题答案一一对应，所以不需要另立一张年代表。
+ * ⚠️ 它**只用来选维持线 / 计息口径**（`maintRateOf` / `paysInterest`）—— 判据是「有没有借入」，
+ *    所以 **1x 多头**（借入 0）落进 `'perp'` 那一支，但它**不可强平**，维持线根本不参与判定。
+ * ⚠️ 与 `engine.levKind(s)`（`'margin'` / `'fut'`，回答「走哪张杠杆表」）**不是**同一条分界了 ——
+ *    前者按 `s.mode`，这里按借入量。1x 空头走杠杆表、也按杠杆口径计息，两边一致。
  */
-export const instrumentOf = pos => (isMargin(pos) && pos.lev > 1 ? 'margin' : 'perp');
+export const instrumentOf = pos => (borrowedOf(pos) > 0 ? 'margin' : 'perp');
 
 /**
  * 这一笔订单 / 仓位的**冲击形态品种**（§73.6）—— 决定走 `SHOCK_MODE.coin` 还是 `fut` 那一套
  * `perm` / `betaFast`，也决定它参不参与 NPC 级联。
  *
  * 两档的唯一分界是「**有没有杠杆盘**」，不是「走不走杠杆模式」：
- *   - 杠杆 1x（`margin && lev ≤ 1`）⇒ `'coin'`（实物换手、无杠杆盘 ⇒ 痕迹久、不级联）；
- *   - 合约（`mode='fut'`）与**杠杆 > 1**（`margin && lev > 1`）⇒ `'fut'`（合成盘、有杠杆盘）。
+ *   - 杠杆 1x（`isMargin && lev ≤ 1`）⇒ `'coin'`（实物换手、无杠杆盘 ⇒ 痕迹久、不级联）；
+ *   - 合约（`mode='fut'`）与**杠杆 > 1**（`isMargin && lev > 1`）⇒ `'fut'`（合成盘、有杠杆盘）。
  *
  * ⚠️ 与 `isMargin` / `instrumentOf` **不是同一件事**：那两个回答「是不是杠杆通道 / 什么工具」，
  *    这里回答「它的冲击长什么样」。杠杆 1x 是实物换手，杠杆 > 1 才是合成盘 —— 这正是模型要的
  *    「1x 与带杠杆两个手感不同」的分界。
  */
-export const shockKindOf = (margin, lev) => (margin && lev <= 1 ? 'coin' : 'fut');
+export const shockKindOf = (isMargin, lev) => (isMargin && lev <= 1 ? 'coin' : 'fut');
 
 /**
  * 维持线最多吃掉初始保证金的**一半**（＝爆仓前至少留一半垫子）。
@@ -241,10 +265,12 @@ export function maintRateOf(pos) {
 }
 
 /**
- * 这个仓位要不要付**借贷利息**（B26）—— 只有杠杆仓要。
+ * 这个仓位要不要付**借贷利息**（B26）—— **有借入就要**（见 `borrowedOf`）：
+ * 杠杆 > 1 的多头（借美元）、以及**任何空头**（借币，含 1x 空头）。
  * 与 `paysFunding` 互斥，两者合起来覆盖全部可强平的仓位。
+ * ⚠️ 2026-10-03 起判据从 `lev > 1` 换成 `borrowedOf > 0`（与 `canLiquidate` 同源）。
  */
-export const paysInterest = pos => instrumentOf(pos) === 'margin';
+export const paysInterest = pos => borrowedOf(pos) > 0;
 
 /* ───────────────────────── 资金费率（GDD §9.5） ───────────────────────── */
 

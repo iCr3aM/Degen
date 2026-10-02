@@ -23,7 +23,7 @@ import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate 
 import {
   equityOf, isLiquidatable, isMargin, liquidationPrice, maintRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
-  FUNDING, FR, INSURE, fundingOf, canLiquidate, paysFunding, paysInterest, shockKindOf,
+  FUNDING, FR, INSURE, fundingOf, canLiquidate, paysFunding, paysInterest, borrowedOf, shockKindOf,
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
@@ -364,7 +364,7 @@ function advPeakOf(s, sym, i) {
 function advCurExposureOf(s, sym, raw) {
   if (!(raw > 0)) return 0;
   const pos = s.positions[sym];
-  if (!pos || (pos.margin && pos.lev === 1)) return 0;
+  if (!pos || (isMargin(pos) && pos.lev === 1)) return 0;
   const mark = markPrice(s, sym);
   return mark > 0 ? pos.size * mark / raw : 0;
 }
@@ -1463,7 +1463,8 @@ function openCheck(s, side, frac = 1) {
      判据是 `hasFinancingAt`（＝杠杆表上限 > 1）—— BitMEX / 2019-07 前的 Binance 只有 1x，
      也就是「用自己的钱买币」，没有任何出借方。
      ⚠️ 只拦**开仓**：已在场的仓位照常持有，平仓也不受影响（否则旧档里那张空单会被关在里面）。
-     ⚠️ 也**因此**根除了「1x 杠杆空单没有强平线」：那种仓位从源头就开不出来了。 */
+     ⚠️ 至于有融资的所里把杠杆调到 **1x 的空单**（如 Bitfinex 3.3x 档下）：它借了全额币 ⇒
+        `canLiquidate` / `paysInterest` 按**借入量**判定 ⇒ 照常有强平线、照样付借贷利息（2026-10-03）。 */
   if (side === 'short' && marginOf(s, otc) && !hasFinancingAt(timeOf(s), s.ex)) {
     return { ok: false, why: '杠杆做空 暂不可用 ｜ 该所此刻没有融资业务' };
   }
@@ -2315,7 +2316,7 @@ export function advanceOneHour(s) {
      排在 `tickMarket` 之后 —— 玩家的 `pv` 刚被清掉、持仓也刚跟着这一根的行情更新过。 */
   advTick(s);
 
-  // 持仓成本每 8 游戏小时结算一次（B26：永续扣资金费、杠杆保证金扣借贷利息，杠杆 1x 不扣）
+  // 持仓成本每 8 游戏小时结算一次（B26：永续扣资金费、杠杆保证金扣借贷利息；1x 多头无借入 ⇒ 不扣）
   if (s.i % FUNDING.hours === 0 && settleFunding(s)) return;
 
   liquidateAll(s);
@@ -2433,13 +2434,16 @@ export function invalidateSigma() {
  *     **不含 `dir`**：方向只在 `fundingOf` 里出现一次（v30 · 缺口 3 修掉原来的双重 `dir` bug）。
  *     费率由**全市场多空失衡**（`longShareOf`，含玩家自己的名义）驱动，玩家可真收可付；
  *     「仓位越大越贵 / 越赚」自动保持，不再由行情动量决定。口径见 `positions.js` 的 `FR` 注释。
- *   - **杠杆（margin）**：借贷利息 —— `名义 × 日息 × (8/24)`。史实里 Bitfinex 的
- *     「杠杆」是用户间 P2P 借美元/借 BTC（出借方叫 Margin Funding Provider），按市场利率计息；
+ *   - **杠杆（margin）**：借贷利息 —— `借入量 × 日息 × (8/24)`（2026-10-03 起按**借入量**，
+ *     不再按名义）。史实里 Bitfinex 的「杠杆」是用户间 P2P 借美元/借 BTC（出借方叫
+ *     Margin Funding Provider），按市场利率计息；多头借的是美元（`名义 − 保证金`）、
+ *     空头借的是币（**全额名义**）—— 见 `borrowedOf`。
  *     日息**按年代取值**（`config.MARGIN.daily`）且**数字是合成值** ⇒ GDD 声明。
  *     2016-05-13 之前世界上没有永续，那时的杠杆仓全落进这一支。
  *
  * ⚠️ **两条路各写一条日志**（标签不同、不能合并成一条）：`paysInterest` 与 `paysFunding` 互斥，
- *    同时持有两种仓位时玩家需要分别看到两笔成本的费率。杠杆 1x 两样都不付。
+ *    同时持有两种仓位时玩家需要分别看到两笔成本的费率。1x **多头**（无借入）两样都不付；
+ *    1x **空头**借了全额 ⇒ 付借贷利息。
  * @returns {boolean} 是否因结算后总权益归零而结束本局
  */
 function settleFunding(s) {
@@ -2454,17 +2458,19 @@ function settleFunding(s) {
   for (const sym of syms) {
     const pos = s.positions[sym];
 
-    /* ── 杠杆保证金：借贷利息（B26）── */
+    /* ── 杠杆保证金：借贷利息（B26）—— 按**借入量**计息（2026-10-03）──
+       多头借美元（名义 − 保证金）、空头借币（全额）。1x 多头借入为 0 ⇒ 落不进来。 */
     if (paysInterest(pos)) {
-      const fee = pos.notional * daily * (FUNDING.hours / 24);
+      const borrowed = borrowedOf(pos);
+      const fee = borrowed * daily * (FUNDING.hours / 24);
       pos.margin -= fee;
       s.realized -= fee;
       ied += fee;
-      grossM += pos.notional;
+      grossM += borrowed;                            // 报出去的费率 = ied / grossM ≡ daily
       continue;
     }
 
-    if (!paysFunding(pos)) continue;                 // 杠杆 1x：两样都不付
+    if (!paysFunding(pos)) continue;                 // 1x 多头：两样都不付
     const mark = exPrice(s, sym, pos.ex);            // 缺口 10：资金费也按**本仓所在所**的本所价
     if (!(mark > 0)) continue;
 
@@ -2521,9 +2527,9 @@ function settleFunding(s) {
 
 /**
  * 逐仓强平：每个仓位各自用**当根 K 线的高低点**判定（见文件头注释）。
- * 杠杆 1x 仓位跳过 —— 只有币价归零才归零本金，不因维持保证金率被强平（GDD §9.1）。
- * ⚠️ v9（§15.3 N5）：判据从「是不是杠杆 1x」换成 `canLiquidate` —— 杠杆从 §15.6 起**也带倍数**，
- *    而「借来的钱要还」⇒ **杠杆 > 1 仓位照样强平**，只有杠杆 1x 才是那个无强平的特例。
+ * 无借入的仓位跳过 —— **1x 多头**只有币价归零才归零本金，不因维持保证金率被强平（GDD §9.1）。
+ * ⚠️ v9（§15.3 N5）：判据从「是不是杠杆 1x」换成 `canLiquidate` —— 杠杆从 §15.6 起**也带倍数**。
+ * ⚠️ 2026-10-03：判据再收窄成 `borrowedOf > 0` —— **1x 空头借了全额币，也进这一支强平**。
  * ⚠️ B18/B26：维持线本身也不再是常数 —— `maintRateOf(pos)` 按「所 × 工具 × 名义档」取
  *    （Binance 永续四档、杠杆保证金恒 15%），所以早期 3.3x 杠杆仓会明显比现在更容易爆。
  * ⚠️ **2026-10-01 起不再是「一穿线就整条打掉」**：触线只走**部分强平**一档（`partialLiquidate`），

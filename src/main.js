@@ -576,8 +576,9 @@ function soundFromTick(s) {
   /* 安全垫跌破 **0.2（红区）**：**进入**那一刻响一次，回到注意区之上后重置（不然每帧都在响）。
      与持仓条第三格**同一个判据**（本轮 ⑥ 起两边都走 `safetyOf`，不再各写一个阈值）——
      原来是拿保证金率绝对值卡 `< 5%`，那会让 100x 仓位一开出来就响（它开出来就只有 1%）。
-     ⚠️ 不可强平的仓位（杠杆 1x，实物换手）没有维持保证金率这一说，跳过 —— 判据统一走 `canLiquidate`
-        （v9 · §15.4：杠杆 1x 以外都能强平，`isMargin` 已经不回答这个问题）。 */
+     ⚠️ 不可强平的仓位（1x 多头，无借入）没有维持保证金率这一说，跳过 —— 判据统一走 `canLiquidate`
+        （v9 · §15.4：`isMargin` 已经不回答这个问题；2026-10-03 起判据 = 有没有借入，
+        所以 1x 空头也算可强平）。 */
   for (const sym of heldSyms(s)) {
     const pos = s.positions[sym];
     if (!canLiquidate(pos)) { warnedSyms.delete(sym); continue; }
