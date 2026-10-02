@@ -993,7 +993,10 @@ export const ADV = {
  *   ② 若 OTC 能上 100x，它就是「无滑点 ＋ 高杠杆」的纯优解，§14.3 那套滑点对大户直接失效。
  *   ⇒ 仓位打 `spot` 标（`positions.isSpot` 读的就是它），**零新增仓位类型**。
  *
- * ⚠️ `unlock` / `min` 两个门槛是 GDD §15.3 的原值，**暂不改**：真机跑一局后按实测资产曲线复校。
+ * ⚠️ `unlock` / `min` 两个门槛（2026-10-02 · 调研①拍板）**已由绝对美元常量改为年代表**
+ *    （`OTC.unlock` / `OTC.min` ＋ `otcUnlockAt(t)` / `otcMinAt(t)`）——
+ *    GDD §15.3 的原值（$5M / $1M）在 2013 年的新流动性锚下等于 8.9 / 1.8 天全市场成交量，
+ *    早期 OTC 成了死内容。2020 端仍回到 $5M / $25 万的量级，现代端手感不变。见 `OTC` 注释。
  *
  * ── 溢价（P2-B 修订 · 史实化，2026-09-29）────────────────────────────────
  * 原先是**固定 1%**。查证后的史实是：OTC 溢价**既随年代收敛、又随市况炸开** ——
@@ -1020,8 +1023,33 @@ export const ADV = {
  *    `base` / `multCap` 的差别只在中低市况 ＋ 中小单那一段还看得见。
  */
 export const OTC = {
-  unlock: 5e6,      // 权益 > $500 万 才解锁（§15.3）
-  min: 1e6,         // 单笔名义下限 $100 万（§15.3）
+  /**
+   * **单笔下限 `min(t)`** 与**解锁门槛 `unlock(t)`** —— 年代表（2026-10-02 调研①拍板，
+   * 与 `base` / `sigmaRef` 同一写法：几何插值 / 步骤函数）。
+   *
+   * 病根：这两个数原来是**绝对美元常量**（`$1M` / `$5M`）。而流动性锚改逐年之后（§6.1），
+   * 2013 的 BTC 只有 **$564.5K/天** ⇒ 一笔 $1M 的 OTC 单 = **1.8 天全市场成交量**，
+   * 现实里 2013 年**不存在**能承接这个量的台（机构 OTC 台是 2018 年 Coinbase Prime 之后的事）；
+   * 要攒到 $5M 权益才解锁 = 8.9 天全市场成交量 ⇒ **2013–2014 的 OTC 是死内容**。
+   * 连带的第二个病：`otcPremiumOf` 的规模倍率以 `notional ÷ OTC.min` 为基准 ⇒ 2013 年一笔
+   * 天量 $1M 单只拿到最窄的 ×1 —— 「大宗越大越贵」这条在早期整体失效。
+   *
+   * 现实锚（本轮检索）：
+   *   · 2020 前后机构台单笔下限 **$50K**（Kraken OTC / Coinbase Prime / Binance OTC）、
+   *     **$100K**（Cumberland）、**≈$200K**（Galaxy / Wintermute）⇒ 取 **$250K**（区间上沿）；
+   *   · 早期小台（BitcoinVN，2014 成立）公开下限 **$10K** ⇒ 2013 取 **$10K**。
+   *   · `unlock = min × 20` 这条比例**恰好让 2020 端回到原来的 $5M** ⇒ 现代端手感一字不变。
+   */
+  min: [
+    { t: Date.UTC(2013, 0, 1), v: 1e4 },      // $1 万：对齐早期小台（BitcoinVN 2014 公开下限）
+    { t: Date.UTC(2016, 0, 1), v: 1e5 },      // $10 万：以太 ICO 潮、机构开始进场
+    { t: Date.UTC(2020, 0, 1), v: 25e4 },     // $25 万：Cumberland / Galaxy 区间上沿，此后不再变
+  ],
+  unlock: [
+    { t: Date.UTC(2013, 0, 1), v: 2e5 },      // $20 万 ＝ min × 20
+    { t: Date.UTC(2016, 0, 1), v: 2e6 },      // $200 万
+    { t: Date.UTC(2020, 0, 1), v: 5e6 },      // $500 万（与改动前逐位相同）
+  ],
   base: [           // 基准点差（常态点差）—— 几何插值的锚点，按年代收敛
     { t: Date.UTC(2013, 0, 1), v: 0.0050 },   // 0.50%：早期场子薄、做市商少
     { t: Date.UTC(2016, 0, 1), v: 0.0030 },   // 0.30%
@@ -1039,9 +1067,8 @@ export const OTC = {
   max: 0.08,        // 溢价硬上限 8%（任何年代、任何市况）
 };
 
-/** OTC 常态点差 `base(t)` —— 几何插值，两端锚定（同 §15.2 日流动性的写法） */
-export function otcBaseAt(t) {
-  const a = OTC.base;
+/** 几何插值（两端锚定，同 §15.2 日流动性的写法）—— `base` / `min` / `unlock` 三张表共用一处口径 */
+function geomAt(a, t) {
   if (t <= a[0].t) return a[0].v;
   for (let k = 1; k < a.length; k++) {
     if (t < a[k].t) {
@@ -1051,6 +1078,15 @@ export function otcBaseAt(t) {
   }
   return a[a.length - 1].v;
 }
+
+/** OTC 常态点差 `base(t)` */
+export const otcBaseAt = t => geomAt(OTC.base, t);
+
+/** OTC 单笔下限 `min(t)`（2026-10-02 · 调研①）—— 早期台子门槛低，2020 起定格 $25 万 */
+export const otcMinAt = t => geomAt(OTC.min, t);
+
+/** OTC 解锁门槛 `unlock(t)`（2026-10-02 · 调研①）—— 恒为 `min × 20`，2020 端 = $500 万（与改动前相同） */
+export const otcUnlockAt = t => geomAt(OTC.unlock, t);
 
 /** 该年代的 σ_基准 —— 步骤函数，升序取「最后一个 `t <= 时刻`」 */
 export function otcSigmaRefAt(t) {
@@ -1067,14 +1103,20 @@ export function otcSigmaRefAt(t) {
  * @returns {number} `base(t)` ~ `OTC.max`
  *
  * ⚠️ **规模倍数（v19 · 2026-10-01 用户拍板）**：现实里大宗台的报价随**单笔规模**变宽 ——
- *    同样一个 2013 年 0.50% 的基准点差，$1M 的单与 $100M 的单拿到的价不一样。
- *    倍率取**平方根律**（`sqrt(名义 ÷ OTC.min)`，与 §14.3 滑点同形），上限 `sizeCap = 4` ——
- *    即本笔名义 ≥ 16 × min（$1,600 万）后不再变宽。$1M 的单倍率为 1（与改动前逐位相同）。
+ *    同样一个基准点差，`min` 那一档的单与 16 倍于它的单拿到的价不一样。
+ *    倍率取**平方根律**（`sqrt(名义 ÷ min(t))`，与 §14.3 滑点同形），上限 `sizeCap = 4` ——
+ *    即本笔名义 ≥ 16 × `min(t)` 之后不再变宽；恰好等于 `min(t)` 的单倍率为 1。
+ *
+ * ⚠️ **基准是 `min(t)` 而不是常量**（2026-10-02 · 调研①）：门槛改年代表之后，这个倍率自动
+ *    变成「**相对当年代**的大宗程度」—— 2013 年一笔 $1M 的单会拿到接近顶格的宽度（它当年是天量），
+ *    而在 2020 年 $1M 只是 4 × min、宽度温和。改动前用绝对常量 ⇒ 早期的天量单反而最便宜。
  */
-export function otcPremiumOf(sigma, t, notional = OTC.min) {
+export function otcPremiumOf(sigma, t, notional) {
+  const min = otcMinAt(t);
+  const n = Number.isFinite(notional) && notional > 0 ? notional : min;
   const base = otcBaseAt(t);
   const s = Number.isFinite(sigma) && sigma > 0 ? sigma : otcSigmaRefAt(t);
   const mult = Math.min(OTC.multCap, Math.max(1, Math.pow(s / otcSigmaRefAt(t), OTC.p)));
-  const size = Math.min(OTC.sizeCap, Math.max(1, Math.pow(Math.max(notional, OTC.min) / OTC.min, OTC.sizeP)));
+  const size = Math.min(OTC.sizeCap, Math.max(1, Math.pow(Math.max(n, min) / min, OTC.sizeP)));
   return Math.min(OTC.max, Math.max(base, base * mult * size));
 }

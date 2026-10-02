@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canCloseAt, canOpenAt, chanOf, equity, futuresAvailable, heatOf, markPrice, otcOpenFor, otcUnlocked, pauseLocked, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canCloseAt, canOpenAt, chanOf, equity, futuresAvailable, heatOf, longShareOf, markPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { HEAT } from '../core/god.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -179,13 +179,19 @@ export function mount(root) {
   chartEta.hidden = true;
   const chartLock = el('div', 'chart-lock', '双击回最新');
   chartLock.hidden = true;
-  /* 市场热度（§73.5）—— 0–1 的条 ＋ 贪婪 / 中性 / 恐慌 三档字面。
+  /* 市场热度（§73.5）＋ 派生量两行（缺口 4 / 19 · 2026-10-02 拍板）——
+     第一行是 0–1 的条 ＋ 贪婪 / 中性 / 恐慌 三档字面，下面两行是 OI 与多空比。
      ⚠️ 放左下角这一列（那时常空着），**不占** `.chart-head` 那一行的宽度 ——
-        头部五行字在 390px 屏上已经排满，再插一枚会把粒度小字挤掉。 */
+        头部五行字在 390px 屏上已经排满，再插一枚会把粒度小字挤掉。
+     ⚠️ 不多开面板（LESS IS MORE）：两行读数就挂在热度这一格里，共用同一块浮字底。 */
   const heatBar = el('i');
   const heatTxt = el('u');
+  const heatRow = el('div', 'row');
+  heatRow.append(heatBar, heatTxt);
+  const oiTxt = el('u');
+  const lsTxt = el('u');
   const heatChip = el('div', 'chart-heat');
-  heatChip.append(heatBar, heatTxt);
+  heatChip.append(heatRow, oiTxt, lsTxt);
   const chartSide = el('div', 'chart-side');
   chartSide.append(heatChip, chartEta, chartLock);
   const chartWrap = el('div', 'chart-wrap');
@@ -500,8 +506,10 @@ export function mount(root) {
         读数走 `reviewHeatOf`（同一条方程、只吃原始行情）。 */
   const rvHeatBar = el('i');
   const rvHeatTxt = el('u');
+  const rvHeatRow = el('div', 'row');
+  rvHeatRow.append(rvHeatBar, rvHeatTxt);
   const rvHeatChip = el('div', 'chart-heat');
-  rvHeatChip.append(rvHeatBar, rvHeatTxt);
+  rvHeatChip.append(rvHeatRow);
   const rvSide = el('div', 'chart-side');
   rvSide.append(rvHeatChip);
   const rvWrap = el('div', 'chart-wrap');
@@ -556,7 +564,7 @@ export function mount(root) {
     eqVal, eqSub, cashVal, cashSub,
     symbols, symBtns,
     canvas, chartWrap, chartHead, chSym, chMcap, chSupp, chChg, modeBtn, chartEta, chartLock,
-    heatChip, heatBar, heatTxt,
+    heatChip, heatBar, heatTxt, oiTxt, lsTxt,
     posbar, posSide, posPnl, posRate,
     logline, newsTag, logTime, logText,
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
@@ -970,7 +978,8 @@ export function update(refs, s, view) {
   refs.exBtn.disabled = frozen || locked;
 
   /* 通道切换键**四档状态**（P2-B 修订 · GDD §15.3；2026-10-02 加第四档）：
-       ① 权益 ≤ $500 万 ⇒ `hidden` —— 一个 $1,000 开局的玩家不该看见自己用不了的东西
+       ① 权益 ≤ 当年解锁线（`otcUnlockAt`，2020 起 $500 万）⇒ `hidden` ——
+          一个 $1,000 开局的玩家不该看见自己用不了的东西
        ② 权益够、但**当前币**还没开通 OTC ⇒ 可见但禁用（灰框）——
           这一级存在的意义就是「切币时按钮不再忽隐忽现」，所以不能藏
        ③ **手上有仓位** ⇒ 禁用（2026-10-02 审计修）：OTC 只能平现货，
@@ -1187,6 +1196,11 @@ function syncChart(refs, s, view, sym, cur, mark) {
   refs.heatBar.style.setProperty('--heat', `${Math.round(heat * 100)}%`);
   refs.heatTxt.textContent = heat >= HEAT.greed ? '贪婪' : heat <= HEAT.panic ? '恐慌' : '中性';
   refs.heatChip.dataset.heat = heat >= HEAT.greed ? 'greedy' : heat <= HEAT.panic ? 'panic' : 'mid';
+  /* 派生量两行（缺口 4 / 19 · 2026-10-02 拍板）：OI 与多空比，口径同源（见 `openInterestOf`）。
+     多空比取不到（两侧皆空）⇒ `--`，不硬凑一个 50/50。 */
+  const ls = longShareOf(s, sym);
+  refs.oiTxt.textContent = `OI ${fmtMoneyShort(openInterestOf(s, sym))}`;
+  refs.lsTxt.textContent = ls == null ? '多空 --' : `多空 ${Math.round(ls * 100)}/${Math.round((1 - ls) * 100)}`;
 
   /* 在途转账倒计时（K 线右上角）。两个数字与顶栏那行同源，但这里多一个「去哪儿」——
      玩家一眼能确认钱在往哪家所的路上。 */
@@ -1862,7 +1876,7 @@ const ABOUT = [
     + '现货杠杆：借钱买币 / 借币做空，按日计息，维持线 15%。'
     + '合约：USDT 本位永续，每 8 小时一次资金费，维持线 0.5% 起。倍数越高，强平线越近。'],
   ['两条通道',
-    '盘口吃冲击与滑点，单子越大越贵；OTC 是私下一口价的大宗通道（单笔 ≥ $100 万），'
+    '盘口吃冲击与滑点，单子越大越贵；OTC 是私下一口价的大宗通道（单笔 ≥ 当年门槛，$1 万起逐年抬升），'
     + '不吃滑点、但带一笔溢价。有持仓时，通道 / 现货合约 / 交易所都会锁住 —— 先平仓再换。'],
   ['你的成交会改变行情',
     '每一笔都会在市场里留下永久的位移（买抬价、卖压价），持仓本身还带来抛压折价。'

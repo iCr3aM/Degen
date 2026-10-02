@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
@@ -138,8 +138,12 @@ export function sampleEquity(s) {
 
 /* ───────────────────────── 下单通道（P2-B3 · GDD §15.3） ───────────────────────── */
 
-/** OTC 是否已解锁（§15.3：权益 > $500 万）—— UI 用它决定那枚切换键显不显示 */
-export const otcUnlocked = s => equity(s) > OTC.unlock;
+/**
+ * OTC 是否已解锁（§15.3）—— UI 用它决定那枚切换键显不显示。
+ * ⚠️ 门槛是 **`unlock(t)` 的函数**（2026-10-02 · 调研①）：绝对美元常量在 2013 年等于
+ *    8.9 天全市场成交量，早期等于永不满足 ⇒ 改为按年代（2020 端仍为 $500 万，与改动前相同）。
+ */
+export const otcUnlocked = s => equity(s) > otcUnlockAt(timeOf(s));
 
 /**
  * 当前币**此刻**能不能走 OTC（P2-B 修订 · §15.3）。
@@ -561,6 +565,52 @@ function npcNet(m) {
 }
 
 /**
+ * 某币**此刻的持仓量（OI）**（缺口 4 · 2026-10-02 用户拍板）—— `Σ(long + short)`。
+ *
+ * ⚠️ 口径：NPC 六档阶梯 ＋ **玩家在该币的持仓名义**（`size × 现价`，用户拍板「含玩家仓位」）。
+ *    这才是「市场上所有未平仓头寸」的现实定义 —— 只看 NPC 会漏掉自己那一份，
+ *    而且玩家开一单把 OI 推高、读数却不动的观感很假。
+ * ⚠️ **纯读**：不调 `mktOf`（那是懒初始化、只在写路径可达），缺失就只算 NPC 部分 ——
+ *    `render` 每帧都会调它，绝不能顺手在 `s.mkt` 上建条目。
+ * @returns {number} 名义额（USD），无数据时 0
+ */
+export function openInterestOf(s, sym) {
+  const m = s.mkt && s.mkt[sym];
+  let oi = 0;
+  if (m && m.npc) for (const g of m.npc) oi += g.long + g.short;
+  oi += positionNotionalOf(s, sym);
+  return Number.isFinite(oi) && oi > 0 ? oi : 0;
+}
+
+/**
+ * 某币**多空比**（缺口 19 · 2026-10-02 用户拍板）—— 多头名义占比，区间 `0 ~ 1`。
+ *
+ * ⚠️ 与 `openInterestOf` **同一口径**（NPC 六档 ＋ 玩家该币名义，按方向计入多 / 空）：
+ *    多空两侧之和恰等于 OI ⇒ 两行读数永远自洽（单一分母），不会出现「OI 涨了、多空比却没动」。
+ * ⚠️ 两侧之和为 0（没有任何仓位）⇒ 返回 `null`（展示为 `--`），不是 0.5 ——
+ *    一个没有持仓的市场根本没有多空比可言。
+ * ⚠️ 纯读，同 `openInterestOf`。
+ */
+export function longShareOf(s, sym) {
+  const m = s.mkt && s.mkt[sym];
+  let L = 0, S = 0;
+  if (m && m.npc) for (const g of m.npc) { L += g.long; S += g.short; }
+  const pos = s.positions[sym];
+  const n = positionNotionalOf(s, sym);
+  if (n > 0) { if (pos.side === 'long') L += n; else S += n; }
+  const tot = L + S;
+  return Number.isFinite(tot) && tot > 0 ? L / tot : null;
+}
+
+/** 玩家在某币的持仓名义（`size × 现价`）—— OI / 多空比共用的那一段，纯读。 */
+function positionNotionalOf(s, sym) {
+  const pos = s.positions && s.positions[sym];
+  if (!pos || !(pos.size > 0)) return 0;
+  const p = markPrice(s, sym);
+  return p > 0 ? pos.size * p : 0;
+}
+
+/**
  * **现货不参与级联**（§73.6）—— 玩家这一单给热度加料的倍率。
  * 现货（含 OTC）是实物换手，没有杠杆盘、也就没有「散户追高被强平」那一环 ⇒ 倍率 0；
  * 合约 / 杠杆按 `min(lev/5, 3)` 放大（5x 起跳，15x 及更高级顶格 3 倍）。
@@ -632,6 +682,9 @@ function syncNpcDrift(s, sym, i, sig) {
   const liqDay = liqOf(sym, dayIndexOf(i));
   const q = liqDay > 0 ? Math.abs(net) / liqDay : 0;
   const v = net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig);
+  /* 非有限值守卫（2026-10-02 审计修 · 风险 R2）：NaN / Infinity 落进台阶表后，`JSON.stringify`
+     写成 `null`、读回 `NaN`，整条价格曲线会跟着变 NaN。上游目前都被夹在有限区间，这里是兜底。 */
+  if (!Number.isFinite(v)) return;
   const tab = m.npcDrift || (m.npcDrift = { at: [], v: [] });
   const n = tab.at.length;
   if (n && Math.abs(v - tab.v[n - 1]) < NPC.driftEps) return;   // 变得看不见：不落级、不动历史
@@ -833,8 +886,10 @@ function refreshOverhang(s, sym, give = 0) {
   const prevTab = s.overhang[sym];
   const n = prevTab ? prevTab.at.length : 0;
   /* 上一级台阶拆成两块：`scar` = 卖出留下的永久疤痕，`v − scar` = 那一级的持仓折价 */
-  const prevScar = n ? prevTab.scar[n - 1] : 0;
-  const prevHold = n ? prevTab.v[n - 1] - prevScar : 0;
+  /* 非有限值守卫（2026-10-02 审计修 · 风险 R2）：NaN / Infinity 一旦落进台阶表，`JSON.stringify`
+     写成 `null`、读回 `NaN`，整条价格曲线随之变 NaN。读旧的 `scar` / `v` 时先自愈，否则会一路带毒。 */
+  const prevScar = n && Number.isFinite(prevTab.scar[n - 1]) ? prevTab.scar[n - 1] : 0;
+  const prevHold = n && Number.isFinite(prevTab.v[n - 1]) ? prevTab.v[n - 1] - prevScar : 0;
 
   const share = floatShareOf(s, sym, s.i);
   const hold = share > 0 ? -FLOAT.overhangMax * share : 0;
@@ -844,8 +899,13 @@ function refreshOverhang(s, sym, give = 0) {
     const drop = hold - prevHold;          // > 0 ⇒ 折价幅度在变薄（卖出 / 减仓）
     if (drop > 0) scar -= drop * (1 - give);
   }
+  /* 下夹 `−FLOAT.overhangMax`（2026-10-02 审计修 · 风险 R1）：`scar` 只减不增，
+     反复「开满 → 全平」往返会让残值线性下探 ⇒ `factorFor` 被钉死在 `SHOCK.fallMax`（−45%）。
+     折价的物理上限就是「持仓占满浮筹」那一档（`hold` 的最小值 = `−overhangMax`），疤痕不该超过它。 */
+  if (scar < -FLOAT.overhangMax) scar = -FLOAT.overhangMax;
 
   const v = hold + scar;
+  if (!Number.isFinite(v)) return;                     // 同 R2 守卫：宁可不落这一级，也不写毒值
   if (n === 0 && v === 0) return;                                 // 本来就没折价：不建表、不动 σ
   if (n && prevTab.v[n - 1] === v && prevScar === scar) return;   // 值没变：不写、不动 σ
   const tab = prevTab || (s.overhang[sym] = { at: [], v: [], scar: [] });
@@ -1120,9 +1180,12 @@ function openCheck(s, side, frac = 1) {
     return { ok: false, why: `下单金额太小 ｜ 单笔名义需 ≥ ${fmtMoneyShort(minNotional)}` };
   }
 
-  /* OTC 的门槛（§15.3）：单笔名义 ≥ $100 万。锁定 1x ⇒ 名义 = 保证金。
-     ⚠️ 门槛只卡**买入**，不卡平仓 —— 卡平仓会把玩家困在一条「币价跌下来、名义已不足 $100 万」的仓位上。 */
-  if (otc && margin < OTC.min) return { ok: false, why: `OTC 单笔最少 ${fmtMoney(OTC.min)}` };
+  /* OTC 的门槛（§15.3）：单笔名义 ≥ 当年门槛。锁定 1x ⇒ 名义 = 保证金。
+     ⚠️ 门槛逐年化（`otcMinAt`，2013 $1 万 → 2016 $10 万 → 2020 $25 万）：绝对常量在 2013 = 1.8 天全市场
+        成交量，会把早期 OTC 变成死内容。
+     ⚠️ 门槛只卡**买入**，不卡平仓 —— 卡平仓会把玩家困在一条「币价跌下来、名义已不足门槛」的仓位上。 */
+  const otcMin = otcMinAt(timeOf(s));
+  if (otc && margin < otcMin) return { ok: false, why: `OTC 单笔最少 ${fmtMoney(otcMin)}` };
 
   /* 成交价（P2-B1 / P2-B3）：盘口价 ± 代价 —— 买抬、卖压，**永远对玩家不利**。
      代价有两种，同一时刻只有一种成立：盘口是平方根冲击、OTC 是「基准点差 × 市况倍数」（不吃滑点）。
@@ -2176,6 +2239,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
     consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：部分强平也是真实成交 ⇒ 也吃深度
   }
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
+  s.stat.liq += 1;                         // 统计（2026-10-02 审计修）：逐步强平同样计入 —— 与 `forceLiquidate` 同口径
   s.positions[pos.sym] = r.pos;
   pushLog(s, `部分强平 ${pos.sym} ${pos.lev}x｜平掉 ${fmtRate(frac, 1)}｜保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad');
   refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：部分强平也是卖出 ⇒ 折价同比例释放

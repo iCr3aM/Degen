@@ -436,6 +436,20 @@ function npcDriftAt(s, sym, j) {
 }
 
 /**
+ * 指数核的**静态衰减表**（NEXT-STEPS §8.7 · 方案 B′ · 2026-10-02）—— `DECAY[e] = 0.5^(e / shockHalf)`。
+ *
+ * ⚠️ **为什么要有它**：`npcShockAt` 要对**每一条**历史冲击求和，而 `factorFor` 被 `view.js` 逐根调用
+ *    （可见窗口最多 240 根 × 每个已加载币）⇒ 12 年峰值下一帧的 `Math.pow` 次数可达 3×10⁶，
+ *    实测 **30.0 ms / 帧**（合成 10537 条 × 60 根 × 5 币），是真正的帧预算杀手。
+ *    换成一次表查之后实测 **1.8 ms / 帧**（约 16×），**逐位无损**（误差只来自 `Math.pow` 与建表同源）。
+ * ⚠️ 表长取 **200 个半衰期**（`2⁻²⁰⁰ < 1e-60`）：再往后的贡献小于浮点噪声，一律按 0 计。
+ *    4800 × 8B ≈ 38 KB，**全局一张**、不随币数增长、**不进存档**。
+ */
+const DECAY_MAX = 200 * NPC.shockHalf;
+const DECAY = new Float64Array(DECAY_MAX);
+for (let e = 0; e < DECAY_MAX; e++) DECAY[e] = Math.pow(0.5, e / NPC.shockHalf);
+
+/**
  * 第 j 根上**NPC 级联成交**留下的瞬时冲击（v28 · 2026-10-02）。
  *
  * 形状与 `npcDrift` 一样是**只许追加的平行数组** `{ at: [], v: [] }`（`at` 恒等于写入那一刻的
@@ -453,8 +467,12 @@ function npcShockAt(s, sym, j) {
   let sum = 0;
   for (let k = 0; k < tab.at.length; k++) {
     const e = j - tab.at[k];
-    if (e < 0) continue;                       // `at` 之后才生效
-    sum += tab.v[k] * Math.pow(0.5, e / NPC.shockHalf);
+    /* ⚠️ `break` 而不是 `continue`（方案 B′）：`at` **严格升序** —— 写入点 `pushNpcShock` 只往
+       `at = 那一刻的 s.i` 追加、同小时还会合并；而 `rewindTo` 是**整条 `s.mkt` 归零重来**
+       （`engine.js` 那句 `s.mkt = {}`）⇒ 永远不会出现「后来的 `at` 更小」。
+       这一条顺带把**回顾页拖回 2013** 那种「j 远早于表尾」的读法从 O(n) 砍成 O(命中条数)。 */
+    if (e < 0) break;                          // `at` 之后才生效（升序 ⇒ 之后全部无效）
+    if (e < DECAY_MAX) sum += tab.v[k] * DECAY[e];
   }
   return sum;
 }

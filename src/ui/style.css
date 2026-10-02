@@ -443,16 +443,20 @@ b, strong { font-weight: 600; }
 
 /* 市场热度（§73.5）：0–1 的条 ＋ 贪婪 / 中性 / 恐慌 三档字面 —— 与上面两枚同一套浮字底。
    三档的着色只走语义色（涨绿 / 跌红 / 中性灰），与 K 线涨跌同一套语言。 */
+/* 三行：① 热度条 ＋ 三档字面 ② OI ③ 多空比（缺口 4 / 19 · 2026-10-02 拍板）。
+   ⚠️ 涨跌着色只落在第①行（`.row`）—— OI / 多空比是中性读数，跟着贪婪/恐慌变色会误导。 */
 .chart-heat {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   padding: 6px 8px;
   background: rgba(16, 19, 23, .72);   /* = --panel-2 的七成不透明，同 .chart-head */
   font-size: calc(12px * var(--ui));
   color: var(--mut);
 }
-.chart-heat u { text-decoration: none; }
+.chart-heat .row { display: flex; align-items: center; gap: 6px; }
+.chart-heat u { display: block; text-decoration: none; }
 .chart-heat i {
   display: block;
   width: calc(40px * var(--ui));
@@ -468,9 +472,9 @@ b, strong { font-weight: 600; }
   width: var(--heat, 50%);
   background: var(--mut);
 }
-.chart-heat[data-heat="greedy"] { color: var(--up); }
+.chart-heat[data-heat="greedy"] .row { color: var(--up); }
 .chart-heat[data-heat="greedy"] i::after { background: var(--up); }
-.chart-heat[data-heat="panic"] { color: var(--down); }
+.chart-heat[data-heat="panic"] .row { color: var(--down); }
 .chart-heat[data-heat="panic"] i::after { background: var(--down); }
 
 /* ══════════════ 持仓条（**常驻**） ══════════════
