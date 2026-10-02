@@ -29,8 +29,12 @@ export const ACTION_KEYS = [
   'god', 'godcash', 'godyear', 'godmon', 'godday', 'godgo', 'godoff',
   /* U1（ROADMAP §21.4）：`mode2`（操作区「金额」行末尾那枚「杠杆 / 合约」模式键）。
      ⚠️ 用 `mode2` 而不是 `mode` —— `mode` 已被 K 线左上角那枚**粒度**小字占用（`main.js` 的 `d.mode`）。
-     v9（§15.3 N4）：`buy` / `sell` ＝ 杠杆模式那两枚动作键（借 U 买入 / 借币卖出）。 */
-  'mode2', 'buy', 'sell',
+     v9（§15.3 N4）：`buy` / `sell` ＝ 杠杆模式那两枚动作键（借 U 买入 / 借币卖出）。
+     ⚠️ **2026-10-03 补 `chan`（盘口 ⇄ OTC 切换键）** —— 它一直在 `render.js` 里被创建
+        （`chanBtn.dataset.chan = 'toggle'`）却**漏进了这张表**，于是 `findActionEl` 认不出它、
+        `main.js` 的 `onChan()` 永远收不到派发 ⇒ 那枚键**从上线起就是死的**（用户实测「无法切换」）。
+        同一类病根见上面 `guide` 那条：**漏进这张表 = 点了没反应**，`data-*` 与这张表必须成对维护。 */
+  'mode2', 'buy', 'sell', 'chan',
   /* v11（③）：`warn`（破产预警遮罩的那枚「知道了」）/ `hint`（设置页「新手提示」开关）。
      v11（⑤ · 方案 §20.2.1）：`log` ＝ **日志条整条**（点开日志浮层看全 30 条）。 */
   'warn', 'hint', 'log',

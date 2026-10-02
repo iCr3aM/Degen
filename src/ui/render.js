@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canCloseAt, canOpenAt, chanOf, equity, exPrice, futuresAvailable, heatOf, longShareOf, markPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canCloseAt, canOpenAt, chanOf, equity, exPrice, futuresAvailable, heatOf, markPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { HEAT } from '../core/god.js';
 import { canLiquidate, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -1274,11 +1274,12 @@ function syncChart(refs, s, view, sym, cur, mark) {
   refs.heatBar.style.setProperty('--heat', `${Math.round(heat * 100)}%`);
   refs.heatTxt.textContent = heat >= HEAT.greed ? '贪婪' : heat <= HEAT.panic ? '恐慌' : '中性';
   refs.heatChip.dataset.heat = heat >= HEAT.greed ? 'greedy' : heat <= HEAT.panic ? 'panic' : 'mid';
-  /* 派生量两行（缺口 4 / 19 · 2026-10-02 拍板）：OI 与多空比，口径同源（见 `openInterestOf`）。
-     多空比取不到（两侧皆空）⇒ `--`，不硬凑一个 50/50。 */
-  const ls = longShareOf(s, sym);
+  /* 派生量两行（缺口 4 / 19；2026-10-03 改口径）：OI（全市场，含玩家与 1:1 对手方）
+     ＋ **散户多空比**（散盘子集，不含玩家 —— 全市场口径按定义恒为 1:1、零信息量，见
+     `retailLongShareOf`）。取不到（散户两侧皆空）⇒ `--`，不硬凑一个 50/50。 */
+  const ls = retailLongShareOf(s, sym);
   refs.oiTxt.textContent = `OI ${fmtMoneyShort(openInterestOf(s, sym))}`;
-  refs.lsTxt.textContent = ls == null ? '多空 --' : `多空 ${Math.round(ls * 100)}/${Math.round((1 - ls) * 100)}`;
+  refs.lsTxt.textContent = ls == null ? '散户多空 --' : `散户多空 ${Math.round(ls * 100)}/${Math.round((1 - ls) * 100)}`;
 
   /* 在途转账倒计时（K 线右上角）。两个数字与顶栏那行同源，但这里多一个「去哪儿」——
      玩家一眼能确认钱在往哪家所的路上。 */

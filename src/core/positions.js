@@ -144,12 +144,13 @@ export function reducePosition(pos, frac, price) {
  * 由 `保证金率' = 保证金率 ÷ (1 − frac)`（见 `reducePosition`）反解：
  *   `frac = 1 − 保证金率 ÷ (target × 维持保证金率)`
  *
- * 触发强平时 `保证金率 ≤ 维持保证金率` ⇒ `frac ≥ 1 − 1/target`（默认 1.5 倍 ⇒ **至少平 1/3**）；
+ * 触发强平时 `保证金率 ≤ 维持保证金率` ⇒ `frac ≥ 1 − 1/target`
+ * （2026-10-03 起默认 1.1 倍 ⇒ **至少平 1/11**，见 `engine.PARTIAL_TARGET`）；
  * 只有在权益已经跌到 ≤ 0 时才取到 1（那时必须全平，不能留一个负保证金率的口子）。
  *
  * @param {number} target 目标倍数（binance 官方式：拉到维持线的若干倍即止）
  */
-export function reduceFraction(pos, price, target = 1.5) {
+export function reduceFraction(pos, price, target = 1.1) {
   const goal = target * maintRateOf(pos);
   if (!(goal > 0)) return 1;
   const f = 1 - marginRateOf(pos, price) / goal;

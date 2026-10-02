@@ -33,15 +33,31 @@ import { addCareer, thinEq } from './careers.js';
 /** 交易所归零前多少毫秒给一条预警日志（7 天） */
 const WARN_LEAD = 7 * 24 * HOUR_MS;
 
-/* ── 逐步强平（2026-10-01 拍板 · Binance 口径） ──
+/* ── 逐步强平（2026-10-01 拍板 · 2026-10-03 对齐 Binance） ──
  * 触发时**只平一档**，把剩余仓位的保证金率拉回 `PARTIAL_TARGET` 倍维持线，而不是整条打掉。
- * 参考：Binance 逐仓合约到维持线时下 IOC 单平掉一部分，直到保证金率回到 100% 之上；
- * Bybit 则是减到「维持保证金率回到 90%」。本作取「1.5 倍维持线」—— 留一点垫子，
- * 让玩家在暴跌里不是一次被打死，而是**被削一刀后还有翻本的机会**（GDD §10 的核心体验）。 */
-const PARTIAL_TARGET = 1.5;
+ * 参考：Binance 逐仓合约到维持线时下 IOC 单平掉一部分，直到保证金率回到维持线**之上**；
+ * Bybit 则是减到「维持保证金率回到 90%」。真实交易所留的垫子很薄（刚过线一点点就停手），
+ * 本作原来取「1.5 倍维持线」—— 一刀砍掉 **1/3**，比交易所狠得多（用户审计：强制减仓不符合现实）。
+ *
+ * 2026-10-03 拍板收到 **1.1**（用户圈定区间 1.05–1.1，取上沿）：每档只削
+ * `1 − 1/1.1 ≈ 1/11`（9.09%），与 Binance「削到刚过维持线就停」同一量级；
+ * 取上沿而不是 1.05 的理由是**触发间距**——1.05 时每刀只把强平线推远 `5% × 维持线`（≈0.025% 价格），
+ * 同一根 K 线会反复触发、日志刷屏；1.1 给 10% × 维持线（约 0.05% 价格）的垫子，
+ * 在「像交易所」与「不刷屏」之间取平衡。
+ * ⚠️ 垫子薄了 ⇒ 同样的暴跌里**档数变多**，故 `PARTIAL_STEPS` 同步上调以保住每小时的保护力度。 */
+const PARTIAL_TARGET = 1.1;
 
-/** 同一根 K 线内最多连打几档（缓跌穿线 → 部分强平把强平价推远 → 继续跌 → 再穿）。 */
-const PARTIAL_STEPS = 6;
+/**
+ * 同一根 K 线内最多连打几档（缓跌穿线 → 部分强平把强平价推远 → 继续跌 → 再穿）。
+ *
+ * ⚠️ **必须跟着 `PARTIAL_TARGET` 一起调**：每小时最多削掉的仓位比例 =
+ * `1 − (1 − frac)^PARTIAL_STEPS`，而 `frac = 1 − 1/PARTIAL_TARGET`。
+ *   原档（1.5 / 6）：`(2/3)^6 = 0.0878` ⇒ 每小时最多削 **91.2%**；
+ *   新档取 **26**：`(1/1.1)^26 = 0.0840` ⇒ 每小时最多削 **91.6%** —— 与改动前**等量**。
+ * 若只改 `PARTIAL_TARGET` 而不动本值，每小时保护力度会从 91% 掉到 44%，玩家更容易「挂着不被爆」。
+ * ⚠️ 它只是**安全闸**（防一根 K 线里无限循环）：真正的终止条件仍是「路径走完」或权益 ≤ 0。
+ */
+const PARTIAL_STEPS = 26;
 
 /** OTC 通道**自动回退**时那句日志（§15.3）—— 文案单独提出来，因为它的「已播过」闩锁就是比对这句话（见 `advanceOneHour`） */
 const OTC_OFF = '场外通道关闭 ｜ 已自动切回盘口';
@@ -404,6 +420,36 @@ function advPushOf(s, sym, i, sig) {
 }
 
 /**
+ * **档 2 推价的缓入缓出**（2026-10-03 用户拍板 `ADV.pushHalf = 6h`）—— 把 `advPushOf` 那个
+ * **瞬时开关**换成一阶低通，返回本小时该用的推价（并把新值写回 `m.advPush`）：
+ *
+ *     m.advPush += (advPushOf(…) − m.advPush) × (1 − 0.5^(1 / ADV.pushHalf))
+ *
+ * 病根（用户实测「画门」＋「反复画门」）：推价原来**平仓即归零**，下一小时 `syncNpcDrift` 落的
+ * 那级台阶把 −6.03% 一步放到 +3.2%（单步 **+10.7%**，`market.candleAt` 又把它压进同一根 ⇒
+ * 单根振幅 13.6%）。真实盘口是被**库存回补**一点点吃回来的（Avellaneda–Stoikov），不是开关；
+ * 缓动之后单小时只走 **10.9%**，同一场景的单步只剩约 0.7%。
+ *
+ * ⚠️ **只在每小时一次的写路径上调用**（`syncNpcDrift`；`tickMarket` 跑当前币、`advTick` 跑其余
+ *    持有 / 疤痕币，两处对同一个币每小时各只跑一次）—— 本函数**改状态**，挂到每帧都跑的读路径上
+ *    会变成「渲染即改存档」。
+ * ⚠️ **残尾归零**（`NPC.driftEps`）：`0.5^(t/6)` 渐近但永远到不了 0，留着只会让台阶表多出
+ *    「值已看不出来、却还在缓慢变化」的噪声级。
+ * ⚠️ 平滑的是**推价**，不是 `npcDrift` 整体：NPC 散户净持仓那一份该多快就多快（它是**存量**折算，
+ *    本来就连续）；被平滑的只有「撤深度 ⇒ 逼库存回补」这条**会突然消失**的项。
+ */
+function stepAdvPush(s, sym, i, sig) {
+  const m = mktOf(s, sym);
+  const cur = Number.isFinite(m.advPush) ? m.advPush : 0;   // 旧存档没有这个键 ⇒ 视作 0
+  const target = advPushOf(s, sym, i, sig);
+  const a = 1 - Math.pow(0.5, 1 / ADV.pushHalf);
+  let next = cur + (target - cur) * a;
+  if (Math.abs(next) < NPC.driftEps) next = 0;
+  m.advPush = next;
+  return next;
+}
+
+/**
  * 深度乘数 ∈ `[ADV.floor, 1]` —— **档 0 恰好返回 1**（`hourLiqBase` 里 `mul === 1` 早退 ⇒ 逐位不变）。
  */
 function advDepthMul(s, sym, i, raw) {
@@ -481,8 +527,12 @@ function advTick(s) {
        ⚠️ 其余**持有币 / 疤痕币**必须在这里补：`tickMarket` 只跑当前币，而「拿着大仓去看别的币」
           时那个大仓同样要被推价；**平仓之后**这一步会写回 0 把推价释放（否则它会永远粘住）。 */
     const sig = dailySigma(sym, s.i);
-    if (sym !== s.sym) syncNpcDrift(s, sym, s.i, sig);
-    const p = Math.abs(advPushOf(s, sym, s.i, sig));
+    if (sym !== s.sym) syncNpcDrift(s, sym, s.i, sig);   // 内含 `stepAdvPush`（缓动后）的写
+    /* 报警读的必须是**缓动之后**实际生效的推价（`m.advPush`），不是那个瞬时目标值：
+       `s.sym` 的缓动刚在 `tickMarket` 里走过，其余币刚在上面这一行走过 ⇒ 两者都是本小时的值。
+       ⚠️ 这里**只能读**，不能再调一次 `stepAdvPush` —— 那会让同一个币一小时走两格。 */
+    const mk = s.mkt && s.mkt[sym];
+    const p = mk && Number.isFinite(mk.advPush) ? Math.abs(mk.advPush) : 0;
     if (p > pushMax) pushMax = p;
   }
   if (drop >= 1 - ADV.warnMul) {
@@ -684,6 +734,9 @@ const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
  *   `npcShock`（**v28**）是 NPC 级联**逐笔被动平仓**的冲击台阶表 `{ at: [], v: [] }` —— 独立的
  *         **有界瞬时**通道（`0.5^(e / NPC.shockHalf)` 指数衰减），**不写 `s.flow`**（见 `pushNpcShock`）；
  *   `npcFund`（**v30** · 缺口 3）是**对手方池**（USD）—— 玩家永续资金费的对手方账户（见 `settleFunding`）；
+ *   `advPush`（**2026-10-03**）是**档 2 推价的缓动状态**（`ADV.pushHalf` 半衰期的一阶低通，见
+ *         `stepAdvPush`）—— 旧存档没有这个键 ⇒ 读取侧一律用 `Number.isFinite` 守卫，为空即视作 0
+ *         （等价于改动前的「瞬时推价」初值）⇒ **不必升 `STATE_VERSION`**；
  *   `pv` 是**玩家本小时**的成交名义（每根 K 线结算一次，见 `tickMarket`）。
  */
 function mktOf(s, sym) {
@@ -694,7 +747,7 @@ function mktOf(s, sym) {
       long: 0, longAvg: 0, short: 0, shortAvg: 0, longStopped: false, shortStopped: false,
     })),
     mm: { long: 0, longAvg: 0, short: 0, shortAvg: 0, longStopped: false, shortStopped: false },
-    npcDrift: null, npcShock: null, npcFund: 0, pv: 0,
+    npcDrift: null, npcShock: null, npcFund: 0, advPush: 0, pv: 0,
   });
 }
 
@@ -720,7 +773,8 @@ function npcNet(m) {
 /**
  * 某币**此刻的持仓量（OI）**（缺口 4 · 2026-10-02 用户拍板）—— `Σ(long + short)`。
  *
- * ⚠️ 口径：NPC 六档阶梯 ＋ **玩家在该币的持仓名义**（`size × 现价`，用户拍板「含玩家仓位」）。
+ * ⚠️ 口径：NPC 六档阶梯 ＋ 做市盘 ＋ **玩家在该币的持仓名义**（`size × 现价`）
+ *    ＋ **对手方的镜像名义**（1:1 · 2026-10-03 拍板，见下）。
  *    这才是「市场上所有未平仓头寸」的现实定义 —— 只看 NPC 会漏掉自己那一份，
  *    而且玩家开一单把 OI 推高、读数却不动的观感很假。
  * ⚠️ **纯读**：不调 `mktOf`（那是懒初始化、只在写路径可达），缺失就只算 NPC 部分 ——
@@ -732,18 +786,24 @@ export function openInterestOf(s, sym) {
   let oi = 0;
   if (m && m.npc) for (const g of m.npc) oi += g.long + g.short;
   if (m && m.mm) oi += m.mm.long + m.mm.short;      // 缺口 6-A：做市盘也计入 OI
-  oi += positionNotionalOf(s, sym);
+  /* 玩家 ＋ **其对手方**（1:1 配对 · 2026-10-03 拍板）：用户审计指出「玩家做空，那必然有人做多」——
+     OI 的定义是「市场上所有未平仓头寸」，一张合约**两侧各算一次**。原来只加玩家这一侧（`pn`），
+     巨鲸 $45B 的仓在读数上「没有对手方」；补上镜像的 `pn` 之后，巨鲸开一单 OI 涨两倍名义，
+     与真实交易所（OI 随成交双向增长）一致。 */
+  const pn = positionNotionalOf(s, sym);
+  oi += pn + pn;
   return Number.isFinite(oi) && oi > 0 ? oi : 0;
 }
 
 /**
- * 某币**多空比**（缺口 19 · 2026-10-02 用户拍板）—— 多头名义占比，区间 `0 ~ 1`。
+ * 某币**全市场多空比**（缺口 19 · 2026-10-02）—— 多头名义占比，区间 `0 ~ 1`。
  *
- * ⚠️ 与 `openInterestOf` **同一口径**（NPC 六档 ＋ 玩家该币名义，按方向计入多 / 空）：
- *    多空两侧之和恰等于 OI ⇒ 两行读数永远自洽（单一分母），不会出现「OI 涨了、多空比却没动」。
- * ⚠️ 两侧之和为 0（没有任何仓位）⇒ 返回 `null`（展示为 `--`），不是 0.5 ——
- *    一个没有持仓的市场根本没有多空比可言。
- * ⚠️ 纯读，同 `openInterestOf`。
+ * ⚠️ 口径 = **NPC 六档 ＋ 做市盘 ＋ 玩家该币名义**（**不含**对手方镜像）。它现在只剩**一个**用途：
+ *    **资金费的拥挤度输入**（`settleFunding`）——「玩家自己的仓越大 ⇒ 对偏斜贡献越大 ⇒ 仓越大越贵」
+ *    这条设计诉求（§73.6）要求玩家留在分母里。
+ * ⚠️ **展示侧不再用它**（2026-10-03 拍板）：见 `retailLongShareOf`（散户子集口径）。
+ * ⚠️ 两侧之和为 0（没有任何仓位）⇒ 返回 `null`，不是 0.5。
+ * ⚠️ 纯读，同 `openInterestOf`（绝不调 `mktOf`）。
  */
 export function longShareOf(s, sym) {
   const m = s.mkt && s.mkt[sym];
@@ -753,6 +813,29 @@ export function longShareOf(s, sym) {
   const pos = s.positions[sym];
   const n = positionNotionalOf(s, sym);
   if (n > 0) { if (pos.side === 'long') L += n; else S += n; }
+  const tot = L + S;
+  return Number.isFinite(tot) && tot > 0 ? L / tot : null;
+}
+
+/**
+ * 某币**散户多空比**（2026-10-03 拍板 · 展示口径）—— 散户（NPC 趋势盘六档 ＋ 做市盘）的
+ * 多头名义占比，区间 `0 ~ 1`。
+ *
+ * ⚠️ **为什么把玩家与对手方排除在外**（用户审计「多空数据是否正确」）：
+ *    CoinGlass 的官方口径是 —— **全体**持仓的名义多空**恒为 1:1**（每一张多单都对应一张空单），
+ *    拿全市场当分母，读数永远 50/50、零信息量；只有**子集**口径（如 Binance「大户持仓多空比」
+ *    取前 20% 账户）才会偏离。本作同理：玩家 $45B 的巨鲸仓一旦计入，读数直接被顶成 **100/0**
+ *    （实测 `longShare = 1.0000`）—— 那是「分母里只剩我自己」，不是市场信息。
+ *    加上 1:1 对手方镜像后，全市场口径**必然**回到 50/50，更没有展示价值 ⇒ 展示改用散户子集。
+ * ⚠️ 与 `openInterestOf` **口径不同**（那边含玩家与对手方，是「全市场未平仓名义」）：
+ *    OI 是总量、多空比是散户子集 —— 两者本就该是两个数，不再共用分母。
+ * ⚠️ 两侧之和为 0（散户还没建仓）⇒ 返回 `null`（展示 `--`）。纯读，不调 `mktOf`。
+ */
+export function retailLongShareOf(s, sym) {
+  const m = s.mkt && s.mkt[sym];
+  let L = 0, S = 0;
+  if (m && m.npc) for (const g of m.npc) { L += g.long; S += g.short; }
+  if (m && m.mm) { L += m.mm.long; S += m.mm.short; }
   const tot = L + S;
   return Number.isFinite(tot) && tot > 0 ? L / tot : null;
 }
@@ -840,8 +923,11 @@ function syncNpcDrift(s, sym, i, sig) {
   const q = liqDay > 0 ? Math.abs(net) / liqDay : 0;
   /* 缺口 6-B（2026-10-03）：同一张台阶表里再叠一层**档 2 有向推价**（玩家持仓逆向）——
      与 NPC 净持仓偏移**相加**后落一级，共用同一条「差 ≥ `NPC.driftEps` 才落级」的纪律。
-     ⚠️ 平仓 / 退出档 2 时 `advPushOf` 返回 0 ⇒ 下一级台阶自然把推价释放（不会永久粘住）。 */
-  const v = (net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig)) + advPushOf(s, sym, i, sig);
+     ⚠️ 推价走 `stepAdvPush`（**缓入缓出**，`ADV.pushHalf = 6h`）：平仓 / 退出档 2 时目标值归 0，
+        但推价按半衰期**渐近释放**，不是「下一根瞬间弹回去」—— 那正是玩家实测的「画门」。
+     ⚠️ `stepAdvPush` **改状态**，故本函数只能从每小时的写路径调用（`tickMarket` / `advTick`），
+        不得挂到 `render` 每帧都碰的读路径上。 */
+  const v = (net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig)) + stepAdvPush(s, sym, i, sig);
   /* 非有限值守卫（2026-10-02 审计修 · 风险 R2）：NaN / Infinity 落进台阶表后，`JSON.stringify`
      写成 `null`、读回 `NaN`，整条价格曲线会跟着变 NaN。上游目前都被夹在有限区间，这里是兜底。 */
   if (!Number.isFinite(v)) return;
@@ -911,16 +997,21 @@ function fundSettle(s, notional, avg, lev, dir, price) {
 
 /**
  * **ADL 自动减仓**（v30 · 第 6 批 · 缺口 5 ③）—— 保险基金被穿仓掏空后，按 ADL 队列
- * 强减**盈利的 NPC 档**，直到补齐缺口。
+ * 强减**盈利的仓位**（**NPC 六档 ＋ 玩家自己**），直到补齐缺口。
  *
  * 队列口径（[Hypercall](https://docs.hypercall.xyz/docs/reference/auto-deleveraging/)）：
  * `ADL index = (mark ÷ entry) × (notional ÷ accountValue)`，其中 `accountValue ≈ margin = notional ÷ lev`
  * ⇒ `index = (mark ÷ entry) × lev`。**盈利越高、杠杆越高，越先被减**（其反直觉之处正是现实特征：
  * ADL 砍的是**赢家**，不是输家 —— 连 Hyperliquid 在 2025-10-10 都触发了两年来的首次 ADL）。
  *
- * ⚠️ 被减的档按现价平掉、写 `pushNpcShock`（平多 ⇒ 卖出 −1、平空 ⇒ 买回 +1）——
- *    与「止损 / 强平」走同一条有界瞬时通道。**不给 `panicDrop`**：ADL 是被迫去杠杆，
- *    不是新的恐慌来源（与止损波同一先例，避免同一波下跌被计两次热度跳变）。
+ * ⚠️ **玩家自 2026-10-03 起也在队列里**（用户审计：「ADL 只该显示玩家自己的减仓」）——
+ *    原来只遍历 `m.npc`，玩家**永不被 ADL**，那就等于给巨鲸开了一张免死金牌；
+ *    而现实里按名义排序时，巨鲸恰恰排在最前面。
+ * ⚠️ **只有玩家的那一笔播日志**：NPC 档的减仓静默（玩家看不到、也无法据此决策），
+ *    但它的**价格冲击照常写**（`pushNpcShock`）—— 那才是玩家能感知到的部分。
+ * ⚠️ NPC 被减的档写 `pushNpcShock`（平多 ⇒ 卖出 −1、平空 ⇒ 买回 +1），与「止损 / 强平」走同一条
+ *    有界瞬时通道。**不给 `panicDrop`**：ADL 是被迫去杠杆，不是新的恐慌来源
+ *    （与止损波同一先例，避免同一波下跌被计两次热度跳变）。
  * ⚠️ 现实 ADL 触发率 <0.1% 的强平 —— 本作只有在级联把基金打到 ≤ 0 时才走这里，同样罕见。
  * @param {number} need 需要覆盖的缺口（USD 名义）
  */
@@ -938,23 +1029,77 @@ function adl(s, sym, m, price, need) {
       q.push({ k, long: false, ratio: g.shortAvg / price, lev, notional: g.short });
     }
   }
+  /* **玩家自己也在队列里**（2026-10-03 拍板）：ADL 砍的正是**赢家**，而按 `ratio × lev` 排序时
+     「仓位大 ＋ 杠杆高 ＋ 浮盈多」天然排在队伍最前面 —— 巨鲸是第一个被减的，不是被豁免的
+     （Hyperliquid 2025-10-10 的两年首次 ADL 就是这么发生的）。队列口径与 NPC 逐位相同。
+     ⚠️ 只收**盈利中**的仓位（`ratio > 1`）：ADL 从不砍输家，输家那条路是强平。 */
+  const ppos = s.positions[sym];
+  let playerItem = null;
+  if (ppos && ppos.size > 0 && ppos.entry > 0) {
+    const lng = ppos.side === 'long';
+    const ratio = lng ? price / ppos.entry : ppos.entry / price;
+    if (ratio > 1) {
+      playerItem = { player: true, long: lng, ratio, lev: ppos.lev, notional: ppos.size * price };
+      q.push(playerItem);
+    }
+  }
   q.sort((a, b) => (b.ratio * b.lev) - (a.ratio * a.lev));      // ADL index 降序
   let done = 0;
   for (const it of q) {
     if (done >= need) break;
-    const g = m.npc[it.k];
     const cut = Math.min(it.notional, need - done);
-    pushNpcShock(s, sym, m, it.long ? -1 : 1, cut);
-    if (it.long) {
-      g.long -= cut;
-      if (g.long <= 0) { g.long = 0; g.longAvg = 0; g.longStopped = false; }
+    if (it.player) {
+      /* 玩家的那一份走 `adlPlayerReduce`（**结算回现金**）；`ppos` 是本函数开头取的那一份，
+         队列里至多命中一次 ⇒ 不存在「对象已被换掉」的问题。 */
+      adlPlayerReduce(s, ppos, cut, price);
     } else {
-      g.short -= cut;
-      if (g.short <= 0) { g.short = 0; g.shortAvg = 0; g.shortStopped = false; }
+      const g = m.npc[it.k];
+      pushNpcShock(s, sym, m, it.long ? -1 : 1, cut);
+      if (it.long) {
+        g.long -= cut;
+        if (g.long <= 0) { g.long = 0; g.longAvg = 0; g.longStopped = false; }
+      } else {
+        g.short -= cut;
+        if (g.short <= 0) { g.short = 0; g.shortAvg = 0; g.shortStopped = false; }
+      }
+      /* ⚠️ **不再 `pushLog`**（2026-10-03 拍板）：NPC 档的减仓是市场内部对手盘的调整 ——
+         玩家看不到、也无法据此做任何决策，播出来只会把日志刷满（用户：「ADL 不该显示别人的」）。
+         价格冲击（`pushNpcShock`）照常保留：它才是玩家**能感知**到的那一部分。 */
     }
     done += cut;
-    pushLog(s, `ADL 自动减仓 ${sym} ${it.lev}x｜平掉 ${fmtMoneyShort(cut)} @ ${fmtLogPrice(price)}`, 'bad', 'liq');
   }
+}
+
+/**
+ * **玩家被 ADL 减仓**（2026-10-03 拍板）—— 按现价平掉 `cutNotional` 名义的**盈利**仓位，
+ * 保证金 ＋ 盈利**结算回当初开仓那家所**（与 `closeTrade` 同一条 `credit` 路径与 `mix` 口径）。
+ *
+ * ⚠️ 与 `partialLiquidate` 的分工是镜像的：那是**亏损**侧的强平（钱留在仓位里当垫子、
+ *    现金一分不动）；这是**盈利**侧的被动减仓 ⇒ 钱必须真的回到玩家账上，
+ *    否则「被 ADL 砍了却看不到钱」。
+ * ⚠️ **不收清算费**：ADL 既没有穿仓、也没有动用保险基金，只是一次强制撮合平仓；
+ *    这里全额结算「保证金 ＋ 盈亏」，不额外再补一刀（现实 ADL 同样只收普通手续费）。
+ * ⚠️ 价格冲击 / 量柱 / 抛压折价与其它三处平仓**同一套口径**（开仓 / 平仓 / 强平 / 部分强平）：
+ *    ADL 是把仓位**砸到市场上**的卖出（或买回），不是账面冲销 —— 所以它写 `s.flow`；
+ *    NPC 那一侧才走有界瞬时通道 `pushNpcShock`（它没有真实账户、不该留永久台阶）。
+ */
+function adlPlayerReduce(s, pos, cutNotional, price) {
+  const mark = pos.size * price;
+  const f = mark > 0 ? Math.max(0, Math.min(1, cutNotional / mark)) : 1;
+  const r = reducePosition(pos, f, price);
+  const notional = r.closedNotional;
+  addPlayerVol(s, pos.sym, notional, pos.ex, isMargin(pos) ? 'margin' : 'fut');
+  {
+    const dir = pos.side === 'long' ? -1 : 1;
+    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive, shockKindOf(isMargin(pos), pos.lev));
+    consumePool(s, pos.sym, notional);
+  }
+  credit(s, pos.ex, pos.margin * f + r.pnl, { usd: pos.mix.usd * f, usdt: pos.mix.usdt * f });
+  s.realized += r.pnl;
+  if (f >= 1) delete s.positions[pos.sym];
+  else s.positions[pos.sym] = r.pos;
+  refreshOverhang(s, pos.sym, SHOCK.closeGive);
+  pushLog(s, `ADL 自动减仓 ${pos.sym} ${pos.lev}x｜平掉 ${fmtMoneyShort(notional)} @ ${fmtLogPrice(price)}`, 'bad', 'liq');
 }
 
 /**
