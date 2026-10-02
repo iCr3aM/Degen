@@ -10,7 +10,16 @@
 import { cashCurAt, DEFAULT_SCENARIO, GAME, isChallenge, scenarioEndIndex, scenarioOf, scenarioStartIndex } from './config.js';
 import { isSpot } from './positions.js';
 
-/* ⚠️ v27（2026-10-02 · NEXT-STEPS §九）：`s.overhang[sym]` 与 `s.mkt[sym].npcDrift` 由
+/* ⚠️ v29（2026-10-02 · NEXT-STEPS §五 · 提案 B 档 1「收流动性」）：
+   新增 `s.adv` —— **对抗性流动性的峰值台阶**（`sym -> { v, at }`，`v` = 有效 exposure）。
+   你的**杠杆盘**名义相对本小时基准深度越大，做市商越会撤深度（`hourLiqBase` 再乘一层折减）；
+   撤走的深度**半衰期一周**（`ADV.halfHours`）才回来 ⇒ 必须记一条只抬不降的峰值台阶，
+   否则玩家一平仓深度立刻复原，「撤流动性」变成一句空话。
+   同时新增 `s.advWarn`（预警闩锁，布尔）—— 「多家交易所盘口变薄…」一局内的**连续区间只播一次**，
+   口径与 `s.otcOff` 同一先例：退回档 0（`exposure ≤ ADV.t1`）才解除。
+   动了状态形状（新增两个字段）⇒ 一并升版本号，旧档走既有的「丢弃重开」路径。
+
+   ⚠️ v27（2026-10-02 · NEXT-STEPS §九）：`s.overhang[sym]` 与 `s.mkt[sym].npcDrift` 由
    **单条 `{ v, at }`** 改为**台阶表**（三条 / 两条平行数组，只追加、绝不重盖）——
    修「已经画出来的 K 线过几个小时又恢复」的两个根因（`refreshOverhang` 重盖 `at` /
    `syncNpcDrift` 每小时无条件重盖 `at`）。位移层随之新增硬纪律：`at` 只许等于写入那一刻的 `s.i`。
@@ -87,7 +96,7 @@ import { isSpot } from './positions.js';
    台阶表，与 `s.flow` 分开）—— 形状变了，旧档的 `npc*` 在新代码里读不到 ⇒ 弃档重开。
    （§4.4 原判断「`s.mkt` 是派生态、不进存档」**经核实不成立**：`save.shaped()` 的 SHAPE 就含 `mkt`，
    且 `save()` 是整份 `JSON.stringify(s)` ⇒ 它**确实落盘**，所以必须升版本号。） */
-export const STATE_VERSION = 28;
+export const STATE_VERSION = 29;
 
 /**
  * 开一局新的。
@@ -233,6 +242,28 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      * ⚠️ 与 `FLOAT`（结构性持仓折减）是两件事：那个是「你囤着不卖」，这个是「你刚把它吃掉了」。
      */
     pool: {},
+
+    /**
+     * **对抗性流动性的峰值台阶**（v29 · 2026-10-02 · 提案 B 档 1）—— `sym -> { v, at }`。
+     *   `v`  = 曾经达到的**有效 exposure**（`杠杆盘名义 ÷ 折减前的基准深度`，≥ 0）
+     *   `at` = 写下它的那个 `s.i`
+     *
+     * 做市商看到「你的仓位相对这个小时的深度太大」就撤深度（`hourLiqBase` 再乘一层折减，
+     * 见 `config.ADV`）。撤走的深度**半衰期一周**（`ADV.halfHours`）才回来 ⇒ 这里记的是
+     * **只抬不降**的峰值，取值 = `max(当前 exposure, v × 0.5^(经过小时 ÷ 168))`。
+     *
+     * ⚠️ 由 `engine.advTick` **每小时**写一次（不在读路径上写）：`openCheck` / `closeCheck`
+     *    是纯判据、`render.js` 每帧都调，在那里写状态等于「渲染即改存档」。
+     * ⚠️ 只算**杠杆盘**（合约 / 现货保证金）：现货 1x 是实物，走 `FLOAT` 那条浮筹折减，
+     *    两边不重复计（§5.3）。
+     */
+    adv: {},
+
+    /**
+     * 「多家交易所盘口变薄」那条预警的**闩锁**（v29）—— 深度降幅首次达到 10% 时播一条，
+     * 退回档 0（`exposure ≤ ADV.t1`）才解除。口径与 `s.otcOff` 同一先例：一个**连续区间**算一件事。
+     */
+    advWarn: false,
 
     /**
      * **NPC 市场情绪 / 持仓**（v26 · §73.5 · 2026-10-02 拍板）——

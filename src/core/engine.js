@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
@@ -239,27 +239,142 @@ function floatShareOf(s, sym, i) {
 }
 
 /**
- * 该小时的**基准深度分母** ＝ `liqOf(当天) × hourShareK(该小时份额, …) × 持仓折减`
- * —— **不含**瞬时深度池（池容量要拿它当基数 ⇒ 不能在它里面自洽引用，见 `poolFactorOf`）。
+ * 该小时的**基准深度分母（未含对抗性折减）** ＝ `liqOf(当天) × hourShareK(该小时份额, …) × 浮筹折减`
+ * —— **不含**瞬时深度池（池容量要拿它当基数 ⇒ 不能在它里面自洽引用，见 `poolFactorOf`），
+ * 也**不含**对抗性折减（那是 `hourLiqBase` 再乘一层，见 `advDepthMul`）。
  * 口径与改动前的 `hourLiqOf` 逐字相同。
  *
  * 分母口径（C2，2026-09-29 拍板）：完整交易日里系数 = 24 × share，其**当日均值恰为 1**
  * ⇒ 一天下来的平均行为与「只用日流动性」**完全一致**（`A` / `threshold` / `cap` 无需重校），
  * 只是薄盘时段更痛、活跃时段更轻。
  *
- * **持仓折减**（v18 · 2026-10-01 拍板）：`max(FLOAT.depthFloor, 1 − share)` —— 你囤走的浮筹越多，
+ * **浮筹折减**（v18 · 2026-10-01 拍板）：`max(FLOAT.depthFloor, 1 − share)` —— 你囤走的浮筹越多，
  * 市场能承接的深度越薄，同一笔单子的 `q` 越大、滑点越痛。下夹 `FLOAT.depthFloor` 是为了在
  * `share → 1` 时不把分母压到 0（否则 `q` 无穷大，滑点与拆单笔数都会失控）。
  *
+ * ⚠️ **为什么把「未折减」这一层单独拆出来**（2026-10-02 · `ADV`）：对抗性流动性的触发量是
+ *    `exposure = 持仓名义 ÷ 本值`。若拿**折减后**的 `hourLiqBase` 当分母，「深度变薄 ⇒ exposure
+ *    变大 ⇒ 更薄」当场自激 —— §5.3 那条「不新开第二把尺子」的红线要求分母是同一条，
+ *    但必须是它**折减之前**的形态。
+ *
  * @returns {number} 分母；取不到当日流动性时返回 0
  */
-function hourLiqBase(s, sym, i) {
+function hourLiqRaw(s, sym, i) {
   const day = dayIndexOf(i);
   const liq = liqOf(sym, day);
   if (!(liq > 0)) return 0;
   const { sum, n } = dayVolShare(sym, day);
   const shrink = Math.max(FLOAT.depthFloor, 1 - floatShareOf(s, sym, i));
   return liq * hourShareK(volumeAt(sym, i), sum, n) * shrink;
+}
+
+/* ───────────────── 对抗性流动性（提案 B 档 1 · NEXT-STEPS §五 · 2026-10-02）─────────────────
+   做市商看到「你的仓位相对这个小时的深度太大」就**撤深度**（不是猎杀止损，§5.4）。
+   三样东西共用**一个** `exposure`、**一个**深度乘数：
+     ① `hourLiqBase` 的折减（滑点 / 拆单笔数 / 瞬时深度池容量 / 资金费分母全部连带）
+     ② OTC 点差放大（`otcPremiumFor`，`1 ÷ 深度乘数`）
+     ③ 预警日志（`advTick`，深度乘数首次 ≤ `ADV.warnMul` 时播一条，带闩锁）
+
+   ⚠️ **口径**：`exposure` 只算**杠杆盘**（合约 / 现货保证金）的名义 —— 现货 1x 是**实物**，
+      它走的是 `FLOAT` 那条「浮筹折减」通道（§5.3），两处不能重复计。
+   ⚠️ **撤走的深度要一周才回来**（`ADV.halfHours`）：只按当前持仓算的话，玩家一平仓深度立刻复原，
+      「撤流动性」就变成一句空话。所以留一条 `s.adv[sym] = { v, at }` 的**峰值台阶**：
+     有效 exposure = `max(当前 exposure, 峰值 × 0.5^(经过小时 ÷ 168))`。
+   ⚠️ **读路径绝不写状态**：`advDepthMul` / `advSpreadMul` 只读 `s.adv`；台阶的写入与预警日志
+      全部收在**每小时一次**的 `advTick` 里。否则 `openCheck` / `closeCheck`（`render.js` 每帧都调）
+      会变成「渲染即改存档」—— 那正是位移层那条硬纪律要防的东西。 */
+
+/** 峰值台阶在 `i` 时刻的残值（纯读；`i ≤ at` 时不衰减）—— 与 `s.pool` 的 `poolRefill` 同形。 */
+function advPeakOf(s, sym, i) {
+  const a = s.adv && s.adv[sym];
+  if (!a || !(a.v > 0)) return 0;
+  const e = i - a.at;
+  return e > 0 ? a.v * Math.pow(0.5, e / ADV.halfHours) : a.v;
+}
+
+/**
+ * 该币此刻的**有效 exposure** ＝ `max(当前持仓名义 ÷ 折减前基准深度, 峰值台阶残值)`。
+ * 分母由调用方传入（它刚算过 `hourLiqRaw`，别重算一遍）。
+ */
+function advExposureOf(s, sym, i, raw) {
+  if (!(raw > 0)) return 0;
+  const pos = s.positions[sym];
+  let cur = 0;
+  if (pos && !(pos.spot && pos.lev === 1)) {
+    const mark = markPrice(s, sym);
+    if (mark > 0) cur = pos.size * mark / raw;
+  }
+  const peak = advPeakOf(s, sym, i);
+  return cur > peak ? cur : peak;
+}
+
+/**
+ * 深度乘数 ∈ `[ADV.floor, 1]` —— **档 0 恰好返回 1**（`hourLiqBase` 里 `mul === 1` 早退 ⇒ 逐位不变）。
+ */
+function advDepthMul(s, sym, i, raw) {
+  const e = advExposureOf(s, sym, i, raw);
+  if (!(e > ADV.t1)) return 1;
+  return Math.max(ADV.floor, 1 - ADV.k * (e - ADV.t1));
+}
+
+/** OTC 点差放大倍数（`1 ÷ 深度乘数`）—— 盘口越薄、大宗报价越宽。档 0 时**恰好 1**。 */
+function advSpreadMul(s, sym) {
+  const raw = hourLiqRaw(s, sym, s.i);
+  if (!(raw > 0)) return 1;
+  const d = advDepthMul(s, sym, s.i, raw);
+  return d >= 1 ? 1 : 1 / d;
+}
+
+/**
+ * 对抗性流动性的**每小时落账**（由 `advanceOneHour` 调用）：
+ *   ① 把本小时的有效 exposure 抬进峰值台阶（**只抬不降** —— 降靠 `advPeakOf` 的半衰期）；
+ *   ② 深度乘数首次跌到 `ADV.warnMul` 以下时播一条预警日志（带闩锁）。
+ *
+ * ⚠️ 为什么必须**每小时单独跑一次**（而不是挂在读路径上）：
+ *    ① 读路径是**纯函数**（`openCheck` / `closeCheck` 每帧都被 `render.js` 调到），在它里面写状态
+ *       等于「渲染即改存档」；
+ *    ② 玩家平掉那条仓之后，**再没有任何代码会去读那条币的分母** —— 峰值台阶若靠读路径刷新，
+ *       就永远停在最后那个值上，「撤走的深度一周才回来」也就无从谈起（虽然这条对结果恰好无害，
+ *       但语义上说不通，且会让「清仓后深度不恢复」变成一个没人能解释的行为）。
+ *
+ * ⚠️ 闩锁口径与 `s.otcOff` **同一先例**：退回档 0（`exposure ≤ t1`）才解除，中途不重复播报 ——
+ *    满足「一局内同一事件描述最多出现一次」的那条规矩（阈值以上的连续区间算**一件**事）。
+ */
+function advTick(s) {
+  if (!s.adv) s.adv = {};
+  const syms = new Set(heldSyms(s));
+  for (const k in s.adv) syms.add(k);   // 已平掉但疤痕还在的币也要继续衰减
+  let drop = 0, maxE = 0;
+  for (const sym of syms) {
+    const raw = hourLiqRaw(s, sym, s.i);
+    if (!(raw > 0)) continue;
+    const e = advExposureOf(s, sym, s.i, raw);
+    if (e > 0) {
+      if (e > advPeakOf(s, sym, s.i)) s.adv[sym] = { v: e, at: s.i };
+      if (e > maxE) maxE = e;
+    }
+    const d = 1 - advDepthMul(s, sym, s.i, raw);
+    if (d > drop) drop = d;
+  }
+  if (drop >= 1 - ADV.warnMul) {
+    if (!s.advWarn) {
+      s.advWarn = true;
+      pushLog(s, `多家交易所盘口变薄 ｜ 深度较常态下降 ${Math.round(drop * 100)}%`, 'bad');
+    }
+  } else if (maxE <= ADV.t1) {
+    s.advWarn = false;
+  }
+}
+
+/**
+ * 该小时的**基准深度分母** ＝ `hourLiqRaw × 对抗性深度乘数`
+ * —— **不含**瞬时深度池（池容量要拿它当基数 ⇒ 不能在它里面自洽引用，见 `poolFactorOf`）。
+ */
+function hourLiqBase(s, sym, i) {
+  const raw = hourLiqRaw(s, sym, i);
+  if (!(raw > 0)) return 0;
+  const mul = advDepthMul(s, sym, i, raw);
+  return mul === 1 ? raw : raw * mul;
 }
 
 /**
@@ -832,7 +947,13 @@ const slipTag = (impact, count = 1) =>
  * ⚠️ 取「**此刻**」而不是开仓时的：卖出面对的是当时的流动性，不是当初的（§15.3 ⑤）。
  * ⚠️ v19 起多一个 `notional`：大宗台的报价随**单笔规模**变宽（`OTC.sizeP` / `sizeCap`）。
  */
-const otcPremiumFor = (s, sym, notional) => otcPremiumOf(dailySigma(sym, s.i), timeOf(s), notional);
+const otcPremiumFor = (s, sym, notional) => {
+  const p = otcPremiumOf(dailySigma(sym, s.i), timeOf(s), notional);
+  const mul = advSpreadMul(s, sym);
+  /* ⚠️ 放大之后再夹一次 `OTC.max`：那个 8% 是「任何年代、任何市况」的硬顶（`config.OTC`），
+     对抗性放大不该在它上面开第二个口子。档 0 时 `mul === 1` ⇒ 与改动前逐位相同。 */
+  return mul === 1 ? p : Math.min(OTC.max, p * mul);
+};
 
 /**
  * 日志里的价格走 `fmtLogPrice`（本轮 ②）—— `≥ $1` 固定 1 位小数、`< $1` 保留有效数字。
@@ -1783,6 +1904,10 @@ export function advanceOneHour(s) {
      它自己会往 `s.flow` 写 NPC 的成交，所以必须排在资金费 / 强平之前、玩家的流之后。 */
   tickMarket(s, s.sym);
 
+  /* 对抗性流动性（提案 B 档 1）：把本小时的 exposure 抬进峰值台阶 ＋ 该播预警就播。
+     排在 `tickMarket` 之后 —— 玩家的 `pv` 刚被清掉、持仓也刚跟着这一根的行情更新过。 */
+  advTick(s);
+
   // 持仓成本每 8 游戏小时结算一次（B26：永续扣资金费、现货保证金扣借贷利息，现货 1x 不扣）
   if (s.i % FUNDING.hours === 0 && settleFunding(s)) return;
 
@@ -1837,6 +1962,8 @@ export function rewindTo(s, to) {
   s.flow = {};
   s.mkt = {};           // NPC 情绪 / 持仓（v26 · §73.5）同样是「进度」⇒ 回退时一并抹掉
   s.pool = {};          // 瞬时深度池（v23）同样是「进度」⇒ 回退时一并抹掉（与 s.flow 同口径）
+  s.adv = {};           // 对抗性流动性峰值台阶（v29）同样是「进度」⇒ 回退时一并抹掉
+  s.advWarn = false;    // 预警闩锁也一并复原（否则回退后再进档 1 就永远不再提醒）
   s.pvol = {};          // 玩家自己的成交量（v17）也是「进度」，回退时一并抹掉 —— 与 s.flow 同口径
   /* 持仓抛压折价（v18 / v25 疤痕）同样是「进度」⇒ 一并抹掉。⚠️ 漏掉它会让**没有持仓**的价格
      仍被一条永久疤痕压着（`refreshOverhang` 的按日重算只遍历 `heldSyms`，永远洗不掉它）。 */
