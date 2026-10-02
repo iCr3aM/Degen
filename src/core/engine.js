@@ -13,11 +13,11 @@
  */
 
 import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, usdtPriceAt, haltedAt } from './config.js';
-import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
+import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { HEAT, NPC, SHOCK, addFlow, factorFor, shockParamsOf } from './god.js';
+import { HEAT, NPC, SHOCK, addFlow, playerFactor, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -381,11 +381,38 @@ function pushFlow(s, sym, dir, notional, give = 1, kind = 'fut', player = true) 
 
 /* ───────────────────── NPC 情绪 / 踩踏级联（§73.5 · 2026-10-02） ─────────────────────
    起因：`pushFlow` 原来的调用者只有玩家自己的仓 ⇒ 市场上物理上**不存在踩踏**。
-   这一层给每个币补一组「NPC 净持仓 ＋ 情绪热度」：热度由**价格位移**与**玩家自己的成交**
-   一起烧起来，反过来驱动 NPC 顺势建仓（正反馈），恐慌时再触发踩踏级联（一条反向下台阶）。 */
+   这一层给每个币补一组「NPC 净持仓 ＋ 情绪热度」：热度由**近 24h 的价格收益**与玩家自己的成交
+   一起烧起来，反过来驱动 NPC 顺势建仓，跌破强平线时再触发踩踏级联（一条反向下台阶）。 */
 
 /** 热度只读给 UI（缺格时返回中性 `HEAT.base` —— 与 `mktOf` 的初值一致）。 */
 export const heatOf = (s, sym) => (s.mkt && s.mkt[sym] ? s.mkt[sym].heat : HEAT.base);
+
+/**
+ * **回顾页**的热度读数 —— 与实盘同一套方程，但只吃**原始历史行情**。
+ *
+ * 为什么回顾页可以「零耦合」：回顾那一屏 `factorFor ≡ 1`（见 `main.js` 的 factor 注入），
+ * 显示的本来就是原始 K 线 ⇒ 热度是 `(sym, i)` 的**纯函数**，与存档无关，可以整条预计算后按索引取。
+ * ⚠️ 游标只前进（`j` 从上次处续算），回看历史时直接查 `arr`，不重跑。
+ */
+const rvHeat = new Map();
+
+export function reviewHeatOf(sym, i) {
+  const r = rangeOf(sym);
+  if (!r || i < r[0] || !isLoaded(sym)) return HEAT.base;
+  const upto = Math.min(i, r[1] - 1);
+  let c = rvHeat.get(sym);
+  if (!c) { c = { a: r[0], j: r[0] - 1, h: HEAT.base, arr: [] }; rvHeat.set(sym, c); }
+  for (let j = c.j + 1; j <= upto; j++) {
+    const sig = dailySigma(sym, j);
+    const p1 = rawCloseAt(sym, j);
+    const p0 = rawCloseAt(sym, j - HEAT.window);
+    const x = sig > 0 && p1 > 0 && p0 > 0 ? (p1 / p0 - 1) / sig : 0;
+    c.h = clamp01(c.h + HEAT.k1 * x - HEAT.k2 * (c.h - HEAT.base));
+    c.arr.push(c.h);
+    c.j = j;
+  }
+  return c.arr[upto - c.a] ?? HEAT.base;
+}
 
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -393,12 +420,13 @@ const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
  * 某个币的 NPC 情绪 / 持仓格子（懒建）：
  *   `heat` ∈ [0,1]，0.5 中性；`npcLong` / `npcShort` 是 NPC 净持仓**名义价值**（USD）；
  *   `npcLongAvg` / `npcShortAvg` 是平均入场价（算踩踏强平线用）；
+ *   `npcDrift` 是散户净持仓造成的**有界价位偏移** `{ v, at }`（见 `god.npcDriftAt`）；
  *   `pv` 是**玩家本小时**的成交名义（每根 K 线结算一次，见 `tickMarket`）。
  */
 function mktOf(s, sym) {
   if (!s.mkt) s.mkt = {};
   return s.mkt[sym] || (s.mkt[sym] = {
-    heat: HEAT.base, npcLong: 0, npcShort: 0, npcLongAvg: 0, npcShortAvg: 0, pv: 0,
+    heat: HEAT.base, npcLong: 0, npcShort: 0, npcLongAvg: 0, npcShortAvg: 0, npcDrift: null, pv: 0,
   });
 }
 
@@ -414,37 +442,82 @@ function cascadeMulOf(s) {
 }
 
 /**
- * NPC 顺势建仓：把某一侧净持仓朝 `target` 靠 `NPC.speed`，**增量本身写进 `s.flow`**
- * —— 这就是正反馈那条线（散户看到涨 → 追高 → 把价格再推一档）。`price` 是这一刻的标记价。
- * ⚠️ `give = 1`：NPC 的建仓 / 减仓是**真实的市场买卖**，不走玩家侧的 `closeGive` 回吐口径；
- * ⚠️ `player = false`：NPC 自己的成交不再喂热度，否则热度会自激。
+ * NPC 顺势建仓：把某一侧净持仓朝 `target` 靠 `NPC.speed`。
+ *
+ * ⚠️ **不再 `pushFlow`**（2026-10-02 审计修，用户拍板）。原来每小时把建仓增量写进冲击池：
+ *    `collapse` 归并同向流量时会把它按权重 1 重新计时（`decay(e≤1) = 1`）⇒ 恒定单向流量让
+ *    残存值**线性发散**（实测 400 小时后 0.754，早就顶死 `riseMax` +20%，12 年里 99% 的时间
+ *    被钉在夹子上），同时把玩家自己的 8 笔历史一笔笔挤出去。
+ *    现在只更新持仓，价位偏移由 `syncNpcDrift` 依据**净持仓大小**重算 —— 有界、不累积。
+ * ⚠️ **残尾要归零**（2026-10-02 审计修，`NPC.floor`）：`speed` 是「朝靶心靠 15%」的渐近式，
+ *    净持仓永远只是**趋近** 0 而不等于 0（每小时 ×0.85）⇒ 一个 $1 的残尾 + 早年的低均价
+ *    就能让 `stampede` 判出「亏 8%」白送一次强平（实测 12 年 663 次里绝大多数是这种幽灵）。
+ *    低于 `floor` 的残尾直接清成 0 —— 残尾本身对价格没有可观测影响，留着只有副作用。
+ * @param {number} price 这一刻的标记价（摊平均价用）
+ * @param {number} floor 残尾归零阈值（名义额，调用侧给 `日流动性 × NPC.floor`）
  */
-function stepNpc(s, sym, side, target, price) {
+function stepNpc(s, sym, side, target, price, floor) {
   const m = mktOf(s, sym);
   const long = side === 'long';
   const key = long ? 'npcLong' : 'npcShort';
   const avgKey = long ? 'npcLongAvg' : 'npcShortAvg';
   const cur = m[key];
   const next = cur + (Math.max(0, target) - cur) * NPC.speed;
+  if (next < floor) {                                                                // 残尾 ⇒ 直接清零
+    if (cur !== 0) { m[key] = 0; m[avgKey] = 0; }
+    return;
+  }
   const delta = next - cur;
   if (!(Math.abs(delta) > 1e-9)) return;
   m[key] = next;
   if (delta > 0 && price > 0) m[avgKey] = (m[avgKey] * cur + price * delta) / next;   // 加仓 ⇒ 摊平均价
-  else if (next <= 1e-9) { m[key] = 0; m[avgKey] = 0; }                              // 减到零 ⇒ 均价清零
-  pushFlow(s, sym, long ? 1 : -1, Math.abs(delta), 1, 'fut', false);
 }
 
 /**
- * **踩踏级联**（§73.5 第 4 步）：恐慌态（`heat < HEAT.panic`）下，NPC 多头的强平线被击穿 ⇒
- * 整条多仓被动卖出（一根大阴线），并把热度再压一档 ⇒ 下一根更容易触发。空头镜像（逼空）。
+ * 把散户**净持仓**折算成一根**有界**的价位偏移台阶（`s.mkt[sym].npcDrift`）。
  *
- * 强平线口径与玩家侧同一把尺子：距入场价 `1/lev − 维持保证金率`（= 18%）。
+ * 口径与玩家侧同一把尺子：`q = |净持仓| ÷ 日流动性`，偏移 = `±permImpactOf(q, σ)`。
+ * 稳态下 `q ≤ NPC.mom/2 = 7.5%`（靶心封顶）⇒ 偏移 `≤ 0.548σ`：2024 年 σ≈3.5% ⇒ ±1.9%，
+ * 2013 年 σ≈16% ⇒ ±9%。**不累积、清仓即归零**。
+ * ⚠️ 实测极值 `|npcDrift| = 15.7%`（2013-04-20，σ=16.5%）：那一天正好落在流动性骤降的
+ *    年份形状谷底，而持仓按 `speed=0.15` 只每小时衰减 15% ⇒ `q` 短暂冲到 0.228（越过稳态上界）。
+ *    仍远低于 `riseMax=20%` 的夹子（全程顶夹时间 0.000%），属可接受的历史极端。
+ *
+ * ⚠️ 分母用**日流动性**、不是逐小时深度（2026-10-02 审计修）：`hourLiqBase` 是「日流动性 ×
+ *    该小时占比(×24) × 收缩」，占比逐小时在 0.3~3 之间摆动 ⇒ 同一笔净持仓的折算偏移**逐小时跳变**，
+ *    显示的价位偏移变成一根跟着量能形状抖的噪声。`npcDrift` 是**存量**的仓位折算，该用日尺子 ——
+ *    一天之内恒定，与靶心 `target` 的口径也才对得上。
+ *
+ * ⚠️ 存成 `{ v, at: s.i }` 台阶（与 `s.overhang` 同范式）：`at` 之前的 K 线一律不受影响。
+ */
+function syncNpcDrift(s, sym, i, sig) {
+  const m = mktOf(s, sym);
+  const net = m.npcLong - m.npcShort;
+  const liqDay = liqOf(sym, dayIndexOf(i));
+  const q = liqDay > 0 ? Math.abs(net) / liqDay : 0;
+  m.npcDrift = { v: net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig), at: i };
+}
+
+/**
+ * **踩踏级联**（§73.5 第 4 步）：散户整条仓**浮亏到强平线**（距入场价 `1/lev − 维持保证金率`）⇒
+ * 整条被动卖出（一根大阴线），并把热度再压一档。空头镜像（逼空）。
+ *
+ * 强平线口径与玩家侧同一把尺子：距入场价 `1/lev − 维持保证金率`（= `1/10 − 2%` = **8%**）。
+ *
+ * ⚠️ **入口条件只有「亏 8%」这一条**（2026-10-02 审计修，用户拍板）。原来还前置了
+ *    `m.heat < HEAT.panic`，但那与 `target = mom × (heat − 0.5)` 直接矛盾：热度低于 0.25 时
+ *    靶心已经为负 ⇒ 散户的**多仓早就被清成 0** ⇒ 多头分支**结构上永远不可达**，
+ *    ROADMAP §73.10 那条「heat 高位时单笔砸 −3% → 触发级联」的验收根本跑不出来。
+ *    现在只要价格真的跌穿 8%，无论热度在哪一档，整条多仓都会被强平 —— 这才是「强平线」的意思。
  * ⚠️ 平仓那笔用 `give = 1`（全额反向）—— NPC 建仓时写的是正冲击、且已经衰减了一部分，
  *    此刻的全额反向会**净剩一笔向下的位移**，那正是 §73.4 说的「过冲」的来源。
+ * ⚠️ **按模式门控**（§73.6 · 2026-10-02 审计修）：级联的燃料是**杠杆盘**，实物现货换手没有被
+ *    强制平仓的对手方 ⇒ `cascadeMulOf` 为 0（真现货 1x）时整条不跑。改动前它在现货模式也会
+ *    把 NPC 当杠杆仓强平，与「现货不参与级联」的口径直接矛盾。
  */
 function stampede(s, sym, m, price) {
-  if (m.heat >= HEAT.panic || !(price > 0)) return;
-  const drop = 1 / NPC.lev - NPC.maint;              // 距入场价多远爆（0.18 = 18%）
+  if (cascadeMulOf(s) <= 0 || !(price > 0)) return;
+  const drop = 1 / NPC.lev - NPC.maint;              // 距入场价多远爆（0.08 = 8%）
   if (m.npcLong > 0 && m.npcLongAvg > 0 && price < m.npcLongAvg * (1 - drop)) {
     const amt = m.npcLong;
     m.npcLong = 0; m.npcLongAvg = 0;
@@ -462,31 +535,59 @@ function stampede(s, sym, m, price) {
 /**
  * 每根小时 K 线跑一次的市场情绪刻度（§73.5）—— 在 `advanceOneHour` 里、基础行情算完之后调用。
  *
- * ① 读**价格位移**（按日 σ 标准化）② 更新热度（位移 ＋ 玩家成交 × 品种倍率 − 均值回复）
- * ③ NPC 顺势建仓（正反馈）④ 踩踏级联。
+ * ① 读**近 `HEAT.window` 小时的价格收益**（按日 σ 标准化）② 更新热度（收益 **被成交量有向放大** − 均值回复）
+ * ③ NPC 顺势建仓（正反馈）④ 踩踏级联（仅杠杆模式）。
  * ⚠️ 只对**当前币**跑（`s.sym`）：玩家只在这个币上下单，其余币的 NPC 状态冻结 ——
  *    省掉「每个币每小时各跑一次」的整表开销，也不影响玩法（持仓的其它币走行情本身）。
  */
 export function tickMarket(s, sym) {
   const m = mktOf(s, sym);
   const i = s.i;
-  /* ① 位移标准化：`d / 日σ` —— 2013 的 3% 与 2024 的 3% 不是同一件事（与滑点同一套归一化）。 */
+  /* ① 价格项 `x` = **近 24h 收益 ÷ 日σ**（2026-10-02 拍板，取代原来的「本根累积位移 ÷ σ」）。
+     ⚠️ 两条口径都很关键：
+        · **窗口收益**而非单根位移 —— 位移是脉冲（平时恒 0），热度会被钉死在中性、玩家不动手就不跳；
+          换窗口后 `x ≈ N(0, 1)`，热度才是一条连续的情绪曲线（`k1` 随之从 0.12 降到 0.02）。
+        · 价格走 **`playerFactor`（剔除 NPC 自己那层偏移）** —— 玩家的成交要算进去，
+          否则「拉盘 → 散户追高」这条玩法消失（§73.10 验收要求「单笔砸 −3%」有效）；
+          NPC 自己的连续偏移必须剔除，否则自激（旧实现在 12 年里把价格钉死在 +20% 夹子上）。 */
   const sig = dailySigma(sym, i);
-  const x = sig > 0 ? (factorFor(s, sym, i) - 1) / sig : 0;
-  /* ② 热度：位移 ＋ 玩家成交名义占比 × 品种倍率 − 均值回复。⚠️ 这里的读全在 ③④ 写流之前。 */
+  const p1 = heatPriceAt(s, sym, i);
+  const p0 = heatPriceAt(s, sym, i - HEAT.window);
+  const x = sig > 0 && p1 > 0 && p0 > 0 ? (p1 / p0 - 1) / sig : 0;
+  /* ② 热度：收益（**被成交量有向放大**）− 均值回复。⚠️ 这里的读全在 ③④ 写流之前。
+     ⚠️ 成交量进的是**放大器**而不是加数（2026-10-02 审计修）：`pv` 是无符号的成交名义，
+        写成加数时一笔巨额**卖单**会把热度往上顶 ⇒ 砸盘被读成极度贪婪、散户反手做多、位移反向
+        （实测 15x 砸掉当日量 100% ⇒ 位移 +13.2%）。现在它只放大 `k1·x` 的**方向**：
+        砸盘放大的是「变冷」、追高放大的是「变热」，量级再大也不翻转符号。
+     ⚠️ `cascadeMulOf` 仍是模式权重：现货实物换手（无杠杆盘）⇒ 0，玩家的现货量不给热度加料（§73.6）。 */
   const liq = hourLiqBase(s, sym, i);
   const pv = liq > 0 ? m.pv / liq : 0;
-  m.heat = clamp01(m.heat + HEAT.k1 * x - HEAT.k2 * (m.heat - HEAT.base) + HEAT.k3 * pv * cascadeMulOf(s));
+  m.heat = clamp01(m.heat + HEAT.k1 * x * (1 + HEAT.k3 * Math.min(pv, 1) * cascadeMulOf(s))
+    - HEAT.k2 * (m.heat - HEAT.base));
   m.pv = 0;
-  /* ③ NPC 顺势建仓：热度高于中性 ⇒ 净多头，低于中性 ⇒ 净空头。取不到深度就不建（不凭空造量）。 */
-  if (liq > 0) {
-    const target = NPC.mom * (m.heat - HEAT.base) * liq;
+  /* ③ NPC 顺势建仓：热度高于中性 ⇒ 净多头，低于中性 ⇒ 净空头。取不到深度就不建（不凭空造量）。
+     ⚠️ 靶心与残尾阈值都用**日流动性**（与 `syncNpcDrift` 同一把尺子）：用逐小时深度时，
+        冷门小时（占比 1/24）的靶心被压小、热门小时又被放大 ⇒ 散户仓位跟着小时形状剧烈抖动。 */
+  const liqDay = liqOf(sym, dayIndexOf(i));
+  if (liqDay > 0) {
+    const target = NPC.mom * (m.heat - HEAT.base) * liqDay;
     const price = markPrice(s, sym);
-    stepNpc(s, sym, 'long', target, price);
-    stepNpc(s, sym, 'short', -target, price);
+    const floor = liqDay * NPC.floor;
+    stepNpc(s, sym, 'long', target, price, floor);
+    stepNpc(s, sym, 'short', -target, price, floor);
   }
+  syncNpcDrift(s, sym, i, sig);
   /* ④ 踩踏级联。 */
   stampede(s, sym, m, markPrice(s, sym));
+}
+
+/**
+ * 热度用的价格读数 —— **原始历史行情 × 玩家自己的位移系数**（`god.playerFactor`），不含 NPC 那层。
+ * 取不到原始收盘价（未上线 / 越界）时返回 0，调用方按「无价格项」处理。
+ */
+function heatPriceAt(s, sym, i) {
+  const raw = rawCloseAt(sym, i);
+  return raw == null ? 0 : raw * playerFactor(s, sym, i);
 }
 
 /**

@@ -8563,37 +8563,61 @@ export function decay(e) {
 
 ### 73.5 层 3 · NPC 情绪 / 持仓 / 踩踏级联（P1）
 
-新状态 `s.mkt[sym] = { heat, npcLong, npcShort, npcLongAvg, npcShortAvg }`：
+新状态 `s.mkt[sym] = { heat, npcLong, npcShort, npcLongAvg, npcShortAvg, npcDrift, pv }`：
 
 - `heat` ∈ [0,1]，0.5 中性；0 极度恐慌、1 极度贪婪。
 - `npcLong` / `npcShort`：NPC 净持仓**名义价值**（USD）；`*Avg` 为平均入场价。
+- `npcDrift`：散户净持仓折算的**有界价位偏移**台阶 `{ v, at }`（不累积，清仓即归零）。
+- `pv`：玩家本小时的成交名义（每根结算一次，只当热度放大器）。
 
 每根 K 线（`advanceOneHour` 内，基础行情算完之后）跑一次 `tickMarket(s, sym)`：
 
-1. **读位移**：`d = factorFor(s, sym, s.i) - 1`，`x = d / dailySigma(sym, s.i)`（标准化）。
-2. **热度更新**：`heat += HEAT.k1 * x - HEAT.k2 * (heat - HEAT.base) + HEAT.k3 * (玩家本根成交名义 / hourLiqBase)`
-   再夹到 `[0, 1]`。即「价格位移」＋「玩家自己的成交量」一起烧热度，且带均值回复。
-3. **NPC 顺周期建仓**：`target = HEAT.mom * (heat - HEAT.base) * hourLiqBase`；
-   `npcLong += (max(target,0) - npcLong) * NPC.speed`；`npcShort` 同理取负半轴。
-   增量本身 `pushFlow(s, sym, dir, |Δ|)` —— 这就是**正反馈**的那条绿线。
-4. **踩踏级联**：`heat < HEAT.panic`（默认 0.25）时，NPC 多头按 `NPC.lev` 计算的强平线被击穿即
-   全部平仓 ＋ `pushFlow` 反向一大笔，并把 `heat` 再压一档 ⇒ 引发下一根的新一轮判定。
-   `PARTIAL_STEPS` 那套玩家侧的部分强平逻辑**不动**，NPC 走自己的队列。
+1. **读价格项**：`x = (heatPriceAt(i) / heatPriceAt(i − HEAT.window) − 1) / dailySigma(sym, i)`，
+   其中 `heatPriceAt = 原始行情收盘价 × playerFactor`（＝显示价**剔除 NPC 自己那层偏移**，玩家自己的成交仍在）。
+   取**近 24 小时窗口收益**、不是单根位移 —— 位移是脉冲（平时恒 0），热度会被钉死在中性。
+2. **热度更新**：
+   `heat += HEAT.k1 * x * (1 + HEAT.k3 * min(pv / hourLiqBase, 1) * cascadeMul) − HEAT.k2 * (heat − HEAT.base)`，
+   再夹到 `[0, 1]`。成交量进的是**放大器**（不是加数）—— 写成加数时一笔巨额卖单会把热度往上顶，
+   砸盘被读成贪婪；现在它只放大 `k1·x` 的方向。
+3. **NPC 顺周期建仓**：`target = NPC.mom * (heat − HEAT.base) * liqOf(sym, 当天)`；
+   `npcLong += (max(target,0) − npcLong) * NPC.speed`；`npcShort` 同理取负半轴。
+   **不写 `s.flow`**（恒单向流量会让 `collapse` 的残值线性发散，实测顶死 `riseMax`）；
+   价位影响改由 `syncNpcDrift` 按**净持仓 ÷ 日流动性**折算成有界偏移。
+   低于 `NPC.floor × 日流动性` 的残尾直接归零（否则永不等于 0 的残尾会白送「幽灵强平」）。
+4. **踩踏级联**：散户整条仓浮亏到强平线（距入场价 `1/NPC.lev − NPC.maint` = **8%**）即全部平仓 ＋
+   反向 `pushFlow`，并把 `heat` 再压一档 ⇒ 引发下一根的新一轮判定。
+   入口**只看「亏 8%」这一条**（不再前置 `heat < HEAT.panic`：那个门与 `target = mom × (heat − 0.5)`
+   直接矛盾，让多头分支结构上不可达）。现货 / 真 1x（`cascadeMulOf = 0`）**不参与**级联。
 
-初值参数（需实机调）：
+初值（2026-10-02 用 BTC 全期 105192 根实测标定）：
 
 ```js
-export const HEAT = { base: 0.5, k1: 0.35, k2: 0.03, k3: 0.5, panic: 0.25, greed: 0.75 };
-export const NPC  = { speed: 0.15, mom: 0.6, lev: 5, maint: 0.02 };
+export const HEAT = { base: 0.5, window: 24, k1: 0.02, k2: 0.05, k3: 0.5, panic: 0.25, greed: 0.75, panicDrop: 0.12 };
+export const NPC  = { speed: 0.15, mom: 0.15, lev: 10, maint: 0.02, floor: 0.001 };
 ```
 
-**UI**：HUD 或 K 线区加一条极简「热度」指示（0–1 的条 ＋ `贪婪 / 中性 / 恐慌` 三档字面）。
+- `panic` / `greed` **不动**：0.25 / 0.75 与 Alternative.me Fear & Greed Index 的五档边界逐位重合。
+- `k1` 0.35 → **0.02**：换成窗口收益口径后 `x ≈ N(0,1)`，实测分布「恐慌 10.8% / 中性 72.7% / 贪婪 16.5%」
+  （0.12/0.05 是 32%/27%/41%，明显偏热）。
+- `mom` 0.6 → **0.15**、`lev` 5 → **10**：靶心收到日流动性的 ±7.5%，强平线收到 8%。
+
+**实测**（真实 `tickMarket` 驱动 BTC 全期、无玩家操作）：
+
+- 全程顶到 `riseMax` 的时间占比 **0.000%**（旧实现 99%）；
+- 四次暴跌（3·12 / 519 / LUNA / FTX）±36h 窗口**全部**读「恐慌」，两次顶部（2017-12-17 / 2021-11-10）**全部**读「贪婪」；
+- `|npcDrift|` 极值 15.7%（2013-04-20，当日 σ=16.5% 的历史极端），2024 年 σ≈3.5% 时只有 ±1.9%。
+
+**UI**：K 线区**左下角留白**一条极简「热度」浮字（0–1 的条 ＋ `贪婪 / 中性 / 恐慌` 三档字面），
+绝对定位、**不占** `.chart-head` 那一行的宽度（头部五行字在 390px 屏上已排满）；交易页与回顾页同款。
 不加可视化的话这条层玩家完全感觉不到，故**必须**有一条最小显示（样式遵循 LESS IS MORE）。
 
 **验收**：
-- `heat` 高位时单笔砸 −3%，1x 下随后 1–2 小时出现额外 −1~3% 的级联，再进入幂律修复；
-- 上推时能自我强化到 +8~15%（被 `riseMax` 兜底）；
-- `heat` 中性时同一笔单**不产生**级联。
+- 单笔砸盘击穿 8% 强平线即触发级联：2021-01-29 靶心（heat 0.986、散户多仓 $538M）实测
+  −8% ⇒ 额外 −4.1%（−8% → −12.14%）；**−7% 不触发**；−1%/−3%/−5% 均不触发。
+  ⚠️ 阈值由 `NPC.lev`（=8% 强平线）决定、**不是** `HEAT.panic`。旧文写的「砸 −3%」属 `lev=5` 时代的
+  旧口径 —— 散户是连续建仓、均价贴着现价，`−3%` 结构上到不了强平线。
+- 上推时能自我强化（`npcDrift` 正偏移 ＋ 热度正反馈），被 `riseMax` 兜底；
+- `heat` 中性／散户空仓时同一笔单**不产生**级联。
 
 ### 73.6 层 4 · 现货 / 合约 / 杠杆的「质」差异（P1）
 
@@ -8683,7 +8707,7 @@ export const FR = { k: 0.0015, max: 0.003, hours: 8 };
 ### 73.10 验收
 
 - 临时实测脚本跑通（真实数据包），打印新 `decay` 全表 ＋ NPC 级联三用例（中性 / 贪婪 / 恐慌）。
-- `heat` 中性砸 −3% 无级联；高位砸 −3% 有额外 −1~3%；上推可到 +8~15%。
+- `heat` 中性／散户空仓时砸盘无级联；高位砸穿 8% 强平线有额外级联（实测 −8% ⇒ 额外 −4.1%）；上推可自我强化。
 - 同方向同保证金，现货 / 合约 / 100x 三档在「回落速度、最大瞬时位移、有无级联、持仓成本」四项数字不同。
 - 挑战局在各自 `end` 结算，结算文案写对年份。
 - 暂停下单 → 按钮全灰 → 继续 → 走满 1 游戏小时才恢复可点。

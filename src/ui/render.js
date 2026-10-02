@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canOpenAt, chanOf, equity, futuresAvailable, heatOf, markPrice, otcOpenFor, otcUnlocked, pauseLocked, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canOpenAt, chanOf, equity, futuresAvailable, heatOf, markPrice, otcOpenFor, otcUnlocked, pauseLocked, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { HEAT } from '../core/god.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -494,8 +494,18 @@ export function mount(root) {
   rvModeBtn.dataset.mode = 'toggle';
   const rvHead = el('div', 'chart-head');
   rvHead.append(rvSym, rvMcap, rvSupp, rvChg, rvModeBtn);
+  /* 市场热度（§73.5 · 2026-10-02）：与交易页**同一枚浮字**，压在同一个留白处（K 线左下角）
+     —— 回顾页没有 `chart-eta` / `chart-lock`，所以这一列只有热度那一枚。
+     ⚠️ 它必须和交易页长得一模一样：同一套 `.chart-heat` / `data-heat` 三档着色，
+        读数走 `reviewHeatOf`（同一条方程、只吃原始行情）。 */
+  const rvHeatBar = el('i');
+  const rvHeatTxt = el('u');
+  const rvHeatChip = el('div', 'chart-heat');
+  rvHeatChip.append(rvHeatBar, rvHeatTxt);
+  const rvSide = el('div', 'chart-side');
+  rvSide.append(rvHeatChip);
   const rvWrap = el('div', 'chart-wrap');
-  rvWrap.append(rvCanvas, rvHead);
+  rvWrap.append(rvCanvas, rvHead, rvSide);
 
   /* 日志栏**加长**（方案 §3.6）：回顾页没有操作区 / HUD / 持仓条，省下的高度全给它 ——
      固定几行常驻、超出就在面板内滚（与日志浮层同一套 `.log-row`，两个入口一副样子）。 */
@@ -557,6 +567,7 @@ export function mount(root) {
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
     rvWrap, rvCanvas, rvHead, rvSym, rvMcap, rvSupp, rvChg, rvModeBtn, rvLogs,
+    rvHeatChip, rvHeatBar, rvHeatTxt,
     /* 交易档案页（M2 · 2026-10-01） */
     careersPage, careersList,
     _levSignature: '',
@@ -2016,6 +2027,13 @@ export function renderReview(refs, rv, view) {
   } else {
     refs.rvChg.textContent = '';
   }
+
+  /* 市场热度（§73.5 · 2026-10-02）：与交易页**逐字同一套**写法 —— 同一条方程、同一个阈值、
+     同一组 `data-heat` 类名。口径差异只有一处：回顾页读的是**原始行情**（这一屏本来就画原始 K 线）。 */
+  const heat = reviewHeatOf(sym, rv.i);
+  refs.rvHeatBar.style.setProperty('--heat', `${Math.round(heat * 100)}%`);
+  refs.rvHeatTxt.textContent = heat >= HEAT.greed ? '贪婪' : heat <= HEAT.panic ? '恐慌' : '中性';
+  refs.rvHeatChip.dataset.heat = heat >= HEAT.greed ? 'greedy' : heat <= HEAT.panic ? 'panic' : 'mid';
 
   const win = chartOpts({
     /* ⚠️ `own: false`（v20）：回顾那一屏**不并玩家自己的成交额** ——
