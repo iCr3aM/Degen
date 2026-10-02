@@ -597,6 +597,10 @@ const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
  *   `npc`（**v28 · §4.2**）＝ **6 档杠杆阶梯** —— 每档 `{ long, longAvg, short, shortAvg,
  *         longStopped, shortStopped }`（净持仓**名义价值** USD ＋ 平均入场价 ＋ 止损已触发标志）。
  *         ⚠️ 档序与 `NPC.ladder` **逐位对应** —— `stampede` 按下标读 `lev`。
+ *   `mm`（**缺口 6-A · 2026-10-03**）＝ **做市盘队列**（同形的一个格子，**不进阶梯**）——
+ *         它的净持仓恒为趋势盘 6 档净持仓的 `−NPC.mm.absorb` 倍，杠杆单值 `NPC.mm.lev`。
+ *         旧存档没有这个键 ⇒ `undefined`，调用侧一律用 `m.mm &&` 守卫（见 `npcNet` / `stampede`），
+ *         首次 `tickMarket` 由 `mktOf` 补上 ⇒ **不必升 `STATE_VERSION`**。
  *   `npcDrift` 是散户净持仓造成的**有界价位偏移**台阶表 `{ at: [], v: [] }`（见 `god.npcDriftAt`）；
  *   `npcShock`（**v28**）是 NPC 级联**逐笔被动平仓**的冲击台阶表 `{ at: [], v: [] }` —— 独立的
  *         **有界瞬时**通道（`0.5^(e / NPC.shockHalf)` 指数衰减），**不写 `s.flow`**（见 `pushNpcShock`）；
@@ -610,14 +614,27 @@ function mktOf(s, sym) {
     npc: NPC.ladder.map(() => ({
       long: 0, longAvg: 0, short: 0, shortAvg: 0, longStopped: false, shortStopped: false,
     })),
+    mm: { long: 0, longAvg: 0, short: 0, shortAvg: 0, longStopped: false, shortStopped: false },
     npcDrift: null, npcShock: null, npcFund: 0, pv: 0,
   });
 }
 
-/** 六档净持仓之和（`long − short`，名义 USD）—— `syncNpcDrift` 的口径，与改动前的标量同义。 */
-function npcNet(m) {
+/** 六档**趋势盘**净持仓之和（`long − short`，名义 USD）—— 做市盘靶心的输入（见 `tickMarket` ③）。 */
+function trendNet(m) {
   let net = 0;
   for (const g of m.npc) net += g.long - g.short;
+  return net;
+}
+
+/**
+ * **NPC 总**净持仓之和（趋势盘六档 ＋ 做市盘，`long − short`，名义 USD）—— `syncNpcDrift` 的口径。
+ *
+ * ⚠️ 缺口 6-A（2026-10-03）起这一条**必须含做市盘**：做市盘恒在趋势盘对面 ⇒ 它的 `−absorb` 正好把
+ *    净敞口折成 `(1 − absorb)` 倍。旧存档没有 `m.mm` ⇒ 跳过（等价于改动前的行为，不炸）。
+ */
+function npcNet(m) {
+  let net = trendNet(m);
+  if (m.mm) net += m.mm.long - m.mm.short;
   return net;
 }
 
@@ -635,6 +652,7 @@ export function openInterestOf(s, sym) {
   const m = s.mkt && s.mkt[sym];
   let oi = 0;
   if (m && m.npc) for (const g of m.npc) oi += g.long + g.short;
+  if (m && m.mm) oi += m.mm.long + m.mm.short;      // 缺口 6-A：做市盘也计入 OI
   oi += positionNotionalOf(s, sym);
   return Number.isFinite(oi) && oi > 0 ? oi : 0;
 }
@@ -652,6 +670,7 @@ export function longShareOf(s, sym) {
   const m = s.mkt && s.mkt[sym];
   let L = 0, S = 0;
   if (m && m.npc) for (const g of m.npc) { L += g.long; S += g.short; }
+  if (m && m.mm) { L += m.mm.long; S += m.mm.short; }   // 缺口 6-A：做市盘两边同时在场 ⇒ 多空比更均衡
   const pos = s.positions[sym];
   const n = positionNotionalOf(s, sym);
   if (n > 0) { if (pos.side === 'long') L += n; else S += n; }
@@ -693,14 +712,15 @@ function cascadeMulOf(s) {
  * @param {object} slot 该档该币的格子（`{ long, longAvg, short, shortAvg, … }`，`§4.2` 的一档）
  * @param {number} price 这一刻的标记价（摊平均价用）
  * @param {number} floor 残尾归零阈值（名义额，调用侧给 `日流动性 × NPC.floor × 该档权重`）
+ * @param {number} [speed] 每小时朝靶心靠的比例（缺省 `NPC.speed`；做市盘传 `NPC.mm.speed`）
  */
-function stepNpc(slot, side, target, price, floor) {
+function stepNpc(slot, side, target, price, floor, speed = NPC.speed) {
   const long = side === 'long';
   const key = long ? 'long' : 'short';
   const avgKey = long ? 'longAvg' : 'shortAvg';
   const stopKey = long ? 'longStopped' : 'shortStopped';
   const cur = slot[key];
-  const next = cur + (Math.max(0, target) - cur) * NPC.speed;
+  const next = cur + (Math.max(0, target) - cur) * speed;
   if (next < floor) {                                                                // 残尾 ⇒ 直接清零
     /* ⚠️ 连**止损标志**一起清（v28）：这一档该侧已经空了，下一轮建仓是**新的仓**，
        必须能重新触发止损 —— 否则「上一轮止过损」会一直压着新仓不让它止损。 */
@@ -885,51 +905,18 @@ function adl(s, sym, m, price, need) {
  *    · **缺口 16**：`liqNotional`（只含强平）→ `s.stat.liqNotional`；达阈值播「爆仓潮」日志。
  *    · **缺口 5 ①②**：`fundSettle` —— 强平盈余入保险基金 / 穿仓掏池。
  *    两处都**只挂在「跌破强平线」这一支**：自愿止损不是「爆仓」、也没有强平盈余可言。
+ *
+ * ⚠️ **缺口 6-A（2026-10-03）起做市盘也走同一条逐档逻辑**（`NPC.mm.lev` = 3x）——
+ *    抽成 `flushSlot` 只为一处复用，**行为逐位不变**：杠杆由调用侧传入，不新开第二套公式。
+ *    现实里做市商仓位低、回补快，只有极端行情（−32.8%）才被击穿，故它是罕见事件。
  */
 function stampede(s, sym, m, price) {
   if (cascadeMulOf(s) <= 0 || !(price > 0)) return;
-  const maint = GAME.maintRate;                     // 0.5% 基准档（与玩家侧 `GAME.maintRate` 同源）
   let liqNotional = 0;                              // 本小时被**强平**的名义（缺口 16 口径：不含止损波）
   for (let k = 0; k < m.npc.length; k++) {
-    const g = m.npc[k];
-    const lev = NPC.ladder[k].lev;
-    const drop = 1 / lev - maint;                   // 该档距入场价多远爆
-    const stop = drop * NPC.stopFrac;               // 止损带：强平线 × 0.6
-    /* 多头：先自愿止损（平 50%、一次性），跌破强平线则全平并复位。 */
-    if (g.long > 0 && g.longAvg > 0) {
-      if (price < g.longAvg * (1 - drop)) {
-        pushNpcShock(s, sym, m, -1, g.long);
-        m.heat = clamp01(m.heat - HEAT.panicDrop);
-        liqNotional += g.long;                      // 缺口 16：只认这一笔（强平潮）
-        fundSettle(s, g.long, g.longAvg, lev, 1, price);   // 缺口 5 ①②：盈余入池 / 穿仓掏池
-        g.long = 0; g.longAvg = 0; g.longStopped = false;
-      } else if (!g.longStopped && price < g.longAvg * (1 - stop)) {
-        const cut = g.long * 0.5;
-        pushNpcShock(s, sym, m, -1, cut);
-        g.long -= cut;
-        g.longStopped = true;
-      } else if (g.longStopped && price >= g.longAvg * (1 - stop)) {
-        g.longStopped = false;                      // 回升出带 ⇒ 下一轮可再触发
-      }
-    }
-    /* 空头镜像：逼空 ⇒ 热度反而上冲。 */
-    if (g.short > 0 && g.shortAvg > 0) {
-      if (price > g.shortAvg * (1 + drop)) {
-        pushNpcShock(s, sym, m, 1, g.short);
-        m.heat = clamp01(m.heat + HEAT.panicDrop);
-        liqNotional += g.short;
-        fundSettle(s, g.short, g.shortAvg, lev, -1, price);
-        g.short = 0; g.shortAvg = 0; g.shortStopped = false;
-      } else if (!g.shortStopped && price > g.shortAvg * (1 + stop)) {
-        const cut = g.short * 0.5;
-        pushNpcShock(s, sym, m, 1, cut);
-        g.short -= cut;
-        g.shortStopped = true;
-      } else if (g.shortStopped && price <= g.shortAvg * (1 + stop)) {
-        g.shortStopped = false;                     // 回落出带 ⇒ 下一轮可再触发
-      }
-    }
+    liqNotional += flushSlot(s, sym, m, m.npc[k], NPC.ladder[k].lev, price);
   }
+  if (m.mm) liqNotional += flushSlot(s, sym, m, m.mm, NPC.mm.lev, price);
   /* 缺口 16：把本小时被强平的名义记进统计；达到「当日流动性 × NPC.liqEventFrac」播一条事件日志。
      ⚠️ 只含**强平潮**，不含上面的自愿止损波 —— 对齐 Coinglass 的公告口径。 */
   if (liqNotional > 0) {
@@ -950,10 +937,60 @@ function stampede(s, sym, m, price) {
 }
 
 /**
+ * **一个持仓格子的逐档击穿**（趋势盘六档与做市盘**共用**这一条，缺口 6-A 抽出）——
+ *   ① 多头：先自愿止损（平 50%、一次性），跌破强平线则全平并复位；空头镜像（逼空 ⇒ 热度上冲）。
+ *   ② 返回本格本小时被**强平**的名义额（不含自愿止损波）—— 缺口 16 的「爆仓潮」只认这一笔。
+ *
+ * ⚠️ 杠杆由调用侧传入（趋势盘 `NPC.ladder[k].lev`、做市盘 `NPC.mm.lev`）⇒ 强平线 / 止损带
+ *    仍是「`1/lev − 维持保证金率` 与本值 × `NPC.stopFrac`」这**一套**公式，没有第二条。
+ */
+function flushSlot(s, sym, m, g, lev, price) {
+  const maint = GAME.maintRate;                     // 0.5% 基准档（与玩家侧 `GAME.maintRate` 同源）
+  const drop = 1 / lev - maint;                     // 该档距入场价多远爆
+  const stop = drop * NPC.stopFrac;                 // 止损带：强平线 × 0.6
+  let liqNotional = 0;
+  /* 多头：先自愿止损（平 50%、一次性），跌破强平线则全平并复位。 */
+  if (g.long > 0 && g.longAvg > 0) {
+    if (price < g.longAvg * (1 - drop)) {
+      pushNpcShock(s, sym, m, -1, g.long);
+      m.heat = clamp01(m.heat - HEAT.panicDrop);
+      liqNotional += g.long;                        // 缺口 16：只认这一笔（强平潮）
+      fundSettle(s, g.long, g.longAvg, lev, 1, price);   // 缺口 5 ①②：盈余入池 / 穿仓掏池
+      g.long = 0; g.longAvg = 0; g.longStopped = false;
+    } else if (!g.longStopped && price < g.longAvg * (1 - stop)) {
+      const cut = g.long * 0.5;
+      pushNpcShock(s, sym, m, -1, cut);
+      g.long -= cut;
+      g.longStopped = true;
+    } else if (g.longStopped && price >= g.longAvg * (1 - stop)) {
+      g.longStopped = false;                        // 回升出带 ⇒ 下一轮可再触发
+    }
+  }
+  /* 空头镜像：逼空 ⇒ 热度反而上冲。 */
+  if (g.short > 0 && g.shortAvg > 0) {
+    if (price > g.shortAvg * (1 + drop)) {
+      pushNpcShock(s, sym, m, 1, g.short);
+      m.heat = clamp01(m.heat + HEAT.panicDrop);
+      liqNotional += g.short;
+      fundSettle(s, g.short, g.shortAvg, lev, -1, price);
+      g.short = 0; g.shortAvg = 0; g.shortStopped = false;
+    } else if (!g.shortStopped && price > g.shortAvg * (1 + stop)) {
+      const cut = g.short * 0.5;
+      pushNpcShock(s, sym, m, 1, cut);
+      g.short -= cut;
+      g.shortStopped = true;
+    } else if (g.shortStopped && price <= g.shortAvg * (1 + stop)) {
+      g.shortStopped = false;                       // 回落出带 ⇒ 下一轮可再触发
+    }
+  }
+  return liqNotional;
+}
+
+/**
  * 每根小时 K 线跑一次的市场情绪刻度（§73.5）—— 在 `advanceOneHour` 里、基础行情算完之后调用。
  *
  * ① 读**近 `HEAT.window` 小时的价格收益**（按日 σ 标准化）② 更新热度（收益 **被成交量有向放大** − 均值回复）
- * ③ NPC 顺势建仓（正反馈）④ 踩踏级联（仅杠杆模式）。
+ * ③ NPC 顺势建仓（正反馈）③′ **做市盘**建到趋势盘对面（缺口 6-A）④ 踩踏级联（仅杠杆模式）。
  * ⚠️ 只对**当前币**跑（`s.sym`）：玩家只在这个币上下单，其余币的 NPC 状态冻结 ——
  *    省掉「每个币每小时各跑一次」的整表开销，也不影响玩法（持仓的其它币走行情本身）。
  */
@@ -1008,6 +1045,16 @@ export function tickMarket(s, sym) {
       const floor = liqDay * NPC.floor * w;
       stepNpc(m.npc[k], 'long', target * w, price, floor);
       stepNpc(m.npc[k], 'short', -target * w, price, floor);
+    }
+    /* ③′ **做市盘**（缺口 6-A · 2026-10-03）：站到趋势盘**对面**，库存回补更快。
+       ⚠️ 靶心取**趋势盘六档的实际净持仓**（而不是 `target` 这个稳态靶心）—— 做市盘吃的是
+          「已经挂出来的那部分仓」，两者在收敛途中并不相等；用实际值才自洽。
+       ⚠️ 残尾阈值不乘权重（做市盘是**单个**格子，不分档）；`speed` 用 `NPC.mm.speed`（更快）。 */
+    if (m.mm) {
+      const targetMM = -NPC.mm.absorb * trendNet(m);
+      const floorMM = liqDay * NPC.floor;
+      stepNpc(m.mm, 'long', targetMM, price, floorMM, NPC.mm.speed);
+      stepNpc(m.mm, 'short', -targetMM, price, floorMM, NPC.mm.speed);
     }
   }
   syncNpcDrift(s, sym, i, sig);

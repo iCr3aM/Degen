@@ -270,7 +270,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
 
     /**
      * **NPC 市场情绪 / 持仓**（v26 · §73.5 · 2026-10-02 拍板）——
-     * `sym -> { heat, npc: [ 6 档 ], npcDrift }`。
+     * `sym -> { heat, npc: [ 6 档 ], mm, npcDrift }`。
      *
      *   `heat`        ∈ [0,1] 的市场热度：0.5 中性、1 极度贪婪、0 极度恐慌。由「价格位移」
      *                 ＋ 「玩家自己的成交量」烧起来，并带均值回复（参数见 `HEAT`）。
@@ -279,6 +279,11 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      *                 档序与 `NPC.ladder` **逐位对应**（`stampede` 按下标读 `lev`）。
      *                 改动前是四个标量 `npcLong/npcShort/npcLongAvg/npcShortAvg`（单值 10x ⇒
      *                 只有一条强平线，要么不炸、要么一起炸）。
+     *   `mm`（**缺口 6-A** · 2026-10-03）：**做市盘队列**（与上面一档同形的一个格子，**不进阶梯**）。
+     *                 它的净持仓靶心恒为趋势盘 6 档净持仓的 `−NPC.mm.absorb` 倍（站到趋势盘对面、
+     *                 库存回补更快），杠杆单值 `NPC.mm.lev`，也被算进 `npcDrift` / OI / 多空比。
+     *                 ⚠️ **不升版本号**：旧存档没有这个键（`undefined`），调用侧一律 `m.mm &&` 守卫，
+     *                    首次 `tickMarket` 由 `mktOf` 补上 ⇒ 老档不炸、行为回退到改动前。
      *   `npcDrift`（v27 · 2026-10-02）散户净持仓造成的**有界价位偏移**，存成**台阶表**
      *                 `{ at: [], v: [] }`（只追加、取值 = 最后一个 `at <= j` 的那一项）。
      *                 仅当偏移变化 ≥ `NPC.driftEps` 时才落一级 —— 旧实现每小时无条件重盖
