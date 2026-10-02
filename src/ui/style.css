@@ -499,56 +499,79 @@ b, strong { font-weight: 600; }
 .posbar .side-long { color: var(--up); }
 .posbar .side-short { color: var(--down); }
 
-/* ══════════════ 日志条（一行，只显示最近一条） ══════════════ */
+/* ══════════════ 日志条（**两行** · 2026-10-03） ══════════════
+   由「一行只放最新一条」改成**恒定两行**（24 → 48px）。起因：级联那一小时里
+   「资金费率 → 爆仓潮 → ADL → 爆仓」四条连发时，前面几条被顶掉、根本看不见（用户 2026-10-03）。
+   ⚠️ 行数是**恒定**的（`render.LOG_ROWS = 2`），不是「有内容才长高」——
+      变高会带着下面的 K 线区一起跳。 */
 .logline {
   flex: none;
-  /* 26 → **24px**（Batch 5 · B26）：12px 字在 24px 里居中仍有余量，省下的 2px 归 K 线区 */
-  height: calc(24px * var(--ui));
+  height: calc(48px * var(--ui));
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  justify-content: center;
   padding: 0 2px;
   font-size: calc(12px * var(--ui));
   color: var(--mut);
   overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   /* 整条可点（⑤ · 方案 §20.2.1）：点开浮层看全 30 条。按压反馈与 `.tab` 同一手法 */
   cursor: pointer;
 }
 .logline:active { background: var(--line); }
 
-/* 新闻态（P2-C）：正文前一枚金色小标签，正文由灰转「正文色」—— 与普通日志一眼分得开。
-   标签 `flex:none` 占住自己那一段；正文必须 `min-width:0` 才能被压窄后在**自己那一格**上
-   截尾（`text-overflow` 只对块级 / 行内块生效，弹性子项默认不肯缩到内容宽度以下）。
-   ⚠️ 本轮起**日志浮层里的新闻条也复用这枚标签**（`openLog`），所以选择器从
-      `.logline .news-tag` 放宽成 `.news-tag`；它右侧那 4px 只服务日志条（浮层里是 `gap`）。 */
-.news-tag {
+/* 日志条里的一行 = 类别芯片 ＋ 时间 ＋ 正文（与浮层 `.log-row` 同一副样子）。
+   ⚠️ `border-left` **恒占位**（透明色）—— 只有全市场级那一行才上色；不占位的话，
+      上色的那一刻整行文字会向右跳 2px。 */
+.lg-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: calc(22px * var(--ui));
+  border-left: 2px solid transparent;
+  padding-left: 2px;
+}
+/* 全市场级事件（爆仓潮 / 归零 / 停机…）：红边 ＋ 淡红底 —— 整屏扫一眼就能抓住。
+   ⚠️ 与浮层的 `.log-row.alert` 是**同一套**观感，两个入口一副样子。 */
+.lg-row.alert { border-left-color: var(--down); background: rgba(255, 91, 106, .09); }
+
+/* 类别芯片（2026-10-03）：一枚 **2 字短标签 ＋ 一个色相**，回答「这是哪一类事件」；
+   正文的颜色仍由 `kind` 给，回答「这一笔是好是坏」。六类的分工见 `state.LOG_TAGS`。
+   ⚠️ `sys` 刻意**不加底色**（纯暗字）—— 闸门提示是最轻的一类，它不该跟「资金费」「爆仓」
+      抢注意力；其余五类一律实底，缩到 11px 也分得开。 */
+.log-tag {
   flex: none;
   font-style: normal;
   font-size: calc(11px * var(--ui));
   line-height: calc(14px * var(--ui));
   padding: 0 3px;
-  color: var(--on-gold);
-  background: var(--gold);
-}
-.logline .news-tag { margin-right: 4px; }
-/* 时间那一格（2026-09-29 需求 1）：与浮层 `.log-row u` 同款 —— **恒为次要灰**，
-   不随正文的 kind 染色（`.logline` 容器上的老做法会把爆仓那条的时间一起染红）。 */
-.logline > u {
-  flex: none;
-  text-decoration: none;
-  margin-right: 4px;
   color: var(--mut);
 }
-.logline > span {
+.log-tag.trade { background: var(--accent); color: var(--on-accent); }
+.log-tag.cost  { background: var(--line);  color: var(--mut); }
+.log-tag.liq   { background: var(--down);  color: var(--on-down); }
+.log-tag.mkt   { background: var(--down);  color: var(--on-down); }
+.log-tag.news  { background: var(--gold);  color: var(--on-gold); }
+
+/* 时间那一格（2026-09-29 需求 1）：与浮层 `.log-row u` 同款 —— **恒为次要灰**，
+   不随正文的 kind 染色（容器上的老做法会把爆仓那条的时间一起染红）。 */
+.lg-row > u {
+  flex: none;
+  text-decoration: none;
+  color: var(--mut);
+}
+/* 正文必须 `min-width:0` 才能被压窄后在**自己那一格**上截尾
+   （`text-overflow` 只对块级 / 行内块生效，弹性子项默认不肯缩到内容宽度以下）。 */
+.lg-row > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 新闻态：只把**正文**提亮（改 `> span` 而非整行 —— `.logline.news` (0,2,0) 会盖过
-   `.logline > u` (0,1,1)，时间会被一起染成 `--fg`）。 */
-.logline.news > span { color: var(--fg); }
+/* 新闻那条：只把**正文**提亮（`.lg-row.news > span` (0,2,1) 盖过 `.mut` (0,1,0)）——
+   与旧 `.logline.news > span` 同一先例，时间不动。 */
+.lg-row.news > span { color: var(--fg); }
 
 /* ══════════════ 操作区 ══════════════ */
 .trade { flex: none; padding-top: 8px; }
@@ -888,9 +911,27 @@ canvas.curve {
   border-bottom: 1px solid var(--line);
 }
 .log-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 0; }
-/* 一行的两格：时间（定宽、不折）＋ 正文（**允许折行** —— 这正是浮层存在的理由，拍板 ③）。
-   行距靠 `line-height` 排开、不写 gap —— 遵守「纵向间距只有 8 与 12 两档」那条约束。 */
-.log-row { display: flex; gap: 8px; padding: 2px 12px; font-size: calc(12px * var(--ui)); line-height: calc(16px * var(--ui)); }
+/* 一行的三格：类别芯片（定宽）＋ 时间（定宽、不折）＋ 正文（**允许折行** —— 这正是浮层存在的理由，拍板 ③）。
+   行距靠 `line-height` 排开、不写 gap —— 遵守「纵向间距只有 8 与 12 两档」那条约束。
+   ⚠️ 左侧 2px 色条（2026-10-03 用户拍板「两者都要」）与日志条 `.lg-row` **同一套观感**：
+      翻 30 条时不再满屏同色，一眼就能顺着色条挑出「爆仓 / 爆仓潮 / 成交」。
+      `border-left` 恒占位（透明色）—— 不占位的话上色那一刻整行会向右跳 2px。 */
+.log-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 12px 2px 10px;
+  border-left: 2px solid transparent;
+  font-size: calc(12px * var(--ui));
+  line-height: calc(16px * var(--ui));
+}
+.log-row.trade { border-left-color: var(--accent); }
+.log-row.cost  { border-left-color: var(--line); }
+.log-row.liq   { border-left-color: var(--down); }
+.log-row.mkt   { border-left-color: var(--down); }
+.log-row.news  { border-left-color: var(--gold); }
+/* 全市场级事件：淡红底 —— 与日志条 `.lg-row.alert` 同一套（两个入口一副样子） */
+.log-row.alert { background: rgba(255, 91, 106, .09); }
 .log-row u { flex: none; text-decoration: none; color: var(--mut); }
 .log-row span { flex: 1 1 auto; min-width: 0; word-break: break-word; }
 /* 新闻那条：正文提到「正文色」，与普通日志区分（底下的 `.log-row span` (0,1,1) 被这条盖过） */

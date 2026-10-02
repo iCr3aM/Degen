@@ -591,6 +591,35 @@ export const anyHeld = s => heldSyms(s).length > 0;
 export const LOG_MAX = 60;
 
 /**
+ * **日志类别**（2026-10-03 新增 `tag` 字段）—— 一枚**短标签 ＋ 一个色相**，解决「一排红字分不清」。
+ *
+ * 起因（用户 2026-10-03）：`kind` 只有 `bad` / `ok` / `info` 三档颜色，而实际事件族有 7 类、
+ * 其中 15 条以上全落在同一个红色 `bad` 里（资金费率 / 借贷利息 / 部分强平 / 爆仓 / ADL /
+ * 爆仓潮 / 盘口变薄 / 归零 / 停机 / 提现异常 / OTC 关闭）⇒「资金费 −$12」与「爆仓 保证金
+ * 全部损失」同色同款，只能逐字读、扫不出来。
+ *
+ * 分工（两者**并存**，各管一件事）：
+ *   · `kind`  → **正文颜色**：`ok` 绿 / `bad` 红 / 其余灰。回答「这一笔是好是坏」。
+ *   · `tag`   → **芯片颜色**：下表六类。回答「这是哪一类事件」。
+ *
+ * ⚠️ 只给**四类**（`trade` / `cost` / `liq` / `mkt`）显式传 —— 其余走 `LOG_TAG_DEFAULT`
+ *    按 `kind` 推成 `sys` / `news`，所以约五十处旧调用点**一个字都不用改**。
+ * ⚠️ 老存档的日志条目没有 `tag` ⇒ 读出来是 `undefined`，渲染层按同一条默认表回退
+ *    ⇒ **不改 `STATE_VERSION`**（结构是「多一个可选字段」，不是「换形状」）。
+ */
+export const LOG_TAGS = {
+  trade: '成交',   // 玩家自己的动作：开仓 / 加仓 / 平仓 / 减仓 / 买U / 转账 / 到账
+  cost:  '费率',   // 慢性成本：资金费率 / 借贷利息（最容易被忽略的那一类）
+  liq:   '强平',   // 被强制平仓：部分强平 / 爆仓 / ADL 自动减仓
+  mkt:   '市场',   // 全市场级事件：爆仓潮 / 盘口变薄 / 归零 / 停机 / OTC 关闭 —— 加边框那一类
+  sys:   '系统',   // 闸门提示 / 上线解锁 / 杠杆调整 / 结局
+  news:  '新闻',   // 史实新闻（金底，与既有 `.news-tag` 同一枚芯片）
+};
+
+/** `kind` → 默认类别（只有 `news` 需要区分，其余一律 `sys`） */
+export const LOG_TAG_DEFAULT = { info: 'sys', ok: 'sys', bad: 'sys', news: 'news' };
+
+/**
  * 追加一条日志（新的在前）。
  *
  * ⚠️ **相邻同文案折叠**（2026-09-29 拍板）：若与最新一条的正文**完全相同**，只把它的时候戳
@@ -598,13 +627,16 @@ export const LOG_MAX = 60;
  *    连点十几次就会用同一句话刷满整格；折叠后「点了 12 次」在日志里就是一条，
  *    且时间戳停在最后一次点击 —— 正是「只留最新一次的那条」。
  *    只在**相邻**时折叠（中间夹了别的日志就各留一条），所以时间线不会被压平。
- * ⚠️ 判据只用 `text`、**不含** `kind`：同一句话在不同入口可能一个 `info` 一个 `bad`
- *    （如「现货做空 暂不可用」主入口是 `info`、引擎兜底是 `bad`），带上 kind 判就会漏合并。
- * ⚠️ 结构零变化（仍是 `{at,text,kind}`）⇒ 不改 `STATE_VERSION`，老档照读。
+ * ⚠️ 判据只用 `text`、**不含** `kind` / `tag`：同一句话在不同入口可能一个 `info` 一个 `bad`
+ *    （如「现货做空 暂不可用」主入口是 `info`、引擎兜底是 `bad`），带上它们判就会漏合并。
+ *
+ * @param {string} text 正文
+ * @param {'info'|'ok'|'bad'|'news'} [kind] 正文颜色档（`ok` 绿 / `bad` 红 / 其余灰 / `news` 提亮）
+ * @param {keyof typeof LOG_TAGS} [tag] 类别芯片（缺省按 `LOG_TAG_DEFAULT` 推）
  */
-export function pushLog(s, text, kind = 'info') {
+export function pushLog(s, text, kind = 'info', tag = null) {
   const head = s.log[0];
   if (head && head.text === text) { head.at = s.i; return; }
-  s.log.unshift({ at: s.i, text, kind });
+  s.log.unshift({ at: s.i, text, kind, tag: tag || LOG_TAG_DEFAULT[kind] || 'sys' });
   if (s.log.length > LOG_MAX) s.log.length = LOG_MAX;
 }

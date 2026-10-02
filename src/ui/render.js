@@ -21,7 +21,7 @@ import { levelsOf } from '../core/levels.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
-import { anyHeld, heldSyms, posOf, slotOf } from '../core/state.js';
+import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf } from '../core/state.js';
 import { OVER_LABEL, badgesOf, multOf, titleOf } from '../core/titles.js';
 import { drawChart, drawEquityCurve } from './chart.js';
 import { windowFor, setYPx } from './view.js';
@@ -81,6 +81,28 @@ function moneySlot(key, n, { sign = false } = {}) {
  *  顶栏这几处虽然每帧重算，但绝大多数帧的值是同一个。读 `textContent` / `className` 不触发布局。 */
 const setText = (n, v) => { if (n.textContent !== v) n.textContent = v; };
 const setCls = (n, v) => { if (n.className !== v) n.className = v; };
+
+/**
+ * 日志条显示几行（2026-10-03 用户拍板 **2**）—— 见 `logline` 的构建处。
+ * ⚠️ 恒定行数（不是「有内容才长高」）：变高会带着 K 线区／下方内容一起跳。
+ */
+const LOG_ROWS = 2;
+
+/**
+ * 一条日志该用哪枚类别芯片。
+ *
+ * ⚠️ 老存档的条目没有 `tag`（那批数据写在 `LOG_TAGS` 存在之前）⇒ 按 `LOG_TAG_DEFAULT` 回退，
+ *    所以两处渲染都**必须**走这个函数，不能直接读 `e.tag`。
+ * ⚠️ **新闻会衰老**（P2-C 既有口径）：超过 `NEWS_HOURS` 就不该再顶着金底标签 —— 降级成 `sys`。
+ */
+function tagOf(e, nowI) {
+  const t = e.tag || LOG_TAG_DEFAULT[e.kind] || 'sys';
+  if (t === 'news' && nowI >= (e.at ?? nowI) + NEWS_HOURS) return 'sys';
+  return t;
+}
+
+/** 正文颜色：只认 `kind`（`ok` 绿 / `bad` 红 / 其余灰）；`news` 的提亮交给 CSS 的 `.lg-row.news` */
+const kindClsOf = kind => (kind === 'bad' ? 'down' : kind === 'ok' ? 'up' : 'mut');
 
 /** 左上角遮罩（`.chart-head`）的**实测高度**缓存（用户 2026-10-01 拍板）—— 它只随容器宽度
  *  （换行）与文案总长变，逐帧 `getBoundingClientRect` 会白白强制一次布局。
@@ -210,21 +232,30 @@ export function mount(root) {
     mini('保证金率', posRate),
   );
 
-  /* ── 日志条 ──
-     拆成「标签 ＋ 正文」两个节点（P2-C）：锚点时刻在正文前挂一枚 `新闻` 小标签切到**新闻态**，
-     不带标签时就是原来那一条普通日志。槽位仍是 24px，固定块合计不变 —— 见 ⑤ 的裁决 ③。
+  /* ── 日志条（**两行** · 2026-10-03 用户拍板）──
+     ⚠️ 由「一行只放最新一条」改成**恒定两行**（24px → 48px）。起因：级联那一小时里
+        「资金费率 → 爆仓潮 → ADL → 爆仓」四条连发，前面几条被顶掉、根本看不见。
+        两行是**恒定**高度（不是有内容才长高）—— 变高会带着 K 线区一起跳。
+     ⚠️ 每行拆成「类别芯片 ＋ 时间 ＋ 正文」三格（与浮层 `.log-row` 同一副样子）：
+        · 芯片按 `tag` 取色（`LOG_TAGS` 六类），回答「这是哪一类事件」；
+        · 正文按 `kind` 上色（`bad` 红 / `ok` 绿 / 其余灰），回答「这一笔是好是坏」。
+        原来整行共用一个 class，时间会被正文的颜色一起染掉（爆仓那条连时间都是红的）。
+     ⚠️ 类别为 `mkt`（全市场级：爆仓潮 / 归零 / 停机…）的那一行额外加 `alert`
+        —— 2px 左边框 ＋ 淡红底，整屏扫一眼就能抓住。
      ⚠️ **整条可点**（⑤ · 方案 §20.2.1）：点开日志浮层看全 30 条 ——
-        这一行只放得下一句被截尾的话，回看在浮层里做（`openLog`）。 */
-  const newsTag = el('i', 'news-tag', '新闻');
-  newsTag.hidden = true;
-  /* 时间与正文**拆成两格**（2026-09-29 用户要求）：时间写 `00:00`（不套方括号）、**恒为次要灰**；
-     正文按 `kind` 上色（`bad` 红 / `ok` 绿 / 其余灰）—— 与浮层 `.log-row` 是同一副样子。
-     原来整行共用一个 class，时间会被正文的颜色一起染掉（爆仓那条连时间都是红的）。 */
-  const logTime = el('u', 'num');
-  const logText = el('span');
+        两行也只放得下被截尾的两句，回看在浮层里做（`openLog`）。 */
+  const logRows = [];
   const logline = el('div', 'logline');
   logline.dataset.log = '';
-  logline.append(newsTag, logTime, logText);
+  for (let r = 0; r < LOG_ROWS; r++) {
+    const tag = el('i', 'log-tag');
+    const time = el('u', 'num');
+    const text = el('span');
+    const row = el('div', 'lg-row');
+    row.append(tag, time, text);
+    logline.append(row);
+    logRows.push({ row, tag, time, text });
+  }
 
   /* ── 操作区 ── */
   const fracRow = el('div', 'row');
@@ -566,7 +597,7 @@ export function mount(root) {
     canvas, chartWrap, chartHead, chSym, chMcap, chSupp, chChg, modeBtn, chartEta, chartLock,
     heatChip, heatBar, heatTxt, oiTxt, lsTxt,
     posbar, posSide, posPnl, posRate,
-    logline, newsTag, logTime, logText,
+    logline, logRows,
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asList,
@@ -799,33 +830,35 @@ export function update(refs, s, view) {
     }
   }
 
-  /* 日志条：只显示最近一条。时间用**事件发生那一刻**的 `at`，不是「现在」——
-     否则一条发生在 2015-10-01 的爆仓，几天后会被标成今天。
-     ⚠️ 前缀**只有时分**（2026-09-29）：完整日期已经在顶栏，这里再写一遍就是重复显示。 */
-  /* ⚠️ 兜底文案是 **`—`** 而不是「等待开盘…」（Batch 5 · B24）：那一行是日志的**空态**，
-     而此刻行情往往已经在跑了 —— 写「等待开盘」等于声称一件不成立的事。
-     新开局的「开盘」日志由 `main.js` 的 `onIntro()` 补上，空态几乎只出现在老存档上。 */
-  const last = s.log[0];
-  /* **新闻态**（P2-C · 裁决 ③：复用日志条这 24px 槽位，零布局开销）。
-     本轮起新闻**写进了日志**（引擎在窗口起点 push 一条 `kind:'news'`），所以这里不再按
-     `anchorAt(s.i)` 判时间窗，而是看**最上面那一条**是不是新闻、且没超过 `NEWS_HOURS`。
-     两条好处：① 新闻天然进 60 条日志（浮层里翻得到）；② 「同一事件一局内最多一次」由
-     `newsStartAt` 的 `===` 保证，不再依赖「窗口不重叠」这个巧合。
-     ⚠️ 一旦有更新的日志压上来（玩家自己的操作反馈），新闻就降级成一条普通日志 ——
-        这正是「新闻让位于更新的日志」（P2-C 拍板）想要的行为。 */
-  const newsOn = !!last && last.kind === 'news' && s.i < last.at + NEWS_HOURS;
-  refs.newsTag.hidden = !newsOn;
-  /* ⚠️ 颜色只上在**正文**那一格（`refs.logText`）：时间恒为 `--mut`（颜色落点是 CSS 的
-     `.logline > u`）。改这里就要连 CSS 一起看，两处是一件事。 */
-  refs.logTime.hidden = !last;
-  setText(refs.logTime, last ? fmtHour(GAME.start + (last.at ?? s.i) * HOUR_MS) : '');
-  setText(refs.logText, last ? last.text : '—');
-  if (newsOn) {
-    setCls(refs.logText, '');
-    setCls(refs.logline, 'logline news');
-  } else {
-    setCls(refs.logText, last ? (last.kind === 'bad' ? 'down' : last.kind === 'ok' ? 'up' : 'mut') : 'mut');
-    setCls(refs.logline, 'logline');
+  /* 日志条：显示**最近两条**（`LOG_ROWS`，2026-10-03）。时间用**事件发生那一刻**的
+     `at`，不是「现在」—— 否则一条发生在 2015-10-01 的爆仓，几天后会被标成今天。
+     ⚠️ 前缀**只有时分**（2026-09-29）：完整日期已经在顶栏，这里再写一遍就是重复显示。
+     ⚠️ **兜底文案是 `—`**（Batch 5 · B24）：那一行是日志的**空态**，而此刻行情往往已经在跑了
+        —— 写「等待开盘」等于声称一件不成立的事。空态几乎只出现在老存档上（新开局的「开盘」
+        日志由 `main.js` 的 `onIntro()` 补上），所以只在**第一行**兜底、第二行空着。 */
+  for (let r = 0; r < refs.logRows.length; r++) {
+    const cell = refs.logRows[r];
+    const e = s.log[r];
+    cell.row.hidden = !e && r > 0;
+    if (!e) {                                   // 第一天就空着的那一槽
+      setCls(cell.row, 'lg-row');
+      setCls(cell.tag, 'log-tag sys');
+      setText(cell.tag, r === 0 ? LOG_TAGS.sys : '');
+      setText(cell.time, '');
+      setText(cell.text, r === 0 ? '—' : '');
+      setCls(cell.text, 'mut');
+      continue;
+    }
+    /* ⚠️ 类别一律走 `tagOf`（老存档没有 `tag` 字段、新闻到点要衰老）—— 不要直接读 `e.tag`。 */
+    const tg = tagOf(e, s.i);
+    setText(cell.tag, LOG_TAGS[tg]);
+    setCls(cell.tag, `log-tag ${tg}`);
+    setText(cell.time, fmtHour(GAME.start + (e.at ?? s.i) * HOUR_MS));
+    setText(cell.text, e.text);
+    /* 正文颜色仍走 `kind`；`.lg-row.news > span` 会把新闻那条提到正文色（同一先例，见 CSS）。 */
+    setCls(cell.text, kindClsOf(e.kind));
+    /* `mkt` = 全市场级事件（爆仓潮 / 归零 / 停机…）⇒ 加 2px 左边框 ＋ 淡红底，一眼抓住。 */
+    setCls(cell.row, tg === 'mkt' ? 'lg-row alert' : 'lg-row');
   }
 
   /* **下单一小时锁**（§73.8 · 2026-10-02 用户拍板）：一笔成交后 `s.lockI = s.i`，
@@ -1577,10 +1610,16 @@ export function openLog(s, onClose) {
 
   const list = el('div', 'log-list');
   for (const e of s.log.slice(0, 30)) {
-    const row = el('div', 'log-row ' + (e.kind === 'bad' ? 'down' : e.kind === 'ok' ? 'up' : e.kind === 'news' ? 'news' : 'mut'));
-    /* 新闻那条带一枚金色小标签 —— 与日志条上那枚是**同一个** `.news-tag`，玩家一眼能认出 */
-    if (e.kind === 'news') row.append(el('i', 'news-tag', '新闻'));
-    row.append(el('u', null, fmtHour(GAME.start + (e.at ?? s.i) * HOUR_MS)), el('span', null, e.text));
+    /* 类别一律走 `tagOf`（老存档没有 `tag` 字段、新闻到点要衰老）。
+       整行左侧 2px 色条 = 类别色（CSS 里按 `.log-row.<tag>` 取），`mkt`（全市场级）再叠一层
+       边框 ＋ 淡底 —— 与日志条那两行走**同一套** class，两个入口一副样子。 */
+    const tg = tagOf(e, s.i);
+    const row = el('div', `log-row ${tg}${tg === 'mkt' ? ' alert' : ''}`);
+    row.append(el('i', `log-tag ${tg}`, LOG_TAGS[tg]));
+    row.append(
+      el('u', null, fmtHour(GAME.start + (e.at ?? s.i) * HOUR_MS)),
+      el('span', kindClsOf(e.kind), e.text),
+    );
     list.append(row);
   }
   if (!list.childElementCount) list.append(el('div', 'log-row mut', '—'));

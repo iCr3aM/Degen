@@ -419,7 +419,7 @@ function advTick(s) {
   if (drop >= 1 - ADV.warnMul) {
     if (!s.advWarn) {
       s.advWarn = true;
-      pushLog(s, `多家交易所盘口变薄 ｜ 深度较常态下降 ${Math.round(drop * 100)}%`, 'bad');
+      pushLog(s, `多家交易所盘口变薄 ｜ 深度较常态下降 ${Math.round(drop * 100)}%`, 'bad', 'mkt');
     }
   } else if (maxE <= ADV.t1) {
     s.advWarn = false;
@@ -849,7 +849,7 @@ function adl(s, sym, m, price, need) {
       if (g.short <= 0) { g.short = 0; g.shortAvg = 0; g.shortStopped = false; }
     }
     done += cut;
-    pushLog(s, `ADL 自动减仓 ${sym} ${it.lev}x｜平掉 ${fmtMoneyShort(cut)} @ ${fmtLogPrice(price)}`, 'bad');
+    pushLog(s, `ADL 自动减仓 ${sym} ${it.lev}x｜平掉 ${fmtMoneyShort(cut)} @ ${fmtLogPrice(price)}`, 'bad', 'liq');
   }
 }
 
@@ -936,7 +936,9 @@ function stampede(s, sym, m, price) {
     s.stat.liqNotional += liqNotional;
     const liqDay = liqOf(sym, dayIndexOf(s.i));
     if (liqDay > 0 && liqNotional >= liqDay * NPC.liqEventFrac) {
-      pushLog(s, `爆仓潮 ${sym} ｜ ${fmtMoneyShort(liqNotional)}`, 'bad');
+      /* 补 `@ 价格`（2026-10-03 用户要求）：只报金额时玩家看不出这一波砸在什么价位上，
+         也就无法把「爆仓潮」与 K 线上那根长阴对上号。 */
+      pushLog(s, `爆仓潮 ${sym} ｜ ${fmtMoneyShort(liqNotional)} @ ${fmtLogPrice(price)}`, 'bad', 'mkt');
     }
   }
   /* 缺口 5 ③：基金被穿仓掏空（< 0）⇒ 用 ADL 强减盈利档补齐，池复位到 0。 */
@@ -1477,7 +1479,7 @@ export function openTrade(s, side, frac = 1) {
     : `${prev ? '追加保证金' : '保证金'} ${fmtMoneyShort(margin)} · 名义 ${fmtMoneyShort(notional)}`;
   const avg = prev ? `｜均价 ${fmtLogPrice(pos.entry)}` : '';
   pushLog(s, `${head}｜${line} @ ${fmtLogPrice(fill)}${avg}｜手续费 ${fmtMoneyShort(fee)}${tag}`,
-    side === 'long' ? 'long' : 'short');
+    side === 'long' ? 'long' : 'short', 'trade');
 
   /* 订单冲击（方案 §2.6）：把这一笔的行情位移（`permImpactFor`，**无阈值死区**）沉淀成台阶
      —— 从此处起价格上/下一个台阶，再按 §73.3 的三段曲线（永久 ＋ 慢幂律 ＋ 快回）缓慢修复。
@@ -1622,12 +1624,12 @@ export function closeTrade(s, why = '手动', frac = 1) {
      它是纯文本（core 不认识 UI，不挂 `.sign` 伪元素），与「盈利 / 亏损」两个字面并存。 */
   const verdict = `${netRound >= 0 ? '盈利 ▲' : '亏损 ▼'} ${fmtMoneyShort(netRound)} · ${why}｜手续费 ${fmtMoneyShort(fees)}${tag}`;
   if (f >= 1) {
-    pushLog(s, `平仓 ${sym} ${pos.lev}x｜${verdict}`, netRound >= 0 ? 'ok' : 'bad');
+    pushLog(s, `平仓 ${sym} ${pos.lev}x｜${verdict}`, netRound >= 0 ? 'ok' : 'bad', 'trade');
     delete s.positions[sym];
   } else {
     /* 减仓那一条把**平掉的比例**写在脸上（`25%` / `50%`）—— 否则玩家分不清
        「刚才是卖了一半」还是「整条没了」。 */
-    pushLog(s, `减仓 ${sym} ${pos.lev}x ${Math.round(f * 100)}%｜${verdict}`, netRound >= 0 ? 'ok' : 'bad');
+    pushLog(s, `减仓 ${sym} ${pos.lev}x ${Math.round(f * 100)}%｜${verdict}`, netRound >= 0 ? 'ok' : 'bad', 'trade');
     pos.size -= closeSize;
     pos.margin -= backMargin;
     pos.notional *= (1 - f);
@@ -1709,7 +1711,7 @@ function forceLiquidate(s, pos, atPrice) {
   pushLog(s, back > 1e-9
     ? `爆仓 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)}｜退回 ${fmtMoneyShort(back)} @ ${fmtLogPrice(atPrice)}`
     : `爆仓 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)} 全部损失 @ ${fmtLogPrice(atPrice)}`,
-    'bad');
+    'bad', 'liq');
 
   if (back > 1e-9) credit(s, pos.ex, back, pos.mix);   // 退回**当初开仓那家所**（原路：按 mix 比例分两格）
   s.realized -= pos.margin - back;                     // 真实现金变动 = 丢掉保证金、收回退款
@@ -1839,7 +1841,7 @@ export function buyUsdt(s, frac = 1) {
   b.usdt += got;
   /* 日志把**汇率**写出来（而不是只报两个金额）：玩家要能看出这一笔是赚了还是亏了 ——
      0.900 时买 U 是捡便宜、1.050 时是挨宰，那正是这个机制的全部意义。 */
-  pushLog(s, `买入 USDT ${fmtMoney(got)}｜1 USDT = $${price.toFixed(3)}｜花费 ${fmtMoney(usd)}`, 'info');
+  pushLog(s, `买入 USDT ${fmtMoney(got)}｜1 USDT = $${price.toFixed(3)}｜花费 ${fmtMoney(usd)}`, 'info', 'trade');
   return { ok: true };
 }
 
@@ -1934,7 +1936,7 @@ export function switchExchange(s, id) {
   const add = rail.hours ? 0 : bumpPulse(s, send);     // > 当日 BTC 流动性的 10% 才算大额
   const eta = rail.hours ? `${Math.round(n / 24)} 天后到账` : `${n} 小时后到账`;
   pushLog(s, `转账 → ${ex.name}｜${fmtMoneyShort(send)}｜${rail.label} · ${eta}｜手续费 ${fmtMoneyShort(fee)}`
-    + (add ? `｜推高拥堵 +${add.toFixed(1)}` : ''), 'info');
+    + (add ? `｜推高拥堵 +${add.toFixed(1)}` : ''), 'info', 'trade');
   s.stat.move += 1;                                    // 统计（v21）：称号「搬家达人」读它
   return { ok: true };
 }
@@ -1966,7 +1968,7 @@ function collapseExchange(s, ex) {
 
   const hit = lost + margin;
   pushLog(s, hit > 0 ? `${ex.name} 归零 ｜ 损失 ${fmtMoney(hit)}` : `${ex.name} 归零`,
-    hit > 0 ? 'bad' : 'info');
+    hit > 0 ? 'bad' : 'info', 'mkt');
 
   return checkRuin(s);
 }
@@ -1993,7 +1995,7 @@ function applyHackCut(s, ex) {
   pushLog(s, lost > 0
     ? `${ex.name} 被盗 ｜ 普损 ${fmtRate(ex.hack.cut, 3)} 损失 ${fmtMoney(lost)}`
     : `${ex.name} 被盗 ｜ 普损 ${fmtRate(ex.hack.cut, 3)}`,
-    lost > 0 ? 'bad' : 'info');
+    lost > 0 ? 'bad' : 'info', 'mkt');
 
   return checkRuin(s);
 }
@@ -2024,7 +2026,7 @@ export function takeLoan(s) {
      原来只把 `paused` 放开，玩家若在 50x 下被爆仓、点「领取救济金」，会在**自己没反应过来**时
      又连飞几十个游戏小时。救命钱到账这一刻必须让玩家重新握回速度盘。 */
   s.speed = 1;
-  pushLog(s, `领取救济金 ${fmtMoney(amount)} ｜ 无需偿还`, 'info');
+  pushLog(s, `领取救济金 ${fmtMoney(amount)} ｜ 无需偿还`, 'info', 'trade');
   return { ok: true };
 }
 
@@ -2074,7 +2076,7 @@ export function advanceOneHour(s) {
     ensureBook(s, tr.to)[tr.cur] += tr.amount;
     s.transfer = null;
     const to = exchangeOf(tr.to);
-    pushLog(s, `到账 ${to ? to.name : tr.to} ｜ ${fmtMoney(tr.amount)}`, 'ok');
+    pushLog(s, `到账 ${to ? to.name : tr.to} ｜ ${fmtMoney(tr.amount)}`, 'ok', 'trade');
   }
   decayPulse(s);
 
@@ -2089,7 +2091,7 @@ export function advanceOneHour(s) {
   for (const ex of EXCHANGES) {
     if (ex.close == null) continue;
     if (t === ex.close - WARN_LEAD && s.ex === ex.id) {
-      pushLog(s, `${ex.name} 提现异常，7 天后将停止一切交易`, 'bad');
+      pushLog(s, `${ex.name} 提现异常，7 天后将停止一切交易`, 'bad', 'mkt');
     }
     if (t === ex.close && collapseExchange(s, ex)) return;
   }
@@ -2120,7 +2122,7 @@ export function advanceOneHour(s) {
     if (ex.open > GAME.start && t === ex.open) pushLog(s, `${ex.name} 上线 ｜ 可在此交易`, 'ok');
     // 停机维护（B24 · BitMEX 2020-03-13）：窗口内**只平不开**
     for (const h of ex.halts || []) {
-      if (t === h.from) pushLog(s, `${ex.name} 停机维护 ｜ 只能平仓，不能开仓`, 'bad');
+      if (t === h.from) pushLog(s, `${ex.name} 停机维护 ｜ 只能平仓，不能开仓`, 'bad', 'mkt');
       if (t === h.to) pushLog(s, `${ex.name} 恢复交易`, 'ok');
     }
     /* 杠杆阶梯：**首档 > 1x** 才叫「这类杠杆上线」（1x 就是纯现货，不是杠杆，不播）；
@@ -2152,7 +2154,7 @@ export function advanceOneHour(s) {
         条件仍成立时会再报一次 —— 正是用户要求消除的那种重复。
      ⚠️ 回到「OTC 可用」或「玩家自己切回盘口」时**解除闩锁**，这样下一次真的跌落还能再报一次。 */
   if (s.chan === 'otc' && chanOf(s) === 'book') {
-    if (!s.otcOff) { s.otcOff = true; pushLog(s, OTC_OFF, 'bad'); }
+    if (!s.otcOff) { s.otcOff = true; pushLog(s, OTC_OFF, 'bad', 'mkt'); }
   } else if (s.otcOff) {
     s.otcOff = false;
   }
@@ -2376,12 +2378,12 @@ function settleFunding(s) {
     const rate = fed / grossP;
     const pool = s.mkt && s.mkt[s.sym] ? s.mkt[s.sym].npcFund : 0;
     pushLog(s, `资金费率 ${fmtRate(Math.abs(rate), 4)} ｜ 收益 ${fmtMoney(-fed, { sign: true })} ｜ 对手方池 ${fmtMoneyShort(pool)}`,
-      fed > 0 ? 'bad' : 'ok');
+      fed > 0 ? 'bad' : 'ok', 'cost');
   }
   if (grossM > 0 && ied !== 0) {
     const rate = ied / grossM;
     pushLog(s, `借贷利息 ${fmtRate(Math.abs(rate), 4)} ｜ 收益 ${fmtMoney(-ied, { sign: true })}`,
-      'bad');
+      'bad', 'cost');
   }
 
   return checkRuin(s);
@@ -2476,7 +2478,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
   s.stat.liq += 1;                         // 统计（2026-10-02 审计修）：逐步强平同样计入 —— 与 `forceLiquidate` 同口径
   s.positions[pos.sym] = r.pos;
-  pushLog(s, `部分强平 ${pos.sym} ${pos.lev}x｜平掉 ${fmtRate(frac, 1)}｜保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad');
+  pushLog(s, `部分强平 ${pos.sym} ${pos.lev}x｜平掉 ${fmtRate(frac, 1)}｜保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad', 'liq');
   refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：部分强平也是卖出 ⇒ 折价同比例释放
 }
 
