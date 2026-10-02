@@ -304,7 +304,7 @@ function hourLiqRaw(s, sym, i) {
 
 /* ───────────────── 对抗性流动性（提案 B 档 1 · NEXT-STEPS §五 · 2026-10-02）─────────────────
    做市商看到「你的仓位相对这个小时的深度太大」就**撤深度**（不是猎杀止损，§5.4）。
-   三样东西共用**一个** `exposure`、**一个**深度乘数：
+   四样东西共用**一个** `exposure`、**一个**深度乘数：
      ① `hourLiqBase` 的折减（滑点 / 拆单笔数 / 瞬时深度池容量**全部连带**）
         ⚠️ v30 起**资金费不再走这条深度分母**（改由 `longShareOf` 的多空比驱动）⇒ 不再连带。
      ② OTC 点差放大（`otcPremiumFor`，`1 ÷ 深度乘数`）
@@ -312,6 +312,9 @@ function hourLiqRaw(s, sym, i) {
         另一个乘数 `heatSpreadMul`（缺口 11 · 2026-10-02 拍板），与 ② 相乘喂给同一个
         `otcPremiumFor`。两者读的是**不同**的输入（玩家仓位 vs 市场热度），不得合并。
      ③ 预警日志（`advTick`，深度乘数首次 ≤ `ADV.warnMul` 时播一条，带闩锁）
+     ④ **档 2 有向推价**（缺口 6-B · 2026-10-03）：`exposure ≥ ADV.t2` 时，向玩家持仓的**逆向**
+        施加一笔位移 `permImpactOf(pushK × (exposure − t2), σ)`，**折进 `s.mkt[sym].npcDrift`
+        同一张台阶表**（不新开第二条价格通道）。它走的是**当前**持仓（`advCurExposureOf`，疤痕不算）。
 
    ⚠️ **口径**：`exposure` 只算**杠杆盘**（合约 / 现货保证金）的名义 —— 现货 1x 是**实物**，
       它走的是 `FLOAT` 那条「浮筹折减」通道（§5.3），两处不能重复计。
@@ -331,19 +334,52 @@ function advPeakOf(s, sym, i) {
 }
 
 /**
+ * 玩家此刻在该币的**当前**杠杆名义 ÷ 折减前基准深度 —— **不含**峰值疤痕（`s.adv`）。
+ *
+ * ⚠️ 档 1 与档 2 的判据**故意不同**：档 1（撤深度）走 `advExposureOf`（含疤痕 —— 撤走的深度
+ *    一周才回来），档 2（推价）走**本函数**（只看当前持仓 —— 平仓即停止施压，§5.1「疤痕不算」）。
+ * ⚠️ 只算**杠杆盘**（合约 / 现货保证金）：现货 1x 是实物，走 `FLOAT` 那条浮筹折减（§5.3）。
+ */
+function advCurExposureOf(s, sym, raw) {
+  if (!(raw > 0)) return 0;
+  const pos = s.positions[sym];
+  if (!pos || (pos.spot && pos.lev === 1)) return 0;
+  const mark = markPrice(s, sym);
+  return mark > 0 ? pos.size * mark / raw : 0;
+}
+
+/**
  * 该币此刻的**有效 exposure** ＝ `max(当前持仓名义 ÷ 折减前基准深度, 峰值台阶残值)`。
  * 分母由调用方传入（它刚算过 `hourLiqRaw`，别重算一遍）。
  */
 function advExposureOf(s, sym, i, raw) {
-  if (!(raw > 0)) return 0;
-  const pos = s.positions[sym];
-  let cur = 0;
-  if (pos && !(pos.spot && pos.lev === 1)) {
-    const mark = markPrice(s, sym);
-    if (mark > 0) cur = pos.size * mark / raw;
-  }
+  const cur = advCurExposureOf(s, sym, raw);
   const peak = advPeakOf(s, sym, i);
   return cur > peak ? cur : peak;
+}
+
+/**
+ * **档 2 · 有向推价**（缺口 6-B · 2026-10-03 用户拍板 `pushK = 1.0`）—— 返回一笔**带符号**的
+ * 价格位移（多 ⇒ 负、空 ⇒ 正），折进 `s.mkt[sym].npcDrift` 同一张台阶表（见 `syncNpcDrift`）。
+ *
+ * 口径（§5.1 档 2 / §5.5）：
+ *   · **只在当前持仓存在且 `exposure ≥ ADV.t2`** 时生效（疤痕不算 ⇒ 平仓即释放）；
+ *   · `q = ADV.pushK × (exposure − t2)`，幅度 = `permImpactOf(q, σ)` —— 与玩家自己砸同样名义时
+ *     **同一把尺子**（`permImpactOf` 的 `q` 口径），不新立第二条公式；
+ *   · 方向恒为玩家持仓的**逆向**（做市商吃下对手盘后，其库存回补的压力把价格往回推 ——
+ *     Brunnermeier & Pedersen 2005 的掠夺方向；§5.4 已明令文案不许写成「猎杀止损」）。
+ *
+ * ⚠️ **不是新通道**：位移最终只经 `factorFor` 一处生效（与 `npcDrift` 同源），且是**有界**的
+ *    （被 `SLIP.cap` 夹住 ⇒ ≤ `σ`）⇒ 不累积、不顶夹子。
+ */
+function advPushOf(s, sym, i, sig) {
+  const pos = s.positions[sym];
+  if (!pos) return 0;
+  const e = advCurExposureOf(s, sym, hourLiqRaw(s, sym, i));
+  if (!(e >= ADV.t2)) return 0;
+  const mag = permImpactOf(ADV.pushK * (e - ADV.t2), sig);
+  if (!(mag > 0)) return 0;
+  return pos.side === 'long' ? -mag : mag;
 }
 
 /**
@@ -388,7 +424,9 @@ function advSpreadMul(s, sym) {
 /**
  * 对抗性流动性的**每小时落账**（由 `advanceOneHour` 调用）：
  *   ① 把本小时的有效 exposure 抬进峰值台阶（**只抬不降** —— 降靠 `advPeakOf` 的半衰期）；
- *   ② 深度乘数首次跌到 `ADV.warnMul` 以下时播一条预警日志（带闩锁）。
+ *   ② 深度乘数首次跌到 `ADV.warnMul` 以下时播一条预警日志（带闩锁）；
+ *   ③ **档 2 有向推价**（缺口 6-B）：对本小时遍历到的每个币跑一次 `syncNpcDrift`，把
+ *      `advPushOf` 叠进该币的 `npcDrift` 台阶表；进入档 2 播一条预警（闩锁 `s.advWarn2`）。
  *
  * ⚠️ 为什么必须**每小时单独跑一次**（而不是挂在读路径上）：
  *    ① 读路径是**纯函数**（`openCheck` / `closeCheck` 每帧都被 `render.js` 调到），在它里面写状态
@@ -404,7 +442,7 @@ function advTick(s) {
   if (!s.adv) s.adv = {};
   const syms = new Set(heldSyms(s));
   for (const k in s.adv) syms.add(k);   // 已平掉但疤痕还在的币也要继续衰减
-  let drop = 0, maxE = 0;
+  let drop = 0, maxE = 0, pushMax = 0;
   for (const sym of syms) {
     const raw = hourLiqRaw(s, sym, s.i);
     if (!(raw > 0)) continue;
@@ -415,6 +453,16 @@ function advTick(s) {
     }
     const d = 1 - advDepthMul(s, sym, s.i, raw);
     if (d > drop) drop = d;
+    /* 缺口 6-B（2026-10-03）：档 2 的**有向推价**折进 `npcDrift` 台阶表。
+       ⚠️ **跳过当前币 `s.sym`**：它刚在 `tickMarket` 里调过一次（且那一次早于踩踏级联，
+          是本作既有的口径）—— 再调一次会在「本小时恰好踩踏」时用**清算后**的 `npcNet`
+          多落一级、改变既有行为。跳过 ⇒ 当前币语义一字不动。
+       ⚠️ 其余**持有币 / 疤痕币**必须在这里补：`tickMarket` 只跑当前币，而「拿着大仓去看别的币」
+          时那个大仓同样要被推价；**平仓之后**这一步会写回 0 把推价释放（否则它会永远粘住）。 */
+    const sig = dailySigma(sym, s.i);
+    if (sym !== s.sym) syncNpcDrift(s, sym, s.i, sig);
+    const p = Math.abs(advPushOf(s, sym, s.i, sig));
+    if (p > pushMax) pushMax = p;
   }
   if (drop >= 1 - ADV.warnMul) {
     if (!s.advWarn) {
@@ -423,6 +471,16 @@ function advTick(s) {
     }
   } else if (maxE <= ADV.t1) {
     s.advWarn = false;
+  }
+  /* 缺口 6-B：档 2 推价的预警（§5.2 硬要求 —— 被打之前必须看得见）。口径与 `s.advWarn` 同一先例：
+     进入档 2 播一条，退回档 0 才解除 —— 中间（档 1 区间）不重复播。§5.4：不写「猎杀止损」。 */
+  if (pushMax > 0) {
+    if (!s.advWarn2) {
+      s.advWarn2 = true;
+      pushLog(s, `盘口承接力不足 ｜ 大额持仓出现额外 ${fmtRate(pushMax, 1)} 不利偏移`, 'bad', 'mkt');
+    }
+  } else if (maxE <= ADV.t1) {
+    s.advWarn2 = false;
   }
 }
 
@@ -758,7 +816,10 @@ function syncNpcDrift(s, sym, i, sig) {
   const net = npcNet(m);
   const liqDay = liqOf(sym, dayIndexOf(i));
   const q = liqDay > 0 ? Math.abs(net) / liqDay : 0;
-  const v = net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig);
+  /* 缺口 6-B（2026-10-03）：同一张台阶表里再叠一层**档 2 有向推价**（玩家持仓逆向）——
+     与 NPC 净持仓偏移**相加**后落一级，共用同一条「差 ≥ `NPC.driftEps` 才落级」的纪律。
+     ⚠️ 平仓 / 退出档 2 时 `advPushOf` 返回 0 ⇒ 下一级台阶自然把推价释放（不会永久粘住）。 */
+  const v = (net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig)) + advPushOf(s, sym, i, sig);
   /* 非有限值守卫（2026-10-02 审计修 · 风险 R2）：NaN / Infinity 落进台阶表后，`JSON.stringify`
      写成 `null`、读回 `NaN`，整条价格曲线会跟着变 NaN。上游目前都被夹在有限区间，这里是兜底。 */
   if (!Number.isFinite(v)) return;
@@ -2289,6 +2350,7 @@ export function rewindTo(s, to) {
   s.pool = {};          // 瞬时深度池（v23）同样是「进度」⇒ 回退时一并抹掉（与 s.flow 同口径）
   s.adv = {};           // 对抗性流动性峰值台阶（v29）同样是「进度」⇒ 回退时一并抹掉
   s.advWarn = false;    // 预警闩锁也一并复原（否则回退后再进档 1 就永远不再提醒）
+  s.advWarn2 = false;   // 档 2 推价预警闩锁，同上
   /* 保险基金（v30 · 缺口 5）也是「进度」⇒ 回退时抹成 `null`，让它按**跳转后那一天**的
      流动性重新播种（写死绝对值会在跨年代回退时失真）。 */
   s.fund = null;

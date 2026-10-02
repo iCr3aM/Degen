@@ -269,6 +269,14 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     advWarn: false,
 
     /**
+     * **档 2 推价**那条预警的**闩锁**（缺口 6-B · 2026-10-03）—— 当前持仓的有效 exposure 首次
+     * 达到档 2（`≥ ADV.t2`）时播一条，退回档 0（`≤ ADV.t1`）才解除 —— 与 `s.advWarn` 同一先例，
+     * 同一连续区间只播一次（§5.2 硬要求：被打之前必须看得见）。
+     * ⚠️ 不升 `STATE_VERSION`：新增布尔，旧档缺省 `undefined`（falsy）⇒ 行为与首次进档一致。
+     */
+    advWarn2: false,
+
+    /**
      * **NPC 市场情绪 / 持仓**（v26 · §73.5 · 2026-10-02 拍板）——
      * `sym -> { heat, npc: [ 6 档 ], mm, npcDrift }`。
      *
