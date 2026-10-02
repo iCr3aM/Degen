@@ -17,7 +17,7 @@ import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, ra
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { HEAT, NPC, SHOCK, addFlow, exDevOf, playerFactor, shockParamsOf } from './god.js';
+import { HEAT, NPC, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -928,7 +928,8 @@ function adl(s, sym, m, price, need) {
   const q = [];
   for (let k = 0; k < m.npc.length; k++) {
     const g = m.npc[k];
-    const lev = NPC.ladder[k].lev;
+    /* 缺口 17：ADL 排序用的杠杆也走年代封顶 —— 与 `stampede` 的强平线同源 */
+    const lev = npcLevOf(timeOf(s), NPC.ladder[k].lev);
     if (g.long > 0 && g.longAvg > 0 && price > g.longAvg) {
       q.push({ k, long: true, ratio: price / g.longAvg, lev, notional: g.long });
     }
@@ -996,7 +997,8 @@ function stampede(s, sym, m, price) {
   if (cascadeMulOf(s) <= 0 || !(price > 0)) return;
   let liqNotional = 0;                              // 本小时被**强平**的名义（缺口 16 口径：不含止损波）
   for (let k = 0; k < m.npc.length; k++) {
-    liqNotional += flushSlot(s, sym, m, m.npc[k], NPC.ladder[k].lev, price);
+    /* 缺口 17：强平线读**年代封顶后**的杠杆（2016-05-13 前全市场最高只有 3.33x） */
+    liqNotional += flushSlot(s, sym, m, m.npc[k], npcLevOf(timeOf(s), NPC.ladder[k].lev), price);
   }
   if (m.mm) liqNotional += flushSlot(s, sym, m, m.mm, NPC.mm.lev, price);
   /* 缺口 16：把本小时被强平的名义记进统计；达到「当日流动性 × NPC.liqEventFrac」播一条事件日志。
