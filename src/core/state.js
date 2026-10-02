@@ -81,8 +81,13 @@ import { isSpot } from './positions.js';
    ① **限价挂单 `s.orders` 整体移除**（C8-B2 回滚）—— 改动前它是 v15 新增的键。
    ② **场外配资改版为「一次性救济金」**—— 删除 `s.loan`（在贷）字段与全部利息/到期/违约逻辑。
    两处都动了状态形状，旧档对不上 ⇒ **弃档重开**（既有规范，不写迁移）。
-   ⚠️ v26（2026-10-02 · §73）：新增 `s.endI`（本局终点）与 `s.mkt`（NPC 情绪 / 持仓）—— 同样弃档重开。 */
-export const STATE_VERSION = 27;
+   ⚠️ v26（2026-10-02 · §73）：新增 `s.endI`（本局终点）与 `s.mkt`（NPC 情绪 / 持仓）—— 同样弃档重开。
+   ⚠️ v28（2026-10-02 · NEXT-STEPS §4.2）：`s.mkt[sym]` 的 `npcLong/npcShort/npcLongAvg/npcShortAvg`
+   四个标量 → `npc`（**6 档杠杆阶梯**数组）；并新增 `s.mkt[sym].npcShock`（级联的**有界瞬时**冲击
+   台阶表，与 `s.flow` 分开）—— 形状变了，旧档的 `npc*` 在新代码里读不到 ⇒ 弃档重开。
+   （§4.4 原判断「`s.mkt` 是派生态、不进存档」**经核实不成立**：`save.shaped()` 的 SHAPE 就含 `mkt`，
+   且 `save()` 是整份 `JSON.stringify(s)` ⇒ 它**确实落盘**，所以必须升版本号。） */
+export const STATE_VERSION = 28;
 
 /**
  * 开一局新的。
@@ -230,20 +235,28 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     pool: {},
 
     /**
-     * **NPC 市场情绪 / 持仓**（v26 · §73.5 · 2026-10-02 拍板）—— `sym -> { heat, npcLong, npcShort,
-     * npcLongAvg, npcShortAvg, npcDrift }`。
+     * **NPC 市场情绪 / 持仓**（v26 · §73.5 · 2026-10-02 拍板）——
+     * `sym -> { heat, npc: [ 6 档 ], npcDrift }`。
      *
      *   `heat`        ∈ [0,1] 的市场热度：0.5 中性、1 极度贪婪、0 极度恐慌。由「价格位移」
      *                 ＋ 「玩家自己的成交量」烧起来，并带均值回复（参数见 `HEAT`）。
-     *   `npcLong/Short`  NPC 净持仓**名义价值**（USD），`*Avg` 为它们的平均入场价。
+     *   `npc`（**v28** · §4.2）：**6 档杠杆阶梯** —— 每档 `{ long, longAvg, short, shortAvg,
+     *                 longStopped, shortStopped }`（名义价值 USD ＋ 平均入场价 ＋ 止损标志）。
+     *                 档序与 `NPC.ladder` **逐位对应**（`stampede` 按下标读 `lev`）。
+     *                 改动前是四个标量 `npcLong/npcShort/npcLongAvg/npcShortAvg`（单值 10x ⇒
+     *                 只有一条强平线，要么不炸、要么一起炸）。
      *   `npcDrift`（v27 · 2026-10-02）散户净持仓造成的**有界价位偏移**，存成**台阶表**
      *                 `{ at: [], v: [] }`（只追加、取值 = 最后一个 `at <= j` 的那一项）。
      *                 仅当偏移变化 ≥ `NPC.driftEps` 时才落一级 —— 旧实现每小时无条件重盖
      *                 `at = s.i`（NEXT-STEPS §九 根因 ②）。
+     *   `npcShock`（v28 · 2026-10-02）：NPC 级联**逐笔被动平仓**造成的冲击，同样存成**台阶表**
+     *                 `{ at: [], v: [] }`。与 `s.flow` **分开**：它按 `0.5^(e / NPC.shockHalf)`
+     *                 **指数衰减**（半衰期 24 小时）⇒ 残存值有界，不写 `s.flow` 那条永久台阶
+     *                 （否则级联的慢幂律分量无界累积，把报价顶死在 `riseMax` 夹子上）。
      *
-     * 它让市场**真的会自己动**：热度高 ⇒ NPC 顺周期追高（写正冲击），热度崩 ⇒ NPC 多头被强平
-     * （写负冲击）⇒ 「巨鲸砸盘 → 踩踏 → 缓慢修复」的级联。此前 `pushFlow` 的调用者只有玩家自己，
-     * 物理上不存在踩踏（§73.1 实测）。
+     * 它让市场**真的会自己动**：热度高 ⇒ NPC 顺周期追高（建仓抬高 `npcDrift`），热度崩 ⇒ NPC
+     * 多头被强平（写负 `npcShock`）⇒ 「巨鲸砸盘 → 踩踏 → 缓慢修复」的级联。此前 `pushFlow` 的
+     * 调用者只有玩家自己，物理上不存在踩踏（§73.1 实测）。
      * ⚠️ 与 `s.flow` / `overhang` 一样是**逐币**的；每根 K 线由 `engine.tickMarket` 推进一步。
      */
     mkt: {},

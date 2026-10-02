@@ -418,16 +418,31 @@ const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 /**
  * 某个币的 NPC 情绪 / 持仓格子（懒建）：
- *   `heat` ∈ [0,1]，0.5 中性；`npcLong` / `npcShort` 是 NPC 净持仓**名义价值**（USD）；
- *   `npcLongAvg` / `npcShortAvg` 是平均入场价（算踩踏强平线用）；
+ *   `heat` ∈ [0,1]，0.5 中性；
+ *   `npc`（**v28 · §4.2**）＝ **6 档杠杆阶梯** —— 每档 `{ long, longAvg, short, shortAvg,
+ *         longStopped, shortStopped }`（净持仓**名义价值** USD ＋ 平均入场价 ＋ 止损已触发标志）。
+ *         ⚠️ 档序与 `NPC.ladder` **逐位对应** —— `stampede` 按下标读 `lev`。
  *   `npcDrift` 是散户净持仓造成的**有界价位偏移**台阶表 `{ at: [], v: [] }`（见 `god.npcDriftAt`）；
+ *   `npcShock`（**v28**）是 NPC 级联**逐笔被动平仓**的冲击台阶表 `{ at: [], v: [] }` —— 独立的
+ *         **有界瞬时**通道（`0.5^(e / NPC.shockHalf)` 指数衰减），**不写 `s.flow`**（见 `pushNpcShock`）；
  *   `pv` 是**玩家本小时**的成交名义（每根 K 线结算一次，见 `tickMarket`）。
  */
 function mktOf(s, sym) {
   if (!s.mkt) s.mkt = {};
   return s.mkt[sym] || (s.mkt[sym] = {
-    heat: HEAT.base, npcLong: 0, npcShort: 0, npcLongAvg: 0, npcShortAvg: 0, npcDrift: null, pv: 0,
+    heat: HEAT.base,
+    npc: NPC.ladder.map(() => ({
+      long: 0, longAvg: 0, short: 0, shortAvg: 0, longStopped: false, shortStopped: false,
+    })),
+    npcDrift: null, npcShock: null, pv: 0,
   });
+}
+
+/** 六档净持仓之和（`long − short`，名义 USD）—— `syncNpcDrift` 的口径，与改动前的标量同义。 */
+function npcNet(m) {
+  let net = 0;
+  for (const g of m.npc) net += g.long - g.short;
+  return net;
 }
 
 /**
@@ -453,24 +468,27 @@ function cascadeMulOf(s) {
  *    净持仓永远只是**趋近** 0 而不等于 0（每小时 ×0.85）⇒ 一个 $1 的残尾 + 早年的低均价
  *    就能让 `stampede` 判出「亏 8%」白送一次强平（实测 12 年 663 次里绝大多数是这种幽灵）。
  *    低于 `floor` 的残尾直接清成 0 —— 残尾本身对价格没有可观测影响，留着只有副作用。
+ * @param {object} slot 该档该币的格子（`{ long, longAvg, short, shortAvg, … }`，`§4.2` 的一档）
  * @param {number} price 这一刻的标记价（摊平均价用）
- * @param {number} floor 残尾归零阈值（名义额，调用侧给 `日流动性 × NPC.floor`）
+ * @param {number} floor 残尾归零阈值（名义额，调用侧给 `日流动性 × NPC.floor × 该档权重`）
  */
-function stepNpc(s, sym, side, target, price, floor) {
-  const m = mktOf(s, sym);
+function stepNpc(slot, side, target, price, floor) {
   const long = side === 'long';
-  const key = long ? 'npcLong' : 'npcShort';
-  const avgKey = long ? 'npcLongAvg' : 'npcShortAvg';
-  const cur = m[key];
+  const key = long ? 'long' : 'short';
+  const avgKey = long ? 'longAvg' : 'shortAvg';
+  const stopKey = long ? 'longStopped' : 'shortStopped';
+  const cur = slot[key];
   const next = cur + (Math.max(0, target) - cur) * NPC.speed;
   if (next < floor) {                                                                // 残尾 ⇒ 直接清零
-    if (cur !== 0) { m[key] = 0; m[avgKey] = 0; }
+    /* ⚠️ 连**止损标志**一起清（v28）：这一档该侧已经空了，下一轮建仓是**新的仓**，
+       必须能重新触发止损 —— 否则「上一轮止过损」会一直压着新仓不让它止损。 */
+    if (cur !== 0) { slot[key] = 0; slot[avgKey] = 0; slot[stopKey] = false; }
     return;
   }
   const delta = next - cur;
   if (!(Math.abs(delta) > 1e-9)) return;
-  m[key] = next;
-  if (delta > 0 && price > 0) m[avgKey] = (m[avgKey] * cur + price * delta) / next;   // 加仓 ⇒ 摊平均价
+  slot[key] = next;
+  if (delta > 0 && price > 0) slot[avgKey] = (slot[avgKey] * cur + price * delta) / next;   // 加仓 ⇒ 摊平均价
 }
 
 /**
@@ -495,7 +513,7 @@ function stepNpc(s, sym, side, target, price, floor) {
  */
 function syncNpcDrift(s, sym, i, sig) {
   const m = mktOf(s, sym);
-  const net = m.npcLong - m.npcShort;
+  const net = npcNet(m);
   const liqDay = liqOf(sym, dayIndexOf(i));
   const q = liqDay > 0 ? Math.abs(net) / liqDay : 0;
   const v = net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig);
@@ -506,36 +524,95 @@ function syncNpcDrift(s, sym, i, sig) {
 }
 
 /**
- * **踩踏级联**（§73.5 第 4 步）：散户整条仓**浮亏到强平线**（距入场价 `1/lev − 维持保证金率`）⇒
- * 整条被动卖出（一根大阴线），并把热度再压一档。空头镜像（逼空）。
+ * NPC 级联的一笔冲击 —— 写进 `s.mkt[sym].npcShock`（**不写 `s.flow`**，见 `god.NPC.shockHalf`）。
  *
- * 强平线口径与玩家侧同一把尺子：距入场价 `1/lev − 维持保证金率`（= `1/10 − 2%` = **8%**）。
+ * 为什么必须另开一条通道（2026-10-02 审计修，用户拍板「独立有界瞬时通道」）：级联原来和玩家共用
+ * `pushFlow` ⇒ 每一笔都留下 `SHOCK_MODE.fut.perm = 0.40` 的永久台阶，而 `decay` 的慢分量按
+ * `t^−0.3` 衰减、**积分发散** ⇒ 12 年里级联 2000+ 次，位移单向累积把报价顶死在 `riseMax` 夹子上
+ * （实测全程 **97.67%** 的时间顶夹；旧单档模型也有同源性 **+16.7%** 的系统偏置）。
+ * 本通道按 `0.5^(e / NPC.shockHalf)` 指数衰减 ⇒ 残存值上界 = 每小时注入量 × `1/(1−2^−1/24)` ≈ ×34，
+ * **天然有界**；级联在图上仍是「砸一波、再修复」，但不再累积。
  *
- * ⚠️ **入口条件只有「亏 8%」这一条**（2026-10-02 审计修，用户拍板）。原来还前置了
+ * ⚠️ 与 `s.flow` 同一套**硬纪律**（见 `god.js` 头注）：`at` 只许等于写入那一刻的 `s.i`、只许追加。
+ * ⚠️ **同一根小时内同向（乃至反向）的几笔直接相加** —— 它们共享同一个 `at` 与同一条衰减核，
+ *    逐笔求和与合并求和**逐位等价**，省掉级联时（最多 12 笔/小时）的重复条目。
+ * @param {number} notional 该笔被动平仓的名义额（USD）
+ */
+function pushNpcShock(s, sym, m, dir, notional) {
+  const v = dir * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
+  if (!Number.isFinite(v) || v === 0) return;
+  const tab = m.npcShock || (m.npcShock = { at: [], v: [] });
+  const n = tab.at.length;
+  if (n && tab.at[n - 1] === s.i) tab.v[n - 1] += v;
+  else { tab.at.push(s.i); tab.v.push(v); }
+  invalidateSigma();                                // 位移随级联变了 ⇒ 逐根 σ 失效（同 `pushFlow`）
+}
+
+/**
+ * **踩踏级联**（§73.5 第 4 步 ＋ NEXT-STEPS §4.2/§4.3）：散户的**六档杠杆阶梯**各自按自己的
+ * 强平线（距入场价 `1/lev − GAME.maintRate`）被击穿 ⇒ 该档被动卖出（一根阴线），并把热度再压一档。
+ * 空头镜像（逼空）。改动前只有**一条** 8% 的线（`NPC.lev = 10` / `maint = 2%`）——要么不炸、
+ * 要么一起炸；现在六条线（**32.8 / 19.5 / 9.5 / 4.5 / 1.5 / 0.5%**）逐级击穿，级联成为**台阶**。
+ *
+ * **止损带**（§4.3 · 2026-10-02 用户拍板）：每档在**强平线 × `NPC.stopFrac`（0.6）**处先走一波
+ * **自愿止损** —— 平掉该档 50% 名义，剩余 50% 硬扛到强平线 ⇒ 六级台阶变 **12 级小台阶**
+ * （现实里「一部分人止损、一部分人硬扛到爆」）。三条纪律：
+ *   · **按档缩放**：3x 档的止损线 ≠ 20x 档的止损线，否则低杠杆档永远走不到自己的强平线；
+ *   · **一次性**：触发后该档该侧落 `longStopped / shortStopped` 标志，不再反复减半
+ *     （否则价格一直低于止损线时会逐小时再减半，把剩余 50% 提前磨光、「剩余扛到强平线」不成立）；
+ *     价格**回升出带**或**残尾归零**时复位该标志（下一轮是新仓）。
+ *   · **止损波只写 `npcShock`、不给 `HEAT.panicDrop`**（强平潮是被迫的恐慌、止损是自愿的 ⇒
+ *     避免同一波下跌被计两次热度跳变）。
+ *
+ * ⚠️ **入口条件只有「价格真的穿过那条线」这一条**（2026-10-02 审计修，用户拍板）。原来还前置了
  *    `m.heat < HEAT.panic`，但那与 `target = mom × (heat − 0.5)` 直接矛盾：热度低于 0.25 时
  *    靶心已经为负 ⇒ 散户的**多仓早就被清成 0** ⇒ 多头分支**结构上永远不可达**，
  *    ROADMAP §73.10 那条「heat 高位时单笔砸 −3% → 触发级联」的验收根本跑不出来。
- *    现在只要价格真的跌穿 8%，无论热度在哪一档，整条多仓都会被强平 —— 这才是「强平线」的意思。
- * ⚠️ 平仓那笔用 `give = 1`（全额反向）—— NPC 建仓时写的是正冲击、且已经衰减了一部分，
- *    此刻的全额反向会**净剩一笔向下的位移**，那正是 §73.4 说的「过冲」的来源。
+ *    现在只要价格真的跌穿，无论热度在哪一档，那一档的仓位都会被强平 —— 这才是「强平线」的意思。
+ * ⚠️ **平仓冲击走独立有界通道 `npcShock`（`pushNpcShock`），不写 `s.flow`**（2026-10-02 审计修，
+ *    用户拍板）：全额反向（`give = 1`）在一根内是一笔向下的位移、级联在图上「砸一波再修复」，
+ *    但不再像写 `s.flow` 那样留下 40% 的永久台阶、无界累积（那会把报价顶死在 `riseMax`）。
+ *    详见 `pushNpcShock` 与 `god.NPC.shockHalf`。
  * ⚠️ **按模式门控**（§73.6 · 2026-10-02 审计修）：级联的燃料是**杠杆盘**，实物现货换手没有被
- *    强制平仓的对手方 ⇒ `cascadeMulOf` 为 0（真现货 1x）时整条不跑。改动前它在现货模式也会
- *    把 NPC 当杠杆仓强平，与「现货不参与级联」的口径直接矛盾。
+ *    强制平仓的对手方 ⇒ `cascadeMulOf` 为 0（真现货 1x）时整条不跑。
  */
 function stampede(s, sym, m, price) {
   if (cascadeMulOf(s) <= 0 || !(price > 0)) return;
-  const drop = 1 / NPC.lev - NPC.maint;              // 距入场价多远爆（0.08 = 8%）
-  if (m.npcLong > 0 && m.npcLongAvg > 0 && price < m.npcLongAvg * (1 - drop)) {
-    const amt = m.npcLong;
-    m.npcLong = 0; m.npcLongAvg = 0;
-    m.heat = clamp01(m.heat - HEAT.panicDrop);
-    pushFlow(s, sym, -1, amt, 1, 'fut', false);
-  }
-  if (m.npcShort > 0 && m.npcShortAvg > 0 && price > m.npcShortAvg * (1 + drop)) {
-    const amt = m.npcShort;
-    m.npcShort = 0; m.npcShortAvg = 0;
-    m.heat = clamp01(m.heat + HEAT.panicDrop);       // 空头踩踏 = 逼空 ⇒ 热度反而上冲
-    pushFlow(s, sym, 1, amt, 1, 'fut', false);
+  const maint = GAME.maintRate;                     // 0.5% 基准档（与玩家侧 `GAME.maintRate` 同源）
+  for (let k = 0; k < m.npc.length; k++) {
+    const g = m.npc[k];
+    const drop = 1 / NPC.ladder[k].lev - maint;     // 该档距入场价多远爆
+    const stop = drop * NPC.stopFrac;               // 止损带：强平线 × 0.6
+    /* 多头：先自愿止损（平 50%、一次性），跌破强平线则全平并复位。 */
+    if (g.long > 0 && g.longAvg > 0) {
+      if (price < g.longAvg * (1 - drop)) {
+        pushNpcShock(s, sym, m, -1, g.long);
+        m.heat = clamp01(m.heat - HEAT.panicDrop);
+        g.long = 0; g.longAvg = 0; g.longStopped = false;
+      } else if (!g.longStopped && price < g.longAvg * (1 - stop)) {
+        const cut = g.long * 0.5;
+        pushNpcShock(s, sym, m, -1, cut);
+        g.long -= cut;
+        g.longStopped = true;
+      } else if (g.longStopped && price >= g.longAvg * (1 - stop)) {
+        g.longStopped = false;                      // 回升出带 ⇒ 下一轮可再触发
+      }
+    }
+    /* 空头镜像：逼空 ⇒ 热度反而上冲。 */
+    if (g.short > 0 && g.shortAvg > 0) {
+      if (price > g.shortAvg * (1 + drop)) {
+        pushNpcShock(s, sym, m, 1, g.short);
+        m.heat = clamp01(m.heat + HEAT.panicDrop);
+        g.short = 0; g.shortAvg = 0; g.shortStopped = false;
+      } else if (!g.shortStopped && price > g.shortAvg * (1 + stop)) {
+        const cut = g.short * 0.5;
+        pushNpcShock(s, sym, m, 1, cut);
+        g.short -= cut;
+        g.shortStopped = true;
+      } else if (g.shortStopped && price <= g.shortAvg * (1 + stop)) {
+        g.shortStopped = false;                     // 回落出带 ⇒ 下一轮可再触发
+      }
+    }
   }
 }
 
@@ -574,14 +651,20 @@ export function tickMarket(s, sym) {
   m.pv = 0;
   /* ③ NPC 顺势建仓：热度高于中性 ⇒ 净多头，低于中性 ⇒ 净空头。取不到深度就不建（不凭空造量）。
      ⚠️ 靶心与残尾阈值都用**日流动性**（与 `syncNpcDrift` 同一把尺子）：用逐小时深度时，
-        冷门小时（占比 1/24）的靶心被压小、热门小时又被放大 ⇒ 散户仓位跟着小时形状剧烈抖动。 */
+        冷门小时（占比 1/24）的靶心被压小、热门小时又被放大 ⇒ 散户仓位跟着小时形状剧烈抖动。
+     ⚠️ **按档分配**（§4.2）：同一个靶心按 `NPC.ladder[k].w` 分给六档，`Σw = 1` ⇒
+        六档名义之和 == 改动前的单值（**总敞口守恒**），只是摊到了六条不同的强平线上。
+        残尾阈值同理按档缩放（`× w`）—— 否则低权重的 100x 尾巴会被同一个绝对阈值整条抹掉。 */
   const liqDay = liqOf(sym, dayIndexOf(i));
   if (liqDay > 0) {
     const target = NPC.mom * (m.heat - HEAT.base) * liqDay;
     const price = markPrice(s, sym);
-    const floor = liqDay * NPC.floor;
-    stepNpc(s, sym, 'long', target, price, floor);
-    stepNpc(s, sym, 'short', -target, price, floor);
+    for (let k = 0; k < NPC.ladder.length; k++) {
+      const w = NPC.ladder[k].w;
+      const floor = liqDay * NPC.floor * w;
+      stepNpc(m.npc[k], 'long', target * w, price, floor);
+      stepNpc(m.npc[k], 'short', -target * w, price, floor);
+    }
   }
   syncNpcDrift(s, sym, i, sig);
   /* ④ 踩踏级联。 */
