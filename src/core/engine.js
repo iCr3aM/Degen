@@ -23,7 +23,7 @@ import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate 
 import {
   equityOf, isLiquidatable, isSpot, liquidationPrice, maintRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
-  FUNDING, FR, fundingOf, canLiquidate, paysFunding, paysInterest, shockKindOf,
+  FUNDING, FR, INSURE, fundingOf, canLiquidate, paysFunding, paysInterest, shockKindOf,
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
@@ -305,7 +305,8 @@ function hourLiqRaw(s, sym, i) {
 /* ───────────────── 对抗性流动性（提案 B 档 1 · NEXT-STEPS §五 · 2026-10-02）─────────────────
    做市商看到「你的仓位相对这个小时的深度太大」就**撤深度**（不是猎杀止损，§5.4）。
    三样东西共用**一个** `exposure`、**一个**深度乘数：
-     ① `hourLiqBase` 的折减（滑点 / 拆单笔数 / 瞬时深度池容量 / 资金费分母全部连带）
+     ① `hourLiqBase` 的折减（滑点 / 拆单笔数 / 瞬时深度池容量**全部连带**）
+        ⚠️ v30 起**资金费不再走这条深度分母**（改由 `longShareOf` 的多空比驱动）⇒ 不再连带。
      ② OTC 点差放大（`otcPremiumFor`，`1 ÷ 深度乘数`）
      ⚠️ ② 只覆盖**玩家侧**那半（`advSpreadMul`）。**市场级**那半（踩踏 / 逼空期间放大）是
         另一个乘数 `heatSpreadMul`（缺口 11 · 2026-10-02 拍板），与 ② 相乘喂给同一个
@@ -599,6 +600,7 @@ const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
  *   `npcDrift` 是散户净持仓造成的**有界价位偏移**台阶表 `{ at: [], v: [] }`（见 `god.npcDriftAt`）；
  *   `npcShock`（**v28**）是 NPC 级联**逐笔被动平仓**的冲击台阶表 `{ at: [], v: [] }` —— 独立的
  *         **有界瞬时**通道（`0.5^(e / NPC.shockHalf)` 指数衰减），**不写 `s.flow`**（见 `pushNpcShock`）；
+ *   `npcFund`（**v30** · 缺口 3）是**对手方池**（USD）—— 玩家永续资金费的对手方账户（见 `settleFunding`）；
  *   `pv` 是**玩家本小时**的成交名义（每根 K 线结算一次，见 `tickMarket`）。
  */
 function mktOf(s, sym) {
@@ -608,7 +610,7 @@ function mktOf(s, sym) {
     npc: NPC.ladder.map(() => ({
       long: 0, longAvg: 0, short: 0, shortAvg: 0, longStopped: false, shortStopped: false,
     })),
-    npcDrift: null, npcShock: null, pv: 0,
+    npcDrift: null, npcShock: null, npcFund: 0, pv: 0,
   });
 }
 
@@ -772,6 +774,86 @@ function pushNpcShock(s, sym, m, dir, notional) {
 }
 
 /**
+ * **保险基金的惰性播种**（v30 · 第 6 批 · 缺口 5）—— `开局日流动性 × INSURE.seed`。
+ *
+ * ⚠️ 只在 `s.fund` **还不是有限数**时播种：`createState` 给的是 `null`，上帝模式的
+ *    「跳日期」回退（`rewindTo`）也把它清回 `null` ⇒ 一局里至多重播一次，读路径不受影响。
+ * ⚠️ 用**当日流动性**而非绝对美元：一局的量级从 2013（数十万）跨到 2025（数十亿），
+ *    写死绝对值会在某一端完全失真（同 `INSURE.seed` 的注释）。
+ */
+function seedFund(s, sym) {
+  if (Number.isFinite(s.fund)) return;
+  const liq0 = liqOf(sym, dayIndexOf(s.i));
+  s.fund = liq0 > 0 ? liq0 * INSURE.seed : 0;
+}
+
+/**
+ * **强平盈余结算**（v30 · 第 6 批 · 缺口 5 ① ②）—— 某档 NPC 在 `price` 被强制平仓时，
+ * 把「隐含保证金 − 实际亏损」记进保险基金 `s.fund`。
+ *
+ * 口径（＝现实「强平价 vs 破产价」的差额）：
+ *   `loss    = notional × dir × (1 − price/avg)`   （dir = +1 多头 / −1 空头）
+ *   `margin  = notional ÷ lev`                     （入场时交的保证金）
+ *   `surplus = margin − loss`
+ * 在**强平线**处 `price = avg×(1 − drop)`、`drop = 1/lev − maint` ⇒ 代入得
+ * `surplus = notional × maint`（＝现实里强平盈余恰为维持保证金那一档）；
+ * 价格**越过破产价**（`price < avg×(1 − 1/lev)` 的多头）时 `surplus < 0` ⇒ 穿仓，由池吸收（②）。
+ * @param {number} dir +1 = 多头档、−1 = 空头档
+ */
+function fundSettle(s, notional, avg, lev, dir, price) {
+  if (!(notional > 0) || !(avg > 0) || !(lev > 0)) return;
+  const loss = notional * dir * (1 - price / avg);
+  s.fund += notional / lev - loss;                  // 正 = 盈余入池；负 = 穿仓掏池
+}
+
+/**
+ * **ADL 自动减仓**（v30 · 第 6 批 · 缺口 5 ③）—— 保险基金被穿仓掏空后，按 ADL 队列
+ * 强减**盈利的 NPC 档**，直到补齐缺口。
+ *
+ * 队列口径（[Hypercall](https://docs.hypercall.xyz/docs/reference/auto-deleveraging/)）：
+ * `ADL index = (mark ÷ entry) × (notional ÷ accountValue)`，其中 `accountValue ≈ margin = notional ÷ lev`
+ * ⇒ `index = (mark ÷ entry) × lev`。**盈利越高、杠杆越高，越先被减**（其反直觉之处正是现实特征：
+ * ADL 砍的是**赢家**，不是输家 —— 连 Hyperliquid 在 2025-10-10 都触发了两年来的首次 ADL）。
+ *
+ * ⚠️ 被减的档按现价平掉、写 `pushNpcShock`（平多 ⇒ 卖出 −1、平空 ⇒ 买回 +1）——
+ *    与「止损 / 强平」走同一条有界瞬时通道。**不给 `panicDrop`**：ADL 是被迫去杠杆，
+ *    不是新的恐慌来源（与止损波同一先例，避免同一波下跌被计两次热度跳变）。
+ * ⚠️ 现实 ADL 触发率 <0.1% 的强平 —— 本作只有在级联把基金打到 ≤ 0 时才走这里，同样罕见。
+ * @param {number} need 需要覆盖的缺口（USD 名义）
+ */
+function adl(s, sym, m, price, need) {
+  if (!(need > 0) || !(price > 0)) return;
+  const q = [];
+  for (let k = 0; k < m.npc.length; k++) {
+    const g = m.npc[k];
+    const lev = NPC.ladder[k].lev;
+    if (g.long > 0 && g.longAvg > 0 && price > g.longAvg) {
+      q.push({ k, long: true, ratio: price / g.longAvg, lev, notional: g.long });
+    }
+    if (g.short > 0 && g.shortAvg > 0 && price < g.shortAvg) {
+      q.push({ k, long: false, ratio: g.shortAvg / price, lev, notional: g.short });
+    }
+  }
+  q.sort((a, b) => (b.ratio * b.lev) - (a.ratio * a.lev));      // ADL index 降序
+  let done = 0;
+  for (const it of q) {
+    if (done >= need) break;
+    const g = m.npc[it.k];
+    const cut = Math.min(it.notional, need - done);
+    pushNpcShock(s, sym, m, it.long ? -1 : 1, cut);
+    if (it.long) {
+      g.long -= cut;
+      if (g.long <= 0) { g.long = 0; g.longAvg = 0; g.longStopped = false; }
+    } else {
+      g.short -= cut;
+      if (g.short <= 0) { g.short = 0; g.shortAvg = 0; g.shortStopped = false; }
+    }
+    done += cut;
+    pushLog(s, `ADL 自动减仓 ${sym} ${it.lev}x｜平掉 ${fmtMoneyShort(cut)} @ ${fmtLogPrice(price)}`, 'bad');
+  }
+}
+
+/**
  * **踩踏级联**（§73.5 第 4 步 ＋ NEXT-STEPS §4.2/§4.3）：散户的**六档杠杆阶梯**各自按自己的
  * 强平线（距入场价 `1/lev − GAME.maintRate`）被击穿 ⇒ 该档被动卖出（一根阴线），并把热度再压一档。
  * 空头镜像（逼空）。改动前只有**一条** 8% 的线（`NPC.lev = 10` / `maint = 2%`）——要么不炸、
@@ -798,19 +880,28 @@ function pushNpcShock(s, sym, m, dir, notional) {
  *    详见 `pushNpcShock` 与 `god.NPC.shockHalf`。
  * ⚠️ **按模式门控**（§73.6 · 2026-10-02 审计修）：级联的燃料是**杠杆盘**，实物现货换手没有被
  *    强制平仓的对手方 ⇒ `cascadeMulOf` 为 0（真现货 1x）时整条不跑。
+ *
+ * ⚠️ **v30（第 6 批）在两处强平分支上各挂了一笔账**（自愿止损波**不挂**，见下）：
+ *    · **缺口 16**：`liqNotional`（只含强平）→ `s.stat.liqNotional`；达阈值播「爆仓潮」日志。
+ *    · **缺口 5 ①②**：`fundSettle` —— 强平盈余入保险基金 / 穿仓掏池。
+ *    两处都**只挂在「跌破强平线」这一支**：自愿止损不是「爆仓」、也没有强平盈余可言。
  */
 function stampede(s, sym, m, price) {
   if (cascadeMulOf(s) <= 0 || !(price > 0)) return;
   const maint = GAME.maintRate;                     // 0.5% 基准档（与玩家侧 `GAME.maintRate` 同源）
+  let liqNotional = 0;                              // 本小时被**强平**的名义（缺口 16 口径：不含止损波）
   for (let k = 0; k < m.npc.length; k++) {
     const g = m.npc[k];
-    const drop = 1 / NPC.ladder[k].lev - maint;     // 该档距入场价多远爆
+    const lev = NPC.ladder[k].lev;
+    const drop = 1 / lev - maint;                   // 该档距入场价多远爆
     const stop = drop * NPC.stopFrac;               // 止损带：强平线 × 0.6
     /* 多头：先自愿止损（平 50%、一次性），跌破强平线则全平并复位。 */
     if (g.long > 0 && g.longAvg > 0) {
       if (price < g.longAvg * (1 - drop)) {
         pushNpcShock(s, sym, m, -1, g.long);
         m.heat = clamp01(m.heat - HEAT.panicDrop);
+        liqNotional += g.long;                      // 缺口 16：只认这一笔（强平潮）
+        fundSettle(s, g.long, g.longAvg, lev, 1, price);   // 缺口 5 ①②：盈余入池 / 穿仓掏池
         g.long = 0; g.longAvg = 0; g.longStopped = false;
       } else if (!g.longStopped && price < g.longAvg * (1 - stop)) {
         const cut = g.long * 0.5;
@@ -826,6 +917,8 @@ function stampede(s, sym, m, price) {
       if (price > g.shortAvg * (1 + drop)) {
         pushNpcShock(s, sym, m, 1, g.short);
         m.heat = clamp01(m.heat + HEAT.panicDrop);
+        liqNotional += g.short;
+        fundSettle(s, g.short, g.shortAvg, lev, -1, price);
         g.short = 0; g.shortAvg = 0; g.shortStopped = false;
       } else if (!g.shortStopped && price > g.shortAvg * (1 + stop)) {
         const cut = g.short * 0.5;
@@ -836,6 +929,21 @@ function stampede(s, sym, m, price) {
         g.shortStopped = false;                     // 回落出带 ⇒ 下一轮可再触发
       }
     }
+  }
+  /* 缺口 16：把本小时被强平的名义记进统计；达到「当日流动性 × NPC.liqEventFrac」播一条事件日志。
+     ⚠️ 只含**强平潮**，不含上面的自愿止损波 —— 对齐 Coinglass 的公告口径。 */
+  if (liqNotional > 0) {
+    s.stat.liqNotional += liqNotional;
+    const liqDay = liqOf(sym, dayIndexOf(s.i));
+    if (liqDay > 0 && liqNotional >= liqDay * NPC.liqEventFrac) {
+      pushLog(s, `爆仓潮 ${sym} ｜ ${fmtMoneyShort(liqNotional)}`, 'bad');
+    }
+  }
+  /* 缺口 5 ③：基金被穿仓掏空（< 0）⇒ 用 ADL 强减盈利档补齐，池复位到 0。 */
+  if (s.fund < 0) {
+    const need = -s.fund;
+    s.fund = 0;
+    adl(s, sym, m, price, need);
   }
 }
 
@@ -850,6 +958,7 @@ function stampede(s, sym, m, price) {
 export function tickMarket(s, sym) {
   const m = mktOf(s, sym);
   const i = s.i;
+  seedFund(s, sym);   // v30 · 缺口 5：保险基金**惰性播种**（开局日流动性 × INSURE.seed，只播一次）
   /* ① 价格项 `x` = **近 24h 收益 ÷ 日σ**（2026-10-02 拍板，取代原来的「本根累积位移 ÷ σ」）。
      ⚠️ 两条口径都很关键：
         · **窗口收益**而非单根位移 —— 位移是脉冲（平时恒 0），热度会被钉死在中性、玩家不动手就不跳；
@@ -1571,6 +1680,13 @@ export function closeTrade(s, why = '手动', frac = 1) {
 function forceLiquidate(s, pos, atPrice) {
   const remain = maintRateOf(pos) * pos.notional;     // 触发时的残余权益（＝维持保证金那一格）
   const back = Math.max(0, remain - pos.notional * LIQ.fee);
+  /* 保险基金（v30 · 缺口 5 · 三级瀑布 ①）：这笔强平的**盈余**进池。
+     口径：`盈余 = 残余权益 − 清算费`（若还没吃完）—— 即清算费中扣掉返还的那一份。
+     ⚠️ `remain − back` = `min(remain, notional × LIQ.fee)`：默认档（0.5% 维持线）下
+        `remain = notional × 0.5%` 恰好等于清算费 ⇒ 全额进池、返还为 0（与变动前逐位相同）；
+        高名义档（1% / 2.5%）才有返还，那部分不进池。 */
+  seedFund(s, pos.sym);
+  s.fund += remain - back;
   const notional = pos.size * atPrice;                // 实际成交名义（强平价上的那笔量）
   /* 玩家自己的成交量（v17 · 2026-10-01）：强平也是一笔真实成交 ⇒ 记进当根 K 线的量柱。
      取 `size × atPrice`，与 `closeTrade` 同口径；产品线取**仓位自己**的那条（v20）。 */
@@ -2124,6 +2240,9 @@ export function rewindTo(s, to) {
   s.pool = {};          // 瞬时深度池（v23）同样是「进度」⇒ 回退时一并抹掉（与 s.flow 同口径）
   s.adv = {};           // 对抗性流动性峰值台阶（v29）同样是「进度」⇒ 回退时一并抹掉
   s.advWarn = false;    // 预警闩锁也一并复原（否则回退后再进档 1 就永远不再提醒）
+  /* 保险基金（v30 · 缺口 5）也是「进度」⇒ 回退时抹成 `null`，让它按**跳转后那一天**的
+     流动性重新播种（写死绝对值会在跨年代回退时失真）。 */
+  s.fund = null;
   s.pvol = {};          // 玩家自己的成交量（v17）也是「进度」，回退时一并抹掉 —— 与 s.flow 同口径
   /* 持仓抛压折价（v18 / v25 疤痕）同样是「进度」⇒ 一并抹掉。⚠️ 漏掉它会让**没有持仓**的价格
      仍被一条永久疤痕压着（`refreshOverhang` 的按日重算只遍历 `heldSyms`，永远洗不掉它）。 */
@@ -2131,7 +2250,7 @@ export function rewindTo(s, to) {
   s.realized = 0;
   /* 交易统计（v21）也属于「进度」⇒ 一并清空。唯独 `god`（是否开过上帝模式）留着 ——
      它是「这一局不干净」的**永久标记**，回退一百次也不该被洗白。 */
-  s.stat = { open: 0, win: 0, loss: 0, liq: 0, spot: 0, fut: 0, maxLev: 1, syms: {}, move: 0, god: s.stat.god, loan: 0 };
+  s.stat = { open: 0, win: 0, loss: 0, liq: 0, spot: 0, fut: 0, maxLev: 1, syms: {}, move: 0, god: s.stat.god, loan: 0, liqNotional: 0 };
   s.eq = [];
   s.loaned = false;
   s.pending = null;
@@ -2178,8 +2297,10 @@ export function invalidateSigma() {
  * 每 8 游戏小时一次的**持仓成本结算**（GDD §9.5）—— B26 起分成**两条互斥的路**：
  *
  *   - **永续（perp）**：资金费率 —— **拥挤成本**（§73.6）：应付的名义价值 × 费率从保证金里扣
- *     （应收则加回去）。费率 = `clamp(FR.k × 持仓名义 ÷ 小时基准深度 × dir, ±FR.max)`，
- *     口径与理由见 `positions.js` 的 `FR` 注释 —— 仓越大越贵，不再由行情动量决定。
+ *     （应收则加回去）。费率 = `clamp(FR.k × clamp((多空占比 − 0.5) ÷ 0.5, ±1), ±FR.max)` ——
+ *     **不含 `dir`**：方向只在 `fundingOf` 里出现一次（v30 · 缺口 3 修掉原来的双重 `dir` bug）。
+ *     费率由**全市场多空失衡**（`longShareOf`，含玩家自己的名义）驱动，玩家可真收可付；
+ *     「仓位越大越贵 / 越赚」自动保持，不再由行情动量决定。口径见 `positions.js` 的 `FR` 注释。
  *   - **现货保证金（margin）**：借贷利息 —— `名义 × 日息 × (8/24)`。史实里 Bitfinex 的
  *     「杠杆」是用户间 P2P 借美元/借 BTC（出借方叫 Margin Funding Provider），按市场利率计息；
  *     日息**按年代取值**（`config.MARGIN.daily`）且**数字是合成值** ⇒ GDD 声明。
@@ -2215,14 +2336,27 @@ function settleFunding(s) {
     const mark = markPrice(s, sym);
     if (!(mark > 0)) continue;
 
-    /* 拥挤成本（§73.6 · 2026-10-02）：费率绑在**玩家持仓名义相对小时基准深度**上 ——
-       仓越大越贵，多头拥挤时多头付、空头拥挤时空头付。取不到深度就不收费（数据缺口不凭空造钱）。 */
-    const liq = hourLiqBase(s, sym, s.i);
-    if (!(liq > 0)) continue;
-    const dir = pos.side === 'long' ? 1 : -1;
-    const rate = Math.max(-FR.max, Math.min(FR.max, FR.k * (pos.size * mark / liq) * dir));
+    /* **全市场多空失衡**驱动的资金费（v30 · 第 6 批 · 缺口 3）—— 真实资金费是**多空之间的
+       点对点转移**（拥挤方付、另一侧收），交易所只当中介。费率**不含方向**（`dir` 只在
+       `fundingOf` 里出现一次）⇒ 玩家可真收可付；玩家自己的名义已经在 `longShareOf` 里
+       ⇒「仓越大越贵 / 越赚」自动保持，不必再加第二项。 */
+    const share = longShareOf(s, sym);
+    if (share == null) continue;                     // 没有任何仓位 ⇒ 无多空比可言，不收费
+    const skew = Math.max(-1, Math.min(1, (share - 0.5) / 0.5));
+    const rate = Math.max(-FR.max, Math.min(FR.max, FR.k * skew));
 
-    const fee = fundingOf(pos, mark, rate);
+    let fee = fundingOf(pos, mark, rate);
+    /* **对手方池**（`s.mkt[sym].npcFund` · 缺口 3）：玩家付出 ⇒ 入池；玩家收取 ⇒ 从池出。
+       ⚠️ 池**只付得起它有的部分**（＝偿付上限）：付不起就按余额打折 —— 池余额恒 ≥ 0，
+          这正是「对手方不足以覆盖」时真实平台的处境。 */
+    const m = mktOf(s, sym);
+    if (fee > 0) m.npcFund += fee;
+    else if (fee < 0) {
+      const paid = Math.min(-fee, m.npcFund > 0 ? m.npcFund : 0);
+      m.npcFund -= paid;
+      fee = -paid;                                   // 实际只收到 `paid`
+    }
+
     pos.margin -= fee;
     /* ⚠️ 同一笔钱也要记进「已实现」（Batch 5 · B23）：原来只从保证金里扣，
        于是 HUD 副行那个数漏掉了资金费这一项支出（或收入）。 */
@@ -2231,14 +2365,17 @@ function settleFunding(s) {
     grossP += pos.size * mark;
   }
 
-  /* 各币各看各的动量，费率并不相同 —— 日志只报一个**按名义价值加权的综合费率**，
+  /* 各币各看各自的**多空失衡**，费率并不相同 —— 日志只报一个**按名义价值加权的综合费率**，
      它恰好能自洽地解释那个净额，不会出现「费率写 +0.01% 却收钱」这种读不通的情况。
+     ⚠️ 末段「对手方池」是**当前币**（`s.sym`）的余额（缺口 3）—— 池按币分账，
+        写一个跨币合计反而对不上账，所以只报玩家正在看的那个币。
      文案（Batch 4 · B18，2026-09-29 拍板）：金额一律是**玩家视角的总收益**，
      「收益 +$0.03」= 拿到 U、「收益 −$0.05」= 付出 U ——
      正负号本身就是方向，不再写「支出 / 收入」四个字（日志条一行 nowrap，多两个汉字就挤爆）。 */
   if (grossP > 0 && fed !== 0) {
     const rate = fed / grossP;
-    pushLog(s, `资金费率 ${fmtRate(Math.abs(rate), 4)} ｜ 收益 ${fmtMoney(-fed, { sign: true })}`,
+    const pool = s.mkt && s.mkt[s.sym] ? s.mkt[s.sym].npcFund : 0;
+    pushLog(s, `资金费率 ${fmtRate(Math.abs(rate), 4)} ｜ 收益 ${fmtMoney(-fed, { sign: true })} ｜ 对手方池 ${fmtMoneyShort(pool)}`,
       fed > 0 ? 'bad' : 'ok');
   }
   if (grossM > 0 && ied !== 0) {

@@ -352,6 +352,19 @@ export const NPC = {
    *    正是真实强平潮的形态；「永久痕迹」是留给**玩家自己**的设计支柱（`s.flow` 一字不动）。
    */
   shockHalf: 24,
+  /**
+   * **爆仓潮事件的日志阈值**（v30 · 第 6 批 · 缺口 16）—— 单根小时内被强平的名义额
+   * （`stampede` 里**跌破强平线**那一笔，不含自愿止损波）≥ `该币当日流动性 × 本值` 时，
+   * `pushLog` 一条「爆仓潮 $X」。
+   *
+   * ⚠️ **口径对齐现实公告**：Coinglass 的「爆仓额」只统计**强制平仓**，不含主动止损
+   *    （[MoneySense](https://www.moneysense.ca/columns/canadian-crypto-observer/crypto-investors-lose-billions-in-biggest-ever-liquidation-event/)：
+   *    史上最大 2025-10-11 $19.16B / 163 万账户）。故这里也**只认强平那一笔**。
+   * ⚠️ 阈值取**当日流动性的比例**（不是绝对美元）：一局的量级从 2013（日流动性数十万）
+   *    跨到 2025（数十亿），写死绝对值会在某一端失真。1% ≈ 一小时量级的显著踩踏
+   *    （NPC 单档名义上界 ≈ 日流动性 × 7.5%）。
+   */
+  liqEventFrac: 0.01,
 };
 
 /**

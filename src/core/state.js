@@ -95,8 +95,11 @@ import { isSpot } from './positions.js';
    四个标量 → `npc`（**6 档杠杆阶梯**数组）；并新增 `s.mkt[sym].npcShock`（级联的**有界瞬时**冲击
    台阶表，与 `s.flow` 分开）—— 形状变了，旧档的 `npc*` 在新代码里读不到 ⇒ 弃档重开。
    （§4.4 原判断「`s.mkt` 是派生态、不进存档」**经核实不成立**：`save.shaped()` 的 SHAPE 就含 `mkt`，
-   且 `save()` 是整份 `JSON.stringify(s)` ⇒ 它**确实落盘**，所以必须升版本号。） */
-export const STATE_VERSION = 29;
+   且 `save()` 是整份 `JSON.stringify(s)` ⇒ 它**确实落盘**，所以必须升版本号。）
+   ⚠️ v30（2026-10-02 · NEXT-STEPS 第 6 批 · 缺口 3/5/16）：新增三样账本 ——
+   ① `s.fund`（**保险基金**，全局一个池）；② `s.mkt[sym].npcFund`（**对手方池**，玩家资金费的对手方）；
+   ③ `s.stat.liqNotional`（**全市场级爆仓量**，只含强平潮）。形状变了 ⇒ 弃档重开。 */
+export const STATE_VERSION = 30;
 
 /**
  * 开一局新的。
@@ -284,6 +287,9 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      *                 `{ at: [], v: [] }`。与 `s.flow` **分开**：它按 `0.5^(e / NPC.shockHalf)`
      *                 **指数衰减**（半衰期 24 小时）⇒ 残存值有界，不写 `s.flow` 那条永久台阶
      *                 （否则级联的慢幂律分量无界累积，把报价顶死在 `riseMax` 夹子上）。
+     *   `npcFund`（**v30** · 缺口 3）：**对手方池**（USD）—— 玩家永续资金费的对手方账户。
+     *                 真实资金费是**多空之间的点对点转移**，不是交易所收入；本作把 NPC 那一侧
+     *                 合成一个池：玩家付出入池、玩家收取从池出，**付不起按余额打折**（＝偿付上限）。
      *
      * 它让市场**真的会自己动**：热度高 ⇒ NPC 顺周期追高（建仓抬高 `npcDrift`），热度崩 ⇒ NPC
      * 多头被强平（写负 `npcShock`）⇒ 「巨鲸砸盘 → 踩踏 → 缓慢修复」的级联。此前 `pushFlow` 的
@@ -377,6 +383,22 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     realized: 0,
 
     /**
+     * **保险基金**（v30 · NEXT-STEPS 第 6 批 · 缺口 5）—— 真实大所都有的「强平盈余池」。
+     *
+     * 三级瀑布（[Spark](https://www.spark.money/glossary/auto-deleveraging)）：
+     *   ① **市场强平 → 盈余进基金**：强平价优于破产价的那部分差额入池。本作把它解释成
+     *      「该档的隐含保证金 − 实际亏损」—— 在强平线处恰好 = `名义 × GAME.maintRate`（＝现实盈余）。
+     *   ② **基金吸收穿仓**：价格**越过破产价**（极端跳空 / 级联）时，超额亏损由基金垫付。
+     *   ③ **基金耗尽 → ADL**：`s.fund ≤ 0` 且有新的吸收需求 ⇒ 按 ADL 队列强减**盈利的 NPC 档**。
+     *
+     * ⚠️ 开局为 `null`（**惰性播种**）：由 `engine.tickMarket` 在第一次推进时播种成
+     *    `开局日流动性 × INSURE.seed` —— 现实 SAFU ≈ 全网 OI 的 1–2%，用流动性比例可随年代自动缩放
+     *    （2013 与 2025 的量级差三个数量级，写死绝对值会在某一端失真）。
+     * ⚠️ 与 `s.realized` 一样是**全局一个池**（不分所、不分币）—— 现实是分池的，本作单币主导，合并更简单。
+     */
+    fund: null,
+
+    /**
      * 本局**交易统计**（v21 · 2026-10-01）—— 只服务「交易档案」（M2）与「称号」（M3），
      * **不参与任何玩法判定**（破产看 `equity`、费率看 `pvol`，都与此无关）。
      *
@@ -389,6 +411,8 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      *   `move`   成功换所次数 —— 称号「搬家达人」读它
      *   `god`    是否开过上帝模式 —— 称号「上帝之手」读它
      *   `loan`   领过救济金的次数（0 或 1）—— 称号「续命者」读它
+     *   `liqNotional`（**v30** · 缺口 16）被强平的**名义额累计**（USD）—— **只含强平潮**
+     *     （`stampede` 里跌破强平线那一笔），不含自愿止损波（对齐 Coinglass 公告口径）。
      *
      * ⚠️ **峰值不入表**：它可以由 `s.eq`（每日权益采样）直接取最大值得出，不必另存一份。
      */
@@ -396,6 +420,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
       open: 0, win: 0, loss: 0, liq: 0,
       spot: 0, fut: 0, maxLev: 1,
       syms: {}, move: 0, god: false, loan: 0,
+      liqNotional: 0,
     },
 
     /**
