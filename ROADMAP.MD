@@ -8332,3 +8332,57 @@ F2 的不对称构成**单向棘轮**：买→卖会让价格净抬一档。它�
   ④ 旧存档被丢弃（版本号 24），新开一局正常。
 
 > 同 §三十五：以 `src/` 为准。
+
+---
+
+## 七十一、生涯海报改走 data URL（修「图裂」· 2026-10-02）
+
+### 71.1 起因与病根
+
+用户反馈：**「海报图片图裂了」**（手机上打开预览层，那张 PNG 是一个破图标）。
+
+病根是 §69.3 那条链的**第一步**：`posterBlob(rec)` 走 `canvas.toBlob(cb)` 拿回调 →
+`URL.createObjectURL` → `<img src>`。`toBlob` 在部分设备（尤以**旧安卓 WebView**）**回调不来或抛错**，
+`<img>` 就永远等不到可用的 URL ⇒ 裂图。参考项目 `Man in the Mirror` 在 `js/ui.js::downloadPoster`
+上留了同一句结论：「同步 `data:` URI 锚点下载跨平台（含 Android WebView）可靠，
+避免 `toBlob` 在部分设备回调不来 / 抛错导致下载无反应（**旧安卓裂图**同类问题）」。
+
+### 71.2 修法
+
+把海报的**表示形式**从 `Blob` 换成 **data URL**（PNG），三处（预览 / 保存 / 分享）共用同一串：
+
+| 旧 | 新 |
+| --- | --- |
+| `posterBlob(rec) → Promise<Blob\|null>` | `posterURL(rec) → string\|null`（**同步** `toDataURL`） |
+| `savePoster(blob, name)` | `savePoster(url, name)`（`data:` 锚点下载；无 `download` 时先转回 blob URL 再开新窗口） |
+| `sharePoster(blob, name)` | `sharePoster(url, name)`（原生分享要 `File`，内部 `dataURLToBlob` 现转一次） |
+
+**为何「新窗口」那一支还要转回 blob URL**：Chrome 起禁止顶层导航到 `data:` URL（地址栏只认
+`blob:` / `http:`）——「靠 data URL 保底」这一手**只对下载锚点成立**，对新窗口不成立。
+`dataURLToBlob` 因此是**私有**函数，只有这两处用它。
+
+**连带简化**：`main.js` 里那张海报的模块级状态由 `{ rec, blob, name, url }` 收成 `{ rec, name, url }`；
+没有 blob URL ⇒ `closePoster()` 只放引用、不再 `revokeObjectURL`，`onClose` 回调仍照旧。
+`render.openPoster` 的入参注释同步改成「data URL」。
+
+**代价（如实记录）**：`toDataURL` 是**同步**的 ⇒ 「生成中…」那一帧要不到（`onPoster` 由 `async` 收回同步）；
+不再假装有，只在失败时把那枚键改成「失败」并 1.6 秒后还原。
+
+⚠️ **不动状态**：纯 UI 层改动，`STATE_VERSION` 仍为 **24**，不碰存档。
+
+### 71.3 落点清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/ui/shareCard.js` | `posterBlob` → `posterURL`（同步 `toDataURL`）；新增私有 `dataURLToBlob`；`savePoster` / `sharePoster` 改收 data URL；头部注释同步 |
+| `src/main.js` | 导入改 `posterURL`；`poster` 去掉 `blob`；`closePoster` 去掉 `revokeObjectURL`；`onPoster` 收回同步；`onPosterSave` / `onPosterShare` 改传 `poster.url` |
+| `src/ui/render.js` | `openPoster` 的 `url` 注释由「blob URL」改「data URL」，并去掉「回收 URL」措辞 |
+
+### 71.4 验收
+
+- `npm run build` ✅ 通过（26 modules，`index.css` 24.32 kB / gzip 5.09 kB，
+  `index.js` 119.65 kB / gzip 50.02 kB）。
+- ⚠️ **实机确认项**：① 档案行「生成海报」→ 预览层出图，**不再是裂图**（重点在旧安卓 / 微信内置浏览器）；
+  ② 「保存图片」下载成功且能打开；③ 有原生分享面板时「分享」发出的图与预览同一张。
+
+> 同 §三十五：以 `src/` 为准。

@@ -27,7 +27,7 @@ import {
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
 import { resetTheme } from './ui/chart.js';
-import { canSharePoster, posterBlob, posterName, savePoster, sharePoster } from './ui/shareCard.js';
+import { canSharePoster, posterName, posterURL, savePoster, sharePoster } from './ui/shareCard.js';
 import * as snd from './ui/sound.js';
 
 const root = document.getElementById('app');
@@ -183,9 +183,10 @@ const RV_NS = 'rv';
    主时钟停住即可（与主菜单期间同一条：停在菜单上时行情不该自己走）。 */
 let arch = false;
 
-/* 生涯海报的**当前那一张**（M5 · 2026-10-02）：`{ rec, blob, name, url }` 或 `null`。
+/* 生涯海报的**当前那一张**（M5 · 2026-10-02）：`{ rec, name, url }` 或 `null`。
    ⚠️ 与 `arch` 同一个口径：纯界面状态（预览层里那张图），**不进 `s`、不进存档**。
-      blob URL 的回收也归这里管 —— `ui/*` 不碰资源生命周期（见 `render.openPoster` 的注释）。 */
+      `url` 是 **data URL**（PNG），预览、保存、分享三处共用同一串 —— 没有 blob URL
+      要回收，`closePoster` 只把引用放掉（见 `ui/shareCard.js::posterURL` 的注释）。 */
 let poster = null;
 
 /* 上帝模式的隐藏入口（方案 §2.1）：**1.5 秒内连点顶栏「Degen」5 次**解锁；
@@ -1564,33 +1565,30 @@ function exitCareers() {
 /* ── 生涯海报（M5 · 2026-10-02）────────────────────────────────────
    原来是「点一下直接下载 / 弹原生分享面板」，**没有预览**；现在改成参考项目
    （`我创造的完美球员`）那条路：先画好 → 摊在预览层里看一眼 → 再决定保存 / 分享。
-   ⚠️ 反馈只落在那枚键自己身上（生成中… → 恢复，或失败 1.6 秒后恢复）：档案页是整屏页、
-      **没有日志栏**，`pushLog` 玩家根本看不见；再起一套 toast 又是新 UI（LESS IS MORE）。
-   ⚠️ 画一张 1080×1350 要几十毫秒，期间那枚键 `disabled` —— 免得连点堆出好几张 canvas。 */
+   ⚠️ 反馈只落在那枚键自己身上（失败 1.6 秒后恢复）：档案页是整屏页、**没有日志栏**，
+      `pushLog` 玩家根本看不见；再起一套 toast 又是新 UI（LESS IS MORE）。
+   ⚠️ 出图走**同步的 `toDataURL`**（见 `ui/shareCard.js`）⇒ 要不到「生成中…」那一帧，
+      不假装有：只在失败时把那枚键改成「失败」，1.6 秒后还原。 */
 
-/** 回收当前那张海报的 blob URL（关掉预览层 / 换一张时都走它） */
+/** 放掉当前那张海报的引用（关掉预览层 / 换一张时都走它）—— data URL 无需回收 */
 function closePoster() {
-  if (poster && poster.url) URL.revokeObjectURL(poster.url);
   poster = null;
 }
 
-/** 「生成海报」：按 id 取回那一条生涯 → 画成 PNG → 摊开预览层 */
-async function onPoster(id, node) {
+/** 「生成海报」：按 id 取回那一条生涯 → 画成 PNG（data URL）→ 摊开预览层 */
+function onPoster(id, node) {
   const rec = loadCareers().find(r => String(r.id) === id);
   if (!rec) return;
   const label = node.textContent;
-  node.disabled = true;
-  node.textContent = '生成中…';
-  let blob = null;
-  try { blob = await posterBlob(rec); } catch { /* 落到失败 */ }
-  if (node.isConnected) { node.textContent = blob ? label : '失败'; node.disabled = false; }
-  if (!blob) {
+  const url = posterURL(rec);                     // canvas 取不到 / toDataURL 抛错 ⇒ null
+  if (!url) {
+    node.textContent = '失败';
     setTimeout(() => { if (node.isConnected) node.textContent = label; }, 1600);
     return;
   }
-  closePoster();                                  // 上一张还开着的话先回收，别漏 URL
-  poster = { rec, blob, name: posterName(rec), url: URL.createObjectURL(blob) };
-  openPoster(poster.url, { onClose: closePoster, canShare: canSharePoster() });
+  closePoster();                                  // 上一张还开着的话先放掉
+  poster = { rec, name: posterName(rec), url };
+  openPoster(url, { onClose: closePoster, canShare: canSharePoster() });
 }
 
 /** 预览层「保存图片」—— 下载 / 新窗口长按保存（两级兜底都在 `ui/shareCard.js` 里） */
@@ -1600,7 +1598,7 @@ async function onPosterSave(node) {
   node.disabled = true;
   node.textContent = '保存中…';
   let st = 'failed';
-  try { st = await savePoster(poster.blob, poster.name); } catch { /* 落到失败 */ }
+  try { st = await savePoster(poster.url, poster.name); } catch { /* 落到失败 */ }
   node.textContent = st === 'downloaded' ? '已保存' : st === 'opened' ? '长按保存' : '失败';
   setTimeout(() => {
     if (node.isConnected) { node.textContent = label; node.disabled = false; }
@@ -1614,7 +1612,7 @@ async function onPosterShare(node) {
   node.disabled = true;
   node.textContent = '分享中…';
   let st = 'failed';
-  try { st = await sharePoster(poster.blob, poster.name); } catch { /* 落到失败 */ }
+  try { st = await sharePoster(poster.url, poster.name); } catch { /* 落到失败 */ }
   node.textContent = st === 'shared' ? '已分享' : '失败';
   setTimeout(() => {
     if (node.isConnected) { node.textContent = label; node.disabled = false; }

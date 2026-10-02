@@ -2091,12 +2091,12 @@ function careerRow(r) {
  *      盒子高度只到 `70dvh`，上下留白足够点。
  *   ⚠️ **没有原生分享面板就不画那枚「分享」** —— 留一枚注定回「不支持」的键只会让人以为坏了。
  *
- * 与 `openLog` 同一条：关闭走**回调**而不是光调 `closePicker` —— 那张图是 blob URL，
- * 得由 `main.js` 负责 `revokeObjectURL`（渲染层不碰这类资源的生命周期）。
+ * 与 `openLog` 同一条：关闭走**回调**而不是光调 `closePicker` —— 那张图的引用由
+ * `main.js` 放掉（渲染层不碰这类资源的生命周期）。
  *
- * @param {string} url      海报的 blob URL
+ * @param {string} url      海报的 **data URL**（PNG；见 `ui/shareCard.js::posterURL`）
  * @param {object} [opts]
- * @param {Function} [opts.onClose]  关闭后回调（`main.js` 在那里回收 URL）
+ * @param {Function} [opts.onClose]  关闭后回调（`main.js` 在那里把引用放掉）
  * @param {boolean} [opts.canShare]  这台机器有没有原生分享面板
  */
 export function openPoster(url, { onClose, canShare = false } = {}) {

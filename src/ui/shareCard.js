@@ -16,10 +16,15 @@
  * 这里照做，但把「画」与「导」**拆成两个导出**，让预览层（`render.openPoster`）与
  * 保存 / 分享各拿各的东西：
  *
- *     posterBlob(rec)          →  Promise<Blob|null>   预览与保存共用同一份像素
+ *     posterURL(rec)           →  string | null       data URL（PNG），三处共用同一份像素
  *     posterName(rec)          →  文件名
- *     savePoster(blob, name)   →  'downloaded' | 'opened' | 'failed'
- *     sharePoster(blob, name)  →  'shared' | 'unsupported' | 'failed'
+ *     savePoster(url, name)    →  'downloaded' | 'opened' | 'failed'
+ *     sharePoster(url, name)   →  'shared' | 'unsupported' | 'failed'
+ *
+ * ⚠️ **全链走 data URL，不走 `toBlob`**（2026-10-02 修 · 用户反馈「海报图片图裂了」）——
+ *    `toBlob` 在部分设备（尤以旧安卓 WebView）回调不来 / 抛错，预览就是一张裂图。
+ *    data URL 是同步拿到的，没有回调可失约；只有「原生分享要 File」与「老 iOS 新窗口
+ *    兜底」两处才现转一次 Blob（`dataURLToBlob`）。详见 `posterURL` 的注释。
  */
 
 import { scenarioOf } from '../core/config.js';
@@ -272,15 +277,30 @@ export function drawCard(rec) {
 export const posterName = rec => `degen-${rec.scen}-${rec.id}.png`;
 
 /**
- * 生成海报（PNG）—— 预览层与保存 / 分享**共用同一份像素**，不重复画。
- * @returns {Promise<Blob|null>} canvas 不可用 / `toBlob` 失败都给 `null`（调用方只管报错）
+ * 生成海报（PNG 的 **data URL**）—— 预览层与保存 / 分享**共用同一份像素**，不重复画。
+ *
+ * ⚠️ **走 `toDataURL` 而不是 `toBlob`**（2026-10-02 修 · 用户反馈「海报图片图裂了」）。
+ *    参考项目 `Man in the Mirror` 在 `js/ui.js::downloadPoster` 上留了同一句结论：
+ *    「同步 data: URI 锚点下载，跨平台（含 Android WebView）可靠；避免 `toBlob` 在部分设备
+ *      回调不来 / 抛错导致下载无反应（**旧安卓裂图**同类问题）」。
+ *    本作原来是 `toBlob` → `URL.createObjectURL` → `<img src>`：在那类设备上就是一张裂图。
+ *    换成 data URL 之后，预览与下载共用同一个串，**blob URL 的生命周期管理整块消失**。
+ * @returns {string|null} canvas 取不到 / `toDataURL` 抛错都给 `null`（调用方只管报错）
  */
-export function posterBlob(rec) {
-  return new Promise(resolve => {
-    let cv;
-    try { cv = drawCard(rec); } catch { resolve(null); return; }
-    cv.toBlob(b => resolve(b || null), 'image/png');
-  });
+export function posterURL(rec) {
+  try { return drawCard(rec).toDataURL('image/png'); } catch { return null; }
+}
+
+/** data URL → Blob（只有「原生分享要 File」与「老 iOS 新窗口兜底」两处需要它） */
+function dataURLToBlob(url) {
+  const i = String(url || '').indexOf(',');
+  if (i < 0) return null;
+  try {
+    const bin = atob(String(url).slice(i + 1));
+    const u8 = new Uint8Array(bin.length);
+    for (let k = 0; k < bin.length; k++) u8[k] = bin.charCodeAt(k);
+    return new Blob([u8], { type: 'image/png' });
+  } catch { return null; }
 }
 
 /** 这台机器有没有**原生分享面板**（没有就干脆不画那枚「分享」键，见 `render.openPoster`） */
@@ -289,13 +309,15 @@ export const canSharePoster = () => typeof File === 'function'
 
 /**
  * 保存海报 —— 与 PWA 安装同一套两级兜底：
- *   ① `<a download>` 直接下载；② iOS 老 Safari 没有 `download` ⇒ 新窗口打开，长按保存。
+ *   ① `<a download>` 直接下载（`data:` 锚点，跨平台最可靠，见 `posterURL`）；
+ *   ② iOS 老 Safari 没有 `download` ⇒ 新窗口打开，长按保存。
  * ⚠️ **不回退到「分享」**：预览层里那枚「分享」就在旁边，两条路各管各的（LESS IS MORE）。
+ * ⚠️ ② 这一支要**先换回 blob URL**：Chrome 起禁止顶层导航到 `data:` URL（地址栏只认 blob/http），
+ *    所以「靠 data URL 保底」这一手**只对下载锚点成立**，对新窗口不成立。
  * @returns {Promise<'downloaded'|'opened'|'failed'>}
  */
-export async function savePoster(blob, name) {
-  if (!blob) return 'failed';
-  const url = URL.createObjectURL(blob);
+export async function savePoster(url, name) {
+  if (!url) return 'failed';
 
   if ('download' in HTMLAnchorElement.prototype) {
     const a = document.createElement('a');
@@ -304,23 +326,28 @@ export async function savePoster(blob, name) {
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
     return 'downloaded';
   }
 
-  const win = window.open(url, '_blank');
-  if (!win) { URL.revokeObjectURL(url); return 'failed'; }   // 被拦截：算失败，别把 URL 漏在那
-  setTimeout(() => URL.revokeObjectURL(url), 60000);          // 留一分钟，够长按保存
+  const blob = dataURLToBlob(url);
+  const u = blob ? URL.createObjectURL(blob) : url;
+  const win = window.open(u, '_blank');
+  if (!win) { if (blob) URL.revokeObjectURL(u); return 'failed'; }   // 被拦截：算失败，别把 URL 漏在那
+  if (blob) setTimeout(() => URL.revokeObjectURL(u), 60000);          // 留一分钟，够长按保存
   return 'opened';
 }
 
 /**
  * 用原生分享面板发出去（微信 / 相册 / 推特…都走系统那一张表）。
+ * ⚠️ 入参是 `posterURL` 那串 **data URL**：原生分享要的是 `File`，在这里现转一次
+ *    （`dataURLToBlob` 是同一份像素的另一种包装，不重画）。
  * @returns {Promise<'shared'|'unsupported'|'failed'>}
  */
-export async function sharePoster(blob, name) {
-  if (!blob) return 'failed';
+export async function sharePoster(url, name) {
+  if (!url) return 'failed';
   if (!canSharePoster()) return 'unsupported';
+  const blob = dataURLToBlob(url);
+  if (!blob) return 'failed';
   const file = new File([blob], name, { type: 'image/png' });
   if (!navigator.canShare({ files: [file] })) return 'unsupported';
   try {
