@@ -802,29 +802,75 @@ function encodeCoin(held, count, scale, dayUsd, startI) {
  * 为什么不塞进 K 线包：每根多 4 字节会让 3.35 MB 的包体再涨 25%，破 GDD §19.2 的预算。
  * 日流动性只用来算一个「10% 阈值」，**日粒度足够**（§6.4 与 §14.3 用的都是「日流动性」）。
  *
- * 口径（ROADMAP §五 P2-A，2026-09-29 拍板）= **两端锚定 ＋ 真实年内形状**：
+ * 口径（2026-10-02 改版 · NEXT-STEPS §6.1）= **逐年全市场锚 ＋ 真实年内形状**：
  *   ① 形状：沿抓价那条链逐小时取真实美元成交额 → 按日求和 → ÷ 该币当年的真实日均
- *   ② 两端锚定：L(年) = 早锚 × (晚锚 ÷ 早锚) ^ ((年 − 首年) ÷ (2024 − 首年))
+ *   ② 逐年锚定：L(年) **直接查 `LIQ_MKT`**（该年全市场年均日成交额）
  *       合成 liq(日) = L(年) × 形状(日)  ⇒ **年均正好落在锚上、年内起伏全真**
+ *
+ * ⚠️ **为什么从「两端几何插值」改成逐年查表**：几何插值只有两个端点是对的 —— 真实成交额有一个
+ *    2021 年的大驼峰、2022–2023 回落，而几何式**单调增长、全程无回落**，于是中间年份被压平
+ *    30–90×（q 偏大 ⇒ 冲击顶到 `SLIP.cap`，那几年的大单失去区分度）、2023–2024 反被抬高。
+ *    逐年查表后坡道形状跟着真实市场走。依据见 `NEXT-STEPS.MD` §6.1 / §三.2 更正 ③。
  *
  * ⚠️ **不做平滑**（2026-09-29 定案，原方案的「7 日滚动中位数」已删）：实测 7 日窗口会把
  *    验收口径⑦要求的「年内同形 > 0.9」压到 0.73–0.86（3 日窗口也只到 0.88–0.95），
  *    与「年内起伏全真」直接冲突。去掉平滑后相关**恒为 1.000**（形状本就是真实成交额的等比缩放）。
  *    代价：liq 逐日抖动 = 真实抖动，10% 脉冲阈值跟着抖 —— 这是真实市场形态，接受。
- *
- * ⚠️ §15.2 的 2013 早锚（$50 万）比实测的 Bitstamp 单所 2013 日均（$426 万）还低 8.5×。
- *    ⇒ **不要**把 `L ÷ 真实` 解释成「全市场 ÷ 单所」。真实成交额只提供「形状」，量级完全由锚决定。
  */
 
-/** §15.2 的早 / 晚锚（美元/天）。ETH / SOL 早锚与 SOL 晚锚是 §15.2 没写的三个数，
- *  按「同年 BTC 的 锚 ÷ 真值 比」推得（ROADMAP §五 P2-A「定稿口径」）。 */
-const LIQ_ANCHORS = {
-  BTC:  { early: 5e5,   late: 3e10   },   // 2013-01 → 2024，年化 ×3.35
-  DOGE: { early: 1e3,   late: 2e9    },
-  XRP:  { early: 5e3,   late: 2e9    },
-  ETH:  { early: 1e3,   late: 1.5e10 },
-  SOL:  { early: 9.2e7, late: 2e9    },   // 晚锚不取 $93 亿的推值，与 XRP / DOGE 同档
+/**
+ * 逐年**全市场**年均日成交额（美元/天），口径 = CoinLore「AVG.Volume」（多家交易所聚合的自报量）。
+ * 2026-10-02 逐币取数（`coinlore.com/coin/{bitcoin,dogecoin,ripple,ethereum,solana}/historical-data`）。
+ *
+ * ⚠️ **为什么不拿本管线自己抓的 `dayUsd` 当锚**：那几列是**单 / 少家所**的量（每个币只认优先级
+ *    最高的那一家源当主源），跨币**不可比** —— 拿它当锚会让 DOGE 2021（$920 M，Poloniex 单所）
+ *    比 BTC 2021（$218 M，Bitstamp 单所）还「深」。锚要的是全市场可承接量，所以取聚合口径。
+ *
+ * ⚠️ **刷量折扣（2026-10-02 用户拍板「统一 ×0.3」，见 §8.3）**：2017 年起乘 `WASH_DISCOUNT`。
+ *    依据：Bitwise 呈 SEC 原件（2019-03）判「申报量 ≈95% 为假、10 家真量所合计仅 ≈$273 M/天」；
+ *    NBER `w30783`（2022）判「不监管所 ≈70% 刷量」。取**统一**折扣而非逐年过渡，是因为逐年只有
+ *    2019 / 2022 两个证据点，中间全靠插值反而会**伪造坡道形状**（照 Bitwise 的 1.8% 做，
+ *    2019 的锚会低于 2018，且几乎回到改版前的旧值 —— 等于白改）。
+ *    2013–2016 **不打折**（刷量成规模是 2017 年之后的事，早期市场小、刷量少）。
+ *
+ * 缺年回落：查不到的年取**最近年份**的锚 —— 只命中两处（BTC 2012 回溯段、SOL 2020 上线年，
+ * CoinLore 的 SOL 序列自 2021 起）。BTC 2012 只影响开局前的回溯段显示；
+ * ⚠️ SOL 2020 是**已知近似**（用 2021 的锚，会高估 2020 下半年那 4.7 个月的深度）。
+ */
+const LIQ_MKT = {
+  BTC:  { 2013: 5.645e5, 2014: 2.51e7,  2015: 3.39e7,   2016: 8.59e7,
+          2017: 2.4e9,   2018: 6.0e9,   2019: 1.49e10, 2020: 2.75e10,
+          2021: 4.8e10,  2022: 2.57e10, 2023: 1.82e10, 2024: 3.48e10 },
+  DOGE: { 2013: 1.018e5, 2014: 1.1e6,   2015: 1.685e5, 2016: 2.565e5,
+          2017: 1.12e7,  2018: 2.39e7,  2019: 3.57e7,  2020: 9.44e7,
+          2021: 4.6e9,   2022: 7.46e8,  2023: 4.447e8, 2024: 2.1e9 },
+  XRP:  { 2013: 3.2e3,   2014: 4.572e5, 2015: 6.844e5, 2016: 1.4e6,
+          2017: 2.856e8, 2018: 8.411e8, 2019: 1.3e9,   2020: 2.1e9,
+          2021: 4.8e9,   2022: 1.2e9,   2023: 9.946e8, 2024: 2.5e9 },
+  ETH:  { 2015: 8.2e5,   2016: 1.8e7,   2017: 7.433e8, 2018: 2.3e9,
+          2019: 6.1e9,   2020: 1.21e10, 2021: 2.76e10, 2022: 1.46e10,
+          2023: 7.4e9,   2024: 1.51e10 },
+  SOL:  { 2021: 1.6e9,   2022: 1.4e9,   2023: 1.0e9,   2024: 3.0e9 },
 };
+
+/** 刷量折扣：2017 年起乘它（2026-10-02 用户拍板「统一 ×0.3」，依据见上） */
+const WASH_DISCOUNT = 0.3;
+const WASH_FROM_YEAR = 2017;
+
+/**
+ * 某币某年的流动性锚（美元/天）—— 查 `LIQ_MKT` × 刷量折扣；**缺年取最近年份**（见上）。
+ * @param {string} sym
+ * @param {number} year
+ */
+function liqAnchorOf(sym, year) {
+  const t = LIQ_MKT[sym];
+  let y = year;
+  if (t[y] == null) {
+    const ys = Object.keys(t).map(Number);
+    y = ys.reduce((a, b) => (Math.abs(b - year) < Math.abs(a - year) ? b : a));
+  }
+  return y >= WASH_FROM_YEAR ? t[y] * WASH_DISCOUNT : t[y];
+}
 
 /** 第 d 天的年份（UTC） */
 const yearOfDay = d => new Date(tsOf(d * 24)).getUTCFullYear();
@@ -834,17 +880,15 @@ const yearOfDay = d => new Date(tsOf(d * 24)).getUTCFullYear();
  * @param {string} sym
  * @param {Float64Array} dayUsd  全程逐日真实成交额（未上线日为 0）
  * @param {number} firstDay      该币第一根真 K 线所在的天（**覆盖起点**，可早于锚定日）
- * @param {number} anchorDay     **锚定日** —— `LIQ_ANCHORS.early` 落在这一天所在的年
+ * @param {number} anchorDay     **锚定日** —— 决定 `firstYear`
  *   ⚠️ 与 `firstDay` 分开是 2026-09-30 回溯段的直接结果：BTC 的覆盖起点落在 2012 年，
- *      但锚**必须仍然锚在 2013 年**，否则 `firstYear` 变成 2012 ⇒ 2013–2024 全年流动性数值
- *      会整体平移（滑点分母、脉冲阈值跟着全变）。分开之后：覆盖多出的那几天走**几何向后外推**
- *      （`L(2013−k)` 用同一个幂式算出，2013 年本身仍是 `early`）⇒ **2013+ 逐位不变**。
- * @returns {{ liq: Float32Array, firstYear, anchorEarly, anchorLate, mean: object, corr: object }}
- *   `mean` = 每年**实际算出的**年均（供验收口径⑦核对）；
+ *      但锚仍从 2013 年那格起算，否则 `firstYear` 变成 2012。改逐年查表后，覆盖多出的那几天
+ *      （2012）走 `liqAnchorOf` 的**缺年回落**（取最近年份 ＝ 2013 的锚）。
+ * @returns {{ liq: Float32Array, firstYear, mean: object, corr: object }}
+ *   `mean` = 每年**实际算出的**年均（供验收口径⑦核对，改版后应逐年等于锚表）；
  *   `corr` = 年内同形度 `{ mean, worst }`（无平滑 ⇒ 应为 1.000）
  */
 function buildLiqDaily(sym, dayUsd, firstDay, anchorDay) {
-  const { early, late } = LIQ_ANCHORS[sym];
   const firstYear = yearOfDay(anchorDay);
   const liq = new Float32Array(TOTAL_DAYS);
 
@@ -870,12 +914,11 @@ function buildLiqDaily(sym, dayUsd, firstDay, anchorDay) {
     shape[d] = avg > 0 ? dayUsd[d] / avg : 1;
   }
 
-  // ② 两端锚定几何插值 + 合成
-  const span = Math.max(1, 2024 - firstYear);
+  // ② 逐年查表 + 合成
   const mean = {};
   for (let d = firstDay; d < TOTAL_DAYS; d++) {
     const y = yearOfDay(d);
-    const L = early * Math.pow(late / early, (y - firstYear) / span);
+    const L = liqAnchorOf(sym, y);
     liq[d] = L * shape[d];
     mean[y] = (mean[y] || 0) + liq[d];    // 先累加，收尾除以天数
   }
@@ -889,7 +932,7 @@ function buildLiqDaily(sym, dayUsd, firstDay, anchorDay) {
   }
 
   return {
-    liq, firstYear, anchorEarly: early, anchorLate: late, mean,
+    liq, firstYear, mean,
     corr: intraYearCorr(liq, dayUsd, firstDay),
   };
 }
@@ -917,8 +960,8 @@ function pearson(a, b, from, to) {
  * 年内 liq = 常数 × 真实日均成交额，是真实序列的等比缩放。
  * 它不是「像不像」的近似判断，而是**回归断言**：哪天掉下 1，说明形状的口径被改动了。
  *
- * ⚠️ 必须**按年**算：跨年时 liq 的量级由锚的几何插值决定，而真实成交额有自己的年度水平，
- *    两者本来就被刻意解耦（§15.2 的锚比真实值高/低几倍到几百倍）⇒ 跨年相关系数会很低，
+ * ⚠️ 必须**按年**算：跨年时 liq 的量级由**逐年锚表**决定（全市场口径），而这里比的是本管线
+ *    自己抓到的日成交额（单 / 少家所口径）—— 两者刻意解耦，跨年相关系数本来就会很低，
  *    那不是形状坏了，是量级口径不同。本条只回答「年内起伏像不像」。
  */
 function intraYearCorr(liq, dayUsd, firstDay) {
@@ -1115,9 +1158,10 @@ async function main() {
     const L = buildLiqDaily(coin.sym, dayUsd, firstDay, anchorDay);
     liqPerCoin[coin.sym] = L.liq;
     const yFirst = L.firstYear;
-    log(`  日流动性：首年 ${yFirst} 锚 $${L.anchorEarly.toLocaleString()} ／ 2024 锚 $${L.anchorLate.toLocaleString()}`
-      + ` ｜ 实测年均 首年 $${Math.round(L.mean[yFirst]).toLocaleString()}`
-      + ` ／ 2024 $${Math.round(L.mean[2024]).toLocaleString()}`
+    log(`  日流动性：首年 ${yFirst} 锚 $${Math.round(liqAnchorOf(coin.sym, yFirst)).toLocaleString()}`
+      + ` ／ 2024 锚 $${Math.round(liqAnchorOf(coin.sym, 2024)).toLocaleString()}`
+      + ` ｜ 实测年均 首年 $${Math.round(L.mean[yFirst] || 0).toLocaleString()}`
+      + ` ／ 2024 $${Math.round(L.mean[2024] || 0).toLocaleString()}`
       + ` ｜ 年内同形 加权 ${L.corr.mean.toFixed(3)} ／ 最差年 ${L.corr.worst.toFixed(3)}`);
 
     // 把这一条时间轴的美元序列留给后面的币 —— BTC 计价的小时线要靠它换回美元
@@ -1165,7 +1209,10 @@ async function main() {
        （轴是数据窗口，2026-09-30）。**忘了它，2013 之后的流动性会整体错位 96 天。** */
     preDays: PRE_DAYS,
     order: COINS.map(c => c.sym),
-    anchors: Object.fromEntries(COINS.map(c => [c.sym, LIQ_ANCHORS[c.sym]])),
+    /* 逐年**生效**锚表（已含刷量折扣），仅诊断用 —— 运行时只读 days/order/preDays/file。
+       形状 = `{ [sym]: { '年': 美元/天 } }`；对照 `tools/fetch-data.mjs` 的 `LIQ_MKT`。 */
+    anchors: Object.fromEntries(COINS.map(c => [c.sym,
+      Object.fromEntries(Object.keys(LIQ_MKT[c.sym]).map(y => [y, Math.round(liqAnchorOf(c.sym, Number(y)))]))])),
     firstYear: Object.fromEntries(COINS.map(c => [c.sym, yearOfDay(anchorDayOf[c.sym])])),
     smoothing: null,   // 不做平滑（2026-09-29 定案）：年内形状 = 真实成交额的等比缩放，同形度恒 1.000
     firstDay: coinStartDay,
