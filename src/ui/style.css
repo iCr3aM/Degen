@@ -1058,6 +1058,12 @@ canvas.curve {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  /* 「游戏说明」加入后菜单有 6 枚（未装到桌面时 7 枚），矮屏（如 568px）会顶到上下边。
+     ⚠️ `safe` 只在**装不下时**生效：内容一旦溢出就退回 `flex-start` 并可滚动 ——
+        普通 `center` 在溢出时会把顶部那几行推到盒子**外面**且滚不到（flex 居中老毛病）。
+     装得下时与 `center` 逐位相同，所以高屏机型一个字都不变。 */
+  justify-content: safe center;
+  overflow-y: auto;
   gap: 12px;
   padding: 24px;
 }
@@ -1142,6 +1148,20 @@ canvas.curve {
 }
 /* 存档行：`<button>` 直接吃 `.pick-row` 的底 / 边 / 44px 高，只是四边都有边（不是贴边的竖表） */
 .dlg-rows .pick-row { border: 1px solid var(--line); }
+
+/* 「游戏说明」弹窗（2026-10-02 · 用户要求）—— 六块「小标题 ＋ 一段说明」。
+   与 `.dlg-rows` 同一套矮屏手感（`60dvh` 内部滚动、「返回」留在滚区外），只是里面排的是段落。
+   ⚠️ `p` 的 `margin` 显式压掉：块内小标题与正文只隔 4px，块与块之间一律交给 `gap`（纵向不留第三种间距）。 */
+.about {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+  max-height: 60dvh;
+  overflow-y: auto;
+}
+.about-blk b { display: block; font-size: calc(12px * var(--ui)); font-weight: 600; color: var(--fg); }
+.about-blk p { margin: 4px 0 0; font-size: calc(11px * var(--ui)); line-height: 1.7; color: var(--mut); }
 /* 挑战模式的年代卡（M1 · 2026-10-01）—— 每张三行：名字 / 年代区间 / 一句话。
    整张卡是一枚 `<button>`（动作键 `data-scen`），所以内部三行全部 `display: block`，
    不再继承按钮的居中。 */

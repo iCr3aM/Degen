@@ -23,6 +23,7 @@ import {
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
   renderReview, openNodeCard, openYearPick, openGuide, renderCareers, openPoster,
   isStandalone, toggleInstallGuide, menuRemoveInstall, closeMenuDlg, openSavePick, openScenPick,
+  openAbout,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -841,6 +842,16 @@ function dispatch(node) {
       return;
     }
     const want = Number(d.lev);
+    /* **持仓时杠杆被锁死**（2026-10-02 用户拍板）：同一枚币只能有一条仓位，而加仓必须同杠杆
+       （`posGate`）⇒ 持仓期间改杠杆只会得到一张「按得动、下不出去」的表。
+       渲染层已经把其余档位画成灰（`.opt:disabled`），这一行是**状态机不靠 DOM 兜底**。
+       文案与 `posGate` 逐字一致，两处指的是同一件事。 */
+    const held = posOf(s, s.sym);
+    if (held && want !== held.lev) {
+      pushLog(s, `${s.sym} 已持 ${held.lev}x ｜ 加仓必须同杠杆 ｜ 先平仓再重开`, 'info');
+      after();
+      return;
+    }
     /* 上限取**本单走的那张表**（§15.1）—— 现货档位与合约档位是两套数，不能拿一张去夹另一张。 */
     s.lev = Math.max(1, Math.min(want, maxLeverageAt(timeOf(s), s.ex, levKind(s))));
     after();
@@ -854,6 +865,15 @@ function dispatch(node) {
         少了这一行，`s.mode` 就会切到一张不存在的杠杆表上。 */
   if (d.mode2 !== undefined) {
     if (!futuresAvailable(s)) return;
+    /* **持仓时不许切模式**（2026-10-02 用户拍板）：现货仓与合约仓不能并存（`posGate`），
+       切过去只会得到一排按不动的「做多 / 做空 / 平仓」。两个方向都锁 ——
+       合约仓也不许切回现货，一律先平仓再切。
+       ⚠️ 渲染层已经把这一枚画成 `disabled`，这一行是**状态机不靠 DOM 兜底**（同 `onChan`）。 */
+    if (posOf(s, s.sym)) {
+      pushLog(s, `${s.sym} 有持仓 ｜ 先平仓再切换现货 / 合约`, 'info');
+      after();
+      return;
+    }
     s.mode = s.mode === 'spot' ? 'fut' : 'spot';
     /* 切模式后重新夹取杠杆：两张表的上限不同（如 Binance 现货 3x / 合约 125x），
        不夹的话从合约切回现货会带着一个现货拿不到的档位（`engine.normalizeLeverage` 顺带兜住模式）。 */
@@ -915,8 +935,10 @@ function dispatch(node) {
       if (!r.ok) pushLog(s, r.why, 'bad');
       else { s.lockI = s.i; snd.open(); snd.buzz('light'); }
     } else {
-      /* `why` 写玩家按下的那枚键：平多＝卖出（卖出手上的币）、平空＝买回（买回借出的币） */
-      const r = closeTrade(s, side === 'long' ? '买回' : '卖出');
+      /* `why` 写玩家按下的那枚键：平多＝卖出（卖出手上的币）、平空＝买回（买回借出的币）。
+         ⚠️ 第三参 = **平掉多少**（2026-10-02 用户拍板）：金额档那 1/4 · 1/2 · 全部现在
+            对「开仓」与「平仓」是同一个含义 —— 分批卖出 / 分批减仓从此走同一枚 `s.sizeFrac`。 */
+      const r = closeTrade(s, side === 'long' ? '买回' : '卖出', s.sizeFrac);
       if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
       else { s.lockI = s.i; snd.close(); snd.buzz('light'); }
     }
@@ -931,7 +953,9 @@ function dispatch(node) {
     return;
   }
   if (d.act === 'close') {
-    const r = closeTrade(s);
+    /* 合约模式的「平仓」同样吃金额档（2026-10-02 用户拍板）：与现货「卖出」是一条路径 ——
+       点 1/4 就减掉四分之一，点「全部」才是原来那个一键全平。 */
+    const r = closeTrade(s, '手动', s.sizeFrac);
     if (!r.ok && r.why !== 'liquidated') { pushLog(s, r.why, 'bad'); snd.tap(); }
     else { s.lockI = s.i; snd.close(); snd.buzz('light'); }
     after();
@@ -975,6 +999,16 @@ function onSym(sym) {
  */
 function onChan() {
   if (!otcUnlocked(s) || !otcOpenFor(s)) return;
+  /* **持仓时不换通道**（2026-10-02 审计修 · 用户要求「检查类似的情况」）：
+     OTC 只能平现货，所以「持一张杠杆仓 ＋ 切到 OTC」会让这一枚仓**当场平不掉**
+     （`closeCheck` 会回「OTC 只能平现货，杠杆仓请走盘口」）—— 玩家得先切回盘口才发现。
+     与「持仓不许切现货 / 合约」是同一条规矩：**会改变这一笔交易身份的开关，持仓期间一律锁住**。
+     ⚠️ 渲染层已把这一枚画成 `disabled`；这一行是**状态机不靠 DOM 兜底**。 */
+  if (posOf(s, s.sym)) {
+    pushLog(s, `${s.sym} 有持仓 ｜ 先平仓再切换通道`, 'info');
+    after();
+    return;
+  }
   s.chan = chanOf(s) === 'otc' ? 'book' : 'otc';
   /* 切到 OTC 就把杠杆归 1：OTC 只有现货，让操作区当场显示 1x 比事后再拒绝更直白。
      切回盘口**不还原**原来的杠杆 —— 那需要多存一个字段，而 `1x` 是个安全的默认值。 */
@@ -1166,6 +1200,7 @@ const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.v
    · `review`  ：只读回顾模式（`enterReview`）。
    · `careers` ：交易档案页（M2 · 2026-10-01）—— 见 `enterCareers()`。
    · `install` ：PWA 安装（2026-10-01）—— 见 `onInstall()`。
+   · `about`   ：游戏说明弹窗（2026-10-02 用户要求）—— 见 `openAbout()`。
 
    ⚠️ 2026-10-02（用户要求）：`load` / `scen` 从「在按钮列下面摊开一段列表」改成「弹一层」。
       摊开会把菜单按钮推上推下，同一枚键在不同状态下落在不同位置 —— 手指记忆失效。 */
@@ -1174,6 +1209,7 @@ function onMenu(kind, node) {
   if (kind === 'review') return enterReview();
   if (kind === 'careers') return enterCareers();
   if (kind === 'install') return onInstall();
+  if (kind === 'about') { openAbout(); return; }
   if (kind === 'scen') { openScenPick(); return; }
   /* kind === 'start'：开一局新的经典全程（普通槽）。已有普通档才需要二次确认。 */
   if (hasSave('normal')) {

@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canOpenAt, chanOf, equity, futuresAvailable, heatOf, markPrice, otcOpenFor, otcUnlocked, pauseLocked, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canCloseAt, canOpenAt, chanOf, equity, futuresAvailable, heatOf, markPrice, otcOpenFor, otcUnlocked, pauseLocked, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { HEAT } from '../core/god.js';
 import { canLiquidate, isSpot, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -824,21 +824,6 @@ export function update(refs, s, view) {
      必须走满 1 游戏小时才解锁。判据 `pauseLocked` 与 `main.js` 闸门**同源**（不各算一遍）。 */
   const locked = pauseLocked(s);
 
-  /* 金额档 —— 两种置灰（§73.9）：
-     ① 锁定期：刚成交过，这一小时里点哪一档都没用 ⇒ 整排灰；
-     ② `canOpenAt`：按这一档算出的这单**开不出来**（保证金不足 / 名义 < MIN_NOTIONAL / 无足够浮筹）。
-        ⚠️ 判据是「这一下点下去会不会失败」，与 `main.js` 分派层读**同一个函数**（`engine.canOpenAt`）。
-        ⚠️ 两个方向都开不出来才灰 —— 玩家可能想开多、也可能想开空，只堵一边会误灰。
-        ⚠️ 它只管**开仓**：手上有仓位时「卖出/平仓」不受这一档影响（平仓不看 `sizeFrac`）。 */
-  for (const [k, b] of refs.fracBtns) {
-    const f = Number(k);
-    b.classList.toggle('on', Math.abs(s.sizeFrac - f) < 1e-9);
-    /* ⚠️ 数据包没到货时不判 `canOpenAt`（此时 `markPrice` 为 null，六个档全会闪一下灰）——
-       行情加载中由动作键那边的 `.off` 讲，这一排只是「下一单的参数」，不必跟着闪。 */
-    const dead = isLoaded(sym) && !(canOpenAt(s, 'long', f) || canOpenAt(s, 'short', f));
-    b.disabled = lockedUI || locked || dead;
-  }
-
   /* 模式键（U1 · §21.4；v9 · §15.6 N3）：字面是**当前**模式。`合约` 时走 `.on` ——
      与通道键同一约定：偏离默认态（现货）才高亮，让玩家一眼看见「我这一单是合约」。
      ⚠️ **该所此刻没有合约时整枚不出现**，且一切按现货处理。
@@ -848,6 +833,10 @@ export function update(refs, s, view) {
   refs.tradeModeBtn.hidden = !futAvail;
   refs.tradeModeBtn.textContent = fut ? '合约' : '现货';
   refs.tradeModeBtn.classList.toggle('on', fut);
+  /* **持仓时不许切模式**（2026-10-02 用户拍板）：现货仓与合约仓不能并存（`posGate`）——
+     切过去只会看见一排按不动的动作键，自相矛盾。两个方向都锁（合约仓也不许切回现货），
+     先平仓再切。⚠️ 暂停 / 锁定期**照旧放行**：它只改「下一单的参数」，不动钱（见下面 `frozen` 那段）。 */
+  refs.tradeModeBtn.disabled = !!cur;
 
   /* 该所此刻开没开**融资**（v10）—— 一个数决定两件事：「卖出」能不能开空、杠杆行是不是置灰。
      ⚠️ 只查**现货表**，与当前模式无关 —— 合约做空是保证金交易，不需要借币。 */
@@ -872,7 +861,10 @@ export function update(refs, s, view) {
      点一下由 `main.js` 给一条「暂不可用 ｜ 为什么」。
      ⚠️ 用 `aria-disabled` 而不是 `disabled` —— 后者会连 `pointerdown` 一起吞掉，点了零反馈。 */
   const levOff = kind === 'spot' && !canLev;
-  const sig = kind + ':' + opts.join(',') + '#' + s.lev + (levOff ? '!' : '');
+  /* 签名里带上**仓位自己的倍数**（`cur.lev`）：开仓 / 平仓都会让这一行重建 ——
+     持仓期间除 `cur.lev` 那一格之外一律置灰，不重建就会烙着旧的「都能点」。
+     （`s.lev` 本来也进签名，但持仓时它与 `cur.lev` 恒等，所以另加这一段。） */
+  const sig = kind + ':' + opts.join(',') + '#' + s.lev + (levOff ? '!' : '') + '@' + (cur ? cur.lev : '-');
   if (sig !== refs._levSignature) {
     refs._levSignature = sig;
     refs.levRow.querySelectorAll('.opt').forEach(n => n.remove());
@@ -891,6 +883,9 @@ export function update(refs, s, view) {
            一个红字只是提示，不改变任何行为；选中态仍走 accent
            （`.opt.risk` 写在 `.opt.on` **之前**，同优先级靠源码顺序让 `.on` 胜出）。 */
         b.classList.toggle('risk', v >= 50);
+        /* **持仓时杠杆锁死**（2026-10-02 用户拍板）：加仓必须同杠杆（`posGate`）⇒
+           其余档位一律置灰真禁用（`.opt:disabled`），别让玩家「点了 5x、真下单才被拒」。 */
+        if (cur && v !== cur.lev) b.disabled = true;
       }
       refs.levRow.append(b);
       refs.levBtns.set(v, b);
@@ -938,6 +933,29 @@ export function update(refs, s, view) {
   const sellOff = (!dir && !canLev) || waiting;
   refs.sellBtn.disabled = !waiting && !(tradable && !(sellOff && !waiting));
   refs.sellBtn.classList.toggle('off', sellOff);
+
+  /* 金额档 —— **一档两用**（2026-10-02 用户拍板）：
+       · **空仓 / 加仓**时它是「这一单用掉多少可用保证金」（`openTrade` 的 `frac`）；
+       · **手上有仓位**时它是「**平掉多少**」（`closeTrade` 的 `frac`）—— 1/4 · 1/2 = 分批卖出，
+         「全部」才是原来那个一键全平。
+     置灰判据因此**跟着当前含义走**，两边都读 `engine` 里那两个纯判据（与分派层同源）：
+       · 能平仓（`canReduce`）⇒ 判 `canCloseAt`：分批低于**最小平仓金额**的那几档才灰（「全部」恒可）；
+       · 否则 ⇒ 判 `canOpenAt`：两个方向都开不出来才灰 —— 玩家可能想开多、也可能想开空，只堵一边会误灰。
+     ⚠️ 排在动作键**之后**，因为它要读 `tradable`（与那几枚共用同一个闸门）。
+     ⚠️ 数据包没到货时不判这两个（此时 `markPrice` 为 null，六个档全会闪一下灰）——
+        行情加载中由动作键那边的 `.off` 讲，这一排只是「下一单的参数」，不必跟着闪。 */
+  const canReduce = !!cur && tradable;
+  for (const [k, b] of refs.fracBtns) {
+    const f = Number(k);
+    b.classList.toggle('on', Math.abs(s.sizeFrac - f) < 1e-9);
+    let off = lockedUI || locked;
+    if (!off && isLoaded(sym)) {
+      off = canReduce
+        ? !canCloseAt(s, f)
+        : !(canOpenAt(s, 'long', f) || canOpenAt(s, 'short', f));
+    }
+    b.disabled = off;
+  }
   if (sellOff) refs.sellBtn.setAttribute('aria-disabled', 'true');
   else refs.sellBtn.removeAttribute('aria-disabled');
   /* 另外四枚的「行情加载中」也只挂样式、不禁用 —— 与「卖出」同一套（`.off` 本就带 `cursor: default`）。 */
@@ -951,17 +969,20 @@ export function update(refs, s, view) {
      链上转账，属于「会动钱」四类之一 —— 暂停时它必须也点不动，否则玩家会以为只有下单被拦。 */
   refs.exBtn.disabled = frozen || locked;
 
-  /* 通道切换键**三级状态**（P2-B 修订 · GDD §15.3）：
+  /* 通道切换键**四档状态**（P2-B 修订 · GDD §15.3；2026-10-02 加第四档）：
        ① 权益 ≤ $500 万 ⇒ `hidden` —— 一个 $1,000 开局的玩家不该看见自己用不了的东西
        ② 权益够、但**当前币**还没开通 OTC ⇒ 可见但禁用（灰框）——
           这一级存在的意义就是「切币时按钮不再忽隐忽现」，所以不能藏
-       ③ 两者都满足 ⇒ 可用
+       ③ **手上有仓位** ⇒ 禁用（2026-10-02 审计修）：OTC 只能平现货，
+          「杠杆仓 ＋ 切到 OTC」会让这一枚仓当场平不掉（`closeCheck`）——
+          与「持仓不许切现货 / 合约」同一条规矩：**会改变这一笔交易身份的开关，持仓期间一律锁住**。
+       ④ 其余 ⇒ 可用
      字面与高亮都跟着**生效通道**走 —— 看 `chanOf` 而不是 `s.chan`，
      否则会出现「键藏起来了、单子却还在走 OTC」这种玩家看不见的通道。 */
   const chan = chanOf(s);
   const unlocked = otcUnlocked(s);
   refs.chanBtn.hidden = !unlocked;
-  refs.chanBtn.disabled = !(unlocked && otcOpenFor(s)) || frozen || locked;
+  refs.chanBtn.disabled = !(unlocked && otcOpenFor(s)) || frozen || locked || !!cur;
   refs.chanBtn.textContent = chan === 'otc' ? 'OTC' : '盘口';
   refs.chanBtn.classList.toggle('on', chan === 'otc');
 
@@ -1685,6 +1706,11 @@ export function openMenu({ canLoad = false } = {}) {
   const careers = el('button', 'act chan', '交易档案');
   careers.dataset.menu = 'careers';
   btns.append(careers);
+  /* 游戏说明（2026-10-02 用户要求）—— 讲**这个游戏是什么**：有哪些模块、机制怎么咬合、深度在哪。
+     与「读取存档 / 挑战模式」同一条路：弹一层（`openMenuDlg`），菜单那几枚按钮一动不动。 */
+  const about = el('button', 'act chan', '游戏说明');
+  about.dataset.menu = 'about';
+  btns.append(about);
   if (!isStandalone()) menuInstallBtn(btns);
   box.append(btns);
   /* ⚠️ 菜单本身**只有这一列按钮**（2026-10-02）：原来读档那两行与五张年代卡是摊在它下面的，
@@ -1816,6 +1842,48 @@ export function openScenPick() {
       list.append(row);
     }
     box.append(list);
+  });
+}
+
+/**
+ * 「游戏说明」弹窗（2026-10-02 用户要求）—— 讲**这个游戏是什么**：
+ * 有哪些模块、机制怎么咬合、深度在哪。**不是教程**（怎么点由新手引导负责），
+ * 所以全文没有一步操作指令，只有「这里有什么、它为什么存在」。
+ *
+ * 六块：一局是什么 / 三个工具 / 两条通道 / 你的成交会改变行情 / 市场会自己动 / 两种收场。
+ * 每块一行小标题 ＋ 一段说明，超长时内部滚动（`.about`），「返回」留在滚区之外。
+ */
+const ABOUT = [
+  ['一局是什么',
+    '2013 年 1 月 → 2024 年 12 月，行情就是 BTC / ETH / XRP / DOGE / SOL 的真实历史小时线。'
+    + '从 $1,000 起步，赚到多少都算你的 —— 活到 2024-12-31 收盘即通关，爆仓清零即收场。'],
+  ['三个工具',
+    '现货：拿钱买币，不付利息、不因维持线爆仓。'
+    + '现货杠杆：借钱买币 / 借币做空，按日计息，维持线 15%。'
+    + '合约：USDT 本位永续，每 8 小时一次资金费，维持线 0.5% 起。倍数越高，强平线越近。'],
+  ['两条通道',
+    '盘口吃冲击与滑点，单子越大越贵；OTC 是私下一口价的大宗通道（单笔 ≥ $100 万），'
+    + '不吃滑点、但带一笔溢价。有持仓时，通道 / 现货合约 / 交易所都会锁住 —— 先平仓再换。'],
+  ['你的成交会改变行情',
+    '每一笔都会在市场里留下永久的位移（买抬价、卖压价），持仓本身还带来抛压折价。'
+    + '所以分批建仓、分批卖出（金额档 1/4 · 1/2 · 全部）是躲开冲击的正经打法 —— 同一根 K 线里不能连下。'],
+  ['同样的钱，分量不一样',
+    '巨鲸 NPC 会在关键时刻推价，新闻会在年代节点冒出来，市场流动性逐年增长 ——'
+    + '一笔钱在 2013 年是巨鲸，到 2024 年只是零头。仓位相对市场越大，你自己的冲击就越贵。'],
+  ['两种收场',
+    '爆仓归零，或活到 2024 收盘。每局的结局会写进交易档案；'
+    + '主菜单的挑战模式另有五个年代开局（冬天、ICO、312 前夜、DeFi 之夏、Luna 崩盘）。'],
+];
+
+export function openAbout() {
+  openMenuDlg('游戏说明', box => {
+    const rows = el('div', 'about');
+    for (const [h, t] of ABOUT) {
+      const blk = el('div', 'about-blk');
+      blk.append(el('b', null, h), el('p', null, t));
+      rows.append(blk);
+    }
+    box.append(rows);
   });
 }
 

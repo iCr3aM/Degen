@@ -21,7 +21,7 @@ import { HEAT, NPC, SHOCK, addFlow, playerFactor, shockParamsOf } from './god.js
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
-  closePosition, equityOf, isLiquidatable, isSpot, liquidationPrice, maintRateOf, openPosition, pnlOf,
+  equityOf, isLiquidatable, isSpot, liquidationPrice, maintRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
   FUNDING, FR, fundingOf, canLiquidate, paysFunding, paysInterest, shockKindOf,
 } from './positions.js';
@@ -1041,10 +1041,18 @@ export function openTrade(s, side, frac = 1) {
 }
 
 /**
- * 平仓 —— 平掉**当前所选币**的仓位（与持仓条只显示当前币同一口径）。
- * 多仓下想平另一个币：先切到那个币的 Tab，再点平仓。
+ * **平仓校验** —— 纯判据，**一个字节的状态都不改**（与 `openCheck` 完全对称）。
+ *
+ * `closeTrade` 与渲染层的 `canCloseAt` 读的是**同一个函数**：金额档该不该置灰、
+ * 这一下点下去会不会失败，两处不可能各算一遍（与 `hasFinancingAt` 三处同源同一纪律）。
+ *
+ * @param {number} frac **平掉仓位的比例**（0–1）—— 操作区那 1/4 · 1/2 · 全部。
+ *   `1` = 全平（2026-10-02 之前唯一的行为）。
+ * @returns {{ok:false, why:string}
+ *   | {ok:true, pos:object, otc:boolean, f:number, pk:'spot'|'fut', feeRate:number,
+ *      closeSize:number, notional:number, cost:number, fill:number}}
  */
-export function closeTrade(s, why = '手动') {
+function closeCheck(s, frac = 1) {
   const sym = s.sym;
   const pos = posOf(s, sym);
   if (!pos) return { ok: false, why: `${sym} 没有持仓` };
@@ -1058,26 +1066,71 @@ export function closeTrade(s, why = '手动') {
   const otc = chanOf(s) === 'otc';
   if (otc && !isSpot(pos)) return { ok: false, why: 'OTC 只能平现货，杠杆仓请走盘口' };
 
-  /* 成交价（P2-B1 / P2-B3）：**平多是卖、平空是买**，所以方向与开仓时相反 ——
-     代价永远对玩家不利：卖掉打点折、买回抬点价。本次成交名义 = 整条仓位（一次性平完）。 */
-  const notional = pos.size * price;
-  const cost = otc ? otcPremiumFor(s, sym, notional) : impactFor(s, sym, s.i, notional);
-  const fill = fillPrice(price, pos.side === 'long' ? -1 : 1, cost);
-
+  const f = Math.max(1e-6, Math.min(1, frac));
   /* 平仓费走**开仓时那张表**（v12 · §11.3）：判据是仓位自己的 `isSpot`，
      不是玩家此刻的模式 —— 现货仓平仓不该按合约费率收，反之亦然。 */
   const pk = isSpot(pos) ? 'spot' : 'fut';       // 仓位自己的产品线（v20）：费率与 30 天量同源
-  /* 冲击形态品种（§73.6）与上面那条**产品线**不是一回事：现货保证金杠杆走现货通道、按现货费率，
-     但它是「有杠杆盘」的合成盘，冲击形态与级联都按合约那一档 —— 见 `shockKindOf`。 */
-  const sk = shockKindOf(isSpot(pos), pos.lev);
-  const r = closePosition(pos, fill, feeRateOf(pos.ex, timeOf(s), pk, vol30Of(s, pos.ex, s.i, pk)));
+  const feeRate = feeRateOf(pos.ex, timeOf(s), pk, vol30Of(s, pos.ex, s.i, pk));
+  const closeSize = pos.size * f;
+  const notional = closeSize * price;
+
+  /* **最小平仓金额**（2026-10-02 用户拍板）：只卡**分批**（`f < 1`），全平永不设门槛 ——
+     门槛卡住全平会把玩家困在一条小仓位上，与 OTC 那条「门槛只卡买入、不卡平仓」同一理由。
+     ⚠️ 没有这一条，`1/4` → `1/4` → … 能无限切下去（仓位几何缩小、永不归零）：既留下尘埃仓，
+        也把「分批卖出」变成一条刷手续费的通道。门槛与开仓**同源**（所 × 产品 × 年代）。 */
+  if (f < 1) {
+    const minClose = Math.max(MIN_NOTIONAL, minNotionalAt(pos.ex, timeOf(s), pk));
+    if (notional < minClose) {
+      return { ok: false, why: `单笔平仓金额太小 ｜ 至少 ${fmtMoneyShort(minClose)}（或点「全部」）` };
+    }
+  }
+
+  /* 成交价（P2-B1 / P2-B3）：**平多是卖、平空是买**，所以方向与开仓时相反 ——
+     代价永远对玩家不利：卖掉打点折、买回抬点价。 */
+  const cost = otc ? otcPremiumFor(s, sym, notional) : impactFor(s, sym, s.i, notional);
+  const fill = fillPrice(price, pos.side === 'long' ? -1 : 1, cost);
+
+  return { ok: true, pos, otc, f, pk, feeRate, closeSize, notional, cost, fill };
+}
+
+/** 渲染层用的**纯判据**：这一笔平得出来吗 —— 与 `closeTrade` 同源（金额档的置灰读它）。 */
+export const canCloseAt = (s, frac = 1) => closeCheck(s, frac).ok;
+
+/**
+ * 平仓 / **减仓** —— 平掉**当前所选币**仓位的 `frac` 比例（2026-10-02 用户拍板：可分批卖出）。
+ * 多仓下想平另一个币：先切到那个币的 Tab，再点平仓。
+ *
+ * ⚠️ **分摊口径**（`frac < 1`）：保证金 / 数量 / 名义 / 开仓费 / 两格构成（`pos.mix`）
+ *     **一律按比例收走**，等价于「把这条仓位切成几份，只结算其中一份」。
+ *     ⚠️ **不复用 `reducePosition`**：那是给**部分强平**用的（保证金不退、留在仓位里当垫子、
+ *        强平价被推远），语义与「玩家主动离场、把钱拿出来」正好相反。
+ * ⚠️ `pos.entry` 不动：按比例平仓不改变剩余那部分的加权均价。
+ * ⚠️ 一批一批地减，每一笔各记一次胜负 —— 日志里报的仍是**这一笔自己的回合净额**。
+ */
+export function closeTrade(s, why = '手动', frac = 1) {
+  const c = closeCheck(s, frac);
+  if (!c.ok) return { ok: false, why: c.why };
+  const { pos, otc, f, pk, feeRate, closeSize, notional, cost, fill } = c;
+  const sym = pos.sym;
+
+  /* 这一笔自己的结算（比例口径）：
+       毛盈亏 = (成交价 − 均价) × 本笔数量 × 方向
+       平仓费 = 本笔名义（按成交价）× 费率
+       返还   = 本笔保证金 + 毛盈亏 − 平仓费 */
+  const sign = pos.side === 'long' ? 1 : -1;
+  const pnl = (fill - pos.entry) * closeSize * sign;
+  const fee = closeSize * fill * feeRate;
+  const backMargin = pos.margin * f;
+  const net = backMargin + pnl - fee;
   /* 平仓款**按 `pos.mix` 同比例退回两格**（v13 · 方案 §9.2 ③）——
      2013 年用美元开的仓，平掉回的还是美元：否则 Mt.Gox 会凭空空降一笔 USDT。 */
-  credit(s, pos.ex, r.net, pos.mix);
-  s.realized += r.pnl - r.fee;
-  /* 交易统计（v21）：按**回合净额**（毛盈亏 − 开仓费 − 平仓费）分胜负 —— 与日志里报的
-     「净额」同一口径，所以玩家看到的「盈利」与档案里的「盈利笔数」对得上。 */
-  if (r.pnl - (pos.openFee ?? 0) - r.fee > 0) s.stat.win += 1; else s.stat.loss += 1;
+  credit(s, pos.ex, net, { usd: pos.mix.usd * f, usdt: pos.mix.usdt * f });
+  s.realized += pnl - fee;
+  /* 交易统计（v21）：按**本笔回合净额**（毛盈亏 − 本笔分摊的开仓费 − 平仓费）分胜负 ——
+     与日志里报的「净额」同一口径，所以玩家看到的「盈利」与档案里的「盈利笔数」对得上。
+     ⚠️ 开仓费也要**按同一比例分摊**（全平时 `f = 1`，与旧口径逐位相同）。 */
+  const openFee = (pos.openFee ?? 0) * f;
+  if (pnl - openFee - fee > 0) s.stat.win += 1; else s.stat.loss += 1;
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(s, sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
   /* 玩家自己的成交量（v17 · 2026-10-01）：平仓同样是成交 ⇒ 记进当根 K 线的量柱。
      OTC 不落公开盘口（与「不写冲击池」同一先例）⇒ 不计。 */
@@ -1089,14 +1142,25 @@ export function closeTrade(s, why = '手动') {
      - **手续费**报的是**本回合两笔之和**（开 ＋ 平），与「净额 = 毛额 − 这条手续费」对得上。
      ⚠️ `s.realized` 本来就是净口径（开仓扣一次、这里再加 `pnl − fee`），这两行只是把显示补齐，
         账目一个字没动。 */
-  const fees = (pos.openFee ?? 0) + r.fee;
-  const net = r.pnl - fees;
+  const fees = openFee + fee;
+  const netRound = pnl - fees;
   /* 盈亏串前那枚 ▲/▼ 是**色盲第二通道**（B6-c · §7.6 的第四处）：日志正文本来就整段按
      `ok` / `bad` 上色，红绿色盲读不出「盈利」与「亏损」的色差 —— 符号是同一件事的形状版。
      它是纯文本（core 不认识 UI，不挂 `.sign` 伪元素），与「盈利 / 亏损」两个字面并存。 */
-  pushLog(s, `平仓 ${sym} ${pos.lev}x｜${net >= 0 ? '盈利 ▲' : '亏损 ▼'} ${fmtMoneyShort(net)} · ${why}｜手续费 ${fmtMoneyShort(fees)}${tag}`,
-    net >= 0 ? 'ok' : 'bad');
-  delete s.positions[sym];
+  const verdict = `${netRound >= 0 ? '盈利 ▲' : '亏损 ▼'} ${fmtMoneyShort(netRound)} · ${why}｜手续费 ${fmtMoneyShort(fees)}${tag}`;
+  if (f >= 1) {
+    pushLog(s, `平仓 ${sym} ${pos.lev}x｜${verdict}`, netRound >= 0 ? 'ok' : 'bad');
+    delete s.positions[sym];
+  } else {
+    /* 减仓那一条把**平掉的比例**写在脸上（`25%` / `50%`）—— 否则玩家分不清
+       「刚才是卖了一半」还是「整条没了」。 */
+    pushLog(s, `减仓 ${sym} ${pos.lev}x ${Math.round(f * 100)}%｜${verdict}`, netRound >= 0 ? 'ok' : 'bad');
+    pos.size -= closeSize;
+    pos.margin -= backMargin;
+    pos.notional *= (1 - f);
+    pos.openFee -= openFee;
+    pos.mix = { usd: pos.mix.usd * (1 - f), usdt: pos.mix.usdt * (1 - f) };
+  }
 
   /* 订单冲击：平仓写一笔**方向相反**的台阶（用户 2026-10-01 拍板），但**只回吐
      `SHOCK.closeGive`**（2026-10-02 拍板）。
@@ -1110,10 +1174,11 @@ export function closeTrade(s, why = '手动') {
         那个会把开仓留下的台阶主动推回去，与「台阶永久保留」冲突；这里写的仍是**平仓这一笔自己**
         该有的冲击，只是按 `closeGive` 折了一档。
      ⚠️ 与开仓同口径：OTC 不写（私下一口价不落公开盘口，与它不计量柱同一个先例）；
-        写完必须 `invalidateSigma()` —— 平仓从此**会**改动它之后的 K 线。 */
+        写完必须 `invalidateSigma()` —— 平仓从此**会**改动它之后的 K 线。
+     ⚠️ 分批减仓时，这一笔写的仍是**本笔名义**该有的位移（冲击按成交额走，不按仓位的比例）。 */
   if (!otc) {
-    const dir = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, sym, dir, notional, SHOCK.closeGive, sk);
+    const d = pos.side === 'long' ? -1 : 1;
+    pushFlow(s, sym, d, notional, SHOCK.closeGive, shockKindOf(isSpot(pos), pos.lev));
     consumePool(s, sym, notional);        // 瞬时深度池（L1）：平仓同样是真实成交 ⇒ 也吃深度
   }
   /* 持仓抛压折价（v18 · 2026-10-01）：这一条仓位没了（`delete` 在上面）⇒ 折价随之释放。

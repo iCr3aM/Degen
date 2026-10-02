@@ -101,19 +101,6 @@ export function liquidationPrice(pos) {
   return pos.entry + dir * (maintRateOf(pos) * pos.notional - pos.margin) / pos.size;
 }
 
-/**
- * 平仓结算。
- * @returns {{ proceeds: number, fee: number, pnl: number, net: number }}
- *   `net` = 返还给现金的净额 = 保证金 + 未实现盈亏 − 平仓手续费
- */
-export function closePosition(pos, price, feeRate) {
-  const pnl = pnlOf(pos, price);
-  const notionalNow = pos.size * price;
-  const fee = notionalNow * feeRate;
-  const net = pos.margin + pnl - fee;
-  return { proceeds: pos.margin + pnl, fee, pnl, net };
-}
-
 /* ───────────────────────── 逐步强平（Binance 口径 · 2026-10-01 拍板） ───────────────────────── */
 
 /**
