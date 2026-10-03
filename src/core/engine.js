@@ -17,7 +17,7 @@ import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, raw
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { HEAT, INV, NPC, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
+import { FNG, HEAT, INV, NPC, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -856,6 +856,105 @@ export function reviewHeatOf(sym, i) {
   return c.arr[upto - c.a] ?? HEAT.base;
 }
 
+/* ── 恐惧贪婪指数（**显示轨** · 2026-10-04 用户拍板「显示轨解耦」）────────────────
+   详见 `god.FNG` 的常量注释：`heat` 是逐小时的**玩法引擎**（记忆 ≈ 14h，注定几天内横跳），
+   本条是**每日 1 次**的慢速**只读**读数 —— 两条轨互不影响，`heat` 一个字不改。
+   ⚠️ 它是 `(sym, day)` 的纯函数（只吃行情 ＋ `liqOf`）；实盘轨另叠一层日频低通状态。 */
+
+/** 迟滞分档：`prev` 上一档（旧档缺省按 `'mid'`），`v` 是 0–100 的指数值。 */
+function fngBandStep(prev, v) {
+  const b = FNG.bands;
+  if (prev === 'greedy') return v < b.greedExit ? 'mid' : 'greedy';
+  if (prev === 'panic') return v > b.panicExit ? 'mid' : 'panic';
+  if (v >= b.greed) return 'greedy';
+  if (v <= b.panic) return 'panic';
+  return 'mid';
+}
+
+/**
+ * 某一天 `d` 的 F&G **原始读数**（0–100）—— 三个子因子等权，贪婪为正。
+ * @param {(i:number)=>number} priceAt 价格读数（实盘走 `heatPriceAt`、回顾页走 `rawCloseAt`）
+ * @param {number} d 天序号；读的是**刚结束的那一天**（`d−1` 的最后一小时起算）
+ */
+function fngRawWith(priceAt, sym, d) {
+  const H = HOURS_PER_DAY;
+  const i1 = d * H + (H - 1);          // 这一天（已收盘）的最后一根小时
+  /* ① 动量 25%：30 天收益的 z 分位（`σ_30日 × √30` 归一，夹 ±2σ 后折算到 ±1）。 */
+  const sig = dailySigma(sym, i1);
+  const p1 = priceAt(i1);
+  const p0 = priceAt(i1 - FNG.window * H);
+  const z = sig > 0 && p1 > 0 && p0 > 0 ? (p1 / p0 - 1) / (sig * Math.sqrt(FNG.window)) : 0;
+  const mom = Math.max(-1, Math.min(1, z / 2));
+  /* ② 波动率 25%：`σ_短 ÷ σ_30日` 的**偏离**，越高越恐惧 ⇒ 取负（与 `HEAT.kVol` 同一支口径）。 */
+  const sigFast = dailySigmaFast(sym, i1);
+  const dev = sig > 0 && sigFast > 0 ? Math.max(-1, Math.min(1, sigFast / sig - 1)) : 0;
+  const vol = -dev;
+  /* ③ 成交量 25%：当日额 vs 近 30 日均额（`liqOf` 就是全市场**日成交额**锚），
+        再乘**趋势方向** —— 放量上涨 ⇒ 贪婪，放量下跌 ⇒ 恐惧。
+        ⚠️ 方向取**30 天收益的符号**（与 ① 同一个 `p0`），**不是当日涨跌**（2026-10-04 实测定标）：
+        用当日符号时 `dir` 每天翻一次，成交量项变成 ±33 分的日频噪声 ⇒
+        指数在 25 / 75 之间反复横穿（实测「极端对翻」8.8 次/年，真实指数只有 0.58 次/年）。
+        改成趋势符号后「放量」只在趋势内确认方向，噪声源消失。 */
+  const today = liqOf(sym, d);
+  let sum = 0, n = 0;
+  for (let k = d - FNG.voluWindow; k < d; k++) {
+    const q = liqOf(sym, k);
+    if (q > 0) { sum += q; n++; }
+  }
+  const avg = n > 0 ? sum / n : 0;
+  const dir = p1 > 0 && p0 > 0 ? Math.sign(p1 - p0) : 0;
+  const vr = today > 0 && avg > 0 ? Math.max(-1, Math.min(1, today / avg - 1)) : 0;
+  const volu = dir * vr;
+  const m = (mom + vol + volu) / 3;                    // 三因子等权（各已归一到 ±1）
+  return Math.max(0, Math.min(100, FNG.center + FNG.sens * m));
+}
+
+/** 实盘轨（0–1 显示用；旧档缺格 ⇒ 中性 `0.5`，与 `heatOf` 同一约定）。 */
+export const fngOf = (s, sym) => {
+  const m = s.mkt && s.mkt[sym];
+  return m && Number.isFinite(m.fng) ? m.fng / 100 : 0.5;
+};
+
+/** 实盘轨的**迟滞档**（`'panic' | 'mid' | 'greedy'`）—— 供 UI 文字与着色。 */
+export const fngBandOf = (s, sym) => (s.mkt && s.mkt[sym] && s.mkt[sym].fngBand) || 'mid';
+
+/**
+ * **回顾页**的恐惧贪婪读数 —— 与实盘同一套方程 ＋ 同一条日频低通，但只吃**原始历史行情**。
+ * 与 `reviewHeatOf` 同一条纪律：`(sym, i)` 的纯函数，游标只前进、回看查前缀数组。
+ */
+const rvFng = new Map();
+
+function rvFngAt(sym, i) {
+  const r = rangeOf(sym);
+  if (!r || !isLoaded(sym) || i < r[0]) return null;
+  const upto = Math.min(i, r[1] - 1);
+  let c = rvFng.get(sym);
+  if (!c || c.n !== r[1] - r[0]) {
+    c = { a: dayIndexOf(r[0]), n: r[1] - r[0], d: dayIndexOf(r[0]) - 1, v: null, band: 'mid', arr: [], bands: [] };
+    rvFng.set(sym, c);
+  }
+  const day = dayIndexOf(upto);
+  while (c.d < day) {
+    c.d += 1;
+    const raw = fngRawWith(j => rawCloseAt(sym, j), sym, c.d);
+    c.v = c.v == null ? raw : c.v + FNG.alpha * (raw - c.v);
+    c.band = fngBandStep(c.band, c.v);
+    c.arr.push(c.v); c.bands.push(c.band);
+  }
+  const k = day - c.a;
+  return k < 0 || k >= c.arr.length ? null : { v: c.arr[k], band: c.bands[k] };
+}
+
+export function reviewFngOf(sym, i) {
+  const r = rvFngAt(sym, i);
+  return r ? r.v / 100 : 0.5;
+}
+
+export function reviewFngBandOf(sym, i) {
+  const r = rvFngAt(sym, i);
+  return r ? r.band : 'mid';
+}
+
 /* ── 回顾页的**真实历史指标**（里程碑 B · 2026-10-04）─────────────────────────────
    背景：持仓量 / 多空比 / 资金费率的历史在 2018 年之前**根本拿不到**（数据源从那时才起），
    回顾页不能拿它们当「历史读数」。改展示三样**只吃原始行情**就能算出来的真东西：
@@ -978,6 +1077,9 @@ function mktOf(s, sym) {
     })),
     mm: { long: 0, longAvg: 0, short: 0, shortAvg: 0, longStopped: false, shortStopped: false },
     npcDrift: null, npcShock: null, npcFund: 0, advPush: 0, pv: 0,
+    /* 恐惧贪婪**显示轨**（2026-10-04）：旧档缺这三个键 ⇒ 由 `fngDay === null` 触发首次结算
+       （首日直接吸附到原始读数），行为自洽 ⇒ **不升 `STATE_VERSION`**（同 `m.heat` 先例）。 */
+    fng: 50, fngDay: null, fngBand: 'mid',
   });
 }
 
@@ -1596,6 +1698,16 @@ export function tickMarket(s, sym) {
   syncNpcDrift(s, sym, i, sig);
   /* ④ 踩踏级联。 */
   stampede(s, sym, m, lastPrice(s, sym));
+  /* ⑤ 恐惧贪婪**显示轨**（2026-10-04 · 日频 · 只读）：每个新的一天把当日原始读数经一阶低通
+     写进 `m.fng`（0–100）。⚠️ 它**不参与任何玩法判定**（NPC / 点差 / 踩踏一条都不读它）——
+     与上面的 `heat` 完全解耦，只是 UI 那枚浮字的读数来源（见 `god.FNG`）。 */
+  const day = dayIndexOf(i);
+  if (m.fngDay !== day) {
+    const raw = fngRawWith(j => heatPriceAt(s, sym, j), sym, day);
+    m.fng = m.fngDay == null ? raw : m.fng + FNG.alpha * (raw - m.fng);
+    m.fngDay = day;
+    m.fngBand = fngBandStep(m.fngBand, m.fng);
+  }
 }
 
 /**

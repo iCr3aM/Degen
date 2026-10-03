@@ -13,8 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canCloseAt, canOpenAt, chanOf, equity, exMarkPrice, futuresAvailable, heatOf, lastPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewHeatOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
-import { HEAT } from '../core/god.js';
+import { available, canCloseAt, canOpenAt, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
@@ -606,10 +605,10 @@ export function mount(root) {
   rvModeBtn.dataset.mode = 'toggle';
   const rvHead = el('div', 'chart-head');
   rvHead.append(rvSym, rvMcap, rvSupp, rvChg, rvModeBtn);
-  /* 市场热度（§73.5 · 2026-10-02）：与交易页**同一枚浮字**，压在同一个留白处（K 线左下角）
-     —— 回顾页没有 `chart-eta` / `chart-lock`，所以这一列只有热度那一枚。
+  /* 恐惧贪婪指数（显示轨）：与交易页**同一枚浮字**，压在同一个留白处（K 线左下角）
+     —— 回顾页没有 `chart-eta` / `chart-lock`，所以这一列只有这一枚。
      ⚠️ 它必须和交易页长得一模一样：同一套 `.chart-heat` / `data-heat` 三档着色，
-        读数走 `reviewHeatOf`（同一条方程、只吃原始行情）。 */
+        读数走 `reviewFngOf` / `reviewFngBandOf`（同一套方程、只吃原始行情）。 */
   const rvHeatBar = el('i');
   const rvHeatTxt = el('u');
   const rvHeatRow = el('div', 'row');
@@ -1322,13 +1321,17 @@ function syncChart(refs, s, view, sym, cur, mark) {
     refs.chChg.textContent = '';
   }
 
-  /* 市场热度（§73.5）：0–1 的条 ＋ 贪婪 / 中性 / 恐慌 三档字面。判据与 `HEAT` 同源。
+  /* 恐惧贪婪指数（**显示轨** · 2026-10-04）：条宽用 0–1 的**值**，文字与着色用**迟滞档**。
+     ⚠️ 读数走 `fngOf` 而不是 `heatOf`：`heat` 是逐小时的玩法引擎（记忆 ≈ 14h），几天内横跳是它的
+        本性；这一枚浮字要的是真实指数那种「日频、30 天基线、平均一次持续 20 天以上」的慢读数
+        （见 `god.FNG`）。玩法判定仍全部由 `heat` 驱动，一个字都没改。
      ⚠️ **必须排在 `chartOpts` 之前**（2026-10-04）：`chartOpts` 把这一行的**实测高度**当底部留白
         （`footInset`），文案还没写进去量到的就是一格空底 —— 首帧会把量柱基线压低一行。 */
-  const heat = heatOf(s, sym);
-  refs.heatBar.style.setProperty('--heat', `${Math.round(heat * 100)}%`);
-  refs.heatTxt.textContent = heat >= HEAT.greed ? '贪婪' : heat <= HEAT.panic ? '恐慌' : '中性';
-  refs.heatChip.dataset.heat = heat >= HEAT.greed ? 'greedy' : heat <= HEAT.panic ? 'panic' : 'mid';
+  const fng = fngOf(s, sym);
+  const band = fngBandOf(s, sym);
+  refs.heatBar.style.setProperty('--heat', `${Math.round(fng * 100)}%`);
+  refs.heatTxt.textContent = band === 'greedy' ? '贪婪' : band === 'panic' ? '恐慌' : '中性';
+  refs.heatChip.dataset.heat = band;
   /* 派生量两枚（缺口 4 / 19；2026-10-03 改口径）：OI（全市场，含玩家与 1:1 对手方）
      ＋ **散户多空比**（散盘子集，不含玩家 —— 全市场口径按定义恒为 1:1、零信息量，见
      `retailLongShareOf`）。取不到（散户两侧皆空）⇒ `--`，不硬凑一个 50/50。
@@ -1379,12 +1382,14 @@ function reviewChartSync(refs, rv, view) {
     refs.rvChg.textContent = '';
   }
 
-  /* 市场热度（§73.5 · 2026-10-02）：与交易页**逐字同一套**写法 —— 同一条方程、同一个阈值、
-     同一组 `data-heat` 类名。口径差异只有一处：回顾页读的是**原始行情**（这一屏本来就画原始 K 线）。 */
-  const heat = reviewHeatOf(sym, rv.i);
-  refs.rvHeatBar.style.setProperty('--heat', `${Math.round(heat * 100)}%`);
-  refs.rvHeatTxt.textContent = heat >= HEAT.greed ? '贪婪' : heat <= HEAT.panic ? '恐慌' : '中性';
-  refs.rvHeatChip.dataset.heat = heat >= HEAT.greed ? 'greedy' : heat <= HEAT.panic ? 'panic' : 'mid';
+  /* 恐惧贪婪指数（**显示轨** · 2026-10-04）：与交易页**逐字同一套**写法 —— 条宽用值、
+     文字与着色用迟滞档、同一组 `data-heat` 类名。口径差异只有一处：回顾页读的是**原始行情**
+     （这一屏本来就画原始 K 线）。 */
+  const fng = reviewFngOf(sym, rv.i);
+  const band = reviewFngBandOf(sym, rv.i);
+  refs.rvHeatBar.style.setProperty('--heat', `${Math.round(fng * 100)}%`);
+  refs.rvHeatTxt.textContent = band === 'greedy' ? '贪婪' : band === 'panic' ? '恐慌' : '中性';
+  refs.rvHeatChip.dataset.heat = band;
 
   const win = chartOpts({
     /* ⚠️ `own: false`（v20）：回顾那一屏**不并玩家自己的成交额** ——
