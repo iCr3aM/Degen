@@ -35,12 +35,16 @@ const el = (tag, cls, text) => {
 };
 
 /**
- * 游戏图标（本轮 ①）—— 与 `index.html` 的 favicon **同一副图案**：深底 ＋ 一根绿烛。
+ * 游戏图标（本轮 ① 重绘）—— 与 `index.html` 的 favicon **同一副图案**：
+ * 深底 ＋ 三根迷你 K 线（左红右绿、逐根抬高的上升构图）。
  *
  * 为什么内联 SVG 而不是一张 png：进游戏前那一屏必须是一个「完整的开机画面」，
  * 多一个外部资产就多一条会走丢的路径（favicon 本来就是 `data:` URI 一把梭）。
- * ⚠️ 颜色**不写死**：底色 / 烛色交给 `style.css` 的 `.menu-logo .bg` / `.menu-logo .c`
- *    （与 `chart.js` 从 CSS 变量取色同一条口径 —— 主题改一处，图标跟着变）。
+ * ⚠️ 颜色**不写死**：底色 / 涨烛 / 跌烛交给 `style.css` 的 `.menu-logo .bg` /
+ *    `.menu-logo .u` / `.menu-logo .d`（与 `chart.js` 从 CSS 变量取色同一条口径 ——
+ *    主题改一处，图标跟着变）。
+ * ⚠️ 改图案必须**三处同步**：这里、`index.html` 的 favicon、`tools/make-icons.mjs`
+ *    生成的 `public/icon-192/512.png` —— 几何写死成同一组矩形。
  */
 function logoEl() {
   const NS = 'http://www.w3.org/2000/svg';
@@ -56,8 +60,19 @@ function logoEl() {
     r.setAttribute('class', c);
     return r;
   };
-  // 深底 ＋ 影线（30,12,4,40）＋ 实体（24,20,16,24）—— 与 favicon 逐字相同
-  svg.append(rect(0, 0, 64, 64, 'bg'), rect(30, 12, 4, 40, 'c'), rect(24, 20, 16, 24, 'c'));
+  // 三根蜡烛的几何（viewBox 64×64）—— 与 favicon / `tools/make-icons.mjs` 逐字相同：
+  //   柱宽 14、间隙 5、左右各留 6；影线宽 4、水平居中于实体。
+  //   左红右绿，实体顶沿 33 → 20 → 11 逐根抬高，读作一条上升趋势。
+  const candles = [
+    // [影线 x,y,w,h]    [实体 x,y,w,h]    类别（涨/跌）
+    [[11, 26, 4, 30], [6, 33, 14, 16], 'd'],
+    [[30, 12, 4, 34], [25, 20, 14, 18], 'u'],
+    [[49, 6, 4, 30], [44, 11, 14, 16], 'u'],
+  ];
+  svg.append(rect(0, 0, 64, 64, 'bg'));
+  for (const [wick, body, cls] of candles) {
+    svg.append(rect(...wick, cls), rect(...body, cls));
+  }
   return svg;
 }
 
@@ -212,11 +227,14 @@ export function mount(root) {
   chartEta.hidden = true;
   const chartLock = el('div', 'chart-lock', '双击回最新');
   chartLock.hidden = true;
-  /* 市场热度（§73.5）＋ 派生量两行（缺口 4 / 19 · 2026-10-02 拍板）——
-     第一行是 0–1 的条 ＋ 贪婪 / 中性 / 恐慌 三档字面，下面两行是 OI 与多空比。
+  /* 市场热度（§73.5）＋ 派生量两枚（缺口 4 / 19）—— **一行三格**，格间一条细分隔线：
+       [热度条] 恐慌 ｜ OI 12.3M ｜ 多空 62/38
+     ⚠️ 一行而不是三行（2026-10-03 拍板）：原先热度 / OI / 多空各占一行，白吃掉 K 线
+        左下角两行高。压成一行是把可画区还给 K 线；代价是 OI 去掉 `$` 前缀、
+        `散户多空` 简写为 `多空` —— 只有这样才在 390px 屏上塞得下。
      ⚠️ 放左下角这一列（那时常空着），**不占** `.chart-head` 那一行的宽度 ——
         头部五行字在 390px 屏上已经排满，再插一枚会把粒度小字挤掉。
-     ⚠️ 不多开面板（LESS IS MORE）：两行读数就挂在热度这一格里，共用同一块浮字底。 */
+     ⚠️ 不多开面板（LESS IS MORE）：三格读数就挂在热度这一格里，共用同一块浮字底。 */
   const heatBar = el('i');
   const heatTxt = el('u');
   const heatRow = el('div', 'row');
@@ -1312,12 +1330,13 @@ function syncChart(refs, s, view, sym, cur, mark) {
   refs.heatBar.style.setProperty('--heat', `${Math.round(heat * 100)}%`);
   refs.heatTxt.textContent = heat >= HEAT.greed ? '贪婪' : heat <= HEAT.panic ? '恐慌' : '中性';
   refs.heatChip.dataset.heat = heat >= HEAT.greed ? 'greedy' : heat <= HEAT.panic ? 'panic' : 'mid';
-  /* 派生量两行（缺口 4 / 19；2026-10-03 改口径）：OI（全市场，含玩家与 1:1 对手方）
+  /* 派生量两枚（缺口 4 / 19；2026-10-03 改口径）：OI（全市场，含玩家与 1:1 对手方）
      ＋ **散户多空比**（散盘子集，不含玩家 —— 全市场口径按定义恒为 1:1、零信息量，见
-     `retailLongShareOf`）。取不到（散户两侧皆空）⇒ `--`，不硬凑一个 50/50。 */
+     `retailLongShareOf`）。取不到（散户两侧皆空）⇒ `--`，不硬凑一个 50/50。
+     ⚠️ OI 走 `fmtQty`（= 无 `$` 的同一套后缀表）：这一行要挤下三格，`$` 是第一个被砍的。 */
   const ls = retailLongShareOf(s, sym);
-  refs.oiTxt.textContent = `OI ${fmtMoneyShort(openInterestOf(s, sym))}`;
-  refs.lsTxt.textContent = ls == null ? '散户多空 --' : `散户多空 ${Math.round(ls * 100)}/${Math.round((1 - ls) * 100)}`;
+  refs.oiTxt.textContent = `OI ${fmtQty(openInterestOf(s, sym))}`;
+  refs.lsTxt.textContent = ls == null ? '多空 --' : `多空 ${Math.round(ls * 100)}/${Math.round((1 - ls) * 100)}`;
 
   /* 在途转账倒计时（K 线右上角）。两个数字与顶栏那行同源，但这里多一个「去哪儿」——
      玩家一眼能确认钱在往哪家所的路上。 */

@@ -10,11 +10,16 @@
  *
  * 字号下限 12px（GDD §18.6），等宽字体（GDD §18.6），深底 + 绿涨红跌（GDD §18.6）。
  *
- * ④ **纵向间距只有 8 与 12 两档**（X-2 视觉对齐，2026-09-28；Batch 5 · B26 收紧，2026-09-29）——
- *    8 是块内（同一张卡里的行距），也是**现在主页面所有块间的间距**（顶栏 / HUD / 币种 / K 线 /
- *    持仓 / 日志 / 操作区之间一律 8，因为 K 线区是全屏唯一弹性块，每一道缝都得还给行情）。
+ * ④ **纵向间距只有 6 / 8 / 12 三档**（X-2 视觉对齐，2026-09-28；Batch 5 · B26 收紧，
+ *    2026-09-29；**2026-10-03 再收紧一道**）——
+ *    6 是**主页面块与块之间**的间距（顶栏 / HUD / 币种 / K 线 / 持仓 / 日志 / 操作区 ——
+ *    因为 K 线区是全屏唯一弹性块，每一道缝都得还给行情）。
+ *    8 是**块内**行距（同一张卡里的两行、按钮行之间）。
  *    12 只剩**弹层遮罩内部**（`.confirm` / `.intro` / `.over`，它们不参与页面纵向节奏）。
- *    不再出现 2 / 6 / 10 这类中间值。改任何 padding / margin 前先想一遍：它是主页面还是弹层内。
+ *    ⚠️ 2026-10-03 之前块间也是 8；用户拍板「各区块间距统一 8 → 6」后两档分了工 ——
+ *       看一条 margin / padding 先问：它是「块与块之间」还是「块内部」。前者 6、后者 8。
+ *    ⚠️ 币种条自己的上下留白是 **4px**（那一版单独收紧的一道，见 `.symbols`），
+ *       它比块间距更贴边 —— 那一行是控件本身，不是块。
  *    例外只有一处：`.chart-head` 是画布内的覆盖层，它的内边距只决定浮字落在哪一格与遮罩多高
  *    （高度会被当成 K 线上沿，见 B27），不参与页面块的纵向节奏。
  *
@@ -263,21 +268,26 @@ b, strong { font-weight: 600; }
   flex: none;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  /* 上间距 12 → **8px**（Batch 5 · B26）：块间一律 8，消除顶栏下那道偏宽的缝 */
-  padding-top: 8px;
+  /* 格间 8 → **0**（2026-10-03 用户拍板「两格并成一个面板」）：两格各自带一圈 1px 边框，
+     中间只要不留缝，相邻的两条边就**并成一条** 1px 中缝 —— 整体读作「一个面板 + 一道竖线」，
+     与持仓条（本身就是一整块格栅）同一套语言。留缝再塞线会变成「两根线中间飘一根」。
+     ⚠️ 并缝的那条线来自**第一格的右边框**，所以第二格的左边框要撤掉（见下），否则成 2px。 */
+  gap: 0;
+  /* 上间距 12 → 8（Batch 5 · B26）→ **6px**（2026-10-03 块间统一 6） */
+  padding-top: 6px;
 }
 /* 格子高度锁死：标签 12px + 数值 12px + 副行 12px，行高都定死 ⇒ 永远 3 行，不随数字跳动。
    ⚠️ 高度预算**每一版都要重算**（三行行高之和必须 ≤ 内容盒，否则副行被 `overflow:hidden` 裁掉）：
-       Batch 5 · B26 起 = 标签行 14 ＋ 数值行 20 ＋ 副行 14 = **48 内容** ＋ padding 8×2 ＋ border 1×2
-       = **66px**（原来是 16/22/16 = 54 内容、高 72px）。行高收窄不影响可读性 —— 12px 字在 14px
-       行高下仍有 2px 余量，数值行 20px 也够，而省下的 6px 是这一版回收的最大一笔。
+       2026-10-03 起 = 标签行 12 ＋ 数值行 18 ＋ 副行 12 = **42 内容** ＋ padding 8×2 ＋ border 1×2
+       = **60px**（上一版是 14/20/14 = 48 内容、高 66px）。三行行高各收 2px 是本版回收的一笔；
+       12px 字在 12px 行高下没有余量，但这一格只印一行数字、字体是等宽且 `nowrap`，不会换行。
+       ⚠️ 数值行 20 → 18 仍高于自身字号（12px），视觉上主次不变。
    ⚠️ 数值行字号 16px → **12px**（2026-09-28 P1-B 拍板）：HUD 加第三格后，390px 手机上每格只剩
       91px 可用，`$1,234,567.89` 在 16px 下要 114px、撑爆后被 `text-overflow` 截掉尾巴；
       降到 12px 后同串只要 86px，主次改由字重（600）承担。
       （交易所搬走后每格已有 179px，理论上回 16px 也放得下 —— 但用户本轮未圈定，**保持 12px 不动**。） */
 .hud .cell {
-  height: calc(66px * var(--ui));
+  height: calc(60px * var(--ui));
   min-width: 0;
   overflow: hidden;
   background: var(--panel);
@@ -288,19 +298,21 @@ b, strong { font-weight: 600; }
   color: var(--fg);
   text-align: left;
 }
+/* 第二格撤掉左边框：中缝由第一格的右边框提供（见 `.hud` 上那条注释），两份会叠成 2px */
+.hud .cell + .cell { border-left: 0; }
 .hud .cell i {
   display: block;
   font-style: normal;
   font-size: calc(12px * var(--ui));
-  line-height: calc(14px * var(--ui));
+  line-height: calc(12px * var(--ui));
   color: var(--mut);
 }
-.hud .cell b { display: block; font-size: calc(12px * var(--ui)); line-height: calc(20px * var(--ui)); font-weight: 600; }
+.hud .cell b { display: block; font-size: calc(12px * var(--ui)); line-height: calc(18px * var(--ui)); font-weight: 600; }
 .hud .cell u {
   display: block;
   text-decoration: none;
   font-size: calc(12px * var(--ui));
-  line-height: calc(14px * var(--ui));
+  line-height: calc(12px * var(--ui));
   color: var(--mut);
 }
 /* 副行里带涨跌语义的两个数（Batch 4 · B17）：「已实现」「未实现」正绿负红。
@@ -314,13 +326,20 @@ b, strong { font-weight: 600; }
    实测只占 312px，而手机容器有 366px，那几行滚动代码纯属摆设（P1-A，2026-09-28）。
    改成 5 等分后每个约 68px，比原来更宽更好点；宽度只随容器变化、与解锁数量无关，
    满足约束 ② 的「列宽固定不跳」。
-   高度 36 → **32px**（2026-09-28 三次拍板）：与次级按钮、顶栏小按钮同档，全屏控件只剩 32 / 40 两档。 */
+   高度 36 → 32 → **28px**（2026-09-28 三次拍板；2026-10-03 再收 4px）：
+   这一行是**控件**不是块，比块间距贴边更紧 —— 上下留白 8 → 4px、按钮 32 → 28px，
+   两道缝 ＋ 按钮一共让出 12px 给 K 线区。28px 在 390px 屏上与 68px 宽配起来，
+   命中面积仍有 68×28，够点。 */
 .symbols {
   flex: none;
   display: flex;
   gap: 8px;
-  /* 上下留白 12 → **8px**（Batch 5 · B26）：块间一律 8，同时收紧「币种 ↔ HUD」与「K 线 ↔ 币种」两道缝 */
-  padding: 8px 0;
+  /* 上下留白 12 → 8（Batch 5 · B26）→ **4px**（2026-10-03） */
+  padding: 4px 0;
+  /* 币种条 ↔ K 线区那道细分隔线（2026-10-03 用户拍板）：给 K 线区做个上沿，
+     像顶栏那条下边框一样，把「选币」与「行情」分开。画在这里而不是 K 线上，
+     因为 K 线区是弹性块，它的边框会跟着高度一起被拉伸重算。 */
+  border-bottom: 1px solid var(--line);
 }
 .sym {
   flex: 1 1 0;
@@ -328,7 +347,7 @@ b, strong { font-weight: 600; }
   background: none;
   border: 1px solid var(--line);
   color: var(--mut);
-  height: calc(32px * var(--ui));
+  height: calc(28px * var(--ui));
   padding: 0 10px;
   font: inherit;
   font-size: calc(12px * var(--ui));
@@ -443,17 +462,27 @@ b, strong { font-weight: 600; }
 
 /* 市场热度（§73.5）：0–1 的条 ＋ 贪婪 / 中性 / 恐慌 三档字面 —— 与上面两枚同一套浮字底。
    三档的着色只走语义色（涨绿 / 跌红 / 中性灰），与 K 线涨跌同一套语言。 */
-/* 三行：① 热度条 ＋ 三档字面 ② OI ③ 多空比（缺口 4 / 19 · 2026-10-02 拍板）。
-   ⚠️ 涨跌着色只落在第①行（`.row`）—— OI / 多空比是中性读数，跟着贪婪/恐慌变色会误导。 */
+/* 一行三格（缺口 4 / 19 · 2026-10-03 改）：[热度条] 恐慌 ｜ OI 12.3M ｜ 多空 62/38。
+   格间一条 1px 竖线（画在非首格的左边）—— 与 HUD / 持仓条同一套分隔语言。
+   ⚠️ 原本热度 / OI / 多空是**三行**，白吃掉 K 线左下角两行高；这里压成一行。
+   ⚠️ 涨跌着色只落在第①格（`.row`）—— OI / 多空是中性读数，跟着贪婪 / 恐慌变色会误导。
+   ⚠️ `nowrap`：宁可整块宽一点，也不许折行（折回三行就白改了）。 */
 .chart-heat {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding: 6px 8px;
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+  padding: 4px 8px;
   background: rgba(16, 19, 23, .72);   /* = --panel-2 的七成不透明，同 .chart-head */
   font-size: calc(12px * var(--ui));
+  line-height: calc(14px * var(--ui));
   color: var(--mut);
+  white-space: nowrap;
+}
+.chart-heat > * + * {
+  margin-left: 6px;
+  padding-left: 6px;
+  border-left: 1px solid var(--line);
 }
 .chart-heat .row { display: flex; align-items: center; gap: 6px; }
 .chart-heat u { display: block; text-decoration: none; }
@@ -489,14 +518,29 @@ b, strong { font-weight: 600; }
   position: relative;
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr;
+  /* ⚠️ 格间间隙**保留 8px**，竖线用伪元素悬在缝的正中（2026-10-03 用户拍板「持仓条格间加竖线」）。
+     为什么不像 `.hud` 那样并缝：这里每格要装一个 13px 的数字（`$12,345.67` 约 78px），
+     并缝就得给非首格补左右内边距，90px 的格宽会被吃到 74px —— 数字直接被 `ellipsis` 截尾。
+     悬线不动任何一格的宽度，纯视觉。 */
   gap: 8px;
-  /* 上间距 12 → **8px**（Batch 5 · B26）：收紧「持仓栏 ↔ K 线」那道缝 */
-  margin-top: 8px;
+  /* 上间距 12 → 8（Batch 5 · B26）→ **6px**（2026-10-03 块间统一 6） */
+  margin-top: 6px;
   padding: 8px 12px;
   background: var(--panel);
   border: 1px solid var(--line);
 }
-.posbar div { min-width: 0; }
+/* 格间竖线：挂在「非首格」的左边缘再往左推 4px —— 正好落在 8px 缝的中间（线占 1px）。
+   高度跟着格子的内容盒走（`top/bottom: 0`）—— 上下与文字齐平，不会顶到面板边框。 */
+.posbar div + div::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+}
+.posbar div { min-width: 0; position: relative; }
 .posbar i { display: block; font-style: normal; font-size: calc(12px * var(--ui)); color: var(--mut); }
 .posbar b { display: block; font-size: calc(13px * var(--ui)); }
 .posbar .fund i { font-size: calc(11px * var(--ui)); }
@@ -508,10 +552,11 @@ b, strong { font-weight: 600; }
    由「一行只放最新一条」改成**恒定两行**（24 → 48px）。起因：级联那一小时里
    「资金费率 → 爆仓潮 → ADL → 爆仓」四条连发时，前面几条被顶掉、根本看不见（用户 2026-10-03）。
    ⚠️ 行数是**恒定**的（`render.LOG_ROWS = 2`），不是「有内容才长高」——
-      变高会带着下面的 K 线区一起跳。 */
+      变高会带着下面的 K 线区一起跳。
+   高度 48 → **44px**（2026-10-03）：两行各 22 → 20px，容器跟着收 4px。 */
 .logline {
   flex: none;
-  height: calc(48px * var(--ui));
+  height: calc(44px * var(--ui));
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -526,17 +571,20 @@ b, strong { font-weight: 600; }
 
 /* 日志条里的一行 = 类别芯片 ＋ 时间 ＋ 正文（与浮层 `.log-row` 同一副样子）。
    ⚠️ `border-left` **恒占位**（透明色）—— 只有全市场级那一行才上色；不占位的话，
-      上色的那一刻整行文字会向右跳 2px。 */
+      上色的那一刻整行文字会向右跳 2px。
+   ⚠️ 行**分隔细线**挂在「非首行」的上边（2026-10-03 用户拍板「日志行加分隔细线」）：
+      两条日志挨在一起时常被读成一句，一道线就切开。浮层那边是同一手（见 `.log-row + .log-row`）。 */
 .lg-row {
   flex: none;
   display: flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
-  height: calc(22px * var(--ui));
+  height: calc(20px * var(--ui));
   border-left: 2px solid transparent;
   padding-left: 2px;
 }
+.lg-row + .lg-row { border-top: 1px solid var(--line); }
 /* 全市场级事件（爆仓潮 / 归零 / 停机…）：红边 ＋ 淡红底 —— 整屏扫一眼就能抓住。
    ⚠️ 与浮层的 `.log-row.alert` 是**同一套**观感，两个入口一副样子。 */
 .lg-row.alert { border-left-color: var(--down); background: rgba(255, 91, 106, .09); }
@@ -578,8 +626,11 @@ b, strong { font-weight: 600; }
    与旧 `.logline.news > span` 同一先例，时间不动。 */
 .lg-row.news > span { color: var(--fg); }
 
-/* ══════════════ 操作区 ══════════════ */
-.trade { flex: none; padding-top: 8px; }
+/* ══════════════ 操作区 ══════════════
+   日志条 ↔ 操作区那道细分隔线（2026-10-03 用户拍板）：这一道把「读信息」与「点按钮」分开，
+   是语义上最值得分的一道 —— 上面是行情与日志（只读），下面是玩家能动手的地方。
+   上间距 8 → 6px（2026-10-03 块间统一 6），线画在 padding 之外，不与按钮挤在一起。 */
+.trade { flex: none; padding-top: 6px; border-top: 1px solid var(--line); }
 .row { display: flex; gap: 8px; margin-bottom: 8px; }
 /* 最后一行不再留 8px：那是给「下一行」用的间距，行没了就是纯死空间（#app 自己已有 8px 底部内边距）。
    2026-09-28 拍板，K 线区常驻多收回 8px。 */
@@ -941,6 +992,9 @@ canvas.curve {
 .log-row span { flex: 1 1 auto; min-width: 0; word-break: break-word; }
 /* 新闻那条：正文提到「正文色」，与普通日志区分（底下的 `.log-row span` (0,1,1) 被这条盖过） */
 .log-row.news span { color: var(--fg); }
+/* 行**分隔细线**（2026-10-03 用户拍板）：与日志条 `.lg-row + .lg-row` 同一手 —— 30 条摊在
+   一起时，不划线就只能靠行距自己分开，翻起来容易串行。挂在「非首行」的上边。 */
+.log-row + .log-row { border-top: 1px solid var(--line); }
 
 /* ══════════════ 换所二次确认（Batch 2 · B10） ══════════════
    挂在同一个 `#overlay` 上（`render.confirmExchange`）。与选所弹层共用 `.pick-back` 暗底，
@@ -1120,11 +1174,12 @@ canvas.curve {
   gap: 12px;
   padding: 24px;
 }
-/* 游戏图标：与 favicon 同一副图案（深底 ＋ 一根绿烛）。72px 是这个盒子里最大的元素 ——
+/* 游戏图标：与 favicon 同一副图案（深底 ＋ 三根迷你 K 线）。72px 是这个盒子里最大的元素 ——
    开机画面只需要一个视觉中心。 */
 .menu-logo { width: calc(72px * var(--ui)); height: calc(72px * var(--ui)); display: block; }
 .menu-logo .bg { fill: var(--panel); }
-.menu-logo .c { fill: var(--up); }
+.menu-logo .u { fill: var(--up); }
+.menu-logo .d { fill: var(--down); }
 .menu-box h3 { margin: 0; font-size: calc(15px * var(--ui)); font-weight: 600; }
 /* 副标题：与 `.intro p` 同一副字（12px / 1.9 行高 / mut），只是这里居中 —— 两块讲的是一件事。 */
 .menu-box p {
@@ -1294,7 +1349,7 @@ button { user-select: none; -webkit-user-select: none; }
    高度即 `.ic` 的 32px ＋ 8px 上间距 = 40px，全部从 K 线区扣（回顾页 K 线约 600px，扣得起）。
    ⚠️ 宽度放开：`.top .ic` 那条 42px 定宽只给回顾顶栏那三枚（见上），这里在 `.top` 之外，不受它管，
       但 `.ic` 自己的 `min-width:42px` 仍会生效 —— 「自动跳过」5 个汉字约 60px，撑得开。 */
-.rv-bar { flex: none; display: flex; align-items: center; padding: 8px 0 0; }
+.rv-bar { flex: none; display: flex; align-items: center; padding: 6px 0 0; }
 .rv-bar .ic { width: auto; padding: 0 10px; }
 
 /* 回顾页的日志栏 —— **加长**（方案 §3.6）：没有操作区 / HUD / 持仓条，省下的高度全给它。
@@ -1302,7 +1357,8 @@ button { user-select: none; -webkit-user-select: none; }
 .rv-logs {
   flex: none;
   height: calc(104px * var(--ui));
-  margin-bottom: 8px;
+  /* 块间统一 6（2026-10-03） */
+  margin-bottom: 6px;
   overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -1528,15 +1584,16 @@ button { user-select: none; -webkit-user-select: none; }
 
    ⚠️ 选择器必须写到 `.page.trade-page.on`（0,3,0）：隐藏机制是 `.page { display:none }`，
       只写 `.page.trade-page` 会让交易页在**非活动状态下照样显示**（切到资产页也看得到）。
-   ⚠️ `row-gap` 保持 0：左列各块的纵向间距本来就由它们自己的 `padding / margin`（一律 8px）给，
-      再叠一层 grid gap 会变成 16px。只加横向的 `column-gap`。
+   ⚠️ `row-gap` 保持 0：左列各块的纵向间距本来就由它们自己的 `padding / margin`（块间 6px、
+      币种条 4px —— 见文件头 ④）给，再叠一层 grid gap 会变成双份。只加横向的 `column-gap`。
    ⚠️ 右列宽 380px 是**算出来的**：它要跟手机的操作区一样宽，杠杆 9 档才不挤。
       380 − 边框 2 − 内边距 16 = **362px 内容宽**，与手机（390px 视口 = 366px）基本齐平
       ⇒ 不会凭空多出一处「档位文字撑爆格子」（那本就是已记录的溢出项，不该在桌面上更糟）。
    ⚠️ 右列做成**两级层次**（§3.2）：K 线是 `--panel-2`（深），右列是 `--panel`（浅）＋ `--line` 描边。
       手机端 `.trade` 是无底的，这里才加 —— 断点以下不写规则，所以手机端逐位不变。
-   ⚠️ `.trade` 的 `padding-top:8px` 是给「日志条 ↔ 操作区」那道缝用的；它在右列顶部，
-      上面没东西，这里改成四边一律 8px（卡片内边距）。 */
+   ⚠️ `.trade` 基座上的 `padding-top: 6px` ＋ 那道 `border-top` 是给「日志条 ↔ 操作区」的缝与
+      分隔线用的；它在右列顶部、上面没东西，所以这里整条覆盖成四边一律 8px 的卡片内边距
+      （`border: 1px` 也会把基座那道只有上边的线覆盖成完整的一圈）。 */
 @media (min-width: 620px) and (max-width: 899px) {
   #app { max-width: 760px; }
 }

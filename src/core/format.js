@@ -153,6 +153,8 @@ export function fmtMoneyShort(n, { sign = false, minTier = 0 } = {}) {
  *     但 **`< 1` 保留小数**（`0.0167`）：小额币量取整会印成「0」。
  * ⚠️ 单独一个函数而不是给 `fmtMoneyShort` 加个开关：那个的职责是**金额**，
  *    `$` 与 `sign` 都是它的语义；混进来会逼着每个调用点都多想一层。
+ * ⚠️ 另一个用途（2026-10-03）：K 线左下角那行三格里的 **OI** 也走这里 ——
+ *    不是「币量」，纯粹是那一行塞不下 `$`（见 `render.js` 的 `.chart-heat`）。
  */
 export function fmtQty(n) {
   if (!Number.isFinite(n)) return '--';
