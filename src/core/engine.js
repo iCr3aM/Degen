@@ -1855,8 +1855,14 @@ function openCheck(s, side, frac = 1) {
      判的是**结果仓位**的借入量（已有仓 ＋ 这一单），且**只卡开仓**、不卡平仓（同 `haltedAt` 纪律）。
      ⚠️ 只有**杠杆单**才有借入（合约不借钱、只付资金费）⇒ 非杠杆单整条跳过。
      ⚠️ 取不到当日流动性（该币还没上线 / 数据缺格）⇒ `liqOf` 返回 `null` ⇒ **放行**：宁可漏放这条约束，
-        也不能因为一个数据缺格就把所有单子按「额度已满」处理（与 `floatShareOf` 同一纪律）。 */
-  if (isMarginOrder) {
+        也不能因为一个数据缺格就把所有单子按「额度已满」处理（与 `floatShareOf` 同一纪律）。
+     ⚠️ **OTC 通道整条豁免**（用户 2026-10-03 拍板）：这条闸的尺子是「**盘口**流动性 × 10%」，
+        而 OTC 是**场外撮合、根本不吃盘口深度** —— 拿盘口口径去卡它自相矛盾。实测（审计 `9f`）：
+        BTC 2013 的 OTC 最低单 $17K > 当日可借额度 $14K ⇒ 玩家会同时看到「最少 $17K」与
+        「最多借 $14K」两句互相打架的提示，1x 做空与 4x 以上做多在 2013 走 OTC 是**死结**。
+        OTC 自己的规模约束是**入场门槛（权益 > 20 万）＋ `otcMinAt` 最低单**，已经够用。
+        ⇒ 代价：OTC 通道不再受额度上限约束（拿自有资金 × 杠杆封顶，不是无界）。 */
+  if (isMarginOrder && !otc) {
     const liqToday = liqOf(s.sym, dayIndexOf(s.i));
     const borrowCap = liqToday > 0 ? liqToday * MARGIN.quota : Infinity;
     const addBorrowed = side === 'short' ? notional : notional * (1 - 1 / lev);

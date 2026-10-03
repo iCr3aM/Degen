@@ -494,6 +494,78 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
   }
 }
 
+/* ── 9f · 边界：闸的年代与所边界 · 只拦开仓 · 回退清窗口 · 额度不许锁死 OTC 通道 ── */
+{
+  /* f1 · 2019-09-13 之前**恒不触发** —— 早期所没有熔断这个概念，这段必须是死代码。
+         ⚠️ 这里**独立复算**判据（不复用引擎内部函数），才算真正的第二把尺子。 */
+  const lim = i => {
+    const c1 = market.rawCloseAt('BTC', i), c0 = market.rawCloseAt('BTC', i - 1);
+    if (!(c1 > 0) || !(c0 > 0)) return false;
+    return Math.abs(c1 / c0 - 1) >= Math.max(C.BAND.k * engine.dailySigma('BTC', i), C.BAND.floor);
+  };
+  let would = -1;
+  for (let i = 1, e = idx(C.BAND.from); i < e; i++) if (lim(i)) { would = i; break; }
+  /* ⚠️ 必须**走引擎**验：`lim` 复算的是阈值、不含年代闸 —— 只比较 `lim` 等于没测年代闸。
+        做法：找一根「若在 Binance 年代就会被锁」的旧行情，把所硬设成 Binance ⇒ 引擎必须**不**锁它。 */
+  const s1 = await mk({ sym: 'BTC', i: would + 1, cash: 100000 });
+  s1.ex = 'binance'; s1.mode = 'fut'; s1.lev = 5; s1.books.binance = { usd: 0, usdt: 100000 };
+  const r1span = engine.openTrade(s1, 'long');
+  check('9f 2019-09-13 之前保护带恒不触发（那一根放到 Binance 年代就会被锁）',
+    would > 0 && !/只允许平仓/.test(r1span.why || ''),
+    `候选根 ${new Date(C.GAME.start + would * H).toISOString().slice(0, 16)}Z ⇒ ${r1span.why || 'ok'}`);
+
+  /* f2 · 闸只认 Binance：同一根、同年代，BitMEX 永续照常可开 */
+  let hit2 = -1;
+  for (let i = idx(C.BAND.from), e = idx(at(2024, 11)); i < e; i++) if (lim(i)) { hit2 = i; break; }
+  if (hit2 > 0) {
+    const atHour = async ex => {
+      const s = await mk({ sym: 'BTC', i: hit2 + 1, cash: 100000 });
+      s.ex = ex; s.mode = 'fut'; s.lev = 5; s.books[ex] = { usd: 0, usdt: 100000 };
+      return s;
+    };
+    const rb = engine.openTrade(await atHour('binance'), 'long');
+    const rm = engine.openTrade(await atHour('bitmex'), 'long');
+    check('9f 保护带只认 Binance（同一时刻 BitMEX 照常可开）',
+      !rb.ok && rm.ok, `binance=${rb.why || 'ok'} / bitmex=${rm.why || 'ok'}`);
+  } else {
+    check('9f 保护带只认 Binance（同一时刻 BitMEX 照常可开）', false, '未找到触发点，无法验证');
+  }
+
+  /* f3 · 额度闸**只拦开仓**：先建空头（过闸）⇒ 加仓被顶住 ⇒ 平仓永远放行（与 `haltedAt` 同纪律） */
+  const s3 = await mk({ sym: 'BTC', i: idx(at(2013, 8)), cash: 20000 });
+  s3.ex = 'bitfinex'; s3.mode = 'margin'; s3.lev = 1;
+  const r1 = engine.openTrade(s3, 'short', 0.5);
+  const r2 = engine.openTrade(s3, 'short', 1);
+  const r3 = engine.closeTrade(s3);
+  check('9f 额度闸只拦开仓（平仓永远放行）',
+    r1.ok && !r2.ok && /借贷额度不足/.test(r2.why || '') && r3.ok,
+    `首开=${r1.why || 'ok'} 加仓=${r2.why || 'ok'} 平仓=${r3.why || 'ok'}`);
+
+  /* f4 · 回退必须清掉利息窗口 —— 否则会带着「上半局累计的利息」跨回退播报 */
+  const s4 = await mk({ cash: 50000 });
+  s4.intWin = { ied: 123, grossM: 999 };
+  engine.rewindTo(s4, s4.i);
+  check('9f rewindTo 清掉利息窗口', s4.intWin && s4.intWin.ied === 0 && s4.intWin.grossM === 0, JSON.stringify(s4.intWin));
+
+  /* f5 · 额度闸**只认盘口通道**：OTC 走到最低单也绝不因额度被拦。
+     背景（本断言就是为它立的）：BTC 2013 的 OTC 最低单 $17K > 当日可借额度 $14K
+     （`liqOf` $138K × 10%），拿**盘口**口径去卡**场外**通道会卡出一个死结
+     —— 玩家同时看到「最少 $17K」与「最多借 $14K」。用户 2026-10-03 拍板 OTC 整条豁免。 */
+  const big = async () => {
+    const s = await mk({ sym: 'BTC', i: idx(at(2013, 8)), cash: 400000 });
+    s.ex = 'bitfinex'; s.mode = 'margin'; s.lev = 1;
+    return s;                                       // 权益 $40 万 > OTC 解锁门槛（$20 万）
+  };
+  const sOtc = await big(); sOtc.chan = 'otc';
+  const rOtc = engine.openTrade(sOtc, 'short', 1);
+  check('9f OTC 通道豁免额度闸（BTC 2013 做空不再死结）',
+    rOtc.ok && !/借贷额度不足/.test(rOtc.why || ''), `${rOtc.why || 'ok'} ｜ 名义 $400K vs 额度 $14K`);
+  const sBook = await big();                        // 同规模、同一时刻，只把通道换成盘口
+  const rBook = engine.openTrade(sBook, 'short', 1);
+  check('9f 同一笔走盘口仍被额度闸拦（豁免只给 OTC，不是把闸删了）',
+    !rBook.ok && /借贷额度不足/.test(rBook.why || ''), rBook.why || 'ok');
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);
