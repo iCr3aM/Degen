@@ -166,13 +166,16 @@ section('2b · ⑥ 名义阶梯杠杆封顶（Binance 永续 · 真实 BTCUSDT �
     C.maintRateAt('binance', 3e6, 'perp') < C.maintRateAt('binance', 1e7, 'perp')
     && C.maintRateAt('binance', 1e7, 'perp') < C.maintRateAt('binance', 7e7, 'perp'));
 }
-// 2b.1 巨鲸在 Binance 永续上被档位卡住（2020-06 该所上限 125x；现金 $20 万 × 125x ≈ $2380 万名义 ⇒ 5x 档）
+// 2b.1 巨鲸在 Binance 永续上被**静默降杠杆**（2020-06 该所上限 125x；现金 $20 万 × 125x ≈ $2480 万名义 ⇒ 5x 档）
 {
   const s = await mk({ i: idx(at(2020, 6)) });
   s.ex = 'binance'; s.mode = 'fut'; s.lev = 125;
   s.books.binance = { usd: 0, usdt: 200000 };
-  const r = noteWhy(engine.openTrade(s, 'long'));
-  check('⑥ 超档巨鲸单被拒绝', !r.ok && /超过该档杠杆上限/.test(r.why || ''), r.why || '（竟然开出来了）');
+  const r = engine.openTrade(s, 'long');
+  check('⑥ 超档巨鲸单**不拒绝**（静默降杠杆）', r.ok, r.why || '');
+  check('⑥ 杠杆被钳到本档上限 5x 并落进仓位', s.positions.BTC && s.positions.BTC.lev === 5, `pos.lev=${s.positions.BTC && s.positions.BTC.lev}`);
+  check('⑥ 玩家选择的杠杆也落到钳位值（s.lev）', s.lev === 5, `s.lev=${s.lev}`);
+  check('⑥ 日志告知了降杠杆', /杠杆受名义档位限制 已降至 5x/.test(s.log.map(l => l.text).join('\n')), '');
 }
 // 2b.2 同所同年代：档内的单照常放行（杠杆 20x × $5K ≈ $10 万名义 ⇒ 100x 档）
 {
@@ -181,6 +184,29 @@ section('2b · ⑥ 名义阶梯杠杆封顶（Binance 永续 · 真实 BTCUSDT �
   s.books.binance = { usd: 0, usdt: 5000 };
   const r = engine.openTrade(s, 'long');
   check('⑥ 档内的单照常放行', r.ok, r.why || '');
+}
+// 2b.3 被档位顶住而降杠杆的**加仓放行**（prev 125x 小仓 + 一笔大额加仓 ⇒ 结果名义顶进 50x 档）
+{
+  const s = await mk({ i: idx(at(2020, 6)) });
+  s.ex = 'binance'; s.mode = 'fut'; s.lev = 125;
+  s.books.binance = { usd: 0, usdt: 400 };
+  const r1 = engine.openTrade(s, 'long');
+  check('⑥ 加仓前置：125x 小仓开出来了', r1.ok && s.positions.BTC.lev === 125, r1.why || `pos.lev=${s.positions.BTC && s.positions.BTC.lev}`);
+  s.books.binance.usdt += 5000;
+  const r2 = engine.openTrade(s, 'long');
+  check('⑥ 被档位顶住的降杠杆加仓放行（不再要求先平仓）', r2.ok && s.positions.BTC.lev === 50,
+    r2.why || `pos.lev=${s.positions.BTC && s.positions.BTC.lev}`);
+}
+// 2b.4 主动**升杠杆**加仓仍拒绝（D4 原判据：两种杠杆混算无意义）
+{
+  const s = await mk({ i: idx(at(2020, 6)) });
+  s.ex = 'binance'; s.mode = 'fut'; s.lev = 20;
+  s.books.binance = { usd: 0, usdt: 400 };
+  const r1 = engine.openTrade(s, 'long');
+  check('⑥ 加仓前置：20x 小仓开出来了', r1.ok, r1.why || '');
+  s.lev = 50;
+  const r2 = noteWhy(engine.openTrade(s, 'long'));
+  check('⑥ 主动升杠杆加仓仍被拒绝', !r2.ok && /加仓必须同杠杆/.test(r2.why || ''), r2.why || '（竟然放行了）');
 }
 
 /* ═══════════════════ 3 · 资金守恒（开 → 平 / 开 → 走 N 小时） ═══════════════════ */

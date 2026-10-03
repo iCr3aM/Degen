@@ -1601,15 +1601,24 @@ export const levKind = s => (s.mode === 'fut' ? 'fut' : 'margin');
  *   · 通道不同（盘口 / OTC）⇒ 成交价口径不同
  *   · 杠杆不同 ⇒ 加权均价对两种杠杆没有意义（D4 已拍板）
  *
+ * ⚠️ **唯一例外（2026-10-03 二次拍板 · ⑥ 静默降杠杆）**：`tierCapped` 且 `lev ≤ prev.lev` 时放行。
+ *    这是「加仓把名义顶进更低档 ⇒ 杠杆被档位顶下来」的情形 —— 玩家没主动改杠杆，是交易所口径
+ *    把有效杠杆调低了（真实 Binance 亦然）。此时并仓会顺带把 `pos.lev` 更新到钳位后的值
+ *    （见 `applyFill`），让「已持 Nx」的显示与加仓后的真实杠杆一致。
+ *    升杠杆加仓（`lev > prev.lev`）仍拒绝 —— 那才是 D4 要挡的「两种杠杆混算」。
+ *
+ * @param {boolean} tierCapped 本单的降杠杆是否由 ⑥ 档位封顶造成
  * @returns {string|null} 拒绝理由；`null` = 放行
  */
-function posGate(s, sym, side, marginOrder, otc, lev) {
+function posGate(s, sym, side, marginOrder, otc, lev, tierCapped = false) {
   const prev = posOf(s, sym);
   if (!prev) return null;
   if (prev.side !== side) return `${sym} 已有${prev.side === 'long' ? '多' : '空'}单 ｜ 反手请先平仓`;
   if (isMargin(prev) !== marginOrder) return `${sym} 已有${isMargin(prev) ? '杠杆' : '合约'}仓 ｜ 加仓请先切回同一模式`;
   if (!!prev.otc !== otc) return `${sym} 已有${prev.otc ? 'OTC' : '盘口'}仓 ｜ 加仓请先切回同一通道`;
-  if (prev.lev !== lev) return `${sym} 已持 ${prev.lev}x ｜ 加仓必须同杠杆 ｜ 先平仓再重开`;
+  if (prev.lev !== lev && !(tierCapped && lev <= prev.lev)) {
+    return `${sym} 已持 ${prev.lev}x ｜ 加仓必须同杠杆 ｜ 先平仓再重开`;
+  }
   return null;
 }
 
@@ -1624,8 +1633,11 @@ function posGate(s, sym, side, marginOrder, otc, lev) {
  * ⚠️ `openFee` **累加**（各收各的，不重算）：平仓时要报「本回合两笔之和」（见 `closeTrade`）。
  * ⚠️ `mix` **两格各自累加**：平仓按合计比例退回，等价于两笔各按原比例退。
  * ⚠️ `pos.i` 不更新：它是「这条仓位什么时候开的」，加仓不改出生时刻。
+ * ⚠️ `retier`（⑥ 静默降杠杆）：本单的降杠杆是被名义档位顶住的 ⇒ 并仓时把 `pos.lev` 更新到钳位后的
+ *    值，让「已持 Nx」的显示与加仓后的真实杠杆一致。只在**并进已有仓位**时生效（新开那条在
+ *    `openPosition` 里就已经拿到钳位后的 `lev`）。永远发生在 perp 上（见 `openCheck` 的 ⑥ 段）。
  */
-function applyFill(s, { sym, side, fill, margin, notional, lev, feeRate, marginMode, fee, mix, otc = false }) {
+function applyFill(s, { sym, side, fill, margin, notional, lev, feeRate, marginMode, fee, mix, otc = false, retier = false }) {
   const prev = posOf(s, sym);
   let pos = prev;
   if (pos) {
@@ -1636,6 +1648,7 @@ function applyFill(s, { sym, side, fill, margin, notional, lev, feeRate, marginM
     pos.margin += margin;
     pos.openFee += fee;
     pos.mix = { usd: pos.mix.usd + mix.usd, usdt: pos.mix.usdt + mix.usdt };
+    if (retier) pos.lev = lev;
   } else {
     pos = openPosition(sym, side, fill, margin, lev, feeRate, marginMode);
     pos.i = s.i;
@@ -1694,7 +1707,7 @@ function openCheck(s, side, frac = 1) {
   /* 杠杆上限与费率都取**玩家当前所在的交易所**（GDD §7.1）。2026-10-03：OTC 不再是「锁定 1x、只做多的通道」，
      而是**大宗通道跟随模式** —— 杠杆 = 玩家设的值，同时受「该所此刻的上限」与 `OTC.levMax` 双重封顶
      （大宗私下一口价，杠杆给不到盘口那么高）。非 OTC 不受第二条限制。 */
-  const lev = Math.max(1, Math.min(s.lev, maxLeverageAt(timeOf(s), s.ex, levKind(s)), otc ? OTC.levMax : Infinity));
+  let lev = Math.max(1, Math.min(s.lev, maxLeverageAt(timeOf(s), s.ex, levKind(s)), otc ? OTC.levMax : Infinity));
   /* 费率是**两张表**（v12 · 方案 §11.3）：这一单走 `margin` 还是 `fut` 由**它自己的性质**定
      （`marginOf` 只看模式），与玩家此刻翻到哪一页无关 —— 否则切个页面就能换费率。 */
   const isMarginOrder = marginOf(s, otc);
@@ -1710,18 +1723,37 @@ function openCheck(s, side, frac = 1) {
   const mustUsdt = !isMarginOrder;
   const cash = spendableOf(s, mustUsdt);
 
+  /* ── ⑥ 名义阶梯杠杆封顶 · **静默降杠杆**（2026-10-03 用户二次拍板）──
+     Binance 永续按**结果名义**判档：名义越大、可开的杠杆越低（真实 BTCUSDT 阶梯，与维持保证金率
+     同一张表 `config.notionalMaxLevAt`）。判据 = 「本单名义 ＋ 已有仓位按**现价**的名义」⇒
+     加仓与价格漂移都会被重判。
+     ⚠️ 口径（用户 2026-10-03 二次拍板）：超档**静默把杠杆钳到档位上限**，**不拒绝** ——
+        拒绝会让玩家「无法下单、还要先平仓再下单」（真实交易所在持仓跨越档位时也是自动调低有效杠杆）。
+        `openTrade` 会把这个钳位写一条日志告知玩家，`s.lev` 也随之落到钳位后的值。
+     ⚠️ 钳位只降不升，且只对 **Binance 永续**生效（`margin` / 其余所在 `notionalMaxLevAt` 返回 `Infinity`）。
+     ⚠️ 保证金算式（与下面同源、抽出复用）：钳位要先知道「按所选杠杆算出的名义」才能判档。 */
+  const marginAtLev = lv => {
+    const m0 = cash * Math.max(0.0001, Math.min(1, frac));
+    return m0 + m0 * lv * feeRate > cash ? cash / (1 + lv * feeRate) : m0;
+  };
+  const heldNotional = positionNotionalOf(s, s.sym);
+  const tierCapLev = notionalMaxLevAt(s.ex, heldNotional + marginAtLev(lev) * lev, kind);
+  const tierCapped = lev > tierCapLev + 1e-9;
+  if (tierCapped) lev = tierCapLev;
+
   /* ── 同币加仓的兼容性闸门（v13 · B4 / 方案 §5.2）──
      这一单若与已有仓位冲突，**必须在动账之前**拒绝（下面一旦 `debit`，钱就已经扣了）。
-     四项判据集中在 `posGate` 里（与渲染层同源，三处不各算一遍）。 */
+     四项判据集中在 `posGate` 里（与渲染层同源，三处不各算一遍）。
+     ⚠️ 2026-10-03 二次拍板：`tierCapped`（降杠杆是被档位顶住的）时**放宽**那条「加仓必须同杠杆」——
+        否则持 20x 的仓一旦被行情顶超档，玩家就再也加不进去（只能先平仓），这正是 ⑥ 要拆的墙。
+        升杠杆加仓仍然拒绝（两种杠杆混在一条仓里算不出强平价，D4 原判据不动）。 */
   const prev = posOf(s, s.sym);
-  const gate = posGate(s, s.sym, side, isMarginOrder, otc, lev);
+  const gate = posGate(s, s.sym, side, isMarginOrder, otc, lev, tierCapped);
   if (gate) return { ok: false, why: gate };
 
   // 保证金 = 可用余额 × frac；开仓费按名义价值另收，所以要让「保证金 + 费 ≤ 余额」
-  let margin = cash * Math.max(0.0001, Math.min(1, frac));
-  const feeOf = m => m * lev * feeRate;
-  if (margin + feeOf(margin) > cash) margin = cash / (1 + lev * feeRate);
-  const fee = feeOf(margin);
+  const margin = marginAtLev(lev);
+  const fee = margin * lev * feeRate;
   if (!(margin > 0) || margin + fee > cash + 1e-9) {
     return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用保证金不足' };
   }
@@ -1742,19 +1774,6 @@ function openCheck(s, side, frac = 1) {
   const otcMin = otcMinAt(timeOf(s));
   if (otc && margin * lev < otcMin) return { ok: false, why: `OTC 单笔最少 ${fmtMoneyShort(otcMin)}` };
 
-  /* ⑥ 名义阶梯杠杆封顶（2026-10-03 用户拍板）—— Binance 永续按**结果名义**判档：名义越大、
-     可开的杠杆越低（真实 BTCUSDT 杠杆档位表，与维持保证金率同一张表 `config.notionalMaxLevAt`）。
-     判据 = 「本单名义 ＋ 已有仓位按**现价**的名义」⇒ **加仓与价格漂移**都会被重判；
-     超档**直接拒绝**（不静默把杠杆压下去 —— 那样会在玩家没察觉时改掉下单参数）。
-     ⚠️ **只拦开仓 / 加仓**：已在场的仓位即使被行情顶超档也照样持有（用户拍板「只挡新单，不动老仓」），
-        平仓是逃生通道，一个字都不动。
-     ⚠️ OTC 的 `OTC.levMax = 5` 远低于任何档位的杠杆上限 ⇒ 这条闸对 OTC 天然不生效。 */
-  const heldNotional = positionNotionalOf(s, s.sym);
-  const tierMaxLev = notionalMaxLevAt(s.ex, heldNotional + margin * lev, kind);
-  if (lev > tierMaxLev + 1e-9) {
-    return { ok: false, why: `名义 ${fmtMoneyShort(heldNotional + margin * lev)} 超过该档杠杆上限 ｜ 本档最高 ${tierMaxLev}x` };
-  }
-
   /* 成交价（P2-B1 / P2-B3）：盘口价 ± 代价 —— 买抬、卖压，**永远对玩家不利**。
      代价有两种，同一时刻只有一种成立：盘口是平方根冲击、OTC 是「基准点差 × 市况倍数」（不吃滑点）。
      ⚠️ 保证金与开仓费都不受它影响（那两项按名义价值算，与成交价无关），
@@ -1773,7 +1792,7 @@ function openCheck(s, side, frac = 1) {
     return { ok: false, why: `${s.sym} 已触及供应量上限，无法继续买入` };
   }
 
-  return { ok: true, lev, kind, feeRate, mustUsdt, prev, otc, isMarginOrder, margin, fee, notional, cost, fill };
+  return { ok: true, lev, kind, feeRate, mustUsdt, prev, otc, isMarginOrder, margin, fee, notional, cost, fill, tierCapped };
 }
 
 /**
@@ -1796,7 +1815,7 @@ export const canOpenAt = (s, side, frac = 1) => openCheck(s, side, frac).ok;
 export function openTrade(s, side, frac = 1) {
   const c = openCheck(s, side, frac);
   if (!c.ok) return { ok: false, why: c.why };
-  const { lev, kind, feeRate, mustUsdt, prev, otc, isMarginOrder, margin, fee, notional, cost, fill } = c;
+  const { lev, kind, feeRate, mustUsdt, prev, otc, isMarginOrder, margin, fee, notional, cost, fill, tierCapped } = c;
 
   /* 扣账（v13）：`debit` **先扣 USDT、不足补 USD**（合约只认 USDT），并返回两格各扣了多少 ——
      那个 `mix` 就是「原路退回」的凭据，平仓时按同比例还回两格（见 `state.credit`）。
@@ -1812,7 +1831,7 @@ export function openTrade(s, side, frac = 1) {
   const marginMode = isMarginOrder;
   /* ── 落账（新开 or 并进已有仓位）── */
   const pos = applyFill(s, {
-    sym: s.sym, side, fill, margin, notional, lev, feeRate, marginMode, fee, mix, otc,
+    sym: s.sym, side, fill, margin, notional, lev, feeRate, marginMode, fee, mix, otc, retier: tierCapped,
   });
 
   /* 笔数（C8-B1）：同一份代价，报出它相当于拆成了几笔。OTC 是私下一口价、不吃滑点 ⇒ 不报。 */
@@ -1838,7 +1857,10 @@ export function openTrade(s, side, frac = 1) {
     ? `${prev ? '追加' : '花费'} ${fmtMoneyShort(margin)}`
     : `${prev ? '追加保证金' : '保证金'} ${fmtMoneyShort(margin)} · 名义 ${fmtMoneyShort(notional)}`;
   const avg = prev ? `｜均价 ${fmtLogPrice(pos.entry)}` : '';
-  pushLog(s, `${head}｜${line} @ ${fmtLogPrice(fill)}${avg}｜手续费 ${fmtMoneyShort(fee)}${tag}`,
+  /* ⑥ 静默降杠杆的告知（2026-10-03 二次拍板）：玩家按了 125x、这一单实际只有 5x —— 不写一句
+     就成了「静默改参数」。只在真被档位顶住时出现，与 `head` 里的 `${lev}x` 相互印证。 */
+  const tiertag = tierCapped ? `｜杠杆受名义档位限制 已降至 ${lev}x` : '';
+  pushLog(s, `${head}｜${line} @ ${fmtLogPrice(fill)}${avg}｜手续费 ${fmtMoneyShort(fee)}${tag}${tiertag}`,
     side === 'long' ? 'long' : 'short', 'trade');
 
   /* 订单冲击（方案 §2.6）：把这一笔的行情位移（`permImpactFor`，**无阈值死区**）沉淀成台阶
