@@ -10,18 +10,31 @@
  *
  * 字号下限 12px（GDD §18.6），等宽字体（GDD §18.6），深底 + 绿涨红跌（GDD §18.6）。
  *
- * ④ **纵向间距只有 6 / 8 / 12 三档**（X-2 视觉对齐，2026-09-28；Batch 5 · B26 收紧，
+ * ④ **主页面纵向间距只有 6 / 8 两档**（X-2 视觉对齐，2026-09-28；Batch 5 · B26 收紧，
  *    2026-09-29；**2026-10-03 再收紧一道**）——
- *    6 是**主页面块与块之间**的间距（顶栏 / HUD / 币种 / K 线 / 持仓 / 日志 / 操作区 ——
+ *    6 是**块与块之间**的间距（顶栏 / HUD / 币种 / K 线 / 持仓 / 日志 / 操作区 ——
  *    因为 K 线区是全屏唯一弹性块，每一道缝都得还给行情）。
  *    8 是**块内**行距（同一张卡里的两行、按钮行之间）。
- *    12 只剩**弹层遮罩内部**（`.confirm` / `.intro` / `.over`，它们不参与页面纵向节奏）。
- *    ⚠️ 2026-10-03 之前块间也是 8；用户拍板「各区块间距统一 8 → 6」后两档分了工 ——
- *       看一条 margin / padding 先问：它是「块与块之间」还是「块内部」。前者 6、后者 8。
+ *    ⚠️ 看一条 margin / padding 先问：它是「块与块之间」还是「块内部」？前者 6、后者 8。
+ *       2026-10-03 之前块间也是 8，用户拍板「各区块间距统一 8 → 6」后两档才分了工。
  *    ⚠️ 币种条自己的上下留白是 **4px**（那一版单独收紧的一道，见 `.symbols`），
  *       它比块间距更贴边 —— 那一行是控件本身，不是块。
  *    例外只有一处：`.chart-head` 是画布内的覆盖层，它的内边距只决定浮字落在哪一格与遮罩多高
  *    （高度会被当成 K 线上沿，见 B27），不参与页面块的纵向节奏。
+ *
+ * ④-b **弹层与子页另有一套间距**（2026-10-03 收口）—— 它们不参与主页面的纵向节奏，
+ *    只在自己内部自成一套，与 ④ 的 6 / 8 **分开数**：
+ *    · **全屏遮罩**（`.over` / `.menu-box` / `.boot`）：内边距 **24**、块间 gap **12**。
+ *    · **居中盒**（`.confirm` / `.guide-box` / `.logs` / `.poster`）：内边距 **12**、
+ *      块间 gap **12**；`.dlg-rows` 里排的是 44px 的卡片，gap 用 **8**。
+ *    · **列表行**：横向内边距 **12**（`.pick-head` / `.logs h3` / `.pick-row` / `.log-row`）。
+ *    · **子页卡片**（`.scen` / `.career`）：内边距 **8px 10px**、卡内段间距 **4**
+ *      （`.career-badges` / `.career-sub` / `.career-num`）。
+ *    ⚠️ **横向 12** 是「文字左缘」的基准线 —— 同一屏里各块面板的文字都该落在同一条竖线上；
+ *       `.eq-break` 原先写 8px、与同页 `.prow` 的左缘差了 4px，就是破了这条（2026-10-03 修）。
+ *    ⚠️ 这一套**一律不乘 `var(--ui)`** —— 与下面 `--ui` 那条纪律同源（只乘字号 / 行高 /
+ *       高度 / 文字盒宽度），否则弹层的 8 / 12 会被一起拉散。
+ *    来龙去脉见 ROADMAP §七十四 的 2026-10-03 收口记录。
  *
  * ⑤ 配色基调**中性**（X-2 视觉对齐，2026-09-28）—— 底 / 面板 / 分隔线三色都不带蓝相，
  *    深色界面里任何色偏都会在长时间盯盘时放大。彩色只留给语义：涨跌、主色、金。
@@ -66,7 +79,8 @@
      ⇒ `calc(48px * 1)` 逐位等于 `48px`，**手机端一个像素都不动**（回归红线）。
      宽屏（≥900px）那一档把它调到 1.15，整块界面连同控件一起等比放大。
      ⚠️ 只乘**字号 / 行高 / 高度 / 文字盒宽度**这四类，**内边距与间距一律不乘** ——
-        8 / 12 的纵向节奏是这个项目的一条硬约束（见文件头 ④），放大时不该被一起拉散。
+        6 / 8 的纵向节奏是这个项目的一条硬约束（见文件头 ④），放大时不该被一起拉散。
+        弹层与子页那套（文件头 ④-b）同理，同样一个都不乘。
      ⚠️ 新增任何「装字的固定高度」时，请一并写成 `calc(...)`，否则桌面端会在这里被裁字。 */
   --ui: 1;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -151,7 +165,9 @@ b, strong { font-weight: 600; }
    实机若觉得挤先降到 40px，**不动 HUD / 持仓条**。
    按钮各自带上边框那道 1px 分隔线（选中态用 `inset` 阴影加粗到 2px，不占布局、不跳）。
    ⚠️ B6-c 起那道分隔线改由 `.tabs::before` 画（见下），不再挂在 `.tab` 的 `border-top` 上。 */
-.tabs { flex: none; display: flex; height: 44px; position: relative; }
+/* ⚠️ `height` 曾漏乘 `var(--ui)`（2026-10-03 补）：全屏其余尺寸都跟着桌面缩放旋钮走，
+   只有底部这条导航条不跟随 —— 桌面端放大后 tab 会显得比顶栏矮一截。 */
+.tabs { flex: none; display: flex; height: calc(44px * var(--ui)); position: relative; }
 /* B6-c（§7.8 · 1px 线试点）：DPR ≥ 2 时 1px 会被描成 2 个物理像素，看起来比别处粗。
    **只在这一道试点**（它最长、最显眼、只有一条）—— 伪元素画满宽 1px 再 `scaleY(.5)` 压成半像素；
    卡片外框面太广、收益低、回归成本高，**不动**。
@@ -769,9 +785,12 @@ b, strong { font-weight: 600; }
 /* 明细拆解（用户 2026-10-01 拍板 · 选项 A）：总资产卡下面那两行 ——
    已占用保证金 / 在途转账。复用设置页那副「标签 —— 读数」的样子（同字号、同次要色），
    面板壳与 `.set-card` 同一档（同样的底色与描边）。 */
+/* ⚠️ 左右内边距 8 → **12**（2026-10-03 修）：同页 `.prow` 是 `padding: 0 12px`（外框再 1px）
+   ⇒ 文字左缘落在 13px；本块原来是 `padding: 8px`，文字落在 9px —— 两块面板的左边缘差 4px，
+   一眼能看出没对齐。上下仍 8，不动纵向。 */
 .eq-break {
   margin-top: 8px;
-  padding: 8px;
+  padding: 8px 12px;
   background: var(--panel);
   border: 1px solid var(--line);
   font-size: calc(12px * var(--ui));
@@ -875,7 +894,7 @@ canvas.curve {
 
    P2-A：表头加一行**拥堵状态词**，每行加成两行 —— 上行「名字 / 费率」、下行「确认数 · 预估到账」。
    拥堵信息只能放这里：顶栏 375px 屏只剩 46px，「拥堵 严重」根本塞不进去。
-   两行之间用**行高**排开、不写 gap —— 遵守「纵向间距只有 8 与 12 两档」那条约束。 */
+   两行之间用**行高**排开、不写 gap —— 遵守「间距只走既定档位、不另写 gap」那条约束。 */
 #overlay {
   position: fixed;
   inset: 0;
@@ -896,7 +915,9 @@ canvas.curve {
 .pick {
   position: absolute;
   width: max-content;
-  min-width: 200px;
+  /* ⚠️ `min-width: 200px` 曾漏乘 `var(--ui)`（2026-10-03 补）：它是「桌面观感」的下限，
+      旋钮调大时字号跟着长、下限却不长，面板在宽字下反而更容易贴到 `max-width` 兜底。 */
+  min-width: calc(200px * var(--ui));
   max-width: calc(100vw - 24px);
   background: var(--panel);
   border: 1px solid var(--line);
@@ -968,7 +989,7 @@ canvas.curve {
 }
 .log-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 0; }
 /* 一行的三格：类别芯片（定宽）＋ 时间（定宽、不折）＋ 正文（**允许折行** —— 这正是浮层存在的理由，拍板 ③）。
-   行距靠 `line-height` 排开、不写 gap —— 遵守「纵向间距只有 8 与 12 两档」那条约束。
+   行距靠 `line-height` 排开、不写 gap —— 遵守「间距只走既定档位、不另写 gap」那条约束。
    ⚠️ 左侧 2px 色条（2026-10-03 用户拍板「两者都要」）与日志条 `.lg-row` **同一套观感**：
       翻 30 条时不再满屏同色，一眼就能顺着色条挑出「爆仓 / 爆仓潮 / 成交」。
       `border-left` 恒占位（透明色）—— 不占位的话上色那一刻整行会向右跳 2px。 */
@@ -1011,7 +1032,7 @@ canvas.curve {
   padding: 12px;
 }
 .confirm h3 { margin: 0; font-size: calc(14px * var(--ui)); font-weight: 600; }
-/* 三行「标签 —— 数值」：行高 20px 排开，不用 gap —— 遵守「纵向间距只有 8 与 12 两档」那条约束 */
+/* 三行「标签 —— 数值」：行高 20px 排开，不用 gap —— 遵守「间距只走既定档位、不另写 gap」那条约束 */
 .confirm-rows { margin-top: 12px; }
 .confirm-row {
   display: flex;
@@ -1058,9 +1079,11 @@ canvas.curve {
   font-size: calc(12px * var(--ui));
 }
 .set-row i { font-style: normal; color: var(--mut); }
-/* 开关：与 `.opt` / `.ic` 同档的 32px 高，宽度锁死 64px —— 文案在「开 / 关」之间切换时不抖 */
+/* 开关：与 `.opt` / `.ic` 同档的 32px 高，宽度锁死 64px —— 文案在「开 / 关」之间切换时不抖
+   ⚠️ `width: 64px` 曾是裸值（2026-10-03 补 `var(--ui)`）：同一枚控件高度跟着缩放旋钮走、
+      宽度却不跟 —— 桌面端放大后变成一个又窄又高的长方形。 */
 .set-btn {
-  width: 64px;
+  width: calc(64px * var(--ui));
   height: calc(32px * var(--ui));
   background: none;
   border: 1px solid var(--line);
@@ -1092,7 +1115,9 @@ canvas.curve {
    连排盒用的）；这里是七八块（资金 / 读数 / 三排档位），不隔开会糊成一片。
    ⚠️ 档排叠起来比一屏高（小屏尤其）⇒ 面板自身可滚，按钮**不压缩**（压到 32px 以下就点不准了）。 */
 .godp .confirm-rows { display: grid; gap: 8px; }
-.godp { max-height: calc(100vh - 32px); overflow-y: auto; }
+/* ⚠️ `100vh` → `100dvh`（2026-10-03 修）：全站其余高度一律走 `dvh`（见 `#app`），
+   只有这里漏了 —— 手机地址栏收起 / 展开时 `vh` 不跟着变，面板会有一截伸到屏幕外。 */
+.godp { max-height: calc(100dvh - 32px); overflow-y: auto; }
 .god-in {
   flex: 1;
   min-width: 0;
@@ -1144,7 +1169,8 @@ canvas.curve {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  /* ⚠️ `gap: 10px` → **12**（2026-10-03 修）：10 是全站唯一一档，其余弹层要么 8 要么 12。 */
+  gap: 12px;
   background: var(--bg);
   padding: 24px;
   text-align: center;
@@ -1197,7 +1223,9 @@ canvas.curve {
    `.confirm-btns` 是横排（那是「二选一」），这里是「选一条路」，竖排读起来更像菜单。 */
 /* ⚠️ 宽度**必须收窄**（本轮 ①）：`.act` 在横排时靠 `flex:1` 等分，竖排下会**撑满整屏宽** ——
    开机画面上一条 366px 的实心长条读起来像「横幅」，不像一枚按钮。280px 与整屏形成一个边框感。 */
-.menu-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; width: 100%; max-width: 280px; }
+/* ⚠️ `max-width: 280px` 曾漏乘 `var(--ui)`（2026-10-03 补）：按钮高度跟着旋钮长、
+   这根上限却不长，桌面端放大后四枚按钮挤在一条偏窄的柱子里。 */
+.menu-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; width: 100%; max-width: calc(280px * var(--ui)); }
 /* ⚠️ `.act` 自带 `flex: 1`（横排时等分宽度），纵向 flex 下会变成等分高度、把卡片拉满屏 */
 .menu-btns .act { flex: none; }
 
@@ -1217,7 +1245,9 @@ canvas.curve {
       这段要**左对齐分步**读，绕开它比逐条压回去省事。 */
 .menu-guide {
   width: 100%;
-  max-width: 280px;
+  /* ⚠️ 与 `.menu-btns` 同宽（280px），同样补上 `var(--ui)`（2026-10-03）—— 两者必须一起走，
+     否则桌面端按钮列变宽、说明块不变，左边缘会错开。 */
+  max-width: calc(280px * var(--ui));
   text-align: left;
   font-size: calc(12px * var(--ui));
   line-height: 1.7;
@@ -1329,7 +1359,10 @@ button { user-select: none; -webkit-user-select: none; }
 
 /* 年份跳转：12 格 3 列（2013–2024），跳过去落在那一年的 1 月 1 日 */
 .year-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
-.year-grid .opt { height: 32px; }
+/* ⚠️ 这条 `.opt` 的 `height` 曾写成裸 `32px`、**硬覆盖掉基座的 `calc(32px * var(--ui))`**
+   （2026-10-03 修）：结果是上帝模式年月日面板的按钮在桌面端不跟随缩放，
+   与同一面板里其余 `.opt` 高低不齐。 */
+.year-grid .opt { height: calc(32px * var(--ui)); }
 
 /* 回顾态：把**三页常驻**的顶栏与底部 Tab 藏掉（方案 §3.1「只留一个回顾页」）。
    `.page` 之外的节点没有别的开关，所以只能靠 `#app.rv` 这个类；
@@ -1342,7 +1375,9 @@ button { user-select: none; -webkit-user-select: none; }
 .top .ic.rv-date { width: auto; padding: 0 8px; font-size: calc(12px * var(--ui)); }
 /* 速度档：三枚小方键，与操作区那套 `.opt` 同一副样子，只是不被 flex 等分 */
 .rv-spd { display: flex; gap: 4px; }
-.rv-spd .opt { flex: none; width: 46px; }
+/* ⚠️ `width` 曾漏乘 `var(--ui)`（2026-10-03 补）：三枚速度键的宽度不跟桌面缩放走，
+   桌面端放大后它们仍卡在 46px，比同一行的 `.ic`（32px × --ui）显得又窄又挤。 */
+.rv-spd .opt { flex: none; width: calc(46px * var(--ui)); }
 
 /* 「自动跳过」开关那一行（本轮 ②）—— 放顶栏**下面**单开一行，不塞进 `rvTools`：
    rvTop 实测 336px（日期 90 ＋ 间隙 8 ＋ rvTools 238），容器 366px 只剩 30px，第四枚放不下。
@@ -1353,10 +1388,13 @@ button { user-select: none; -webkit-user-select: none; }
 .rv-bar .ic { width: auto; padding: 0 10px; }
 
 /* 回顾页的日志栏 —— **加长**（方案 §3.6）：没有操作区 / HUD / 持仓条，省下的高度全给它。
-   固定 6 行（6 × 16 + 8 = 104px），放不下就在面板内滚；内容走与日志浮层同一套 `.log-row`。 */
+   ⚠️ 2026-10-03 从 **104 → 136px**（＋32）：`.log-row` 单行实占 **20px**（行高 16 ＋ 上下各 2 的
+      padding，非首行再 ＋1px 分隔线），面板自身上下各 4 ⇒ 136px 装得下约 6 行单行日志。
+      旧注释写的「6 × 16 + 8 = 104」漏算了 `.log-row` 自己的 padding 与分隔线 —— 104 实际只装 4 行多，
+      这正是本次加长的由来。放不下就在面板内滚；内容走与日志浮层同一套 `.log-row`。 */
 .rv-logs {
   flex: none;
-  height: calc(104px * var(--ui));
+  height: calc(136px * var(--ui));
   /* 块间统一 6（2026-10-03） */
   margin-bottom: 6px;
   overflow-y: auto;
@@ -1399,8 +1437,10 @@ button { user-select: none; -webkit-user-select: none; }
 .career-head u { margin-left: auto; text-decoration: none; font-size: calc(12px * var(--ui)); }
 /* 主称号（M3）—— 局名右边一枚，比局名轻、比副行重；`u` 仍由 `margin-left:auto` 顶到最右 */
 .career-title { font-style: normal; font-size: calc(11px * var(--ui)); color: var(--mut); }
-/* 徽章排（M3）—— 无徽章时整条不渲染（`careerRow` 里判 `length`） */
-.career-badges { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+/* 徽章排（M3）—— 无徽章时整条不渲染（`careerRow` 里判 `length`）
+   ⚠️ `margin-top: 6` → **4**（2026-10-03 修）：卡内四段（head / 徽章 / 副行 / 数值）原来是 6、4、6
+   混排，段与段的呼吸一眼不齐 —— 统一到 4，与 `.career-sub` 同档。 */
+.career-badges { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
 .badge {
   font-size: calc(10px * var(--ui));
   line-height: 1;
@@ -1414,7 +1454,7 @@ button { user-select: none; -webkit-user-select: none; }
   color: var(--mut-2);
   font-feature-settings: "tnum";
 }
-.career-num { margin-top: 6px; display: flex; align-items: baseline; gap: 8px; font-feature-settings: "tnum"; }
+.career-num { margin-top: 4px; display: flex; align-items: baseline; gap: 8px; font-feature-settings: "tnum"; }
 .career-num b { font-size: calc(14px * var(--ui)); }
 .career-num u { margin-left: auto; text-decoration: none; font-size: calc(12px * var(--ui)); }
 /* 分享键（M4）—— 挂在 `career-head` 末位（`u` 的 `margin-left:auto` 把这两枚一起顶到最右） */
