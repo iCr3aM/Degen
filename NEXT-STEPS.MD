@@ -1605,3 +1605,141 @@ OI 与多空比的纯 NPC 口径、`size=0` 残仓、取不到行情、空市场
 
 **验收**：`npm run build` ✅ 26 modules / gzip 57.73 kB；`node tools/sim-audit.mjs` ✅ **87 通过 · 0 失败**；
 临时校验脚本（画门缓动 / ADL 玩家侧 / 两条多空比）跑完即删。
+
+---
+
+## 十四、深度模拟模块差距审计（2026-10-03 · 全量）—— 目标「完整贴近现实的加密货币交易模拟器」
+
+**起因**：用户「除了我自己判断出来的错误，请你再详细检查一下目前游戏内还缺失哪些和交易内容有关的
+深度模拟的模块……我们要做一个完整的贴近现实的加密货币交易模拟器。」
+**方法**：① 通读 `src/core/*`（engine / market / impact / congestion / god / config / state / positions）
+与 `src/ui/*` 清点存量；② 联网核对 Binance / Bybit / OKX / Hyperliquid / BitMEX / Deribit 官方文档
+与第三方分析（CoinGlass / tlap.io / Kineticalpha / CFTC），逐条比对口径。**本轮只出结论、不改代码。**
+
+### 14.0 先确认「已经有了」的（避免误判为缺失）
+
+| 已实现 | 落点 |
+|---|---|
+| 逐仓 · 按「所 × 工具 × 名义档」分档维持保证金率（Binance 四档 ＋ 15% 兜底） | `config.js` `BINANCE_MARGIN_TIERS` / `maintRateAt` |
+| 部分强平（`PARTIAL_TARGET=1.1` / `PARTIAL_STEPS=26`）＋ 全额强平 ＋ 细路径布朗桥定位爆仓 tick | `engine.liquidateAll`（L2685–2745） |
+| **强平清算费 0.5%**（从残余权益先扣） | `config.LIQ.fee`（L459） |
+| 保险基金三级瀑布（强平盈余 → 池 → ADL） | `engine.stampede` |
+| ADL（玩家已入队，NPC 静默） | `engine.adl` / `adlPlayerReduce` |
+| 订单冲击：平方根律 → Bouchaud 幂律衰减；瞬时深度池 ＋ 半衰期回补；对抗性流动性（撤深度 / 有向推价） | `impact.js` / `engine.advTick` |
+| NPC 六档杠杆阶梯 ＋ 做市盘 ＋ 自愿止损带 ＋ 踩踏级联 | `god.js`（L272–420） |
+| 资金费率（多空失衡驱动、8h 结算、玩家 ↔ NPC 对手方池的真实转移） | `positions.FR` / `engine.settleFunding` |
+| OI ＋ 多空比（散户口径）＋ 热度情绪 ＋ 拥挤度/链上确认数 ＋ 锚点新闻 | 分散 |
+| **USDT 脱锚**（`USDT_ANCHORS` 线性插值）＋ 停机维护（`haltedAt`）＋ 跨所基差/转账通道 | `config.js` / `congestion.js` |
+| 强平价线画在 K 线上；历史压力位（仅回顾页） | `render.js` L1221 / `levels.js` |
+
+⚠️ 结论：**清算费、USDT 脱锚、停机维护、跨所基差这些用户没提的，其实都已经有了** —— 下面的缺口
+才是真的缺。
+
+### 14.1 A · 价格体系（最结构性的一块）
+
+**A1 全局只有「一个价格」，没有 指数价 / 标记价 / 最新价 的三价分离。**
+`engine.markPrice()`（L89–91）就是 `market.closeAt(sym, s.i)` —— 当根**收盘价**。
+现实口径（Binance 官方）：`Mark = Median(P1, P2, Last)`，`P1 = Index × (1 + FundingRate × 距结算/8h)`、
+`P2 = Index + MA(Basis)`（2.5 分钟 / 30 个 5s 采样），`Basis = (BestBid+BestAsk)/2 − Index`；
+`Index` 由 15+ 家现货所流动性加权、单源偏离中位数 >5% 剔除、离线 >5 分钟权重归零。
+**强平与未实现盈亏走 mark，已实现盈亏走 last** —— 这正是「一笔插针不该把全场爆掉」的机制来源。
+
+> **本作的病：一个自相矛盾。** UI 的未实现盈亏 / 保证金率 / 安全垫全部读 **收盘价**（`exPrice`），
+> 而强平判据读 **当根高低点 × 本所 dev ＋ 121 点布朗桥**（`liquidateAll` L2690–2722）。
+> ⇒ 一根长下影线**已经把你强平了**，但显示屏上「安全垫」还是健康的。
+> 更糟：玩家自己的推价（`advPush` / `npcDrift`）**也乘进了 K 线高低点** ⇒
+> **你砸盘砸出的插针把你自己的仓打掉** —— 而 mark price 存在的全部理由就是防这件事。
+> 出处：<https://www.binance.com/en/support/faq/detail/360033525271>
+
+**A2 没有现货锚**（上一轮重构删掉了 `spot` 概念）⇒ 资金费率的 premium index 无从算起（现用多空失衡
+替代）、期现基差 / 三角关系 / 套利全部无地基。**注意：这不必然要求新增现货数据源** ——
+「未含玩家位移的原始行情 `rawCloseAt`」天然就是那根锚（见 14.4 的方案 a）。
+
+**A3 资金费率模型缺四样**
+| # | 缺什么 | 现实口径 |
+|---|---|---|
+| a | `interest rate` 常量项与那一层 clamp | `F = Premium + clamp(Interest − Premium, ±0.05%)`，`Interest = 0.01%/8h`（≈10.95% 年化） |
+| b | **premium index**（现无） | `[Max(0, ImpactBid − Index) − Max(0, Index − ImpactAsk)] / Index`；Impact Bid/Ask ＝ 吃掉固定 impact notional（主流 20,000 USDT）后的均价 —— **可直接复用现有平方根冲击模型** |
+| c | 上限偏低 ＋ 周期一刀切 | 现 `FR.max = 0.003`（0.3%/8h）；现实 Binance BTC 永续默认 ±0.75%/8h，Hyperliquid 1h 结算 cap 4%/h，部分合约 4h。现 `FUNDING.hours = 8` 固定 |
+| d | **没有「预测下一期资金费率」与结算倒计时** | 真实交易所最常看的读数之一 |
+
+**A4 缺少 `workingType` 的概念**：现实下单要选 `MARK_PRICE` 还是 `CONTRACT_PRICE`（触发用哪个价），
+本作只有一个价，无从选起。
+
+### 14.2 B · 订单层（体感差距最大）
+
+**B1 只有市价单。全市场没有限价单。** `render.js` L271–331 的操作区只有「金额比例 / 杠杆 / 速度 /
+通道 / 动作键」，**没有价格输入框**；`positions.openPosition` 的结构里**没有任何挂单字段**。
+连锁后果（重点不在功能、在生态）：
+- 没有挂单 ⇒ **没有 maker 侧** ⇒ `config.feeRateOf` 只有吃单费率、无 maker/taker 分离、无 maker rebate；
+- 「挂单等价格 / 挂单赚价差 / 限价单规避滑点」这一整个交易流派不存在；
+- 所有成交都吃满滑点，玩家**无法规避冲击成本**。
+
+**B2 没有 止盈 / 止损 / 移动止损 / 只减仓（reduce-only）/ post-only / IOC / FOK / 冰山 / TWAP。**
+Binance 完整清单：`LIMIT / MARKET / STOP / STOP_MARKET / TAKE_PROFIT / TAKE_PROFIT_MARKET /
+TRAILING_STOP_MARKET` ＋ `reduceOnly` ＋ `workingType` ＋ `priceProtect` ＋ VP/TWAP。
+**直击设计目标**（「前期玩家操作、后期自动化」）：现在玩家必须一直在场，无法预设离场条件。
+出处：<https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api>
+
+### 14.3 C–F · 保证金结构 / 市场数据 / 交易所行为 / 资金成本
+
+**C1 只有逐仓，没有全仓（cross margin）** —— `state.js` L174 明写「本版不做」。全仓是多数玩家在
+真实所的默认模式，且强平价算法完全不同（全账户余额共享担保，可用 A 币浮盈扛 B 币浮亏）。
+
+**C2 没有名义阶梯杠杆封顶（leverage brackets）** —— 玩家杠杆选项与名义规模无关，巨鲸可拿 100x
+开巨额仓位。现实：Binance BTCUSDT 名义 ≤ 5 万 → 125x，≥ 500 万 → 5x。
+⚠️ **关键发现：现实中「最大杠杆」与「维持保证金率」本来就是同一张分档表的两列** ——
+本作已有 `BINANCE_MARGIN_TIERS`，加一列 maxLev 即可，**不该再写第二个常数**。
+
+**C3 没有双向持仓（hedge mode）** —— 每个币最多一条持仓（`state.js` L172）。
+**C4 没有自动/手动追加保证金（add margin）**，也没有组合保证金（Portfolio Margin / SPAN 式）。
+
+**D1 多空比 / OI 只有当下值，没有历史曲线；没有清算热力图（liquidation heatmap）** —— 强平密集区
+是真实玩家最重要的决策输入之一。
+**D2 没有期现基差 / 年化基差 / 期限结构（contango / backwardation）**，也没有交割合约与期权
+（Deribit 隐含波动率曲面、希腊字母）。属「要不要做到衍生品全谱系」的取舍。
+
+**E1 有停机维护（`haltedAt`），但没有熔断 / 涨跌停 / 价格保护（price band / price protection），
+也没有极端行情下的「只允许平仓」模式** —— 真实所在暴跌时切这个模式，是「明明想抄底却只能平仓」
+的真实挫败感来源。
+
+**F1 借贷利率是「按年代日息一刀切」**（`MARGIN.daily`：2013 0.2%/日 → 2020 起 0.02%/日）。
+现实是**分档利率曲线 × 额度上限 × 按小时计息**，额度还与账户等级挂钩。
+**F2 手续费只有吃单一张表 ＋ 30 天成交量 VIP 折扣**，没有 maker 档 / 平台币抵扣 / 币对差异。
+
+### 14.4 优先级（按「对真实感的边际收益」排序）
+
+| 序 | 模块 | 性质 | 成本 |
+|---|---|---|---|
+| **1** | **三价体系（index / mark / last）** | **修 bug**（修「显示健康却被爆」）＋ 资金费率真实化的前置 | 中 |
+| 2 | 限价单 ＋ 挂单簿（引入 maker 侧） | 加功能 | 高 |
+| 3 | 止盈止损 / 移动止损 / 只减仓 | 加功能（服务「后期自动化」） | 中 |
+| 4 | 全仓模式 | 加功能 | 中 |
+| 5 | 资金费率真实化（premium index ＋ interest ＋ 预测展示 ＋ 周期/cap 对齐） | 修口径 | 中 |
+| **6** | **名义阶梯杠杆封顶** | **修 bug**（给巨鲸发无限杠杆） | 低 |
+| 7 | 双向持仓 | 加功能 | 低 |
+| 8 | 多空比/OI 历史 ＋ 清算热力图 | 加功能 | 中 |
+| 9 | 熔断 / 只减仓模式 | 加功能 | 低 |
+| 10 | 借贷利率曲线 ＋ 额度 | 修口径 | 低 |
+| 11+ | 组合保证金 → 期现基差/交割/期权 → maker-taker 分离 → 回测重放 | — | — |
+
+### 14.5 下一里程碑（用户 2026-10-03 圈定）：① 三价体系 ＋ ⑥ 名义阶梯杠杆封顶
+
+两条都是**修 bug 性质**，不是加功能 —— 前者在制造「看起来没事其实已经爆了」的假象，
+后者在给巨鲸发无限杠杆。**一次只做一块以便验证**（用户要求）。
+
+#### ① 三价体系 —— 待用户拍板的**唯一设计岔路：index 从哪来？**
+
+| 方案 | 内容 | 评价 |
+|---|---|---|
+| **a（推荐）** | `index := rawCloseAt()`（**未含玩家/NPC 位移的真实行情**）；`last := closeAt()`（含位移）；`mark := index + EMA(last − index)`，半衰期取现实量级（2.5 分钟 ≈ 更短）或复用 `ADV.pushHalf` 的同族缓动 | 无需新数据源；**「你自己的冲击不再把自己打爆」立刻成立**；位移天然变成「基差」 |
+| b | 另建一条合成现货指数（多假想现货所中位数截断） | 更真，但要新增数据/参数，且本作没有现货这个产品线 |
+
+**共同要点**：强平与未实现盈亏**统一走 mark**；`last` 只留给已实现盈亏与 K 线；
+⚠️ 口径一改，`sim-audit.mjs` 第 1 节（强平价自洽）与上一轮「实测数字」都要重跑复核。
+
+#### ⑥ 名义阶梯杠杆封顶 —— 与既有维持保证金率**同表**
+
+在 `BINANCE_MARGIN_TIERS` 上补 `maxLev` 一列（复用同一张名义分档，不写第二个常数）；
+`leverageOptionsAt()` 取 `min(年代阶梯上限, 名义档上限)`。⚠️ 需要在**开仓时按当时价与仓位名义**
+判档（不是按现金），并给出超档时的拒绝分支文案（第 2 节审计里有现成的 `why` 分支穷举可挂）。
