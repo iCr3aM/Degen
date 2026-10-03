@@ -1120,17 +1120,30 @@ function pushNpcShock(s, sym, m, dir, notional) {
 }
 
 /**
- * **保险基金的惰性播种**（v30 · 第 6 批 · 缺口 5）—— `开局日流动性 × INSURE.seed`。
+ * **保险基金的播种水位**（v30 · 第 6 批 · 缺口 5；2026-10-03 ADL 审计重标定）——
+ * `当日流动性 × INSURE.seed`，只决定**播种那一刻**的起始水位。
+ *
+ * ⚠️ 用**当日流动性**而非绝对美元：一局的量级从 2013（数十万）跨到 2025（数十亿），
+ *    写死绝对值会在某一端完全失真（同 `INSURE.seed` 的注释）。这里取的是**调用那一刻**
+ *    的当日流动性 ⇒ 上帝模式跨年代回退（`rewindTo` 把 `s.fund` 清回 `null`）后重播，
+ *    起始水位跟着回到那个年代的市场规模，不会把后期的量级带回早期。
+ * ⚠️ **它不是每小时滚动的基准**，也不参与任何触发判定：自 2026-10-03 起它**只用于播种**
+ *    （`seedFund`）—— ADL 的触发已改由级联烈度给（见 `stampede`），故本值不影响 ADL 频率。
+ */
+function fundBaseOf(s, sym) {
+  const liq = liqOf(sym, dayIndexOf(s.i));
+  return liq > 0 ? liq * INSURE.seed : 0;
+}
+
+/**
+ * **保险基金的惰性播种**（v30 · 第 6 批 · 缺口 5）—— 首次推进时把空池填到**当日基准**。
  *
  * ⚠️ 只在 `s.fund` **还不是有限数**时播种：`createState` 给的是 `null`，上帝模式的
  *    「跳日期」回退（`rewindTo`）也把它清回 `null` ⇒ 一局里至多重播一次，读路径不受影响。
- * ⚠️ 用**当日流动性**而非绝对美元：一局的量级从 2013（数十万）跨到 2025（数十亿），
- *    写死绝对值会在某一端完全失真（同 `INSURE.seed` 的注释）。
  */
 function seedFund(s, sym) {
   if (Number.isFinite(s.fund)) return;
-  const liq0 = liqOf(sym, dayIndexOf(s.i));
-  s.fund = liq0 > 0 ? liq0 * INSURE.seed : 0;
+  s.fund = fundBaseOf(s, sym);
 }
 
 /**
@@ -1153,7 +1166,7 @@ function fundSettle(s, notional, avg, lev, dir, price) {
 }
 
 /**
- * **ADL 自动减仓**（v30 · 第 6 批 · 缺口 5 ③）—— 保险基金被穿仓掏空后，按 ADL 队列
+ * **ADL 自动减仓**（v30 · 第 6 批 · 缺口 5 ③）—— 级联烈度达标（爆仓潮）时，按 ADL 队列
  * 强减**盈利的仓位**（**NPC 六档 ＋ 玩家自己**），直到补齐缺口。
  *
  * 队列口径（[Hypercall](https://docs.hypercall.xyz/docs/reference/auto-deleveraging/)）：
@@ -1169,8 +1182,19 @@ function fundSettle(s, notional, avg, lev, dir, price) {
  * ⚠️ NPC 被减的档写 `pushNpcShock`（平多 ⇒ 卖出 −1、平空 ⇒ 买回 +1），与「止损 / 强平」走同一条
  *    有界瞬时通道。**不给 `panicDrop`**：ADL 是被迫去杠杆，不是新的恐慌来源
  *    （与止损波同一先例，避免同一波下跌被计两次热度跳变）。
- * ⚠️ 现实 ADL 触发率 <0.1% 的强平 —— 本作只有在级联把基金打到 ≤ 0 时才走这里，同样罕见。
- * @param {number} need 需要覆盖的缺口（USD 名义）
+ * ⚠️ **收割的是「浮盈」而不是「名义」**（2026-10-03 ADL 审计 · R3）—— 现实 ADL 把赢家的仓位
+ *    按**破产价**强平，「赢家拿不到从破产价到市价的那一段浮盈」，那一段被拿去填洞。
+ *    本作落成一句可算的话：某仓浮盈率 `rate = 1 − 1/ratio`、浮盈 `pnl = 名义 × rate`，
+ *    本次从它身上收走 `take = min(pnl, 剩余缺口)` ⇒ 需平掉的名义 `cut = take ÷ rate`，
+ *    平仓按**开仓价**结算（那一段浮盈归零）⇒ `s.fund += take`。
+ *    于是「缺口补多少」＝「收走多少浮盈」，**基金一分不多、一分不少**。
+ * ⚠️ 旧实现把 `cut` 的名义额直接当缺口填（`s.fund` 根本不动，浮盈全额还给玩家）——
+ *    基金永远填不满，只能靠 `s.fund = 0` 硬清零 ⇒ 一小时后必然再触发（间隔中位 1 小时）。
+ *
+ * ⚠️ **现实 ADL 触发率 <0.1% 的强平** —— 本作只在**级联烈度达标**（单小时强平额 ≥
+ *    当日流动性 × `NPC.liqEventFrac`，即「爆仓潮」成立）时才走这里，十余年个位数次
+ *    （2025-10-10 那场 $19B 崩盘是 Hyperliquid 两年多来的首次 ADL）。
+ * @param {number} need 需要补回的缺口（USD）＝ **本小时级联造成的净穿仓额**（见 `stampede`）
  */
 function adl(s, sym, m, price, need) {
   if (!(need > 0) || !(price > 0)) return;
@@ -1191,26 +1215,28 @@ function adl(s, sym, m, price, need) {
      （Hyperliquid 2025-10-10 的两年首次 ADL 就是这么发生的）。队列口径与 NPC 逐位相同。
      ⚠️ 只收**盈利中**的仓位（`ratio > 1`）：ADL 从不砍输家，输家那条路是强平。 */
   const ppos = s.positions[sym];
-  let playerItem = null;
   if (ppos && ppos.size > 0 && ppos.entry > 0) {
     const lng = ppos.side === 'long';
     const ratio = lng ? price / ppos.entry : ppos.entry / price;
     if (ratio > 1) {
-      playerItem = { player: true, long: lng, ratio, lev: ppos.lev, notional: ppos.size * price };
-      q.push(playerItem);
+      q.push({ player: true, long: lng, ratio, lev: ppos.lev, notional: ppos.size * price });
     }
   }
   q.sort((a, b) => (b.ratio * b.lev) - (a.ratio * a.lev));      // ADL index 降序
   let done = 0;
   for (const it of q) {
     if (done >= need) break;
-    const cut = Math.min(it.notional, need - done);
+    const rate = 1 - 1 / it.ratio;                  // 该仓的浮盈率（ratio > 1 ⇒ rate > 0）
+    if (!(rate > 0)) continue;
+    const pnl = it.notional * rate;                 // 该仓的全部浮盈
+    const take = Math.min(pnl, need - done);        // 本次从它身上收走的浮盈（＝补上的缺口）
     if (it.player) {
-      /* 玩家的那一份走 `adlPlayerReduce`（**结算回现金**）；`ppos` 是本函数开头取的那一份，
-         队列里至多命中一次 ⇒ 不存在「对象已被换掉」的问题。 */
-      adlPlayerReduce(s, ppos, cut, price);
+      /* 玩家的那一份走 `adlPlayerReduce`（**按比例退回保证金、浮盈被收走**）；`ppos` 是本函数
+         开头取的那一份，队列里至多命中一次 ⇒ 不存在「对象已被换掉」的问题。 */
+      adlPlayerReduce(s, ppos, take, price);
     } else {
       const g = m.npc[it.k];
+      const cut = take / rate;                      // 要让浮盈收走 `take`，需平掉的名义（≤ it.notional）
       pushNpcShock(s, sym, m, it.long ? -1 : 1, cut);
       if (it.long) {
         g.long -= cut;
@@ -1223,38 +1249,58 @@ function adl(s, sym, m, price, need) {
          玩家看不到、也无法据此做任何决策，播出来只会把日志刷满（用户：「ADL 不该显示别人的」）。
          价格冲击（`pushNpcShock`）照常保留：它才是玩家**能感知**到的那一部分。 */
     }
-    done += cut;
+    s.fund += take;                                 // 收走的浮盈进池 ⇒ 基金一分不多、一分不少
+    done += take;
   }
 }
 
 /**
- * **玩家被 ADL 减仓**（2026-10-03 拍板）—— 按现价平掉 `cutNotional` 名义的**盈利**仓位，
- * 保证金 ＋ 盈利**结算回当初开仓那家所**（与 `closeTrade` 同一条 `credit` 路径与 `mix` 口径）。
+ * **玩家被 ADL 减仓**（2026-10-03 拍板 · 会计守恒重写）—— 从玩家的**盈利**仓位里收走
+ * `take` 美元的浮盈，并按比例把那一块**保证金退回**当初开仓那家所。
  *
- * ⚠️ 与 `partialLiquidate` 的分工是镜像的：那是**亏损**侧的强平（钱留在仓位里当垫子、
- *    现金一分不动）；这是**盈利**侧的被动减仓 ⇒ 钱必须真的回到玩家账上，
- *    否则「被 ADL 砍了却看不到钱」。
+ * **口径（R3）**：平仓按**开仓价**结算 —— 被收走的那一块，玩家拿回自己的保证金，
+ * 但**拿不到浮盈**（那正是 `take`，已由 `adl()` 记进保险基金）。现实中 ADL 把赢家
+ * 按**对手方破产价**强平，「赢家拿不到破产价到市价的那一段」；本作用「按开仓价结算」
+ * 作等价简化（`take` 就是这个差）。
+ *
+ * ⚠️ **与 `partialLiquidate` 的分工是镜像的**：那是**亏损**侧的强平（保证金留在仓位里当垫子、
+ *    现金一分不动）；这是**盈利**侧的被动减仓 ⇒ 钱必须真的回到玩家账上，否则
+ *    「被 ADL 砍了却看不到钱」。
+ * ⚠️ **不再走 `reducePosition`**（旧实现的 bug）：那个函数把已平部分的盈亏**加进剩余保证金**
+ *    （强平口径），而这里钱要退回现金 ⇒ 必须**按比例缩保证金**。旧实现两边都做
+ *    （既 `credit(pos.margin × f + pnl)`、又让 `reducePosition` 把 `pnl` 留在仓位里）
+ *    ⇒ 每笔 ADL 凭空多给玩家 `margin × f`（权益泄漏）。新写法：`margin × f` 退回现金、
+ *    剩余 `margin × (1 − f)` 留在仓位，**权益变动恰为 −take**（浮盈被收走），逐分守恒。
  * ⚠️ **不收清算费**：ADL 既没有穿仓、也没有动用保险基金，只是一次强制撮合平仓；
- *    这里全额结算「保证金 ＋ 盈亏」，不额外再补一刀（现实 ADL 同样只收普通手续费）。
+ *    现实 ADL 同样只收普通手续费（本作手续费在开/平仓时已计，不在这里补刀）。
  * ⚠️ 价格冲击 / 量柱 / 抛压折价与其它三处平仓**同一套口径**（开仓 / 平仓 / 强平 / 部分强平）：
  *    ADL 是把仓位**砸到市场上**的卖出（或买回），不是账面冲销 —— 所以它写 `s.flow`；
  *    NPC 那一侧才走有界瞬时通道 `pushNpcShock`（它没有真实账户、不该留永久台阶）。
+ * @param {number} take 要从这笔仓位收走的浮盈（USD，> 0 且 ≤ 该仓全部浮盈）
  */
-function adlPlayerReduce(s, pos, cutNotional, price) {
+function adlPlayerReduce(s, pos, take, price) {
   const mark = pos.size * price;
-  const f = mark > 0 ? Math.max(0, Math.min(1, cutNotional / mark)) : 1;
-  const r = reducePosition(pos, f, price);
-  const notional = r.closedNotional;
+  const dir = pos.side === 'long' ? 1 : -1;
+  const pnl = pos.size * (price - pos.entry) * dir;    // 该仓全部浮盈（调用侧保证 > 0）
+  const f = pnl > 0 ? Math.max(0, Math.min(1, take / pnl)) : 1;
+  const closedSize = pos.size * f;
+  const notional = closedSize * price;                 // 砸到市场上的那笔名义（真实成交口径）
   addPlayerVol(s, pos.sym, notional, pos.ex, isMargin(pos) ? 'margin' : 'fut');
   {
-    const dir = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, pos.sym, dir, notional, SHOCK.closeGive, shockKindOf(isMargin(pos), pos.lev));
+    const d = pos.side === 'long' ? -1 : 1;
+    pushFlow(s, pos.sym, d, notional, SHOCK.closeGive, shockKindOf(isMargin(pos), pos.lev));
     consumePool(s, pos.sym, notional);
   }
-  credit(s, pos.ex, pos.margin * f + r.pnl, { usd: pos.mix.usd * f, usdt: pos.mix.usdt * f });
-  s.realized += r.pnl;
+  credit(s, pos.ex, pos.margin * f, { usd: pos.mix.usd * f, usdt: pos.mix.usdt * f });
   if (f >= 1) delete s.positions[pos.sym];
-  else s.positions[pos.sym] = r.pos;
+  else {
+    s.positions[pos.sym] = {
+      ...pos,
+      margin: pos.margin * (1 - f),
+      size: pos.size - closedSize,
+      notional: pos.notional * (1 - f),
+    };
+  }
   refreshOverhang(s, pos.sym, SHOCK.closeGive);
   pushLog(s, `ADL 自动平仓 ${pos.sym} ${pos.lev}x｜平仓 ${fmtMoneyShort(notional)} @ ${fmtLogPrice(price)}`, 'bad', 'liq');
 }
@@ -1298,6 +1344,7 @@ function adlPlayerReduce(s, pos, cutNotional, price) {
  */
 function stampede(s, sym, m, price) {
   if (cascadeMulOf(s) <= 0 || !(price > 0)) return;
+  const fund0 = s.fund;                             // 本小时级联**之前**的基金（量出这次穿仓了多少）
   let liqNotional = 0;                              // 本小时被**强平**的名义（缺口 16 口径：不含止损波）
   for (let k = 0; k < m.npc.length; k++) {
     /* 缺口 17：强平线读**年代封顶后**的杠杆（2016-05-13 前全市场最高只有 3.33x） */
@@ -1313,13 +1360,23 @@ function stampede(s, sym, m, price) {
       /* 补 `@ 价格`（2026-10-03 用户要求）：只报金额时玩家看不出这一波砸在什么价位上，
          也就无法把「爆仓潮」与 K 线上那根长阴对上号。 */
       pushLog(s, `爆仓潮 ${sym} ｜ ${fmtMoneyShort(liqNotional)} @ ${fmtLogPrice(price)}`, 'bad', 'mkt');
+      /* 缺口 5 ③（2026-10-03 ADL 审计重标定）—— **ADL 的触发就是「爆仓潮」成立的那一刻**，
+         触发闸门与上面这条日志**共用同一个常数**（`NPC.liqEventFrac`）。
+         ⚠️ **为什么不用「基金水位」当触发**（旧实现，实测 5556 次）：基金在这套市场模型里
+            **结构性失血** —— 12 年强平盈余 $165M vs 穿仓 $39.6B（1:240），基金自 2016 年起
+            永久为负 ⇒「跌破触发线」要么退化成「永久处于线下 ⇒ 每根都触发」，要么
+            「跨零后永不恢复 ⇒ 再触发不了」（实测只剩 2013/2016 共 4 次，2016 之后 8 年挂零）。
+            改用**级联烈度**（本小时强平额 ÷ 当日流动性）后与基金水位解耦，实测 12 年 8 次，
+            落在真实大崩盘日期上。
+         ⚠️ **缺口按「本小时穿仓额」结算**（`need = 级联前的基金 − 级联后的基金`，只取正）
+            —— 现实 ADL 补的正是**这一次**破产仓位填不上的那一块，不是「把整个基金补回水位」。
+            若按「基准 − 基金」当缺口（旧实现），$39B 的长期欠账会让每一次 ADL 都收光全市场
+            浮盈，属于把历史欠账算在单次崩盘头上。基金若本小时是**净盈余**则 `need ≤ 0`，
+            `adl` 直接早退（该崩盘的穿仓已被盈余抵掉，无洞可补）。
+         ⚠️ 浮盈**如实入池**（`adl` 内 `s.fund += take`）—— 不再有旧实现那句 `s.fund = 0`
+            硬清零（它把缺口「抹掉」而不是「填上」，下一根必然再触发）。 */
+      adl(s, sym, m, price, Math.max(0, fund0 - s.fund));
     }
-  }
-  /* 缺口 5 ③：基金被穿仓掏空（< 0）⇒ 用 ADL 强减盈利档补齐，池复位到 0。 */
-  if (s.fund < 0) {
-    const need = -s.fund;
-    s.fund = 0;
-    adl(s, sym, m, price, need);
   }
 }
 
