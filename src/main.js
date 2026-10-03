@@ -23,7 +23,7 @@ import {
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
   renderReview, openNodeCard, openYearPick, openGuide, renderCareers, openPoster,
   isStandalone, toggleInstallGuide, menuRemoveInstall, closeMenuDlg, openSavePick, openScenPick,
-  openAbout,
+  openAbout, redrawChart,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -464,6 +464,10 @@ function preloadUpcoming() {
    缓存只在**量到真实可见宽度**时刷新（见 `draw()`），旋屏 / 切页都各有一帧 `draw(true)`，不会长期陈旧。 */
 let chartWCache = 0;      // 交易页那块 K 线区
 let rvChartWCache = 0;    // 回顾页那块 K 线区
+/* 高度缓存（2026-10-04）：手势快路（`draw(force, true)`）**不量 `getBoundingClientRect`**，
+   尺寸只能取上一次量到的值 —— 见 `draw()` 里那段「手势快路」。 */
+let chartHCache = 0;
+let rvChartHCache = 0;
 
 /** K 线区的 CSS 宽度。手势换算「一像素 = 多少根」要用**同一份**，所以单独留一个入口。
  *  ⚠️ 回顾页有自己那一块 K 线区（`rvWrap`）—— 两者可见性互斥，量哪个由 `rv` 决定。 */
@@ -497,17 +501,30 @@ let overDrawn = !!s.over;
    ⚠️ 变量按**真值**记（两种遮罩共用），具体画哪一个仍按 `s.pending` 的**值**分派。 */
 let pendingDrawn = !!s.pending;
 
-/* **手势重绘合并**（2026-10-04 性能修）：原来 pan / zoom 的每次 `pointermove` 都直接
-   `draw(true)` —— 手机上触控采样可达 120Hz，一次拖动等于每秒上百遍**整屏** `update()`
-   （几百次 DOM 写入 ＋ 强制布局），主线程被吃满，于是「拖动 / 捏合」明显掉帧。
-   这里用 `requestAnimationFrame` 合并：无论一帧里来了多少个事件，只重画一次 ——
-   手感不变（仍是每帧刷新），开销砍掉一个数量级。视野状态仍由 `view.js` 在每个事件里**同步**累积，
-   所以合并不会丢掉位移。 */
+/* **手势重绘合并 ＋ 只重画 K 线**（2026-10-04 性能修，两刀一起下）
+ *
+ * 病根有两层，原先只治了第一层：
+ *   ① 频率：pan / zoom 的**每个** `pointermove` 都直接 `draw(true)`。手机触控采样可达 120Hz，
+ *      一次拖动 = 每秒上百次重绘。改用 `requestAnimationFrame` 合并 ⇒ 一帧最多一次。
+ *   ② **单帧成本**：`draw(true)` 会跑**整屏** `update()`（几百处 DOM 遍历）**外加强制一次
+ *      `getBoundingClientRect`**（同步布局）。合并之后仍有 60 帧/秒 × 这份成本 —— 手机上单帧
+ *      压不进 16ms，于是「缩放 / 拖动」照样掉帧（用户 2026-10-04 复现并纠正了上一版判断）。
+ *
+ * 所以手势帧改走 `draw(true, true)` = **只重画 K 线**：页面上除 K 线之外没有任何东西会因手势而变
+ * （视野只活在 `view.js` 里），整屏 `update()` 是纯粹白跑的。整屏那一帧交给 `scheduleFullDraw()`
+ * 在**手势停下来 180ms 后**补一次（兜底：万一有哪一格浮字被快路漏掉，松手后立刻归位）。
+ * 时钟在走时 `onFrame` 本来就会按 80ms 节流跑整屏帧，界面不会因为快路而长期陈旧。
+ *
+ * 视野状态仍由 `view.js` 在每个事件里**同步**累积 ⇒ 合并既不丢位移、也不丢手感。 */
 let drawQueued = false;
+let fullDrawTimer = 0;
 function queueDraw() {
+  /* 兜底整屏帧：每次手势事件都往后推 180ms，只有真正停下来才会跑到 */
+  clearTimeout(fullDrawTimer);
+  fullDrawTimer = setTimeout(() => { fullDrawTimer = 0; draw(true); }, 180);
   if (drawQueued) return;
   drawQueued = true;
-  requestAnimationFrame(() => { drawQueued = false; draw(true); });
+  requestAnimationFrame(() => { drawQueued = false; draw(true, true); });
 }
 
 /**
@@ -625,30 +642,14 @@ function soundFromTick(s) {
   marketSounds(s);
 }
 
-function draw(force = false) {
-  /* 回顾态没有「结束 / 待决遮罩」这回事（回顾不判破产、也没有账户）⇒ 那两个强制帧的判据只在正常玩法下算 */
-  if (!rv && ((s.over && !overDrawn) || (s.pending && !pendingDrawn))) force = true;
-  const now = performance.now();
-  if (!force && now - lastDraw < 80) return;
-  lastDraw = now;
-
-  if (!refs) return;
-  /* ⚠️ **先切页，再量尺寸**（A6 · 方案 §6）：隐藏的 `.trade-page` 是 `display:none`，
-     量出来是 0×0；顺序反了的话第一帧拿到的是上一页的尺寸（切回交易页就会画成一张空图，
-     而且暂停态下**不会再有任何一帧**把它救回来）。 */
-  showPage(refs, rv ? 'review' : arch ? 'careers' : tab);
-  /* 档案页是**纯只读**的一屏（没有 K 线、不量尺寸）⇒ 铺完列表就地返回。
-     ⚠️ 铺列表放在 `showPage` 之后：`.careers-list` 所在的那页此刻才刚被点亮。
-     ⚠️ **进来先 `clearOver`**（2026-10-02 修）：与下面 `rv` 分支同一条 —— 本局已结束时也能
-        从结算遮罩「回主菜单」再进档案页，那时 `#app` 里还挂着那张 `position:fixed` 的 `.over`；
-        这一支**在 `try` 之前就 return 了**，落不到最后那个 `else` 的 `clearOver` 上 ——
-        原来那句 `if (s.over && !arch)` 里的 `!arch` 因此管不到这里（是一处死守卫）。 */
-  if (arch) { clearOver(root); renderCareers(refs, loadCareers()); return; }
-  /* 回顾页量的是它自己那块 K 线区（两页的 DOM 各有一套，方案 §3.2） */
-  const rect = (rv ? refs.rvWrap : refs.chartWrap).getBoundingClientRect();
-  const view = {
-    chartW: Math.max(1, Math.round(rect.width)),
-    chartH: Math.max(1, Math.round(rect.height - 2)),
+/**
+ * 组装一帧要交给渲染层的界面状态（`update()` / `renderReview()` / `redrawChart()` 共用）。
+ * `cssW` / `cssH` = K 线区的 CSS 尺寸（全量帧实测，手势快路取缓存）。
+ */
+function buildView(cssW, cssH) {
+  return {
+    chartW: cssW,
+    chartH: cssH,
     /* 当前页：K 线只在交易页画（另两页没有 K 线） */
     tab,
     /* 资产页资金曲线的区间（`0` = 全部）—— 纯界面状态，与 `redUp` 同一类 */
@@ -666,10 +667,58 @@ function draw(force = false) {
        （与 `tab` 同一类：纯界面状态，不进 `s`。） */
     guide: guideStep != null,
   };
-  /* 刷新宽度缓存（手势复用，见 `chartW`）：只在**真的量到可见宽度**时写 ——
-     隐藏页量出来是 0 / 1px，写进去会把后续手势的「一像素 = 多少根」钉死成畸形值。 */
-  if (rect.width > 1) {
-    if (rv) rvChartWCache = view.chartW; else chartWCache = view.chartW;
+}
+
+function draw(force = false, chartOnly = false) {
+  /* 回顾态没有「结束 / 待决遮罩」这回事（回顾不判破产、也没有账户）⇒ 那两个强制帧的判据只在正常玩法下算 */
+  if (!rv && !chartOnly && ((s.over && !overDrawn) || (s.pending && !pendingDrawn))) force = true;
+  const now = performance.now();
+  if (!force && now - lastDraw < 80) return;
+  lastDraw = now;
+
+  if (!refs) return;
+  /* ── 手势快路（2026-10-04）：**只重画 K 线** ─────────────────────────────
+     拖动 / 捏合只改 `view.js` 里的视野，页面结构一个字都不变 ⇒ 不切页、**不量尺寸**、
+     不跑整屏 `update()`。不量尺寸是关键：`getBoundingClientRect` 会**强制一次同步布局**，
+     与上一帧的 DOM 写入交替就是布局抖动（layout thrash）—— 手机上掉帧的主因。
+     ⚠️ 尺寸只能取缓存；**一次都没量到过**（首帧即手势 / 切页后第一帧被合并吞掉）就退回全量帧，
+        否则会按 1×1 的畸形尺寸画出一张空图。
+     ⚠️ 快路只动 K 线区（画布 ＋ 它那几枚浮字）—— 这就是「手势期间会变的东西」的全部；
+        其余界面由 `scheduleFullDraw()` / 时钟 `onFrame` 的整屏帧负责。 */
+  if (chartOnly) {
+    const cssW = rv ? rvChartWCache : chartWCache;
+    const cssH = rv ? rvChartHCache : chartHCache;
+    if (!(cssW > 1) || !(cssH > 1)) { draw(true); return; }
+    try {
+      redrawChart(refs, s, rv, buildView(cssW, cssH));
+    } catch (err) {
+      renderBoot('渲染失败', err);
+    }
+    return;
+  }
+  /* ⚠️ **先切页，再量尺寸**（A6 · 方案 §6）：隐藏的 `.trade-page` 是 `display:none`，
+     量出来是 0×0；顺序反了的话第一帧拿到的是上一页的尺寸（切回交易页就会画成一张空图，
+     而且暂停态下**不会再有任何一帧**把它救回来）。 */
+  showPage(refs, rv ? 'review' : arch ? 'careers' : tab);
+  /* 档案页是**纯只读**的一屏（没有 K 线、不量尺寸）⇒ 铺完列表就地返回。
+     ⚠️ 铺列表放在 `showPage` 之后：`.careers-list` 所在的那页此刻才刚被点亮。
+     ⚠️ **进来先 `clearOver`**（2026-10-02 修）：与下面 `rv` 分支同一条 —— 本局已结束时也能
+        从结算遮罩「回主菜单」再进档案页，那时 `#app` 里还挂着那张 `position:fixed` 的 `.over`；
+        这一支**在 `try` 之前就 return 了**，落不到最后那个 `else` 的 `clearOver` 上 ——
+        原来那句 `if (s.over && !arch)` 里的 `!arch` 因此管不到这里（是一处死守卫）。 */
+  if (arch) { clearOver(root); renderCareers(refs, loadCareers()); return; }
+  /* 回顾页量的是它自己那块 K 线区（两页的 DOM 各有一套，方案 §3.2） */
+  const rect = (rv ? refs.rvWrap : refs.chartWrap).getBoundingClientRect();
+  const view = buildView(
+    Math.max(1, Math.round(rect.width)),
+    Math.max(1, Math.round(rect.height - 2)),
+  );
+  /* 刷新宽 / 高缓存（手势快路复用，见 `chartW` 与 `draw(force, chartOnly)`）：
+     只在**真的量到可见尺寸**时写 —— 隐藏页量出来是 0 / 1px，写进去会把后续手势的
+     「一像素 = 多少根」钉死成畸形值（高度则会让快路照畸形尺寸画出一张空图）。 */
+  if (rect.width > 1 && rect.height > 1) {
+    if (rv) { rvChartWCache = view.chartW; rvChartHCache = view.chartH; }
+    else { chartWCache = view.chartW; chartHCache = view.chartH; }
   }
 
   try {

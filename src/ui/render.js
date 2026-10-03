@@ -1367,6 +1367,65 @@ function syncChart(refs, s, view, sym, cur, mark) {
   }
 }
 
+/**
+ * 回顾页的 **K 线 ＋ 它那几枚头部浮字**（币种 / 市值 / 流通 / 24h / 热度 / 画布／粒度小字）。
+ *
+ * 为什么整块抽出来（2026-10-04 性能修）：手势快路（`redrawChart`）要**单独**再跑一遍这一小块 ——
+ * 拖动 / 捏合只改视野，页面其余部分一个字都不变，跑整页 `renderReview()` 是白跑。
+ * 抽出来之后两个调用者共用同一份写入，快路不会与整页帧各写各的、写出两套观感。
+ */
+function reviewChartSync(refs, rv, view) {
+  const sym = rv.sym;
+  const mark = isLoaded(sym) ? (candleAt(sym, rv.i)?.c ?? null) : null;
+  const prev = candle24(sym, rv.i);
+  refs.rvSym.textContent = sym;
+  const cap = capText(sym, rv.i, mark);   // 市值 / 流通：与交易页同一份读数（本轮 ⑤）
+  refs.rvMcap.textContent = cap.mcap;
+  refs.rvSupp.textContent = cap.supp;
+  if (mark != null && prev) {
+    refs.rvChg.textContent = `24h ${fmtPct(mark / prev - 1)}`;
+    refs.rvChg.className = mark >= prev ? 'up' : 'down';
+  } else {
+    refs.rvChg.textContent = '';
+  }
+
+  /* 市场热度（§73.5 · 2026-10-02）：与交易页**逐字同一套**写法 —— 同一条方程、同一个阈值、
+     同一组 `data-heat` 类名。口径差异只有一处：回顾页读的是**原始行情**（这一屏本来就画原始 K 线）。 */
+  const heat = reviewHeatOf(sym, rv.i);
+  refs.rvHeatBar.style.setProperty('--heat', `${Math.round(heat * 100)}%`);
+  refs.rvHeatTxt.textContent = heat >= HEAT.greed ? '贪婪' : heat <= HEAT.panic ? '恐慌' : '中性';
+  refs.rvHeatChip.dataset.heat = heat >= HEAT.greed ? 'greedy' : heat <= HEAT.panic ? 'panic' : 'mid';
+
+  const win = chartOpts({
+    /* ⚠️ `own: false`（v20）：回顾那一屏**不并玩家自己的成交额** ——
+       `playerVolSource` 注入的是当前存档的 `pvol`，不关掉就会把「你这一局在 2015 年买的那一笔」
+       画进 2015 年的历史柱子里。 */
+    canvas: refs.rvCanvas, head: refs.rvHead, sym, i: rv.i, view, mark, cur: null, own: false,
+    /* 视野命名空间（2026-10-01）：回顾页自己一套，绝不与交易页那格串味 —— 见 `view.js` 的 `keyOf`。 */
+    ns: 'rv',
+    /* 历史压力位（ROADMAP §六十五）：按 `rv.i` 算「那一刻之前 30 天堆过货的价位」，画成一组横虚线。
+       它是 `(sym, i)` 的纯函数（只吃原始行情）⇒ 回顾页不用新增任何状态、也不碰 `s`。 */
+    levels: levelsOf(sym, rv.i),
+  });
+  refs.rvModeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
+}
+
+/**
+ * **手势快路**（2026-10-04 性能修）：只重画 K 线与它头部的浮字，不碰页面其余部分。
+ *
+ * 为什么需要它：拖动 / 捏合只改 `view.js` 里的视野 —— 页面上除 K 线之外**没有任何东西会变**。
+ * 原来每个手势帧都跑整页 `update()`（交易页）／`renderReview()`（回顾页），
+ * 手机上单帧成本压不进 16ms ⇒ 缩放 / 拖动明显掉帧。这条窄路把成本砍到「一次画布重绘 ＋ 十来处
+ * 文本写入」。整页那一帧由 `main.js` 的 `scheduleFullDraw()`（手势停下 180ms）与时钟 `onFrame` 补上。
+ *
+ * @param {object} rv 回顾态（`null` = 交易页）；两个页面各有自己那一块 K 线区与头部。
+ */
+export function redrawChart(refs, s, rv, view) {
+  if (rv) { reviewChartSync(refs, rv, view); return; }
+  const sym = s.sym;
+  syncChart(refs, s, view, sym, posOf(s, sym), lastPrice(s, sym));
+}
+
 /* ═════════════════════════ 资产页 · 持仓列表 ═════════════════════════ */
 
 /**
@@ -2259,25 +2318,9 @@ export function renderReview(refs, rv, view) {
   }
 
   const sym = rv.sym;
-  const mark = isLoaded(sym) ? (candleAt(sym, rv.i)?.c ?? null) : null;
-  const prev = candle24(sym, rv.i);
-  refs.rvSym.textContent = sym;
-  const cap = capText(sym, rv.i, mark);   // 市值 / 流通：与交易页同一份读数（本轮 ⑤）
-  refs.rvMcap.textContent = cap.mcap;
-  refs.rvSupp.textContent = cap.supp;
-  if (mark != null && prev) {
-    refs.rvChg.textContent = `24h ${fmtPct(mark / prev - 1)}`;
-    refs.rvChg.className = mark >= prev ? 'up' : 'down';
-  } else {
-    refs.rvChg.textContent = '';
-  }
-
-  /* 市场热度（§73.5 · 2026-10-02）：与交易页**逐字同一套**写法 —— 同一条方程、同一个阈值、
-     同一组 `data-heat` 类名。口径差异只有一处：回顾页读的是**原始行情**（这一屏本来就画原始 K 线）。 */
-  const heat = reviewHeatOf(sym, rv.i);
-  refs.rvHeatBar.style.setProperty('--heat', `${Math.round(heat * 100)}%`);
-  refs.rvHeatTxt.textContent = heat >= HEAT.greed ? '贪婪' : heat <= HEAT.panic ? '恐慌' : '中性';
-  refs.rvHeatChip.dataset.heat = heat >= HEAT.greed ? 'greedy' : heat <= HEAT.panic ? 'panic' : 'mid';
+  /* K 线 ＋ 它那几枚头部浮字（币种 / 市值 / 流通 / 24h / 热度 / 画布）整块抽成 `reviewChartSync` ——
+     手势快路（`redrawChart`）要**单独**再跑它一遍，不重铺整页。 */
+  reviewChartSync(refs, rv, view);
 
   /* 真实历史指标（里程碑 B · 2026-10-04）—— 全部只吃原始行情，口径见 `engine.review*`。
      格式：波动率走 `fmtRate`（恒正、不带符号）、距高走 `fmtPct`（自带 −）、成交额走 `fmtCap`
@@ -2293,19 +2336,6 @@ export function renderReview(refs, rv, view) {
     ? (mult >= 100 ? Math.round(mult) : +mult.toFixed(1)) + '×'
     : '--';
   refs.rvStatUsd.textContent = fmtCap(reviewVolUsdOf(sym, rv.i));
-
-  const win = chartOpts({
-    /* ⚠️ `own: false`（v20）：回顾那一屏**不并玩家自己的成交额** ——
-       `playerVolSource` 注入的是当前存档的 `pvol`，不关掉就会把「你这一局在 2015 年买的那一笔」
-       画进 2015 年的历史柱子里。 */
-    canvas: refs.rvCanvas, head: refs.rvHead, sym, i: rv.i, view, mark, cur: null, own: false,
-    /* 视野命名空间（2026-10-01）：回顾页自己一套，绝不与交易页那格串味 —— 见 `view.js` 的 `keyOf`。 */
-    ns: 'rv',
-    /* 历史压力位（ROADMAP §六十五）：按 `rv.i` 算「那一刻之前 30 天堆过货的价位」，画成一组横虚线。
-       它是 `(sym, i)` 的纯函数（只吃原始行情）⇒ 回顾页不用新增任何状态、也不碰 `s`。 */
-    levels: levelsOf(sym, rv.i),
-  });
-  refs.rvModeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
 
   /* 回顾日志（加长的那一栏）：只在**最新一条**变化时重建（与资产页那个列表同一套签名写法）。
      倒序铺 —— 最新在上，与交易页日志条同向。
