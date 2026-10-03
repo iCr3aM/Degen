@@ -13,15 +13,16 @@
       "count": 107496,
       "scale": 100,
       "vol": true,
-      "maxPrice": 108353,
+      "maxPrice": 108297.6,
       "first": 12.2,
-      "last": 93381,
+      "last": 93576,
       "bytes": 1827432,
-      "zipped": 1088369,
+      "zipped": 1086416,
       "sources": {
         "hourly": 107496,
         "gapHours": 0,
         "gapRanges": [],
+        "killed": 0,
         "detail": {
           "bitstamp btcusd": 107496,
           "bitfinex tBTCUSD": 102693,
@@ -39,18 +40,19 @@
       "vol": true,
       "maxPrice": 0.73995,
       "first": 0.00188943,
-      "last": 0.316025,
+      "last": 0.316,
       "bytes": 1630810,
-      "zipped": 892392,
+      "zipped": 845900,
       "sources": {
         "hourly": 95930,
         "gapHours": 0,
         "gapRanges": [],
+        "killed": 1,
         "detail": {
           "binance DOGEUSDT": 48112,
+          "kraken XDGUSD+XDGXBT": 66607,
           "Poloniex_DOGEUSDT_1h.csv": 55542,
           "Poloniex_DOGEBTC_1h.csv": 95928,
-          "kraken XDGUSD+XDGXBT": 66607,
           "votes bitfinex tDOGE:USD": 32379
         }
       }
@@ -66,17 +68,18 @@
       "first": 0.0053754,
       "last": 2.0836,
       "bytes": 1547493,
-      "zipped": 860570,
+      "zipped": 898074,
       "sources": {
         "hourly": 91029,
         "gapHours": 0,
         "gapRanges": [],
+        "killed": 13,
         "detail": {
           "bitstamp xrpusd": 70499,
           "binance XRPUSDT": 58320,
+          "kraken XRPUSD+XRPXBT": 73106,
           "Poloniex_XRPUSDT_1h.csv": 86450,
           "Poloniex_XRPBTC_1h.csv": 91027,
-          "kraken XRPUSD+XRPXBT": 73106,
           "votes bitfinex tXRPUSD": 66737
         }
       }
@@ -88,20 +91,21 @@
       "count": 82410,
       "scale": 10000,
       "vol": true,
-      "maxPrice": 4867,
-      "first": 1.71,
+      "maxPrice": 4864.9,
+      "first": 3,
       "last": 3337.78,
       "bytes": 1400970,
-      "zipped": 894722,
+      "zipped": 870174,
       "sources": {
         "hourly": 82410,
         "gapHours": 0,
         "gapRanges": [],
+        "killed": 1,
         "detail": {
           "bitstamp ethusd": 64664,
           "binance ETHUSDT": 64524,
-          "Poloniex_ETHUSDT_1h.csv": 82408,
           "kraken ETHUSD": 78939,
+          "Poloniex_ETHUSDT_1h.csv": 82408,
           "votes bitfinex tETHUSD": 76821
         }
       }
@@ -117,11 +121,12 @@
       "first": 2.9515,
       "last": 189.31,
       "bytes": 654330,
-      "zipped": 398433,
+      "zipped": 394183,
       "sources": {
         "hourly": 38490,
         "gapHours": 0,
         "gapRanges": [],
+        "killed": 0,
         "detail": {
           "binance SOLUSDT": 38470,
           "binanceus SOLUSD": 24670,
@@ -222,7 +227,7 @@
       "SOL": 2779
     },
     "bytes": 89580,
-    "zipped": 64213
+    "zipped": 64725
   },
   "circulating": {
     "BTC": {

@@ -24,17 +24,24 @@
  *      ⚠️ Kraken 的配对名不是通用写法：BTC 是 `XBT`、**DOGE 是 `XDG`**。
  *
  * ─────────────────────────────────────────────────────────────────────────
- * 多所聚合（2026-10-01，K 线全市场校准 K1）
+ * 多所聚合（2026-10-01 K1；2026-10-04 二次修正：整烛 medoid ＋ 源序重排 ＋ 坏针守卫 ＋ 跨所求和）
  * ─────────────────────────────────────────────────────────────────────────
  * 在此之前，同一小时**只保留优先级最高的那一家**（后来的只补洞、绝不覆盖）。后果是：
- * 某一家某一小时的坏价（薄盘错价、satoshi 量化跳变）会**原样**进包，在图上就是一根针。
+ * 某一家某一小时的坏价（薄盘错价、satoshi 量化跳变、第三方归档的补值行）会**原样**进包，
+ * 在图上就是一根针。
  *
- * 现在 `AGG_COINS` 里的币改成「每一家都覆盖整条窗口 → 逐小时逐字段投票」：
- *   - 取价：`medoid()`（到其余各值对数距离最小的那**一家**）。**不做加权、不做合成** ——
- *     每一根 K 线仍然是某家交易所真实报过的价，平均则会把坏源摊进价格里。
+ * 现在 `AGG_COINS` 里的币改成「每一家都覆盖整条窗口 → 逐小时**整烛**投票」：
+ *   - 源优先级（2026-10-04 重排：官方优先、第三方垫底）：
+ *       官方 API（Bitstamp/Bitfinex/Binance/Binance.US）＞ Kraken 官方归档 ＞ CDD 第三方 ＞ votes。
+ *     旧序把 CDD 排在 Kraken 之前，平局时坏源反而胜出（实证 ETH 2015-12-22）。
+ *   - 取价：`medoidCandle()`（到其余各**整根烛**对数距离最小的那**一家**）。**不做加权、不做合成** ——
+ *     每一根 K 线仍然是某家交易所真实报过的整根（逐字段投票会拼出「两家都没报过」的假针）。
+ *   - 过滤：CDD 的**零成交补值行不投价格票**（早期 Poloniex 大量 `tradeCount=0` 的造假行）；
+ *     聚合后再过一道**坏针守卫**（滚动中位 ±72h、低 0.25× / 高 4.0×，见 `buildCoin` 第 ⑧ 步）。
  *   - 兜底：不变量修正 `H ≥ max(O,C)`、`L ≤ min(O,C)`。
- *   - 成交量：**只认主源**（优先级最高的那家）。改成跨所求和会同时动 `liq.bin`、
- *     滑点分母与拥堵脉冲阈值 —— 本轮刻意不动，单开一批再议。
+ *   - 成交量（2026-10-04 用户拍板）：**跨交易所求和**，同一交易所只算一次（Poloniex 的
+ *     DOGE/XRP 各有 USDT+BTC 两档，去重取 USD 档）。会同时动 `liq.bin` 的年内形状、
+ *     滑点分母与拥堵脉冲阈值 —— 已随本轮一并重建。
  * 未列入 `AGG_COINS` 的币走原路（按优先级补洞），输出**逐位不变** —— 分批推进的隔离保证。
  *
  * ⚠️ **本管线不造 K 线。** 「日线插值」与「平线补齐」已整块删除（含 FLAT_TAG）：
@@ -527,30 +534,40 @@ function fetchKraken(sym, fromMs, toMs, btcAt) {
 const AGG_COINS = new Set(['BTC', 'ETH', 'XRP', 'DOGE', 'SOL']);
 
 /**
- * 逐字段鲁棒中位：从各源**真实报过的值**里挑一个（medoid = 到其余各值对数距离之和最小者）。
+ * **整烛**对数距离：两来源同一小时 OHLC 四价的对数距离之和。
+ * 用于「整烛 medoid」—— 选**整根**最靠近其余各来源的那家，而不是逐字段各挑一家。
+ */
+function candleDist(a, b) {
+  return Math.abs(Math.log(a[0] / b[0])) + Math.abs(Math.log(a[1] / b[1]))
+    + Math.abs(Math.log(a[2] / b[2])) + Math.abs(Math.log(a[3] / b[3]));
+}
+
+/**
+ * 整烛鲁棒中位：从各源**真实报过的整根 K 线**里挑一根（medoid = 到其余各烛对数距离之和最小者）。
  *
  * 为什么不是「取平均」：平均会把一家的坏价**摊进**价格里（Bitstamp 301 / Kraken 4000
  * 平均出 2150，比原来还糟）。medoid 只会把孤立的那家**丢掉**，且结果永远等于某家的真值。
+ * 为什么按**整烛**而不是逐字段（2026-10-04 修）：逐字段独立投票会让 O/L 取自 A 源、H/C 取自 B 源
+ * ⇒ 拼出一根**两家都没报过**的假针；整烛投票保证输出恒等于某家真实报过的整根。
  * 平局按**传入顺序**（＝数据源优先级）取前者：
- *   1 家 → 就是它；2 家 → 平局 ⇒ 取主源（与改造前逐位一致）；3 家 → 恰是中位数；4+ 家 → 离群者出局。
+ *   1 家 → 就是它；2 家 → 平局 ⇒ 取主源；3 家 → 恰是中位数；4+ 家 → 离群者出局。
  */
-function medoid(vals) {
-  if (vals.length === 1) return vals[0];
+function medoidCandle(list) {
+  if (list.length === 1) return list[0];
   let best = 0, bestScore = Infinity;
-  for (let a = 0; a < vals.length; a++) {
+  for (let a = 0; a < list.length; a++) {
     let s = 0;
-    for (let b = 0; b < vals.length; b++) s += Math.abs(Math.log(vals[a] / vals[b]));
+    for (let b = 0; b < list.length; b++) s += candleDist(list[a], list[b]);
     if (s < bestScore - 1e-12) { bestScore = s; best = a; }
   }
-  return vals[best];
+  return list[best];
 }
 
-/** 一小时的多源报价 → 一根 K 线：逐字段 medoid ＋ 不变量修正 */
+/** 一小时的多源报价 → 一根 K 线：整烛 medoid ＋ 不变量修正 */
 function aggregateHour(list) {
-  const o = medoid(list.map(r => r[0]));
-  const c = medoid(list.map(r => r[3]));
-  let h = medoid(list.map(r => r[1]));
-  let l = medoid(list.map(r => r[2]));
+  const m = medoidCandle(list);
+  const o = m[0], c = m[3];
+  let h = m[1], l = m[2];
   if (h < o) h = o;
   if (h < c) h = c;
   if (l > o) l = o;
@@ -603,8 +620,14 @@ async function buildCoin(coin) {
   let tagSeq = 0;
   const nextTag = () => ++tagSeq;
 
-  /** 一条数据源跑完后的统一记账 */
-  const absorb = (label, rows, tag) => {
+  /**
+   * 一条数据源跑完后的统一记账。
+   * @param x       交易所标识（成交量去重用：同一交易所的多档合并时只算一次）
+   * @param cddFill 该源是否可能含「补值 / 造假行」的第三方归档（CDD）—— 是则该源的**零成交行降级为补值票**
+   *   （CDD 早期 Poloniex 大量 `tradeCount=0`、量为 0 的平铺补值行，价是编的；
+   *    Kraken 的量口径不同（标的数量），其 usd 恒为 0 ⇒ 必须豁免，否则整条源被降级）
+   */
+  const absorb = (label, rows, tag, x, cddFill) => {
     let added = 0;
     for (const [i, v] of rows) {
       if (i < startI) continue;
@@ -612,7 +635,11 @@ async function buildCoin(coin) {
       if (cells) {
         let c = cells[k];
         if (!c) { c = cells[k] = []; have[k] = tag; }
-        c.push(v);
+        /* tier：0 = **主票**（官方源 / 有成交的行）；1 = **补值票**（CDD 零成交行）。
+           聚合时**优先只用主票**，只有当该小时一张主票都没有，才退到补值票 ——
+           既不让造假行压过真源，又不丢覆盖（否则会凭空多出一堆「无成交」空档）。 */
+        const tier = (cddFill && !(v[4] > 0)) ? 1 : 0;
+        c.push([v[0], v[1], v[2], v[3], v[4], x, tier]);
         added++;                   // 聚合模式：added = 这家**投出的票数**（＝它覆盖到的小时数）
       } else {
         if (have[k]) continue;
@@ -635,7 +662,7 @@ async function buildCoin(coin) {
     return [tsOf(startI + holes[0]), tsOf(startI + holes[holes.length - 1]) + HOUR_MS];
   };
 
-  /* ── ① 小时级 USD/USDT 源：官方 API ── */
+  /* ── ① 小时级 USD/USDT 源：官方 API（优先级最高） ── */
   // 补洞模式下每家只抓「还有洞」的那一段：缺口常常只是早期几年，窗口若不收窄，
   // 就得把整条 12 年时间轴重新捞一遍，而其中九成上一家已经给过了 —— 纯属白打。
   // 顺序即优先级（聚合模式裁平局也按它）。
@@ -650,62 +677,75 @@ async function buildCoin(coin) {
     if (!span) { log(`    ${key}：已无空缺，跳过`); break; }
     if (!pair) { log(`    ${key}：该币无此交易对`); continue; }
     try {
-      absorb(`${key} ${pair}`, (await fetcher(pair, span[0], span[1])).rows, nextTag());
+      absorb(`${key} ${pair}`, (await fetcher(pair, span[0], span[1])).rows, nextTag(), key, false);
     } catch (err) {
       log(`    ${key} ${pair} 取数失败：${err.message}`);
     }
   }
 
-  /* ── ② 小时级归档 CSV（CryptoDataDownload）—— USDT 直铺 / BTC 计价换算 ── */
-  for (const src of coin.cdd || []) {
-    if (!spanOf()) { log(`    ${src.file}：已无空缺，跳过`); break; }
-    try {
-      absorb(src.file, (await fetchCDDHourly(src.file, src.quote, PRICE.get('BTC'))).rows, nextTag());
-    } catch (err) {
-      log(`    ${src.file} 取数失败：${err.message}`);
-    }
-  }
-
-  /* ── ③ Kraken 官方归档（本地 CSV）—— **只服务聚合模式**；补洞模式必须逐位不变 ── */
+  /* ── ② Kraken 官方归档（本地 CSV）—— **官方源，排在第三方 CDD 之前** ──
+   * 2026-10-04 提到 CDD 前：旧序把 CDD 排在 Kraken 前，平局时坏源胜出
+   * （实证 ETH 2015-12-22 07:00：Kraken 报 0.915/0.99989/0.96 是真，CDD 报 0.88 且 L=0.005 是假，落盘却取了 CDD）。
+   * **只服务聚合模式**；补洞模式必须逐位不变。 */
   if (cells) {
     const pairs = KRAKEN_PAIRS[coin.sym];
     if (pairs) {
       const label = `kraken ${pairs.map(x => x[0]).join('+')}`;
       try {
-        absorb(label, (await fetchKraken(coin.sym, tsOf(startI), tsOf(startI + count), PRICE.get('BTC'))).rows, nextTag());
+        absorb(label, (await fetchKraken(coin.sym, tsOf(startI), tsOf(startI + count), PRICE.get('BTC'))).rows, nextTag(), 'kraken', false);
       } catch (err) {
         log(`    ${label} 读取失败：${err.message}`);
       }
     }
   }
 
-  /* ── ④ 额外投票源（`config.COINS[].votes`）—— **只投票、不定成交量** ──
-   * 排在整条优先级链的**最末**（Kraken 之后）⇒ 永远成不了「主源」（成交量仍归 ⑤ 里的 `list[0]`），
-   * 且只在「该小时已经 ≥3 家报价」时才真正改变 `medoid` 的结果。见 `config.js` 的 `votes` 段。
-   * 同样**只服务聚合模式**：补洞模式必须逐位不变。 */
+  /* ── ③ 小时级归档 CSV（CryptoDataDownload，第三方）—— USDT 直铺 / BTC 计价换算 ──
+   * 排在官方源之后；且**零成交补值行不投价格票**（CDD 早期大量 `tradeCount=0` 的造假行）。
+   * 同一交易所可能有多档（Poloniex 的 DOGE/XRP 各有 USDT+BTC），`x` 标出交易所供成交量去重。 */
+  for (const src of coin.cdd || []) {
+    if (!spanOf()) { log(`    ${src.file}：已无空缺，跳过`); break; }
+    const x = /Poloniex/.test(src.file) ? 'poloniex' : src.file;
+    try {
+      absorb(src.file, (await fetchCDDHourly(src.file, src.quote, PRICE.get('BTC'))).rows, nextTag(), x, true);
+    } catch (err) {
+      log(`    ${src.file} 取数失败：${err.message}`);
+    }
+  }
+
+  /* ── ④ 额外投票源（`config.COINS[].votes`）—— 排在整条优先级链的**最末** ──
+   * 平局时永远输给前面的官方源；只在「该小时已经 ≥3 家报价」时才真正改变 `medoidCandle` 的结果。
+   * 见 `config.js` 的 `votes` 段。同样**只服务聚合模式**：补洞模式必须逐位不变。 */
   if (cells) {
     for (const v of coin.votes || []) {
       if (v.exch !== 'bitfinex') continue;
       try {
-        absorb(`votes bitfinex ${v.pair}`, (await fetchBitfinex(v.pair, tsOf(startI), tsOf(startI + count))).rows, nextTag());
+        absorb(`votes bitfinex ${v.pair}`, (await fetchBitfinex(v.pair, tsOf(startI), tsOf(startI + count))).rows, nextTag(), v.exch, false);
       } catch (err) {
         log(`    votes bitfinex ${v.pair} 取数失败：${err.message}`);
       }
     }
   }
 
-  /* ── ⑤ 聚合：逐字段 medoid ＋ 不变量修正；成交量只认主源 ── */
+  /* ── ⑤ 聚合：整烛 medoid ＋ 不变量修正；成交量 = **跨交易所求和**（同所去重） ── */
   if (cells) {
     let multi = 0, votes = 0;
     for (let k = 0; k < count; k++) {
       const list = cells[k];
       if (!list) continue;
-      const [o, h, l, c] = aggregateHour(list);
+      /* 一票一档：有**主票**（tier 0）就只用主票，把 CDD 零成交补值行（tier 1）整批丢开；
+         只有该小时一张主票都没有，才退到补值票（保住覆盖）。 */
+      const use = list.some(r => r[6] === 0) ? list.filter(r => r[6] === 0) : list;
+      const [o, h, l, c] = aggregateHour(use);
       held[k * 5] = o; held[k * 5 + 1] = h; held[k * 5 + 2] = l; held[k * 5 + 3] = c;
-      // 主源 = 优先级最高、**且这一小时确实报了价**的那家（`absorb` 按优先级顺序 push，故是 `list[0]`）。
-      // 成交量改成跨所求和会同时动 liq.bin、滑点分母与拥堵脉冲阈值 —— 本轮刻意不动。
-      held[k * 5 + 4] = list[0][4] > 0 ? list[0][4] : 0;
-      dayUsd[Math.floor((startI + k) / 24)] += held[k * 5 + 4];
+      /* 成交量口径（2026-10-04 用户拍板「改为跨所求和」）：把各交易所的真实美元成交额相加，
+         更贴近**全市场**成交额；**同一交易所只算一次** —— Poloniex 的 DOGE/XRP 各有 USDT+BTC 两档，
+         直接相加会把同一家算两遍。去重取列表里**优先级最高**的那档（顺序，USD 档在前）。
+         Kraken 的 `usd` 恒为 0（其归档量是标的数量、口径不同，见 `fetchKraken`）⇒ 天然不计入。 */
+      const seen = new Set();
+      let usd = 0;
+      for (const r of use) { if (seen.has(r[5])) continue; seen.add(r[5]); if (r[4] > 0) usd += r[4]; }
+      held[k * 5 + 4] = usd;
+      dayUsd[Math.floor((startI + k) / 24)] += usd;
       votes += list.length;
       if (list.length > 1) multi++;
     }
@@ -743,6 +783,40 @@ async function buildCoin(coin) {
     if (runStart < 0) runStart = k;
   }
   flushGap(count);
+
+  /* ── ⑧ 坏针守卫（2026-10-04）：滚动中位 ±72h，低 0.25× / 高 4.0× ⇒ 该小时作废 ──
+   * 为什么不是「绝对阈值」：真实行情自己就能达到 H/L 2.86、单小时跳变 35%（BTC 2013-04-10 崩盘），
+   *   而假针（XRP 2014 的 7.6 倍、ETH 2015 的 176 倍、XRP 2016 的 12.7 倍假高）与真实崩盘**重叠**
+   *   ⇒ 任何绝对阈值都会**误杀真实崩盘**。改用**相对自身滚动中位**：
+   *   实测真实行情的最低 L/中位 = 0.424（BTC 崩盘）、最高 H/中位 = 3.18（DOGE 2021 暴涨），
+   *   阈值取 0.25 / 4.0 ⇒ 对真实行情 **0 误杀**（离最危险的崩盘有 1.7× 余量），
+   *   却精确捞出全部已确诊坏针（XRP 2014-09-20、XRP 2015-03-03、ETH 2015-12-22、XRP 2016-02-09 …）。
+   * 作废方式与空档一致：沿用上一根收盘、量记 0（并把该小时已计入的日成交额扣回，免得污染 liq 形状）。 */
+  let killed = 0;
+  if (cells) {
+    const G_LOW = 0.25, G_HIGH = 4.0, GW = 72;
+    const closes = new Float64Array(count);
+    for (let k = 0; k < count; k++) closes[k] = held[k * 5 + 3];
+    const bad = new Uint8Array(count);
+    for (let k = GW; k < count - GW; k++) {
+      if (!have[k] || have[k] === 255) continue;            // 跳过空档/未覆盖的小时
+      const a = Array.prototype.slice.call(closes, k - GW, k + GW + 1).sort((x, y) => x - y);
+      const n = a.length;
+      const med = n % 2 ? a[(n - 1) >> 1] : (a[n / 2 - 1] + a[n / 2]) / 2;
+      if (med > 0 && (held[k * 5 + 2] < G_LOW * med || held[k * 5 + 1] > G_HIGH * med)) bad[k] = 1;
+    }
+    let prev = held[lead * 5 + 3];
+    for (let k = lead; k < count; k++) {
+      if (!bad[k]) { prev = held[k * 5 + 3]; continue; }
+      const lost = held[k * 5 + 4];
+      if (lost > 0) dayUsd[Math.floor((startI + k) / 24)] -= lost;
+      held[k * 5] = held[k * 5 + 1] = held[k * 5 + 2] = held[k * 5 + 3] = prev;
+      held[k * 5 + 4] = 0;
+      killed++;
+    }
+    if (killed) log(`    坏针守卫：作废 ${killed} 根（滚动中位 ±${GW}h，低 ${G_LOW}× / 高 ${G_HIGH}×）`);
+  }
+  stats.killed = killed;
 
   const outI = startI + lead;
   const outCount = count - lead;
@@ -1143,6 +1217,7 @@ async function main() {
         hourly: stats.hourly,
         gapHours: stats.gapHours,
         gapRanges: stats.gapRanges.map(([a, b]) => [new Date(a).toISOString(), new Date(b).toISOString()]),
+        killed: stats.killed || 0,     // 坏针守卫作废的根数（见 buildCoin 第 ⑧ 步）
         detail: Object.fromEntries(stats.bySource),
       },
     };
