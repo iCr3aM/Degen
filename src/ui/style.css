@@ -532,17 +532,14 @@ b, strong { font-weight: 600; }
    无持仓时各格填 `--`，不再整条隐藏（2026-09-29）—— K 线区是全屏唯一的弹性块，
    持仓条一显一隐，K 线高度就会在每次开仓 / 平仓时来回跳。行高由 `.num`
    的单行撑开，各格高度与「有持仓」时完全一致，所以常驻不会让 K 线少一格。
-   ⚠️ **三格 → 四格**（2026-10-03 · 资金费率真实化 A3-d）：第四格是「资金费 {N}h后 / 费率」。
-      1/4 屏放不下 `0.0100%`，所以那一格的**标签**降一档（11px），数值与其余三格同档。
-   ⚠️ 数值字号 13 → **12px**（2026-10-03 用户拍板）：四等分后 375px 屏每格只有 **75px**，
-      13px 等宽字约 7.8px/字符 ⇒ `-$99,999.9`（10 字符）要 **78px**，超 3px 被 `ellipsis`
-      吃掉尾巴（390px 屏 79px，也只剩 1px）。降到 12px（7.2px/字符）后同串只要 72px。
-      —— 与 HUD 数值、`.symbols` 的字号回到同一档（用户口径：必要时缩小字体实现自适应）。 */
+   ⚠️ **2026-10-04 用户拍板回到三格**：A3-d（2026-10-03）加的第四格「资金费 {N}h后 / 费率」
+      已删（详见 `.posbar b` 下面那条注释）。下面关于「四等分 75px」的记录保留为历史依据 ——
+      三格是 117px（375 屏），字号 12px 的口径不变（它已与 HUD / `.symbols` 统一）。 */
 .posbar {
   flex: none;
   position: relative;
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   /* ⚠️ 格间间隙**保留 8px**，竖线用伪元素悬在缝的正中（2026-10-03 用户拍板「持仓条格间加竖线」）。
      为什么不像 `.hud` 那样并缝：这里每格要装一个 12px 的数字（`$12,345.7` 约 65px），
      并缝就得给非首格补左右内边距，格宽会被吃到 74px 以下 —— 数字直接被 `ellipsis` 截尾。
@@ -568,9 +565,9 @@ b, strong { font-weight: 600; }
 .posbar div { min-width: 0; position: relative; }
 .posbar i { display: block; font-style: normal; font-size: calc(12px * var(--ui)); color: var(--mut); }
 .posbar b { display: block; font-size: calc(12px * var(--ui)); }
-/* 第四格的**标签**降一档（「资金费 5h后」比「未实现盈亏」长，且它位置最靠右、最容易顶边）。
-   ⚠️ 数值那条 `.posbar .fund b` 已删除（2026-10-03）：数值字号统一到 12px 后它与基座逐字相同。 */
-.posbar .fund i { font-size: calc(11px * var(--ui)); }
+/* ⚠️ **三格**（2026-10-04 用户拍板）：第四格「资金费 Nh后 / 费率」已连同 `setFundingCell`
+   一起删除（`.posbar .fund` 与它的 11px 标签档一并撤掉）。三格后每格 ≈ 117px（375 屏），
+   比四格时的 75px 宽松，`-$99,999.9` 这类长数字不再有被 `ellipsis` 截尾的风险。 */
 .posbar .side-long { color: var(--up); }
 .posbar .side-short { color: var(--down); }
 
