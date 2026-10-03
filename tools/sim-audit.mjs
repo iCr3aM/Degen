@@ -566,6 +566,100 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
     !rBook.ok && /借贷额度不足/.test(rBook.why || ''), rBook.why || 'ok');
 }
 
+/* ── 9g · 缺口 15：档 3「强平簇吸引」（距离感知加速 · 上界 · 预警 · 回退） ── */
+{
+  /* 场景：2016-06 BitMEX 永续 —— 当年盘口尚薄、杠杆档齐全，同一时刻 / 同一本金 / 同一方向，
+     **只变杠杆** ⇒ 只变「到强平线的距离」。走合约通道是因为 `margin` 的借贷额度闸会把大单拒掉。
+     ⚠️ 这四个参数是探针挑出来的（`tools/_probe15.mjs`，用完即删）：四档的 exposure 都 ≫ t3（最低的 3x 也有 ~49%），
+        且 `d` 一近一远正好跨在 dRef 两侧 ⇒ **曝光闸与距离闸都真的被测到**（不空转）。
+     ⚠️ 断言一律做成**相对关系**（`kAim` 开 / 关的自我对照），不写死绝对值 —— 同 §9d 的纪律。 */
+  const T = idx(at(2016, 5));
+  const CASH = 5e6;
+  const LEVS = [3, 5, 10, 20];
+  const SIG = engine.dailySigma('BTC', T);
+  const DREF = C.ADV.dRefSig * SIG;
+  const liqDay = market.liqOf('BTC', market.dayIndexOf(T));
+  console.log(`  2016-06 BitMEX 永续 杠杆档 ${LEVS.join(' / ')} ｜ σ_30日 ${f(SIG * 100, 2)}%`
+    + ` ⇒ dRef = ${f(DREF * 100, 2)}% ｜ t3 = ${f(C.ADV.t3 * 100, 0)}% ｜ 当日流动性 $${f(liqDay / 1e6, 1)}M`);
+
+  /**
+   * 跑一档：同一状态、同一本金、同一方向，**只变杠杆**（⇒ 只变到强平线的距离）与 `kAim`。
+   * ⚠️ 断言一律做成**相对关系**（`kAim` 开 / 关的自我对照），不写死绝对值 —— 同 §9d 的纪律。
+   */
+  const run = async (lev, kAim) => {
+    const saved = C.ADV.kAim;
+    C.ADV.kAim = kAim;
+    const s = await mk({ sym: 'BTC', i: T, mode: 'fut', cash: CASH });
+    s.ex = 'bitmex'; s.lev = lev;
+    s.books = { bitmex: { usd: 0, usdt: CASH } };
+    const r = engine.openTrade(s, 'short', 1);
+    let push = 0, d = NaN, n3 = 0;
+    if (r.ok && s.positions.BTC) {
+      const mk0 = engine.lastPrice(s, 'BTC');
+      d = Math.abs(mk0 - P.liquidationPrice(s.positions.BTC)) / mk0;
+      for (let k = 0; k < 12 && s.positions.BTC; k++) {
+        engine.advanceOneHour(s);
+        const p = Number.isFinite(s.mkt.BTC.advPush) ? Math.abs(s.mkt.BTC.advPush) : 0;
+        if (p > push) push = p;
+      }
+      n3 = s.log.filter(l => /强平线/.test(String(l.text))).length;
+    }
+    C.ADV.kAim = saved;
+    /* 本小时峰值 exposure（`S.adv[sym].v`，与 `advAimAmp` 同口径）—— 用来证明两个闸门都真的开着 */
+    const e = s.adv && s.adv.BTC ? s.adv.BTC.v : 0;
+    return { ok: r.ok, why: r.why, push, d, n3, e, s };
+  };
+
+  const on = [];
+  for (const lev of LEVS) on.push({ lev, ...(await run(lev, 1)) });
+  const good = on.filter(o => o.ok && Number.isFinite(o.d));
+  if (!good.length) {
+    check('9g 前置：2016-06 BitMEX 永续做空能开出来', false,
+      on.map(o => `${o.lev}x:${o.why || 'ok'}`).join(' | '));
+  } else {
+    good.sort((a, b) => a.d - b.d);
+    const near = good[0], far = good[good.length - 1];
+    console.log('  开档 3：' + good.map(o => `${o.lev}x d=${f(o.d * 100, 2)}% e=${f(o.e * 100, 0)}% push=${f(o.push * 100, 3)}%`).join(' ｜ '));
+    check('9g 前置：这一对确实跨在 dRef 两侧（否则测不到距离闸）',
+      near.d < DREF && far.d >= DREF, `${f(near.d * 100, 2)}% < ${f(DREF * 100, 2)}% ≤ ${f(far.d * 100, 2)}%`);
+    /* ⚠️ 两个闸都要真的开着，否则「档 3 生效」可能靠曝光、而「距离闸」可能靠曝光不足而假通过 */
+    check('9g 前置：近强平线那档曝光 ≥ t3（档 3 的曝光闸真的开在「距离」这一侧）',
+      near.e >= C.ADV.t3, `e ${f(near.e * 100, 1)}% ≥ t3 ${f(C.ADV.t3 * 100, 0)}%`);
+    check('9g 前置：远强平线那档曝光 ≥ t3 且档 2 推价 > 0（距离是**唯一**的关闸理由）',
+      far.e >= C.ADV.t3 && far.push > 0,
+      `e ${f(far.e * 100, 1)}% ≥ t3 ${f(C.ADV.t3 * 100, 0)}% ｜ push ${f(far.push * 100, 3)}%`);
+
+    /* ① 档 3 真的加了力：同一状态、只切 `kAim` ⇒ 近强平线的推价必须**严格变大** */
+    const nearOff = await run(near.lev, 0);
+    check('9g 档 3 生效：近强平线时推价严格大于「关掉档 3」',
+      nearOff.ok && near.push > nearOff.push + 1e-12,
+      `开 ${f(near.push * 100, 3)}% vs 关 ${f(nearOff.push * 100, 3)}%`);
+
+    /* ② 距离闸（§5.4 不做凭空针对）：远强平线时 `kAim` 开 / 关**逐位相同**（`amp` 恰为 1） */
+    const farOff = await run(far.lev, 0);
+    check('9g 距离闸：远强平线（d ≥ dRef）时档 3 一个字都不改（逐位相同）',
+      farOff.ok && far.push === farOff.push,
+      `开 ${f(far.push * 100, 3)}% vs 关 ${f(farOff.push * 100, 3)}%`);
+
+    /* ③ 上界：唯一允许破 σ 的地方，但仍是**有界**的（`aimCap × σ`） */
+    const cap = C.ADV.aimCap * SIG;
+    const worst = Math.max(...on.map(o => o.push), nearOff.push, farOff.push);
+    /* ⚠️ `m.advPush` 是**缓动后**的推价（一阶低通）⇒ 上界与目标值同阶，留 1e-9 余量避免浮点脆断 */
+    check('9g 推价上界 ≤ aimCap × σ（破 σ 但有界，不累积）',
+      worst <= cap + 1e-9, `实得最大 ${f(worst * 100, 3)}% ｜ 上界 ${f(cap * 100, 3)}%（σ = ${f(SIG * 100, 2)}%）`);
+
+    /* ④ 预警（§5.2 硬要求）：进档 3 播一条、闩锁不重复；远强平线那条路不播 */
+    check('9g 进档 3 播一条「强平线」预警（不是死代码）', near.n3 >= 1, `实得 ${near.n3} 条`);
+    check('9g 远强平线不播档 3 预警（不做凭空针对）', far.n3 === 0, `实得 ${far.n3} 条`);
+  }
+
+  /* ⑤ 回退必须复位闩锁 —— 否则回退后再进档 3 就永远不再提醒（同 `advWarn` / `advWarn2`） */
+  const s5 = await mk({ cash: 50000 });
+  s5.advWarn3 = true;
+  engine.rewindTo(s5, s5.i);
+  check('9g rewindTo 复位档 3 预警闩锁', s5.advWarn3 === false, `实得 ${s5.advWarn3}`);
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);

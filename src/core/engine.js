@@ -486,17 +486,51 @@ function advExposureOf(s, sym, i, raw) {
  *   · 方向恒为玩家持仓的**逆向**（做市商吃下对手盘后，其库存回补的压力把价格往回推 ——
  *     Brunnermeier & Pedersen 2005 的掠夺方向；§5.4 已明令文案不许写成「猎杀止损」）。
  *
- * ⚠️ **不是新通道**：位移最终只经 `factorFor` 一处生效（与 `npcDrift` 同源），且是**有界**的
- *    （被 `SLIP.cap` 夹住 ⇒ ≤ `σ`）⇒ 不累积、不顶夹子。
+ * **档 3 · 强平簇吸引**（缺口 15 · 2026-10-03 用户拍板）：在档 2 之上，把幅度乘一个**距离感知**
+ * 的倍率 `advAimAmp`（离强平线越近越大，`d ≥ dRef` 时恰为 1），再夹在 `ADV.aimCap × σ`。
+ *
+ * ⚠️ **不是新通道**：位移最终只经 `factorFor` 一处生效（与 `npcDrift` 同源），且是**有界**的 ——
+ *    档 2 被 `SLIP.cap` 夹住 ⇒ `≤ σ`；档 3 再过一道 `aimCap·σ`（`≤ 1.5σ`）⇒ 不累积、不顶夹子。
  */
 function advPushOf(s, sym, i, sig) {
   const pos = s.positions[sym];
   if (!pos) return 0;
   const e = advCurExposureOf(s, sym, hourLiqRaw(s, sym, i));
   if (!(e >= ADV.t2)) return 0;
-  const mag = permImpactOf(ADV.pushK * (e - ADV.t2), sig);
+  const base = permImpactOf(ADV.pushK * (e - ADV.t2), sig);
+  if (!(base > 0)) return 0;
+  /* 档 3 · **强平簇吸引**（缺口 15 · 2026-10-03 用户拍板）：同一个 `base` 乘一个**距离感知**的
+     倍率，再夹在 `aimCap × σ`。不新开通道、不新开分母 —— 只在档 2 这一条式子上多一个因子。 */
+  const mag = Math.min(base * advAimAmp(s, sym, e, sig), ADV.aimCap * sig);
   if (!(mag > 0)) return 0;
   return pos.side === 'long' ? -mag : mag;
+}
+
+/**
+ * **档 3 的距离感知倍率**（缺口 15 · 2026-10-03）—— `amp ∈ [1, 1 + ADV.kAim]`。
+ *
+ *     d   = |现价 − 强平价| ÷ 现价        （到强平线的相对距离）
+ *     amp = 1 + kAim · clamp(1 − d ÷ (dRefSig·σ), 0, 1)
+ *
+ * 诱因**两个都要满足**（§5.4：不做凭空针对）：`exposure ≥ ADV.t3` **且** `d ≤ dRef`。
+ * 缺任一条 ⇒ 返回**恰好 1**（乘上去逐位等于档 2，零回归）。
+ *
+ * ⚠️ 只在**有强平线的活仓**上算：`canLiquidate(pos)` 为假（杠杆 1x 实物多头）⇒ 返回 1
+ *    —— 与 `advCurExposureOf` 的口径一致（实物盘本来就不进 `exposure`，这里也不该进）。
+ * ⚠️ **只读**：不写任何状态（本函数会被 `advTick` 与 `tickMarket` 两条每小时的路径调用）。
+ */
+function advAimAmp(s, sym, e, sig) {
+  if (!(e >= ADV.t3) || !(ADV.kAim > 0) || !(sig > 0)) return 1;
+  const pos = s.positions[sym];
+  if (!pos || !canLiquidate(pos)) return 1;
+  const mark = lastPrice(s, sym);
+  const lp = liquidationPrice(pos);
+  if (!(mark > 0) || !Number.isFinite(lp)) return 1;
+  const ref = ADV.dRefSig * sig;
+  if (!(ref > 0)) return 1;
+  const d = Math.abs(mark - lp) / mark;
+  if (!(d < ref)) return 1;
+  return 1 + ADV.kAim * (1 - d / ref);
 }
 
 /**
@@ -589,7 +623,7 @@ function advTick(s) {
   if (!s.adv) s.adv = {};
   const syms = new Set(heldSyms(s));
   for (const k in s.adv) syms.add(k);   // 已平掉但疤痕还在的币也要继续衰减
-  let drop = 0, maxE = 0, pushMax = 0;
+  let drop = 0, maxE = 0, pushMax = 0, aimMax = 1, aimPushMax = 0;
   for (const sym of syms) {
     const raw = hourLiqRaw(s, sym, s.i);
     if (!(raw > 0)) continue;
@@ -614,6 +648,10 @@ function advTick(s) {
     const mk = s.mkt && s.mkt[sym];
     const p = mk && Number.isFinite(mk.advPush) ? Math.abs(mk.advPush) : 0;
     if (p > pushMax) pushMax = p;
+    /* 缺口 15 · 档 3（强平簇吸引）的预警取样：`advAimAmp` 用**当前** exposure，与 `advPushOf`
+       同一支口径（疤痕不算）。`> 1` 即「本小时有活仓正处在强平线附近」⇒ 该播就播。 */
+    const aim = advAimAmp(s, sym, advCurExposureOf(s, sym, raw), sig);
+    if (aim > aimMax) { aimMax = aim; aimPushMax = Math.max(aimPushMax, p); }
   }
   if (drop >= 1 - ADV.warnMul) {
     if (!s.advWarn) {
@@ -632,6 +670,18 @@ function advTick(s) {
     }
   } else if (maxE <= ADV.t1) {
     s.advWarn2 = false;
+  }
+  /* 缺口 15 · 档 3（强平簇吸引）的预警（§5.2 硬要求 —— 被打之前必须看得见；§5.4：不写「猎杀止损」）。
+     口径与 `s.advWarn` / `s.advWarn2` 同一先例：进档 3 播一条、退回档 0 才解除，中间不重复播。
+     ⚠️ 文案只描述**市场结构**（价格在向你的强平簇靠）、**不描述意图** ——
+        「算法故意扎针扫止损」无一手实证，§5.4 明令不许写。 */
+  if (aimMax > 1) {
+    if (!s.advWarn3) {
+      s.advWarn3 = true;
+      pushLog(s, `价格正逼近你的强平线 ｜ 大额持仓引来额外 ${fmtRate(aimPushMax, 1)} 不利偏移`, 'bad', 'mkt');
+    }
+  } else if (maxE <= ADV.t1) {
+    s.advWarn3 = false;
   }
 }
 
@@ -2732,6 +2782,7 @@ export function rewindTo(s, to) {
   s.adv = {};           // 对抗性流动性峰值台阶（v29）同样是「进度」⇒ 回退时一并抹掉
   s.advWarn = false;    // 预警闩锁也一并复原（否则回退后再进档 1 就永远不再提醒）
   s.advWarn2 = false;   // 档 2 推价预警闩锁，同上
+  s.advWarn3 = false;   // 档 3 强平簇吸引预警闩锁（缺口 15），同上
   s.intWin = { ied: 0, grossM: 0 };   // 借贷利息的 8h 窗口累计（持仓已清空 ⇒ 窗口归零）
   /* 保险基金（v30 · 缺口 5）也是「进度」⇒ 回退时抹成 `null`，让它按**跳转后那一天**的
      流动性重新播种（写死绝对值会在跨年代回退时失真）。 */

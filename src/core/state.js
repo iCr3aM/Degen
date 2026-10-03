@@ -282,6 +282,14 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     advWarn2: false,
 
     /**
+     * **档 3「强平簇吸引」**那条预警的**闩锁**（缺口 15 · 2026-10-03）—— 本小时有活仓同时满足
+     * `exposure ≥ ADV.t3` 且到强平线的距离 `d ≤ ADV.dRefSig × σ_30日` 时播一条，退回档 0 才解除
+     * —— 与 `s.advWarn` / `s.advWarn2` 同一先例，同一连续区间只播一次。
+     * ⚠️ 不升 `STATE_VERSION`：新增布尔，旧档缺省 `undefined`（falsy）⇒ 行为与首次进档一致。
+     */
+    advWarn3: false,
+
+    /**
      * **NPC 市场情绪 / 持仓**（v26 · §73.5 · 2026-10-02 拍板）——
      * `sym -> { heat, npc: [ 6 档 ], mm, npcDrift }`。
      *
