@@ -478,14 +478,17 @@ b, strong { font-weight: 600; }
 .chart-heat[data-heat="panic"] i::after { background: var(--down); }
 
 /* ══════════════ 持仓条（**常驻**） ══════════════
-   无持仓时三格填 `--`，不再整条隐藏（2026-09-29）—— K 线区是全屏唯一的弹性块，
+   无持仓时各格填 `--`，不再整条隐藏（2026-09-29）—— K 线区是全屏唯一的弹性块，
    持仓条一显一隐，K 线高度就会在每次开仓 / 平仓时来回跳。字号 13px 且行高由 `.num`
-   的单行撑开，三格高度与「有持仓」时完全一致，所以常驻不会让 K 线少一格。 */
+   的单行撑开，各格高度与「有持仓」时完全一致，所以常驻不会让 K 线少一格。
+   ⚠️ **三格 → 四格**（2026-10-03 · 资金费率真实化 A3-d）：第四格是「资金费 {N}h后 / 费率」。
+      1/4 屏放不下 13px 的 `0.0100%`，所以那一格单独降一档字（标签 11px / 数值 12px）——
+      这是唯一一处为了塞下新格而动的尺寸（用户口径：必要时可缩小字体实现自适应）。 */
 .posbar {
   flex: none;
   position: relative;
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
   gap: 8px;
   /* 上间距 12 → **8px**（Batch 5 · B26）：收紧「持仓栏 ↔ K 线」那道缝 */
   margin-top: 8px;
@@ -496,6 +499,8 @@ b, strong { font-weight: 600; }
 .posbar div { min-width: 0; }
 .posbar i { display: block; font-style: normal; font-size: calc(12px * var(--ui)); color: var(--mut); }
 .posbar b { display: block; font-size: calc(13px * var(--ui)); }
+.posbar .fund i { font-size: calc(11px * var(--ui)); }
+.posbar .fund b { font-size: calc(12px * var(--ui)); }
 .posbar .side-long { color: var(--up); }
 .posbar .side-short { color: var(--down); }
 

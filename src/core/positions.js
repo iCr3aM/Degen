@@ -276,35 +276,74 @@ export const paysInterest = pos => borrowedOf(pos) > 0;
 
 /* ───────────────────────── 资金费率（GDD §9.5） ───────────────────────── */
 
-/** 持仓成本（永续资金费 / 杠杆借贷利息）的**结算周期**：每 8 游戏小时一次。 */
+/**
+ * 持仓成本（永续资金费 / 杠杆借贷利息）的**结算周期**：每 8 游戏小时一次。
+ *
+ * ⚠️ **8h 不是一刀切偷懒**（2026-10-03 调研）：BitMEX（2016-05-13 人类第一个永续）与
+ *    Binance 的 BTCUSDT 都是 8h（00 / 08 / 16 UTC）。本作三所里只有这两家有永续
+ *    （Bitfinex 是借贷所，没有永续）⇒ 8h 对本作**本来就是对的**。
+ *    （Hyperliquid / dYdX 的 1h、Binance 少数高波动对 2023 后转 4h/1h —— 这些所本作没有。）
+ */
 export const FUNDING = {
   hours: 8,
 };
 
 /**
- * **资金费率参数**（§73.6 · 2026-10-02 拍板；v30 · 第 6 批重定口径）—— 由「玩家自己的拥挤成本」
- * 改为「**全市场多空失衡**」。
+ * **资金费率参数**（§73.6 · 2026-10-02 定口径；**2026-10-03 真实化** —— NEXT-STEPS §14.1 A3）——
+ * 采用 BitMEX / Binance / Hyperliquid 通用的**两段式**：
  *
- * 旧口径（2026-10-02 早）把费率绑在**玩家持仓名义相对小时基准深度**上，并写成
- * `rate = clamp(FR.k × (名义 ÷ hourLiqBase) × dir, ±FR.max)`，而 `fundingOf` 又乘一次 `dir`
- * ⇒ 两次 `dir` 相消 ⇒ `fee = FR.k × (size×mark)² ÷ liq ≥ 0`，**玩家无论做多做空都只付不收**
- * （`fundingOf` 文档里「应收」那一支是死代码）。钱扣完即凭空消失，没有对手方。
+ *     P（溢价指数）→  F = clamp( P + clamp(I − P, ±FR.clamp), ±FR.max )
  *
- * 新口径（真实永续的定义，见 Coinglass「Funding rate」/ tlap.io「Who pays whom」）：
- * 资金费是**多空之间的点对点转移**，交易所只当中介；**拥挤方付、另一侧收**。故费率只由
- * **全市场多空失衡**驱动，不含方向：
+ *   - `interest` I = **0.01% / 8h**（＝ 0.03% / 日，年化 10.95%）。BitMEX 2016 立规时的常量
+ *     （`I = (Q − B) ÷ T = (0.06% − 0.03%) ÷ 3`），Binance 沿用同一档；本作对全部永续所统一取它。
+ *   - `clamp` = **0.05%** —— 夹的是 **`(I − P)`**、**不是费率本身**（最容易被抄错的一点）。
+ *     ⇒ 中性带 `P ∈ [−0.04%, +0.06%]` 内费率**恒等于 I**。这正是 BitMEX 实测 78%、
+ *       Binance 92% 的时间里费率恰好 0.01%、且费率长期偏正的原因。
+ *     BoB 的推导：`F = 0.01%` 当且仅当 `P ∈ [−0.04%, 0.06%]`；带外则以斜率 1 跟随 P。
+ *   - `max` = **0.75% / 8h** —— Binance BTCUSDT 的长期默认上限（现行 ≥30x 合约口径为
+ *     「±0.75 × 维持保证金率」，量级同档）。原来的 0.3% 偏低，且叠上 clamp 后「完全失衡」
+ *     也只有 0.25% ⇒ 上限形同虚设。
  *
- *     rate = clamp(FR.k × clamp((longShare − 0.5) ÷ 0.5, −1, 1), ±FR.max)
- *     fundingOf(pos, mark, rate) = size × mark × rate × dir     ← `dir` 只出现这一次
+ * ⚠️ **`k` = 本作的「P 代理」系数**（用户 2026-10-03 拍板「沿用多空失衡当 P」）：
  *
- * `longShare` 取 `engine.longShareOf`（**NPC 六档 ＋ 玩家该币名义**，单一分母）⇒ 玩家自己的仓
- * 越大，对偏斜的贡献越大 ⇒「仓越大越贵 / 越赚」**自动保持**，无需再加第二项（§73.6 的诉求）。
+ *     P = k × skew,   skew = clamp((longShare − 0.5) ÷ 0.5, ±1)
  *
- * ⚠️ **量级**（用户 2026-10-02 拍板 `k = max = 0.003`）：完全失衡（一侧占全）⇒ 0.3%/8h
- *    （＝旧口径的极端档）；常态偏斜归一化约 0.1–0.3 ⇒ 0.03–0.09%/8h，落在现实
- *    「常态 0.01%、默认上限 0.05%」的上沿，手感与旧档连续。
+ *     **为什么 P 不是价格**：真实 P 是「永续价 − 现货指数」的区间加权均价，而本作数据包
+ *     只有 OHLC（没有期现基差源）。①三价体系虽给了 `markBias`，但它是**游戏尺度**的位移
+ *     （NPC 趋势盘的 `npcDrift` 可达 1%+）⇒ 拿它当 P 会**长期顶死 cap**、费率失真；
+ *     多空失衡的量级恰好落在现实区间（常态 0.01%/8h、极端 0.25%/8h）⇒ 用它当溢价代理。
+ *     ⇒ 本条是**口径注**，不是「忘了做 premium index」。
+ * ⚠️ **量级后果**（用户 2026-10-03 拍板「按现实，不补偿」）：叠上 clamp 后，小溢价一律回到
+ *     0.01%/8h、大溢价被减 0.05% ⇒ 持仓成本比旧口径（0.03–0.09%/8h）**显著变低** ——
+ *     这就是现实（真实费率绝大多数时间恰为 0.01%）。`k` 保持 0.003 不动。
  */
-export const FR = { k: 0.003, max: 0.003 };
+export const FR = { k: 0.003, interest: 0.0001, clamp: 0.0005, max: 0.0075 };
+
+/**
+ * **全市场多空占比 → 溢价指数代理 P**（`skew` 归一化到 ±1，再乘 `FR.k`）。
+ * @param {number} share `longShareOf` 的结果（0 ~ 1）
+ * @returns {number} `−FR.k ~ +FR.k`
+ */
+export function premiumIndexOf(share) {
+  const skew = Math.max(-1, Math.min(1, (share - 0.5) / 0.5));
+  return FR.k * skew;
+}
+
+/**
+ * **溢价指数 → 真实资金费率**（纯函数 · BitMEX / Binance 口径）。
+ *
+ *     `F = clamp( P + clamp(I − P, ±FR.clamp), ±FR.max )`
+ *
+ * 形状：中性带内**恒等于 I**；带外以斜率 1 跟随 P；两端撞 cap。
+ * 例（P 为 0.3% 的完全失衡）：`I − P = −0.29%` → 夹到 `−0.05%` → `F = 0.25%`。
+ * @param {number} p 溢价指数
+ * @returns {number} 该期资金费率（正 = 多头付、空头收）
+ */
+export function fundingRateOf(p) {
+  const x = Number.isFinite(p) ? p : 0;
+  const corr = Math.max(-FR.clamp, Math.min(FR.clamp, FR.interest - x));
+  return Math.max(-FR.max, Math.min(FR.max, x + corr));
+}
 
 /**
  * **保险基金的播种比例**（v30 · 第 6 批 · 缺口 5）—— 见 `state.js` 的 `s.fund` 与

@@ -234,9 +234,43 @@ for (const t of eras) {
   const fm = C.feeRateOf(ex, t, 'margin', null);
   const ff = C.hasLeverageKindAt(t, ex, 'fut') ? C.feeRateOf(ex, t, 'fut', null) : NaN;
   const d = C.marginDailyRateAt(t);
-  console.log(`  ${new Date(t).toISOString().slice(0, 7)}  ${ex.padEnd(9)}  ${f(fm * 100, 4)}%       ${Number.isFinite(ff) ? f(ff * 100, 4) + '%' : '—'}       ${f(d * 100, 4)}%/日  0.3%             见第 5 节`);
+  console.log(`  ${new Date(t).toISOString().slice(0, 7)}  ${ex.padEnd(9)}  ${f(fm * 100, 4)}%       ${Number.isFinite(ff) ? f(ff * 100, 4) + '%' : '—'}       ${f(d * 100, 4)}%/日  ${f(P.FR.max * 100, 2)}%             见第 5 节`);
 }
 check('借贷日息年代阶梯单调（早年 ≥ 近年）', C.marginDailyRateAt(at(2013, 0)) >= C.marginDailyRateAt(at(2021, 0)));
+
+/* ═══════════════════ 4b · 资金费率公式（真实化 · 2026-10-03） ═══════════════════ */
+section('4b · 资金费率两段式：F = clamp( P + clamp(I − P, ±0.05%), ±cap )');
+{
+  const I = P.FR.interest, CL = P.FR.clamp, CAP = P.FR.max;
+  check('Interest I = 0.01%/8h（0.03%/日 · 年化 10.95%）', Math.abs(I - 0.0001) < 1e-12, `I=${I}`);
+  check('clamp = ±0.05%（夹的是 I−P，**不是**费率本身）', Math.abs(CL - 0.0005) < 1e-12, `clamp=${CL}`);
+  check('cap = 0.75%/8h（Binance BTC 永续长期默认）', Math.abs(CAP - 0.0075) < 1e-12, `cap=${CAP}`);
+  /* 中性带 P ∈ [−0.04%, +0.06%] ⇒ F ≡ I —— 这正是「92% 时间恰为 0.01%」的来源 */
+  check('中性带 P=0 ⇒ F = I', Math.abs(P.fundingRateOf(0) - I) < 1e-12);
+  check('中性带上沿 P=+0.06% ⇒ F = I', Math.abs(P.fundingRateOf(0.0006) - I) < 1e-12);
+  check('中性带下沿 P=−0.04% ⇒ F = I', Math.abs(P.fundingRateOf(-0.0004) - I) < 1e-12);
+  /* 带外以斜率 1 跟随 P（减 / 加那 0.05%） */
+  check('P=+0.3% ⇒ F=+0.25%', Math.abs(P.fundingRateOf(0.003) - 0.0025) < 1e-12, `实得 ${f(P.fundingRateOf(0.003) * 100, 4)}%`);
+  check('P=−0.3% ⇒ F=−0.25%', Math.abs(P.fundingRateOf(-0.003) + 0.0025) < 1e-12, `实得 ${f(P.fundingRateOf(-0.003) * 100, 4)}%`);
+  /* 两端撞 cap（cap 只在极端 P 上起作用） */
+  check('P=+2% ⇒ F 夹到 +cap', Math.abs(P.fundingRateOf(0.02) - CAP) < 1e-12);
+  check('P=−2% ⇒ F 夹到 −cap', Math.abs(P.fundingRateOf(-0.02) + CAP) < 1e-12);
+  /* P 代理：全市场多空失衡 */
+  check('premiumIndexOf(0.5) = 0', Math.abs(P.premiumIndexOf(0.5)) < 1e-12);
+  check('premiumIndexOf(1) = +k', Math.abs(P.premiumIndexOf(1) - P.FR.k) < 1e-12);
+  check('premiumIndexOf(0) = −k', Math.abs(P.premiumIndexOf(0) + P.FR.k) < 1e-12);
+  check('完全失衡（一侧占全）也不超 cap', Math.abs(P.fundingRateOf(P.premiumIndexOf(1))) <= CAP + 1e-12);
+  const rows = [0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 1].map(sh =>
+    `多占比 ${(sh * 100).toFixed(0)}%→${f(P.fundingRateOf(P.premiumIndexOf(sh)) * 100, 4)}%`);
+  console.log(`  ${rows.join('  ')}`);
+  /* 预测接口：小时数必须落在 1..8、且与结算时刻同相 */
+  const sf = await mk({ i: idx(at(2021, 5, 1, 3)) });
+  const fc = engine.fundingForecastOf(sf, 'BTC');
+  check('fundingForecastOf.hours ∈ 1..8', !!fc && fc.hours >= 1 && fc.hours <= 8, `hours=${fc && fc.hours}`);
+  const s0 = await mk({ i: idx(at(2021, 5, 1, 0)) });
+  const fc0 = engine.fundingForecastOf(s0, 'BTC');
+  check('刚结算那一刻 hours = 8（不是 0）', !fc0 || fc0.hours === 8, `hours=${fc0 && fc0.hours}`);
+}
 
 /* ═══════════════════ 5 · 滑点 / 冲击量级 ═══════════════════ */
 section('5 · 滑点（平方根律）量级：不同年代、不同名义');

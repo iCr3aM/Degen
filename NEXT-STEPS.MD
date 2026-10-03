@@ -1811,3 +1811,61 @@ TRAILING_STOP_MARKET` ＋ `reduceOnly` ＋ `workingType` ＋ `priceProtect` ＋ 
 **被档位顶住的降杠杆加仓放行（`pos.lev` 125 → 50）**、主动升杠杆加仓仍拒）。
 `npm run build` ✓（26 modules / gzip 58.11 kB）。
 第 1 节强平价自洽（用 `$10 万` 名义 ⇒ 落在未变的第二档）与第 2 节拒绝分支穷举（仍 ≥ 8 类）均不受影响。
+
+#### ⑤ 资金费率真实化 —— **已实现（2026-10-03）**
+
+> §14.1 A3 列的「缺四样」a / c / d 三样本块补齐，b（premium index）按用户拍板**不做**（见口径注）。
+> 调研来源：BitMEX 资金费率推导 `F = P + clamp(I − P, ±0.05%)`、`I = (Q − B)/T = 0.01%/8h`；
+> Binance 合约资金费率 FAQ（cap 与结算周期）；Hyperliquid / 部分合约 1h–4h 结算（本作三所不涉及）。
+
+**真实公式（两段式）**
+
+```
+F = clamp( P + clamp(I − P, ±0.05%), ±cap )
+     内层 clamp 夹的是 (I − P) —— 不是费率本身
+```
+
+| 常量 | 取值 | 出处 / 含义 |
+|---|---|---|
+| `I`（interest rate）`FR.interest` | **0.01% / 8h** = 0.03%/日 ≈ **年化 10.95%** | BitMEX `(0.06% − 0.03%)/3`；全行业基准 |
+| 内层 clamp `FR.clamp` | **±0.05% / 8h** | 夹 `(I − P)` ⇒ **中性带 `P ∈ [−0.04%, +0.06%]`** 内 `F ≡ I` |
+| 外层 cap `FR.max` | **0.75% / 8h**（原 0.3%） | Binance BTCUSDT 长期默认；现实 78–92% 时间恰为 `I` |
+| 结算周期 `FUNDING.hours` | **8h**（00/08/16 UTC） | BitMEX / Binance BTCUSDT 均 8h ⇒ **§14.1 A3-c 的「周期」项经查本作本来就对，无需改** |
+
+**口径注（P 用什么）—— 用户 2026-10-03 拍板：沿用多空失衡当 P 代理**
+
+真实 P 是 premium index `[Max(0, ImpactBid − Index) − Max(0, Index − ImpactAsk)] / Index`，
+Impact Bid/Ask ＝ 吃掉 Impact Margin Notional（`200 USDT × 最高杠杆`）后的均价。
+本作**没有现货锚 / 盘口簿**（§14.1 A2），做不出真 premium index ⇒ 用既有 `longShareOf`（全市场多空占比：
+NPC 六档 ＋ 做市盘 ＋ 玩家名义）线性映射当 P：`P = k × (share − 0.5) / 0.5`，`k = FR.k = 0.003`。
+理由：`longShare` 失衡量级（P ≤ 0.3%）**恰好落在现实的 premium 区间**；而 `markBias`（① 三价体系的
+mark − index）虽在公式上更接近 P 定义，但它是**游戏尺度**的位移（`npcDrift` 净持仓峰值 ≈ 7.5% 当日量，
+可达 1%+）⇒ 直接当 P 会**长期顶死 cap、费率失真**。用户四项拍板：① 沿用失衡当 P；② cap = ±0.75%；
+③ **按现实不补偿**（k 保持 0.003，不因失衡信号弱而放大）；④ 加预测费率 ＋ 结算倒计时。
+
+**落点（代码）**
+
+| 位置 | 改动 |
+|---|---|
+| `positions.js` | `FR` 由 `{ k, max }` 扩为 `{ k, interest, clamp, max }`；新增纯函数 `premiumIndexOf(share)` 与 `fundingRateOf(p)`（两段式实现，`Number.isFinite` 兜底）；`FUNDING.hours = 8` 不变；`fundingOf` 不动 |
+| `engine.js` | `settleFunding` 的费率由 `clamp(k × skew, ±max)` 改为 `fundingRateOf(premiumIndexOf(share))`；**新增导出 `fundingForecastOf(s, sym)`** 供 UI —— 返回 `{ rate, hours }`，`hours = FUNDING.hours − (s.i % FUNDING.hours)` |
+| `render.js` | 持仓条由三格改**四格**，末格常驻显示 `资金费 Nh后` ＋ 费率（`setFundingCell`）；正 = 你付出（红）、负 = 你收到（绿），无持仓灰显 `--` |
+| `style.css` | `.posbar` 由 `1fr 1fr 1fr` 改 `1fr 1fr 1fr 1fr`；第四格单独降字（`i` 11px / `b` 12px）以保四格不挤 |
+
+⚠️ **结算那一刻 `hours = 8`（不是 0）**：结算落在 `s.i % FUNDING.hours === 0`，刚结完正好整除
+⇒ 显示「8h 后」是**下一期**的倒计时，正确。`fundingForecastOf` 是按**当前**失衡外推的**估计值**
+（现实中交易所给的预测值也是这么来的），不是承诺。
+
+**费率量级（多占全市场比例 → 本期费率）**
+
+| 多占比 | 50% | 55% | 60% | 65% | 70% | 80% | 100% |
+|---|---|---|---|---|---|---|---|
+| 本期费率 | 0.010% | 0.010% | 0.010% | 0.040% | 0.070% | 0.130% | 0.250% |
+
+⚠️ 50–60% 落在**中性带**内 ⇒ 恒返回 `I = 0.01%`（与现实「多数时间就是 0.01%」一致）；
+完全失衡（一侧占全）也只有 0.25%/8h，**撞不到 0.75% 的 cap** ⇒ cap 在本作是纯保险，不参与常态平衡。
+
+**验证**：`node tools/sim-audit.mjs` ✓ **118 通过 · 0 失败**（新增第 4b 节 16 项：三个常量值、
+中性带三边界 `P = 0 / +0.06% / −0.04% ⇒ F = I`、带外斜率 `P = ±0.3% ⇒ F = ±0.25%`、两端撞 cap、
+`premiumIndexOf(0.5 / 0 / 1)`、完全失衡 ≤ cap、`fundingForecastOf.hours ∈ 1..8` 与「刚结算 ≡ 8」）。
+`npm run build` ✓（26 modules / gzip 58.34 kB，较 ⑥ 后基线 58.11 kB 略增＝新增 UI 单元格）。

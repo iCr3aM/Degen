@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canCloseAt, canOpenAt, chanOf, equity, exMarkPrice, futuresAvailable, heatOf, lastPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canCloseAt, canOpenAt, chanOf, equity, exMarkPrice, fundingForecastOf, futuresAvailable, heatOf, lastPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { HEAT } from '../core/god.js';
 import { canLiquidate, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -231,16 +231,23 @@ export function mount(root) {
   chartWrap.append(canvas, chartHead, chartSide);
 
   /* ── 持仓条 ──
-   ⚠️ **常驻**（2026-09-29）：无持仓时三格填 `--`，不再整条隐藏 ——
-    K 线区是全屏唯一的弹性块，持仓条一显一隐会让 K 线高度开仓/平仓时来回跳。 */
+   ⚠️ **常驻**（2026-09-29）：无持仓时各格填 `--`，不再整条隐藏 ——
+    K 线区是全屏唯一的弹性块，持仓条一显一隐会让 K 线高度开仓/平仓时来回跳。
+   ⚠️ **四格**（2026-10-03 · 资金费率真实化 A3-d）：第四格报「预测的下一期资金费率 ＋ 距结算
+    小时数」。它的标签要逐小时改（`资金费 5h后`）⇒ 不走 `mini()`，手搭一格并把标签留成 ref。 */
   const posSide = el('b', 'num');
   const posPnl = el('b', 'num');
   const posRate = el('b', 'num');
+  const posFundLb = el('i', null, '资金费率');
+  const posFund = el('b', 'num');
+  const posFundCell = el('div', 'fund');
+  posFundCell.append(posFundLb, posFund);
   const posbar = el('div', 'posbar');
   posbar.append(
     mini('持仓', posSide),
     mini('未实现盈亏', posPnl),
     mini('保证金率', posRate),
+    posFundCell,
   );
 
   /* ── 日志条（**两行** · 2026-10-03 用户拍板）──
@@ -615,7 +622,7 @@ export function mount(root) {
     symbols, symBtns,
     canvas, chartWrap, chartHead, chSym, chMcap, chSupp, chChg, modeBtn, chartEta, chartLock,
     heatChip, heatBar, heatTxt, oiTxt, lsTxt,
-    posbar, posSide, posPnl, posRate,
+    posbar, posSide, posPnl, posRate, posFund, posFundLb,
     logline, logRows,
     fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
@@ -661,6 +668,30 @@ function mini(label, valEl) {
   const d = el('div');
   d.append(el('i', null, label), valEl);
   return d;
+}
+
+/**
+ * 持仓条第四格 · **资金费率**（A3-d · 2026-10-03）—— 抽成一份，持仓 / 空仓两条路共用。
+ *
+ * 标签写「资金费 {hours}h后」而不是静态的「资金费率」：**倒计时**就摆在标签上，
+ * 不额外占一格宽度（本格只有 1/4 屏宽，写不下「费率 + 倒计时」两个数）。
+ * 费率固定 4 位小数（与结算日志 `资金费率 x.xxxx%` 同一精度，同源 `fmtRate`）。
+ * @param {object} fc `engine.fundingForecastOf` 的结果；`null` ⇒ 该币分不出多空比
+ * @param {'long'|'short'|null} side 本仓方向；`null`（空仓）⇒ 没有收支方向，用中性色
+ */
+function setFundingCell(refs, fc, side) {
+  if (!fc) {
+    setText(refs.posFundLb, '资金费率');
+    setText(refs.posFund, '--');
+    setCls(refs.posFund, 'num mut');
+    return;
+  }
+  setText(refs.posFundLb, `资金费 ${fc.hours}h后`);
+  setText(refs.posFund, fmtRate(Math.abs(fc.rate), 4));
+  if (!side) { setCls(refs.posFund, 'num mut'); return; }
+  // 正 = 你付出（红），负 = 你收到（绿）
+  const pay = fc.rate * (side === 'long' ? 1 : -1);
+  setCls(refs.posFund, 'num ' + (pay > 0 ? 'down' : 'up'));
 }
 
 /**
@@ -864,6 +895,13 @@ export function update(refs, s, view) {
     }
     refs._rateDanger = false;   // 空仓：红区状态复位，下一张仓重新判「进没进红区」
   }
+
+  /* 第四格 · **资金费率**（A3-d · 2026-10-03）—— 预测的下一期费率 ＋ 距结算小时数。
+     ⚠️ **常驻**（与另三格同）：空仓也报 —— 它是**全市场**读数，不是本仓的
+        （Binance 合约页也把「预计资金费率」摆在无关持仓的位置）。
+     颜色按**对本仓的收支方向**给：`rate × dir` 为正 ⇒ 你付出 ⇒ 红；为负 ⇒ 你收到 ⇒ 绿。
+     空仓没有方向 ⇒ 中性色。费率口径与 `settleFunding` 同源（`engine.fundingForecastOf`）。 */
+  setFundingCell(refs, fundingForecastOf(s, sym), cur ? cur.side : null);
 
   /* 日志条：显示**最近两条**（`LOG_ROWS`，2026-10-03）。时间用**事件发生那一刻**的
      `at`，不是「现在」—— 否则一条发生在 2015-10-01 的爆仓，几天后会被标成今天。

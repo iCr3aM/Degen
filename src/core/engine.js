@@ -23,7 +23,7 @@ import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate 
 import {
   equityOf, isLiquidatable, isMargin, liquidationPrice, maintRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
-  FUNDING, FR, INSURE, fundingOf, canLiquidate, paysFunding, paysInterest, borrowedOf, shockKindOf,
+  FUNDING, INSURE, fundingOf, premiumIndexOf, fundingRateOf, canLiquidate, paysFunding, paysInterest, borrowedOf, shockKindOf,
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
@@ -884,6 +884,25 @@ export function longShareOf(s, sym) {
   if (n > 0) { if (pos.side === 'long') L += n; else S += n; }
   const tot = L + S;
   return Number.isFinite(tot) && tot > 0 ? L / tot : null;
+}
+
+/**
+ * **预测下一期资金费率 ＋ 距结算的小时数**（2026-10-03 · NEXT-STEPS §14.1 A3-d）—— 纯读，只给 UI。
+ *
+ * ⚠️ 结算落在 `s.i % FUNDING.hours === 0` 的那些整点（见 `advanceOneHour`）⇒ 剩余小时数
+ *    `= FUNDING.hours − (s.i % FUNDING.hours)`（**刚结完那一刻是 8、不是 0**）。
+ * ⚠️ 这是**按当前失衡外推**的估计值（与 Binance 界面那个「预计资金费率」同性质）：它每小时随
+ *    `longShareOf` 变 ⇒ 结算那一刻的实收/实付可能与此不同。费率口径与 `settleFunding` **同源**
+ *    （`fundingRateOf(premiumIndexOf(share))`），不另算一份。
+ * @returns {{ rate:number, hours:number }|null} 两侧都没有仓位（分不出多空比）时 `null`
+ */
+export function fundingForecastOf(s, sym = s.sym) {
+  const share = longShareOf(s, sym);
+  if (share == null) return null;
+  return {
+    rate: fundingRateOf(premiumIndexOf(share)),
+    hours: FUNDING.hours - (s.i % FUNDING.hours),
+  };
 }
 
 /**
@@ -2689,7 +2708,11 @@ export function invalidateSigma() {
  * 每 8 游戏小时一次的**持仓成本结算**（GDD §9.5）—— B26 起分成**两条互斥的路**：
  *
  *   - **永续（perp）**：资金费率 —— **拥挤成本**（§73.6）：应付的名义价值 × 费率从保证金里扣
- *     （应收则加回去）。费率 = `clamp(FR.k × clamp((多空占比 − 0.5) ÷ 0.5, ±1), ±FR.max)` ——
+ *     （应收则加回去）。费率走 BitMEX / Binance 的**两段式**（2026-10-03 真实化 · §14.1 A3）：
+ *
+ *         P = FR.k × clamp((多空占比 − 0.5) ÷ 0.5, ±1)        ← 溢价指数代理（见 `FR` 口径注）
+ *         F = clamp( P + clamp(FR.interest − P, ±FR.clamp), ±FR.max )
+ *
  *     **不含 `dir`**：方向只在 `fundingOf` 里出现一次（v30 · 缺口 3 修掉原来的双重 `dir` bug）。
  *     费率由**全市场多空失衡**（`longShareOf`，含玩家自己的名义）驱动，玩家可真收可付；
  *     「仓位越大越贵 / 越赚」自动保持，不再由行情动量决定。口径见 `positions.js` 的 `FR` 注释。
@@ -2736,11 +2759,12 @@ function settleFunding(s) {
     /* **全市场多空失衡**驱动的资金费（v30 · 第 6 批 · 缺口 3）—— 真实资金费是**多空之间的
        点对点转移**（拥挤方付、另一侧收），交易所只当中介。费率**不含方向**（`dir` 只在
        `fundingOf` 里出现一次）⇒ 玩家可真收可付；玩家自己的名义已经在 `longShareOf` 里
-       ⇒「仓越大越贵 / 越赚」自动保持，不必再加第二项。 */
+       ⇒「仓越大越贵 / 越赚」自动保持，不必再加第二项。
+       ⚠️ 2026-10-03 真实化（§14.1 A3）：失衡先换成**溢价指数代理 P**，再经
+          `F = clamp(P + clamp(I − P, ±0.05%), ±0.75%)` 得到费率 —— 中性带内恒为 0.01%/8h。 */
     const share = longShareOf(s, sym);
     if (share == null) continue;                     // 没有任何仓位 ⇒ 无多空比可言，不收费
-    const skew = Math.max(-1, Math.min(1, (share - 0.5) / 0.5));
-    const rate = Math.max(-FR.max, Math.min(FR.max, FR.k * skew));
+    const rate = fundingRateOf(premiumIndexOf(share));
 
     let fee = fundingOf(pos, mark, rate);
     /* **对手方池**（`s.mkt[sym].npcFund` · 缺口 3）：玩家付出 ⇒ 入池；玩家收取 ⇒ 从池出。
