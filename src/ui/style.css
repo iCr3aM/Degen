@@ -1401,6 +1401,22 @@ button { user-select: none; -webkit-user-select: none; }
 .rv-bar { flex: none; display: flex; align-items: center; padding: 6px 0 0; }
 .rv-bar .ic { width: auto; padding: 0 10px; }
 
+/* 真实历史指标条（里程碑 B · 2026-10-04）：波动率 / 距高 / 距低 / 成交额 —— 四格等分。
+   与 K 线头部那几枚读数同性质（纯展示），但头部本就排满（币种 ＋ 市值 ＋ 流通 ＋ 24h ＋ 粒度），
+   故单开一行。高度约 32px，从 K 线区扣（回顾页没有 HUD / 持仓条，扣得起）。
+   ⚠️ label 与 value **上下两行**、不并排：`成交额 $123.4M` 并排在中窄屏会被挤到截断，
+      而截断数值是硬红线（用户口径）。两行后 value 独占整格宽度，任何量级都放得下。 */
+.rv-stats { flex: none; display: flex; gap: 8px; padding: 4px 0; }
+.rv-stat {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 3px 8px 4px;
+}
+.rv-stat i { display: block; font-style: normal; font-size: calc(10px * var(--ui)); color: var(--mut-2); }
+.rv-stat b { display: block; font-size: calc(13px * var(--ui)); font-weight: 600; }
+
 /* 回顾页的日志栏 —— **加长**（方案 §3.6）：没有操作区 / HUD / 持仓条，省下的高度全给它。
    ⚠️ 2026-10-03 从 **104 → 136px**（＋32）：`.log-row` 单行实占 **20px**（行高 16 ＋ 上下各 2 的
       padding，非首行再 ＋1px 分隔线），面板自身上下各 4 ⇒ 136px 装得下约 6 行单行日志。
@@ -1744,16 +1760,19 @@ button { user-select: none; -webkit-user-select: none; }
   .page.review-page.on {
     display: grid;
     grid-template-columns: minmax(0, 1fr) calc(380px * var(--ui));
-    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto minmax(0, 1fr);
     column-gap: 8px;
     overflow: hidden;
   }
   .page.review-page.on > .rv-top     { grid-area: 1 / 1 / 2 / 3; }
   .page.review-page.on > .rv-bar     { grid-area: 2 / 1 / 3 / 3; }
   .page.review-page.on > .symbols    { grid-area: 3 / 1 / 4 / 3; }
-  .page.review-page.on > .chart-wrap { grid-area: 4 / 1 / 5 / 2; }
+  /* 指标条横贯两列但**限宽左对齐**：宽屏下四格若跟着 1360px 铺开会各留一大片空白。
+     限到 560px 后每格约 130px，与手机上的疏密相当。 */
+  .page.review-page.on > .rv-stats   { grid-area: 4 / 1 / 5 / 3; max-width: calc(560px * var(--ui)); }
+  .page.review-page.on > .chart-wrap { grid-area: 5 / 1 / 6 / 2; }
   .page.review-page.on > .rv-logs {
-    grid-area: 4 / 2 / 5 / 3;
+    grid-area: 5 / 2 / 6 / 3;
     height: auto;                 /* 覆盖手机那条固定 104px */
     min-height: 0;                /* 允许在 1fr 行内收缩，溢出交给自己的 overflow-y */
     max-height: none;

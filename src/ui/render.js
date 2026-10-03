@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canCloseAt, canOpenAt, chanOf, equity, exMarkPrice, fundingForecastOf, futuresAvailable, heatOf, lastPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canCloseAt, canOpenAt, chanOf, equity, exMarkPrice, fundingForecastOf, futuresAvailable, heatOf, lastPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewHeatOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { HEAT } from '../core/god.js';
 import { canLiquidate, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -566,6 +566,23 @@ export function mount(root) {
     rvSymBtns.set(c.sym, b);
   }
 
+  /* 真实历史指标条（里程碑 B · 2026-10-04）：波动率 / 距高 / 距低 / 成交额。
+     2018 年之前拿不到 OI / 多空比 / 资金费率的历史 ⇒ 换成三样**只吃原始行情**就能算的真读数
+     （口径见 `engine.reviewVolOf` / `reviewDrawdownOf` / `reviewVolUsdOf`）。
+     ⚠️ 这一条只服务回顾页，不参与任何玩法判定；与 K 线头部那几枚读数同一性质（纯展示）。 */
+  const rvStats = el('div', 'rv-stats');
+  const rvStatCell = (label) => {
+    const v = el('b');
+    const c = el('div', 'rv-stat');
+    c.append(el('i', null, label), v);
+    rvStats.append(c);
+    return v;
+  };
+  const rvStatVol = rvStatCell('波动率');
+  const rvStatHi = rvStatCell('距高');
+  const rvStatLo = rvStatCell('距低');
+  const rvStatUsd = rvStatCell('成交额');
+
   const rvCanvas = el('canvas');
   const rvSym = el('b');
   const rvMcap = el('i');
@@ -595,7 +612,7 @@ export function mount(root) {
   const rvLogs = el('div', 'rv-logs');
 
   const reviewPage = el('div', 'page review-page');
-  reviewPage.append(rvTop, rvBar, rvSymbols, rvWrap, rvLogs);
+  reviewPage.append(rvTop, rvBar, rvSymbols, rvStats, rvWrap, rvLogs);
 
   /* ── 交易档案页（M2 · 2026-10-01）──
      与回顾页**同一副骨架**：整屏页（`#app.rv` 把常驻顶栏与 Tab 藏掉）＋ 页内自己一枚「返回」。
@@ -651,6 +668,7 @@ export function mount(root) {
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
     rvWrap, rvCanvas, rvHead, rvSym, rvMcap, rvSupp, rvChg, rvModeBtn, rvLogs,
     rvHeatChip, rvHeatBar, rvHeatTxt,
+    rvStats, rvStatVol, rvStatHi, rvStatLo, rvStatUsd,
     /* 交易档案页（M2 · 2026-10-01） */
     careersPage, careersList,
     _levSignature: '',
@@ -2260,6 +2278,21 @@ export function renderReview(refs, rv, view) {
   refs.rvHeatBar.style.setProperty('--heat', `${Math.round(heat * 100)}%`);
   refs.rvHeatTxt.textContent = heat >= HEAT.greed ? '贪婪' : heat <= HEAT.panic ? '恐慌' : '中性';
   refs.rvHeatChip.dataset.heat = heat >= HEAT.greed ? 'greedy' : heat <= HEAT.panic ? 'panic' : 'mid';
+
+  /* 真实历史指标（里程碑 B · 2026-10-04）—— 全部只吃原始行情，口径见 `engine.review*`。
+     格式：波动率走 `fmtRate`（恒正、不带符号）、距高走 `fmtPct`（自带 −）、成交额走 `fmtCap`
+     （带 k/M/B/T）；距低的倍数规则见下面那行注释。取不到时一律印 `--`。 */
+  const dd = reviewDrawdownOf(sym, rv.i);
+  refs.rvStatVol.textContent = fmtRate(reviewVolOf(sym, rv.i), 1);
+  refs.rvStatHi.textContent = fmtPct(dd ? dd.hi : NaN, 1);
+  /* 距历史低用**倍数**而不是百分比：早期币的涨幅是天文数字（BTC 2017 距 2012 低点 +203870%、
+     要 9 个字符，中窄屏必然截断）；`2039×` 是同一个数、只要 5 个字符。
+     ≥100 倍取整（六位数百分比的小数位没有信息量），否则一位小数。 */
+  const mult = dd ? 1 + dd.lo : NaN;
+  refs.rvStatLo.textContent = Number.isFinite(mult)
+    ? (mult >= 100 ? Math.round(mult) : +mult.toFixed(1)) + '×'
+    : '--';
+  refs.rvStatUsd.textContent = fmtCap(reviewVolUsdOf(sym, rv.i));
 
   const win = chartOpts({
     /* ⚠️ `own: false`（v20）：回顾那一屏**不并玩家自己的成交额** ——

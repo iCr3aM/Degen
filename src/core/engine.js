@@ -856,6 +856,98 @@ export function reviewHeatOf(sym, i) {
   return c.arr[upto - c.a] ?? HEAT.base;
 }
 
+/* ── 回顾页的**真实历史指标**（里程碑 B · 2026-10-04）─────────────────────────────
+   背景：持仓量 / 多空比 / 资金费率的历史在 2018 年之前**根本拿不到**（数据源从那时才起），
+   回顾页不能拿它们当「历史读数」。改展示三样**只吃原始行情**就能算出来的真东西：
+   24h 年化波动率、距历史高 / 低回撤、24h 绝对美元成交额。
+   三者与 `reviewHeatOf` 同一条纪律：`(sym, i)` 的**纯函数**，不碰 `s`、不写存档、不判破产。 */
+
+/**
+ * 近 24h 小时收益的**年化滚动波动率**。
+ *
+ * 口径：用 `[i−24, i]` 共 25 个收盘算 24 个对数收益 `ln(c_k / c_{k−1})`，取**总体标准差**
+ * （与 `sigmaOf` / `dailySigma` 同一估计量，不是样本标准差），再乘 `√(24×365)` 年化。
+ * ⚠️ 读 `rawCloseAt`（**不含位移**）：回顾页画的就是原始行情，与 `reviewHeatOf` 同一条口径。
+ * ⚠️ 窗口不满（上线头 24 小时）⇒ `NaN`，UI 层按 `--` 处理。
+ */
+export function reviewVolOf(sym, i) {
+  const r = rangeOf(sym);
+  if (!r || !isLoaded(sym) || i < r[0] + HOURS_PER_DAY || !hasCandle(sym, i)) return NaN;
+  let n = 0, s = 0, s2 = 0;
+  for (let k = i - HOURS_PER_DAY; k <= i; k++) {
+    const c0 = rawCloseAt(sym, k - 1);
+    const c1 = rawCloseAt(sym, k);
+    if (!(c0 > 0) || !(c1 > 0)) continue;
+    const x = Math.log(c1 / c0);
+    n++; s += x; s2 += x * x;
+  }
+  if (n < 2) return NaN;
+  const mean = s / n;
+  return Math.sqrt(Math.max(0, s2 / n - mean * mean)) * Math.sqrt(24 * 365);
+}
+
+/**
+ * **距历史高 / 低**的回撤（截至第 `i` 根）：`{ hi, lo }`
+ *   `hi` = 现价 / 历史最高 − 1（≤ 0，从没跌过就是 0）；
+ *   `lo` = 现价 / 历史最低 − 1（≥ 0，正好在最低点就是 0）。
+ *   「历史最高 / 最低」取 `[r[0], i]` 区间内**原始** K 线的 `h` / `l` 极值。
+ *
+ * ⚠️ 与 `reviewHeatOf` 同一套游标缓存：**逐根累积**，游标只前进（回看历史直接查前缀数组）。
+ *    `hi` / `lo` 是**前缀极值**（单调），故存成两条 `Float64Array` 而不是整段数组 ——
+ *    回跳时按索引读到的仍是「那一刻为止」的极值。
+ */
+const rvDD = new Map();
+
+export function reviewDrawdownOf(sym, i) {
+  const r = rangeOf(sym);
+  if (!r || !isLoaded(sym) || i < r[0]) return null;
+  const upto = Math.min(i, r[1] - 1);
+  const n = r[1] - r[0];
+  let c = rvDD.get(sym);
+  if (!c || c.n !== n) {
+    c = { a: r[0], n, j: r[0] - 1, hi: new Float64Array(n), lo: new Float64Array(n) };
+    rvDD.set(sym, c);
+  }
+  let mx = c.j >= r[0] ? c.hi[c.j - c.a] : -Infinity;
+  let mn = c.j >= r[0] ? c.lo[c.j - c.a] : Infinity;
+  for (let j = c.j + 1; j <= upto; j++) {
+    const k = rawCandleAt(sym, j);
+    if (k) {
+      if (k.h > mx) mx = k.h;
+      if (k.l < mn) mn = k.l;
+    }
+    c.hi[j - c.a] = mx;
+    c.lo[j - c.a] = mn;
+    c.j = j;
+  }
+  const close = rawCloseAt(sym, upto);
+  const H = c.hi[upto - c.a], L = c.lo[upto - c.a];
+  if (!(close > 0) || !(H > 0) || !(L > 0)) return null;
+  return { hi: close / H - 1, lo: close / L - 1 };
+}
+
+/**
+ * **近 24h 绝对美元成交额**（全市场口径）＝ 逐小时 `volumeAt × liqOf(当天)` 求和。
+ *
+ * 口径依据 `market.volumeAt` 的注释：小时成交量份额 `∈ [0,1]` ＝ 该小时占**当日**成交额的比重
+ * ⇒ 本小时美元额 = 份额 × 当日流动性锚；跨日求和时**每一小时各取自己那天的锚**，不做近似。
+ * ⚠️ `liqOf` 的锚本身就是**全市场**（CoinLore AVG.Volume × 刷量折扣），故这一格与 K 线一样
+ *    代表「所有交易所合起来」的成交额，而不是单一所。
+ * ⚠️ 取不到成交量（未上线 / 越界）⇒ 该小时跳过；24 小时全为 0 ⇒ `NaN`，UI 层按 `--` 处理。
+ */
+export function reviewVolUsdOf(sym, i) {
+  const r = rangeOf(sym);
+  if (!r || !isLoaded(sym) || !hasCandle(sym, i)) return NaN;
+  let usd = 0;
+  for (let k = i - HOURS_PER_DAY + 1; k <= i; k++) {
+    if (!hasCandle(sym, k)) continue;
+    const liq = liqOf(sym, dayIndexOf(k));
+    if (!(liq > 0)) continue;
+    usd += volumeAt(sym, k) * liq;
+  }
+  return usd > 0 ? usd : NaN;
+}
+
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 /**
