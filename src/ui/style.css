@@ -461,12 +461,16 @@ b, strong { font-weight: 600; }
    为什么必须搬家：右侧**整列**都是价格轴（4 档轴标签 ＋ 现价彩签 ＋ 开仓价签），
    挂在右上角时，轴最上那一档标签（固定 y≈10）会被这枚浮字盖掉 —— 用户实机发现
    「拖动后价格变到顶部，就被『双击回最新』盖住了」。
-   左下角是全屏唯一没被占用的角落（只有量柱的暗色柱身），压上去仍然读得清。 */
+   ⚠️ **`column-reverse` ＋ chip 排第一**（2026-10-04 用户拍板「K 线底部腾一行」）：
+      视觉上从下往上 = [热度/OI/多空] → [在途倒计时] → [锁视野提示]，**热度那一行恒在最底**。
+      它是唯一天天在场的一块（`render.js` 的 `footInset` 拿它的实测高度当**固定**底部留白）
+      —— 钉住它，K 线的量柱基线才不会因另外两枚条件浮字的出现 / 消失而上下跳。
+      原来正序时 chip 会随着它们顶上来，量柱就被盖住（用户截图报的那一条）。 */
 .chart-side {
   position: absolute;
   bottom: 0; left: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   align-items: flex-start;
   gap: 1px;
   pointer-events: none;

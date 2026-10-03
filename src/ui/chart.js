@@ -124,6 +124,8 @@ function axisLabel(p) {
  *                              ⚠️ **只有回顾页传**（交易页恒 null）—— 见 `render.js` 的 `chartOpts`。
  *   cacheKey string            量柱 P95 的缓存键（`sym|mode|right|count`，见 `volCache`）。不给就不缓存。
  *   topInset number            顶部留白 = 左上角遮罩的实测高度（B27）。不传则退回 `PAD_TOP`。
+ *   bottomInset number         底部留白 = 左下角「热度 / OI / 多空」那一行的实测高度（2026-10-04）。
+ *                              不传按 0 走。价格区高度 = `H − PAD_B − topInset − bottomInset`。
  *   cssW/cssH number           容器尺寸（CSS 像素）
  *   yPx      number            价格轴的垂直平移（像素，向下为正；`view.js` 持有）
  * @returns {number} **实际生效的 `yPx`**（被限位夹过）—— 调用方必须写回视野状态，
@@ -150,7 +152,13 @@ export function drawChart(canvas, o) {
   //    但遮罩有 ≈28px 高 ⇒ 最上档轴标签、开仓价签、强平价签**整块躺在 72% 不透明的遮罩底下**，
   //    看起来就是「强平价显示不全」。真正的病根是这里，不是画布高度不够。
   const topInset = Number.isFinite(o.topInset) && o.topInset > 0 ? o.topInset : PAD_TOP;
-  const plotH = Math.max(1, H - PAD_B - topInset);
+  /* ⚠️ 底部留白 = 左下角「热度 / OI / 多空」那一行的**实测高度**（2026-10-04 用户拍板「腾一行」）。
+     那一行（`.chart-heat`）是绝对定位的浮层，原先压在量柱上、把最下面一档轴标签也一起吃掉。
+     整行让出来之后，量柱基线、右侧四档轴、开仓价签、强平签**全部**落到它之上，谁也不盖谁。
+     量不到（回顾页首帧等）时按 0 走 —— 与 `topInset` 的兜底方向相反：宁可少让一行，也不要凭空
+     挖掉一块可以画 K 线的区域。 */
+  const bottomInset = Number.isFinite(o.bottomInset) && o.bottomInset > 0 ? o.bottomInset : 0;
+  const plotH = Math.max(1, H - PAD_B - topInset - bottomInset);
   const top = topInset;
   const bot = top + plotH;              // 价格区下沿 = 量柱基线（贴住最下面那根网格线）
   // 价格区**吃满** plotH（Batch 4 · B15，原先是「价格 78% + 量区 22%」上下分栏）；
@@ -441,18 +449,17 @@ export function drawChart(canvas, o) {
     // 用 `--down` 红标（在与不在，强平价都是风险信号），与右端金色的开仓价一眼分得开。
     // 它挂的是**开仓线的 y**：强平价在中长仓里通常远在可视区间之外，单独画线只会永远贴在画布边缘。
     //
-    // ⚠️ **避开左下角**（Batch 4 · B16）：`style.css` 的 `.chart-side`（锁视野提示 / 在途倒计时）
-    //    这一版搬到了 K 线左下角，而强平标签也画在左端 —— 落进那一带就**上移一行**，
-    //    两者永远不重叠（浮字是 DOM、标签是画布，后者在下面，重叠就是被吃掉）。
+    // ⚠️ **与开仓价签同一 y**（2026-10-04 修对齐）：原先它为躲左下角 `.chart-side` 的浮字写死了一条
+    //    `SIDE_RESERVE` 上移，而开仓价签没有 ⇒ 两签错开 22px。现在底部浮字那一行由 `bottomInset`
+    //    整行让开（见上），两个签都落在价格区之内，不再需要任何避让 —— `ly` 就等于 `ty`。
     if (Number.isFinite(liq)) {
       const ltag = '强 ' + axisLabel(liq);
       const lw = ctx.measureText(ltag).width + 6;
-      const ly = ty > bot - SIDE_RESERVE ? Math.max(top + 8, ty - SIDE_SHIFT) : ty;
       ctx.fillStyle = T.DOWN;
-      ctx.fillRect(0, ly - 8, lw, 16);
+      ctx.fillRect(0, ty - 8, lw, 16);
       ctx.fillStyle = '#1a0508';
       ctx.textAlign = 'left';
-      ctx.fillText(ltag, 3, ly);
+      ctx.fillText(ltag, 3, ty);
     }
   }
 
@@ -490,10 +497,8 @@ export function drawChart(canvas, o) {
   return -shift * plotH / span;
 }
 
-/** 左下角被 `.chart-side` 浮字占用的高度（px）。强平标签落进这一带就上移一行（Batch 4 · B16）。 */
-const SIDE_RESERVE = 56;
-/** 避让的位移 = 一个标签高 16 ＋ 一个块内间距 6，恰好整行让开 */
-const SIDE_SHIFT = 22;
+/** 左下角被 `.chart-side` 浮字占用的高度，已由调用方实测后经 `o.bottomInset` 整行让开
+ *  （2026-10-04）—— 原先这里的两条避让常量（`SIDE_RESERVE` / `SIDE_SHIFT`）随之删除。 */
 
 /* ═════════════════════ 资金曲线（v13 · 方案 §4；区间＋高低点 2026-10-01） ═════════════════════
  * 把 `s.eq`（每个游戏日一个权益点）画成一条折线 ＋ 一条 $1,000 基准虚线。

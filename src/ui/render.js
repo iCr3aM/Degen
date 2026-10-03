@@ -145,6 +145,23 @@ function headInset(head, chartW) {
   return headInsetH;
 }
 
+/** 左下角浮字底（`.chart-heat`）的**实测高度**缓存（2026-10-04 用户拍板「K 线底部腾一行」）——
+ *  与 `headInset` 同一条思路：它只随容器宽度与文案总长变，逐帧量会白白强制一次布局。
+ *  ⚠️ 它的高度在 `white-space: nowrap` ＋ 固定内边距下几乎是常数（一行 ≈ 22px），但**仍要实测**：
+ *     字号走 `--ui` 缩放、`OI 12.3M` 与 `多空 62/38` 谁长谁短都不该让我写死一个像素值。
+ *  ⚠️ 量的是 **chip** 而不是整条 `.chart-side`：后者还叠着两枚条件浮字（锁视野 / 在途倒计时），
+ *     让它们参与留白就会「浮字一出现 K 线就跳」。恒在最底、恒占一行的只有 chip 这一块。 */
+let footInsetKey = '';
+let footInsetH = 0;
+function footInset(chip, chartW) {
+  const key = `${chartW}|${chip.textContent.length}`;
+  if (key !== footInsetKey) {
+    footInsetKey = key;
+    footInsetH = chip.getBoundingClientRect().height;
+  }
+  return footInsetH;
+}
+
 /**
  * 建骨架。返回一个 refs 对象，`update()` 只认这个对象里的字段。
  * @param {HTMLElement} root
@@ -1209,6 +1226,7 @@ export function update(refs, s, view) {
  *
  * @param {object} o
  *   `canvas` / `head` 两个节点（回顾页各有一套，所以由调用方传进来）；
+ *   `heat` 左下角那枚浮字底（`.chart-heat`）—— 实测它的高度当底部留白（2026-10-04）；
  *   `sym` / `i` 看哪个币的第几根；`view` 本帧尺寸；`mark` 标记价；
  *   `cur` 当前仓位（**回顾页恒传 null** —— 回顾没有持仓）
  *   `own` 是否把**玩家自己的成交额**并进量柱（v20）。交易页默认真；
@@ -1220,7 +1238,7 @@ export function update(refs, s, view) {
  *        用户 2026-10-02 拍板「交易页只算不画」（那是手感，画出来只会干扰看盘）。
  * @returns {object} `windowFor` 的返回值（`mode` / `count` / `locked` / `right` 都要用）
  */
-function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true, ns = '', levels = null }) {
+function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns = '', levels = null }) {
   const win = windowFor(sym, i, view.chartW, own, ns);
   /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
      日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
@@ -1251,6 +1269,10 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true, ns = '',
        ⚠️ 量一次就缓存（用户 2026-10-01 拍板）：它只随**容器宽度**（换行）与**文案长度**变，
           每帧 `getBoundingClientRect` 会白白强制一次布局。键 = 宽度 ＋ 那几段文案的总长。 */
     topInset: headInset(head, view.chartW),
+    /* 底部留白 = 左下角「热度 / OI / 多空」那一行的**实测**高度（2026-10-04 用户拍板「腾一行」）：
+       价格区整块上移，量柱基线、右侧四档轴、开仓价签、强平签全部落到这一行之上。
+       与 `topInset` 同一套缓存口径（量一次就存，见 `footInset`）。 */
+    bottomInset: footInset(heat, view.chartW),
     mark,
     /* 历史压力位（ROADMAP §六十五）—— 只有回顾页会传进来（交易页恒 null，`chart.js` 自会跳过）。 */
     levels,
@@ -1299,16 +1321,9 @@ function syncChart(refs, s, view, sym, cur, mark) {
     refs.chChg.textContent = '';
   }
 
-  const win = chartOpts({
-    canvas: refs.canvas, head: refs.chartHead, sym, i: s.i, view, mark, cur,
-  });
-
-  /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种（`main.js` 里定的目标档） */
-  refs.modeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
-  /* 锁视野提示（Batch 3 · B14）：拖动/缩放之后才出现，双击复位后自己消失 */
-  refs.chartLock.hidden = !win.locked;
-
-  /* 市场热度（§73.5）：0–1 的条 ＋ 贪婪 / 中性 / 恐慌 三档字面。判据与 `HEAT` 同源。 */
+  /* 市场热度（§73.5）：0–1 的条 ＋ 贪婪 / 中性 / 恐慌 三档字面。判据与 `HEAT` 同源。
+     ⚠️ **必须排在 `chartOpts` 之前**（2026-10-04）：`chartOpts` 把这一行的**实测高度**当底部留白
+        （`footInset`），文案还没写进去量到的就是一格空底 —— 首帧会把量柱基线压低一行。 */
   const heat = heatOf(s, sym);
   refs.heatBar.style.setProperty('--heat', `${Math.round(heat * 100)}%`);
   refs.heatTxt.textContent = heat >= HEAT.greed ? '贪婪' : heat <= HEAT.panic ? '恐慌' : '中性';
@@ -1320,6 +1335,15 @@ function syncChart(refs, s, view, sym, cur, mark) {
   const ls = retailLongShareOf(s, sym);
   refs.oiTxt.textContent = `OI ${fmtQty(openInterestOf(s, sym))}`;
   refs.lsTxt.textContent = ls == null ? '多空 --' : `多空 ${Math.round(ls * 100)}/${Math.round((1 - ls) * 100)}`;
+
+  const win = chartOpts({
+    canvas: refs.canvas, head: refs.chartHead, heat: refs.heatChip, sym, i: s.i, view, mark, cur,
+  });
+
+  /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种（`main.js` 里定的目标档） */
+  refs.modeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
+  /* 锁视野提示（Batch 3 · B14）：拖动/缩放之后才出现，双击复位后自己消失 */
+  refs.chartLock.hidden = !win.locked;
 
   /* 在途转账倒计时（K 线右上角）。两个数字与顶栏那行同源，但这里多一个「去哪儿」——
      玩家一眼能确认钱在往哪家所的路上。 */
@@ -1365,7 +1389,7 @@ function reviewChartSync(refs, rv, view) {
     /* ⚠️ `own: false`（v20）：回顾那一屏**不并玩家自己的成交额** ——
        `playerVolSource` 注入的是当前存档的 `pvol`，不关掉就会把「你这一局在 2015 年买的那一笔」
        画进 2015 年的历史柱子里。 */
-    canvas: refs.rvCanvas, head: refs.rvHead, sym, i: rv.i, view, mark, cur: null, own: false,
+    canvas: refs.rvCanvas, head: refs.rvHead, heat: refs.rvHeatChip, sym, i: rv.i, view, mark, cur: null, own: false,
     /* 视野命名空间（2026-10-01）：回顾页自己一套，绝不与交易页那格串味 —— 见 `view.js` 的 `keyOf`。 */
     ns: 'rv',
     /* 历史压力位（ROADMAP §六十五）：按 `rv.i` 算「那一刻之前 30 天堆过货的价位」，画成一组横虚线。
