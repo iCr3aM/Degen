@@ -336,8 +336,8 @@ section('7 · 全时间线连跑：真实数据走满 12 年不崩、曲线有�
     if (!Number.isFinite(engine.equity(s))) { nan++; break; }
     steps++;
   }
-  check('连跑 12 年：权益全程有限', nan === 0, `步数 ${steps}，成交 ${trades}，末值 $${f(engine.equity(s), 2)}，over=${s.over ? s.over.kind : '无'}`);
-  check('连跑结束于结算/爆仓/未结束的合法态', !s.over || ['liquidated', 'settled', 'gaveup'].includes(s.over.kind), JSON.stringify(s.over));
+  check('连跑 12 年：权益全程有限', nan === 0, `步数 ${steps}，成交 ${trades}，末值 $${f(engine.equity(s), 2)}，over=${s.over ? s.over.reason : '无'}`);
+  check('连跑结束于结算/爆仓/未结束的合法态', !s.over || ['liquidated', 'settled', 'gaveup'].includes(s.over.reason), JSON.stringify(s.over));
 }
 
 /* ═══════════════════ 8 · 真实下单：实际滑点（穿引擎，含阈值 / 深度池 / 持仓折减） ═══════════════════ */
@@ -568,18 +568,23 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
 
 /* ── 9g · 缺口 15：档 3「强平簇吸引」（距离感知加速 · 上界 · 预警 · 回退） ── */
 {
-  /* 场景：2016-06 BitMEX 永续 —— 当年盘口尚薄、杠杆档齐全，同一时刻 / 同一本金 / 同一方向，
+  /* 场景：2017-01 BitMEX 永续 —— 当年盘口尚薄、杠杆档齐全，同一时刻 / 同一本金 / 同一方向，
      **只变杠杆** ⇒ 只变「到强平线的距离」。走合约通道是因为 `margin` 的借贷额度闸会把大单拒掉。
-     ⚠️ 这四个参数是探针挑出来的（`tools/_probe15.mjs`，用完即删）：四档的 exposure 都 ≫ t3（最低的 3x 也有 ~49%），
-        且 `d` 一近一远正好跨在 dRef 两侧 ⇒ **曝光闸与距离闸都真的被测到**（不空转）。
+     ⚠️ 这四个参数是探针挑出来的（`tools/_probe9g.mjs`，用完即删）：先扫一遍「时刻 × 本金 × 杠杆组」，
+        只留**同时**满足下列全部条件的组合，再在**本块的真实结构**（`on` 先算、`off` 后算，中间隔着
+        若干次模拟）下复跑确认 —— 不能只在探针里相邻测量通过，因为引擎存在**跨运行末位漂移**
+        （同一 far 档的 `kAim` 开 / 关本应逐位相同，早先 2016-06 那组会在 h6 起分叉 1 ULP）。
+        入选条件：① 四档 exposure 都 ≥ t3（最低的 3x 也有 ~199%）；② `d` 一近一远正好跨在 dRef 两侧；
+        ③ **far 档全程最小 `d` 仍 ≥ dRef**（窗口内不许跌进距离闸）；④ far 开 / 关逐位相同、near 严格变大；
+        ⑤ far 不播预警、near 播。命中后在**本块复跑**确认的是 `2017-01 / $5M / [3,5,10,20]` 这一组。
      ⚠️ 断言一律做成**相对关系**（`kAim` 开 / 关的自我对照），不写死绝对值 —— 同 §9d 的纪律。 */
-  const T = idx(at(2016, 5));
+  const T = idx(at(2017, 0));
   const CASH = 5e6;
   const LEVS = [3, 5, 10, 20];
   const SIG = engine.dailySigma('BTC', T);
   const DREF = C.ADV.dRefSig * SIG;
   const liqDay = market.liqOf('BTC', market.dayIndexOf(T));
-  console.log(`  2016-06 BitMEX 永续 杠杆档 ${LEVS.join(' / ')} ｜ σ_30日 ${f(SIG * 100, 2)}%`
+  console.log(`  2017-01 BitMEX 永续 杠杆档 ${LEVS.join(' / ')} ｜ σ_30日 ${f(SIG * 100, 2)}%`
     + ` ⇒ dRef = ${f(DREF * 100, 2)}% ｜ t3 = ${f(C.ADV.t3 * 100, 0)}% ｜ 当日流动性 $${f(liqDay / 1e6, 1)}M`);
 
   /**
@@ -593,12 +598,20 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
     s.ex = 'bitmex'; s.lev = lev;
     s.books = { bitmex: { usd: 0, usdt: CASH } };
     const r = engine.openTrade(s, 'short', 1);
-    let push = 0, d = NaN, n3 = 0;
+    let push = 0, d = NaN, minD = NaN, n3 = 0;
     if (r.ok && s.positions.BTC) {
       const mk0 = engine.lastPrice(s, 'BTC');
       d = Math.abs(mk0 - P.liquidationPrice(s.positions.BTC)) / mk0;
+      minD = d;
       for (let k = 0; k < 12 && s.positions.BTC; k++) {
         engine.advanceOneHour(s);
+        /* ⚠️ 同时记**窗口内每一步**的到强平线距离：只测 t=0 会被「开局够远、中途贴近」骗过 ——
+           far 的前提必须用**全程最小 d** 来判（否则参数一漂移，用例会悄悄退化成空转）。 */
+        if (s.positions.BTC) {
+          const mkK = engine.lastPrice(s, 'BTC');
+          const dK = Math.abs(mkK - P.liquidationPrice(s.positions.BTC)) / mkK;
+          if (dK < minD) minD = dK;
+        }
         const p = Number.isFinite(s.mkt.BTC.advPush) ? Math.abs(s.mkt.BTC.advPush) : 0;
         if (p > push) push = p;
       }
@@ -607,21 +620,25 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
     C.ADV.kAim = saved;
     /* 本小时峰值 exposure（`S.adv[sym].v`，与 `advAimAmp` 同口径）—— 用来证明两个闸门都真的开着 */
     const e = s.adv && s.adv.BTC ? s.adv.BTC.v : 0;
-    return { ok: r.ok, why: r.why, push, d, n3, e, s };
+    return { ok: r.ok, why: r.why, push, d, minD, n3, e, s };
   };
 
   const on = [];
   for (const lev of LEVS) on.push({ lev, ...(await run(lev, 1)) });
   const good = on.filter(o => o.ok && Number.isFinite(o.d));
   if (!good.length) {
-    check('9g 前置：2016-06 BitMEX 永续做空能开出来', false,
+    check('9g 前置：2017-01 BitMEX 永续做空能开出来', false,
       on.map(o => `${o.lev}x:${o.why || 'ok'}`).join(' | '));
   } else {
     good.sort((a, b) => a.d - b.d);
     const near = good[0], far = good[good.length - 1];
-    console.log('  开档 3：' + good.map(o => `${o.lev}x d=${f(o.d * 100, 2)}% e=${f(o.e * 100, 0)}% push=${f(o.push * 100, 3)}%`).join(' ｜ '));
+    console.log('  开档 3：' + good.map(o => `${o.lev}x d=${f(o.d * 100, 2)}% minD=${f(o.minD * 100, 2)}% e=${f(o.e * 100, 0)}% push=${f(o.push * 100, 3)}%`).join(' ｜ '));
     check('9g 前置：这一对确实跨在 dRef 两侧（否则测不到距离闸）',
       near.d < DREF && far.d >= DREF, `${f(near.d * 100, 2)}% < ${f(DREF * 100, 2)}% ≤ ${f(far.d * 100, 2)}%`);
+    /* ⚠️ 加强前提（比「t=0 够远」更严）：far 必须**整个测量窗口内始终** d ≥ dRef，
+       否则窗口中某一小时 `advAimAmp` 合法地 > 1、②「逐位相同」就退化成空转（曾经发生过）。 */
+    check('9g 前置：远强平线那档全程最小 d 仍 ≥ dRef（窗口内不许跌进距离闸）',
+      far.minD >= DREF, `窗口 minD ${f(far.minD * 100, 2)}% ≥ dRef ${f(DREF * 100, 2)}%`);
     /* ⚠️ 两个闸都要真的开着，否则「档 3 生效」可能靠曝光、而「距离闸」可能靠曝光不足而假通过 */
     check('9g 前置：近强平线那档曝光 ≥ t3（档 3 的曝光闸真的开在「距离」这一侧）',
       near.e >= C.ADV.t3, `e ${f(near.e * 100, 1)}% ≥ t3 ${f(C.ADV.t3 * 100, 0)}%`);

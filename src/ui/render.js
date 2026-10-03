@@ -859,13 +859,13 @@ export function update(refs, s, view) {
   if (cur) {
     const p = cur;
     const posMark = exMarkPrice(s, p.sym, p.ex);   // 三价：保证金率 / 安全垫按**标记价**（本仓所在所）
-    setText(refs.posSide, isMargin(p)
-      /* 字面（v9 · §15.6 N4）：杠杆写「买入 / 卖出」—— 与操作区那两枚键一一对应。
-         原来这里笼统写「现货」两个字，是因为当年杠杆恒为 1x 做多；§15.6 N2 起杠杆**也带倍数、
-         也能做空**，光写「杠杆」就说不清方向与倍数了。
-         ⚠️ **倍数只在 lev > 1 时写**（用户 2026-10-01）：杠杆 1x 写个 `1x` 会与带杠杆的混同。 */
-      ? `${p.sym} ${p.side === 'long' ? '买入' : '卖出'}${p.lev > 1 ? ` ${p.lev}x` : ''}`
-      : `${p.sym} ${p.side === 'long' ? '多' : '空'} ${p.lev}x`);
+    /* 字面（2026-10-03 收窄）：**只留「币种 ＋ 倍数」**，方向改由颜色承担 ——
+       `.posbar .side-long / .side-short`（绿多红空，见 style.css）。
+       ⚠️ 原来写「买入 / 卖出」（合约写「多 / 空」）：`DOGE 买入 100x` ≈ 96px、`BTC 买入 100x` ≈ 88.8px，
+          而 375px 屏每格只有 **75.25px** ⇒ 只要 `lev > 1` 必然被 `ellipsis` 截尾。
+          压成 `DOGE 100x` = **64.8px**、`BTC 100x` = **57.6px**，两种工具同一副字面，终于放得下。
+       ⚠️ **倍数只在 lev > 1 时写**（用户 2026-10-01）：1x 写个 `1x` 会与带杠杆的混同。 */
+    setText(refs.posSide, `${p.sym}${p.lev > 1 ? ` ${p.lev}x` : ''}`);
     setCls(refs.posSide, 'num ' + (p.side === 'long' ? 'side-long' : 'side-short'));
     const pnl = unrealizedOf(s, p.sym);
     const pnlText = moneySlot('pospnl', pnl, { sign: true });
@@ -1396,8 +1396,12 @@ function buildPosList(box, s) {
         ? `${p.side === 'long' ? '买入' : '卖出'}${p.lev > 1 ? ` ${p.lev}x` : ''}`
         : `${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
       /* 杠杆多一行**币量**（用户 2026-10-01「花多少钱买了多少枚币」）——
-         合约的 `size` 只是名义的折算，玩家不看这个数，所以不报。 */
-      const qtyText = isMargin(p) ? ` · ${fmtQty(p.size)} 枚` : '';
+         合约的 `size` 只是名义的折算，玩家不看这个数，所以不报。
+      ⚠️ 本轮 B4 拆掉两处冗余字（2026-10-03）：币量后的「枚」与开仓价前的「开仓」——
+         `买入 100x · 12,345.7 枚 · 开仓 49,123.4` ≈ 254px，而 375px 屏这一行只有 ≈ 237px，
+         `ellipsis` 总是吃掉「开仓价」尾。去掉后 `买入 100x · 12,345.7 @ 49,123.4` ≈ **218px**，
+         三项（方向 ＋ 倍数 / 币量 / 开仓价）一项没少；`@` 是日志串里「按此价成交」的同一口径。 */
+      const qtyText = isMargin(p) ? ` · ${fmtQty(p.size)}` : '';
       const row = el('div', 'prow');
       /* ⚠️ 未实现盈亏改走**短档**（2026-10-03 用户拍板）：原来是 `fmtMoney`（永不换单位），
          百万级时印成 `+$12,345,678.9`（14 字符 ≈ 101px）。这一格是 `flex: none`，
@@ -1405,7 +1409,7 @@ function buildPosList(box, s) {
          `ellipsis` 吃掉。改走 `moneySlot` 后与交易页持仓条同档（`$12.3M`），共用同一套迟滞。 */
       row.append(
         el('b', null, sym),
-        el('span', 'mut', `${dirText}${qtyText} · 开仓 ${fmtLogPrice(p.entry)}`),
+        el('span', 'mut', `${dirText}${qtyText} @ ${fmtLogPrice(p.entry)}`),
         el('b', 'num sign ' + (pnl >= 0 ? 'up' : 'down'), moneySlot('plist:' + sym, pnl, { sign: true })),
       );
       card.append(row);
@@ -2013,10 +2017,10 @@ const ABOUT = [
     + '从 $1,000 起步，赚到多少都算你的 —— 活到 2024-12-31 收盘即通关，爆仓归零即收场。'],
   ['两个工具',
     '杠杆：借钱买币 / 借币做空，按借入量计日息，维持线按所不同（9–15%）；1x 是最低档，多头不借不计息、不参与强平。'
-    + '合约：USDT 本位永续，每 8 小时一次资金费，维持线 0.5% 起。倍数越高，强平线越近。'],
+    + '合约：USDT 本位，每 8 小时一次资金费，维持线 0.5% 起。倍数越高，强平线越近。'],
   ['两条通道',
     '盘口吃冲击与滑点，单子越大越贵；OTC 是私下一口价的大宗通道（单笔 ≥ 当年门槛，$10,000 起逐年抬升），'
-    + '不吃滑点、但带一笔溢价（杠杆封顶 5x，可双向）。有持仓时，通道 / 杠杆合约 / 交易所都会锁住 —— 先平仓再换。'],
+    + '不吃滑点、但带一笔溢价（杠杆封顶 5x，可双向）。有持仓时，通道、杠杆、合约、交易所都会锁住 —— 先平仓再换。'],
   ['你的成交会改变行情',
     '每一笔都会在市场里留下永久的位移（买抬价、卖压价），持仓本身还带来抛压折价。'
     + '所以分批建仓、分批卖出（金额档 1/4 · 1/2 · 全部）是躲开冲击的正经打法 —— 同一根 K 线里不能连下。'],

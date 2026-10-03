@@ -239,7 +239,10 @@ b, strong { font-weight: 600; }
 .ic.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .ic.warn { border-color: var(--down); color: var(--down); }
 .ic:active { background: var(--line); }
-.ic:disabled { opacity: .45; }
+/* 不可用（`disabled`）：**边框转虚线 ＋ 灰字**，与 `.act:disabled`（主操作键）同一套置灰语言 ——
+   原来只压到 .45 透明度、实边框与粗体都保留 ⇒ 顶栏「暂停 / 交易所」在结束 / 暂停时**仍像可点**。
+   可按的是实心实线、不可用的是虚线，扫一眼就能分开（与 `.opt:disabled` / `.sym:disabled` 一致）。 */
+.ic:disabled { border-style: dashed; color: var(--mut); opacity: .55; cursor: default; }
 
 /* 顶栏三枚按钮**定宽**（2026-09-28）—— 约束 ②「列宽固定不跳」在这一行的落点。
    「重开」进入确认态时文案会变，而 `.ic` 只有 `min-width: 42px`：四个字「确认重开」= 4×12 = 48px
@@ -370,9 +373,12 @@ b, strong { font-weight: 600; }
   cursor: pointer;
 }
 .sym.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-/* 未解锁：压暗且不可点（GDD §18.1「未解锁置灰」）—— 比通用禁用（.45）更暗一档，置灰是要一眼看出来的。
-   Batch 5 · B25 起从 .3 提到 **.45**：太暗就看不清下面那道进度环了，置灰仍有 0.45 的落差可辨。 */
-.sym:disabled { opacity: .45; }
+/* 未解锁：压暗且不可点（GDD §18.1「未解锁置灰」）—— 边框转**虚线** ＋ 灰字，
+   与 `.ic:disabled` / `.act:disabled` / `.opt:disabled` 统一到同一套置灰语言。
+   Batch 5 · B25 把透明度从 .3 提到 .45：太暗就看不清下面那道进度环了，置灰仍有落差可辨。
+   ⚠️ 虚线只改 `border-style`，`.sym.locked` 的进度环走的是 `border-color: transparent` +
+       `conic-gradient` 背景（`border-box`），虚线透明边框不遮环、逐位不变。 */
+.sym:disabled { opacity: .45; border-style: dashed; color: var(--mut); }
 /* 解锁进度环（Batch 5 · B25）：从「上一枚币解锁时刻」走到自己的解锁时刻，边框按比例绕一圈。
    `--pf` 由 render.js 写（0→1 四位小数，同值不重写），已走过的部分是主色，其余留 --line。
    `border-color: transparent` ＋ 双层 background-clip 是关键：第一层贴 border-box 画环，
@@ -686,9 +692,12 @@ b, strong { font-weight: 600; }
 .opt.risk { color: var(--down); }
 .opt.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .opt:active { background: var(--line); }
-/* 不可用（`disabled`）：**压得更暗 ＋ 灰字**（2026-10-02 审计修）——
-   原来 .45 与可按的那一档（`.opt` 的 `--fg` 正文色）差得太小，一排小方格里看不出哪一格能按。 */
-.opt:disabled { opacity: .32; color: var(--mut); }
+/* 不可用（`disabled`）：**压得更暗 ＋ 灰字 ＋ 边框转虚线**（2026-10-02 审计修，本轮 B3 补复位）——
+   原来 .45 与可按的那一档（`.opt` 的 `--fg` 正文色）差得太小，一排小方格里看不出哪一格能按。
+   ⚠️ **必须复位 `border` 与 `background`**：`.opt.on` 会给选中档描主色边 ＋ 铺主色淡底，
+      一个「既选中又被禁用」的金额档（如持仓到某个档、或杠杆被降档）若不复位，
+      仍带着主色淡底、比邻格更显眼 —— 复位后回到未选中的中性态，只留虚线 ＋ 置灰。 */
+.opt:disabled { opacity: .32; color: var(--mut); background: none; border-color: var(--line); border-style: dashed; }
 /* 「有、但此刻点不动」的档位（v10 · ②，用户定稿）：比通用禁用（.32，含义是「条件没到」）
    再暗一档（.28），并额外加**虚线边框** —— 它是「这个功能在此刻根本不存在」，
    与小方块那种「明暗差」相比，多一道形状线索才够一眼分得开。

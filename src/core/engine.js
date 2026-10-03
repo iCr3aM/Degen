@@ -1256,7 +1256,7 @@ function adlPlayerReduce(s, pos, cutNotional, price) {
   if (f >= 1) delete s.positions[pos.sym];
   else s.positions[pos.sym] = r.pos;
   refreshOverhang(s, pos.sym, SHOCK.closeGive);
-  pushLog(s, `ADL 自动减仓 ${pos.sym} ${pos.lev}x｜平掉 ${fmtMoneyShort(notional)} @ ${fmtLogPrice(price)}`, 'bad', 'liq');
+  pushLog(s, `ADL 自动平仓 ${pos.sym} ${pos.lev}x｜平仓 ${fmtMoneyShort(notional)} @ ${fmtLogPrice(price)}`, 'bad', 'liq');
 }
 
 /**
@@ -2146,9 +2146,9 @@ export function closeTrade(s, why = '手动', frac = 1) {
     pushLog(s, `平仓 ${sym} ${pos.lev}x｜${verdict}`, netRound >= 0 ? 'ok' : 'bad', 'trade');
     delete s.positions[sym];
   } else {
-    /* 减仓那一条把**平掉的比例**写在脸上（`25%` / `50%`）—— 否则玩家分不清
+    /* 分批平仓那一条把**平仓的比例**写在脸上（`25%` / `50%`）—— 否则玩家分不清
        「刚才是卖了一半」还是「整条没了」。 */
-    pushLog(s, `减仓 ${sym} ${pos.lev}x ${Math.round(f * 100)}%｜${verdict}`, netRound >= 0 ? 'ok' : 'bad', 'trade');
+    pushLog(s, `平仓 ${sym} ${pos.lev}x ${Math.round(f * 100)}%｜${verdict}`, netRound >= 0 ? 'ok' : 'bad', 'trade');
     pos.size -= closeSize;
     pos.margin -= backMargin;
     pos.notional *= (1 - f);
@@ -2710,7 +2710,7 @@ export function advanceOneHour(s) {
      锁定区间内后续各根的前一根也为真 ⇒ 自动不重复播（一个区间只有一条）。
      ⚠️ 只在玩家**此刻就待在 Binance** 时播（与「交易所级预警」同一先例）：你不在这儿，这条与你无关。 */
   if (s.ex === BAND.ex && priceBandAt(s.sym, s.i) && !priceBandAt(s.sym, s.i - 1)) {
-    pushLog(s, `${exchangeOf(s.ex)?.name ?? s.ex} 永续 ｜ 极端行情 只允许平仓 ${BAND.hours} 小时`, 'bad', 'mkt');
+    pushLog(s, `${exchangeOf(s.ex)?.name ?? s.ex} 合约 ｜ 极端行情 只允许平仓 ${BAND.hours} 小时`, 'bad', 'mkt');
   }
 
   /* 持仓成本**每小时**结算一次（2026-10-03 改版 · B26）：
@@ -3066,7 +3066,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
   s.stat.liq += 1;                         // 统计（2026-10-02 审计修）：逐步强平同样计入 —— 与 `forceLiquidate` 同口径
   s.positions[pos.sym] = r.pos;
-  pushLog(s, `部分强平 ${pos.sym} ${pos.lev}x｜平掉 ${fmtRate(frac, 1)}｜保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad', 'liq');
+  pushLog(s, `部分强平 ${pos.sym} ${pos.lev}x｜平仓 ${fmtRate(frac, 1)}｜保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad', 'liq');
   refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：部分强平也是卖出 ⇒ 折价同比例释放
 }
 
