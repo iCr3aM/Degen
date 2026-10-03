@@ -50,27 +50,28 @@ function logoEl() {
   const svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('viewBox', '0 0 64 64');
   svg.setAttribute('class', 'menu-logo');
-  const rect = (x, y, w, h, c) => {
+  const rect = (x, y, w, h, c, rx = 0) => {
     const r = document.createElementNS(NS, 'rect');
     r.setAttribute('x', x);
     r.setAttribute('y', y);
     r.setAttribute('width', w);
     r.setAttribute('height', h);
+    if (rx) r.setAttribute('rx', rx);
     r.setAttribute('class', c);
     return r;
   };
   // 三根蜡烛的几何（viewBox 64×64）—— 与 favicon / `tools/make-icons.mjs` 逐字相同：
-  //   柱宽 14、间隙 5、左右各留 6；影线宽 4、水平居中于实体。
-  //   左红右绿，实体顶沿 33 → 20 → 11 逐根抬高，读作一条上升趋势。
+  //   柱宽 14、间隙 5、左右各留 6；影线宽 4、水平居中于实体；实体圆角 2。
+  //   左红右绿，实体顶沿 34 → 21 → 10 逐根抬高，读作一条上升趋势。
   const candles = [
     // [影线 x,y,w,h]    [实体 x,y,w,h]    类别（涨/跌）
-    [[11, 26, 4, 30], [6, 33, 14, 16], 'd'],
-    [[30, 12, 4, 34], [25, 20, 14, 18], 'u'],
-    [[49, 6, 4, 30], [44, 11, 14, 16], 'u'],
+    [[11, 27, 4, 29], [6, 34, 14, 15], 'd'],
+    [[30, 14, 4, 32], [25, 21, 14, 18], 'u'],
+    [[49, 6, 4, 30], [44, 10, 14, 19], 'u'],
   ];
   svg.append(rect(0, 0, 64, 64, 'bg'));
   for (const [wick, body, cls] of candles) {
-    svg.append(rect(...wick, cls), rect(...body, cls));
+    svg.append(rect(...wick, cls), rect(...body, cls, 2));
   }
   return svg;
 }

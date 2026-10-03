@@ -10,7 +10,8 @@
  * 产物：public/icon-192.png、public/icon-512.png
  *
  * ⚠️ 几何必须与 `index.html` 的 favicon、`src/ui/render.js` 的 logoEl() **逐字一致**：
- *    64×64 视图里柱宽 14 / 间隙 5 / 左右各留 6，影线宽 4 且水平居中于实体。
+ *    64×64 视图里柱宽 14 / 间隙 5 / 左右各留 6，影线宽 4 且水平居中于实体，实体圆角 2。
+ *    外接框固定为 x 6–58 / y 6–56（中心 32,31）—— 改内部比例可以，改外框就要重算 SAFE_SCALE。
  * ⚠️ `icon-512.png` 同时被 manifest 声明为 `maskable` —— 安卓按自己的形状裁切
  *    （圆 / 水滴 / 方），只保证**中心 80% 的圆**内可见。所以图案整体缩到 70% 居中，
  *    外接圆正好落在安全圆内；底色**满幅**铺开（maskable 不允许透明圆角）。
@@ -27,10 +28,11 @@ const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const BG = [0x0a, 0x0f, 0x1a];   // 与 favicon 的深底同色（这里是 PNG，只能硬编码）
 const UP = [0x00, 0xd1, 0x8f];
 const DOWN = [0xff, 0x5b, 0x6a];
+/* [x, y, w, h, 颜色, 圆角半径]：影线不圆角，实体 2（64 视图内的 2px 圆角 —— 更精致，48px 下也不糊）。 */
 const RECTS = [
-  [11, 26, 4, 30, DOWN], [6, 33, 14, 16, DOWN],   // 左：跌烛
-  [30, 12, 4, 34, UP], [25, 20, 14, 18, UP],      // 中：涨烛
-  [49, 6, 4, 30, UP], [44, 11, 14, 16, UP],       // 右：涨烛（更高）
+  [11, 27, 4, 29, DOWN, 0], [6, 34, 14, 15, DOWN, 2],    // 左：跌烛
+  [30, 14, 4, 32, UP, 0],   [25, 21, 14, 18, UP, 2],     // 中：涨烛
+  [49, 6, 4, 30, UP, 0],    [44, 10, 14, 19, UP, 2],     // 右：涨烛（实体最高）
 ];
 /* 图案外接圆（半对角线）在 64 视图里约 36.1 ⇒ 缩到 70% 后约 25.3 < 安全圆半径 25.6。*/
 const SAFE_SCALE = 0.7;
@@ -42,10 +44,22 @@ function colorAt(u, v) {
   const x = (u - 32) / SAFE_SCALE + 32;
   const y = (v - 32) / SAFE_SCALE + 31;
   let c = BG;
-  for (const [rx, ry, rw, rh, col] of RECTS) {
-    if (x >= rx && x < rx + rw && y >= ry && y < ry + rh) c = col;
+  for (const [rx, ry, rw, rh, col, r] of RECTS) {
+    if (!inRect(x, y, rx, ry, rw, rh, r)) continue;
+    c = col;
   }
   return c;
+}
+
+/* 圆角矩形命中测试：先做轴对齐外框快速剔除，再把点夹到「圆角圆心矩形」上比距离。
+   圆心落在核心区内的点距离为 0（必中），只有四个角按圆弧判定。 */
+function inRect(x, y, X, Y, W, H, r) {
+  if (x < X || x >= X + W || y < Y || y >= Y + H) return false;
+  if (!r) return true;
+  const cx = Math.min(Math.max(x, X + r), X + W - r);
+  const cy = Math.min(Math.max(y, Y + r), Y + H - r);
+  const dx = x - cx, dy = y - cy;
+  return dx * dx + dy * dy <= r * r;
 }
 
 /* ── 光栅化：每像素 4×4 超采样，边缘不出现锯齿 ──────────────────────────── */
