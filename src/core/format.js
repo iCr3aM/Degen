@@ -110,16 +110,23 @@ export function moneyTierHeld(prev, a) {
   return a >= TIER_LOW[prev - 1] * TIER_HOLD ? prev : nat;
 }
 
-/** 档位 → `[基数, 后缀, 小数位]`（第 0 档为空，表示「交给 fmtMoney」） */
-const TIER_UNIT = [[], [1e3, 'K', 1], [1e6, 'M', 1], [1e9, 'B', 2]];
+/** 档位 → `[基数, 后缀, 小数位]`（第 0 档为空，表示「交给 fmtMoney」）
+ *  ⚠️ 三档小数位**一律 1 位**（2026-10-03 用户拍板）：`B` 原来是 2 位（`$12.34B`）——
+ *     量级越大位数越多，正好在最窄的格子里最长。收成 1 位后 `$12.3B`，与 `K` / `M` 同档。
+ *     ⚠️ `T`（只在市值 ≥ $1e12 出现，见 `fmtCap`）**刻意留 2 位**：BTC 顶点的 $1.98T
+ *        收成 $2.0T 是把真信息抹掉，而 `$1.98T` 只有 6 字符、任何格子都放得下。
+ *  ⚠️ 改这里会同时改到 `fmtQty`（流通量）：它共用这张表。 */
+const TIER_UNIT = [[], [1e3, 'K', 1], [1e6, 'M', 1], [1e9, 'B', 1]];
 
 function shortBody(a, tier) {
   if (tier === 0) return null;                    // 交给 fmtMoney
   const [base, suf, d] = TIER_UNIT[tier];
   const s = (a / base).toFixed(d);
   if (Number(s) >= 1000) {                        // 进位兜底：`999,999` → `1000.0K` ⇒ 抬到 `$1.0M`
+    /* ⚠️ 兜底那几行的小数位必须与**目标档**的 `TIER_UNIT` 逐位相同，否则同一个数在门槛
+       两侧换了写法（`$999.9B` ↔ `$1000.0B`）。B 收成 1 位后这里也跟着收（2026-10-03）。 */
     if (tier === 1) return '$' + (a / 1e6).toFixed(1) + 'M';
-    if (tier === 2) return '$' + (a / 1e9).toFixed(2) + 'B';
+    if (tier === 2) return '$' + (a / 1e9).toFixed(1) + 'B';
     /* ⚠️ `tier === 3` 的兜底（2026-10-02 审计补）：`B` 是最后一档，原来没有这一行，
        `9.99995e11 ~ 1e12` 这一段会印成 `$1000.00B`（而 `fmtCap` 在 `≥ 1e12` 时印 `$1.00T`）
        —— 同一串数字在门槛两侧换了个写法。补上 T 之后 `fmtMoneyShort` / `fmtCap` 一致。 */

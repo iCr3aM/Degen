@@ -1399,10 +1399,14 @@ function buildPosList(box, s) {
          合约的 `size` 只是名义的折算，玩家不看这个数，所以不报。 */
       const qtyText = isMargin(p) ? ` · ${fmtQty(p.size)} 枚` : '';
       const row = el('div', 'prow');
+      /* ⚠️ 未实现盈亏改走**短档**（2026-10-03 用户拍板）：原来是 `fmtMoney`（永不换单位），
+         百万级时印成 `+$12,345,678.9`（14 字符 ≈ 101px）。这一格是 `flex: none`，
+         多出来的宽度全从中间那格（方向 ＋ 币量 ＋ 开仓价）身上抢 —— 「开仓 13.1」直接被
+         `ellipsis` 吃掉。改走 `moneySlot` 后与交易页持仓条同档（`$12.3M`），共用同一套迟滞。 */
       row.append(
         el('b', null, sym),
         el('span', 'mut', `${dirText}${qtyText} · 开仓 ${fmtLogPrice(p.entry)}`),
-        el('b', 'num sign ' + (pnl >= 0 ? 'up' : 'down'), fmtMoney(pnl, { sign: true })),
+        el('b', 'num sign ' + (pnl >= 0 ? 'up' : 'down'), moneySlot('plist:' + sym, pnl, { sign: true })),
       );
       card.append(row);
     }
