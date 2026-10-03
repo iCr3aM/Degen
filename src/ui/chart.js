@@ -177,7 +177,13 @@ export function drawChart(canvas, o) {
   const dataLo = lo, dataHi = hi;       // 未加留白的数据极值（y 限位要用）
   const dataRange = hi - lo;
   const padY = dataRange * 0.06;
-  lo -= padY; hi += padY;
+  /* ⚠️ **价格恒为正 —— 下沿不许落到 0 以下**（2026-10-04 修「轴底出现负数」）。
+     根因：上下留白都按**幅度**的 6% 加，视野内一旦出现 >17 倍的涨幅（缩放到暴涨段，
+     或拖到价格轴上沿），`dataLo − 6%·range` 就会算成负数 ⇒ 最下面那根网格线印出负价。
+     兜底改取「不低于最低价的 2%」：它是正数，且仍低于 `dataLo` ⇒ **不会把最低那根 K 线
+     顶出价格区**（柱子不被裁）。绝大多数视野下两个值相等（`dataLo·0.02` 更小），行为不变。 */
+  lo = Math.max(dataLo - padY, dataLo * 0.02);
+  hi += padY;
   const span = hi - lo;
 
   // ── y 平移 ＋ **严格限位**（Batch 3 · B14，2026-09-29 拍板「严格」） ──

@@ -356,20 +356,20 @@ async function boot() {
   /* ⚠️ `bindActions` 已提前到本函数开头（见那里的注释）—— 这里不再挂第二遍，
      否则同一个 `pointerdown` 会被派发两次（下单 / 平仓这类动作会真的做两笔）。 */
   /* K 线手势（Batch 3 · B13/B14）：三个回调都只动**视野**（`view.js`），
-     不碰 `s`、不写存档，唯一副作用是立刻重画一帧（拖动不能被 80ms 节流吞掉）。
+     不碰 `s`、不写存档，唯一副作用是把重画排到下一帧（`queueDraw` 合并，拖动不能被 80ms 节流吞掉）。
      复位只在**当前币**上生效；每帧的限位（`chart.js` 里夹）会把越界的视野拉回来。
      ⚠️ 拖动（pan / zoom）刻意**不出声** —— 手指划一下就响，比没声音还吵。 */
   bindChart(refs.canvas, {
-    pan: (dx, dy) => { panBy(s.sym, dx, dy, s.i, chartW()); draw(true); },
-    zoom: f => { zoomBy(s.sym, f, s.i, chartW()); draw(true); },
-    reset: () => { snd.tap(); resetView(s.sym); draw(true); },
+    pan: (dx, dy) => { panBy(s.sym, dx, dy, s.i, chartW()); queueDraw(); },
+    zoom: f => { zoomBy(s.sym, f, s.i, chartW()); queueDraw(); },
+    reset: () => { snd.tap(); resetView(s.sym); queueDraw(); },
   });
   /* 回顾页那块 K 线的同一套手势（方案 §3.2「复用 `simulate.js` / `view.js`」）——
      唯一区别是它推的是 `rv.i` 而不是 `s.i`（回顾的「当前」在 `rv` 里）。 */
   bindChart(refs.rvCanvas, {
-    pan: (dx, dy) => { if (!rv) return; panBy(rv.sym, dx, dy, rv.i, chartW(), RV_NS); draw(true); },
-    zoom: f => { if (!rv) return; zoomBy(rv.sym, f, rv.i, chartW(), RV_NS); draw(true); },
-    reset: () => { if (!rv) return; snd.tap(); resetView(rv.sym, RV_NS); draw(true); },
+    pan: (dx, dy) => { if (!rv) return; panBy(rv.sym, dx, dy, rv.i, chartW(), RV_NS); queueDraw(); },
+    zoom: f => { if (!rv) return; zoomBy(rv.sym, f, rv.i, chartW(), RV_NS); queueDraw(); },
+    reset: () => { if (!rv) return; snd.tap(); resetView(rv.sym, RV_NS); queueDraw(); },
   });
   /* 存档：玩家每次动作走 `after()` 即时落盘；这个定时器只给「时间自己走」兜底 ——
      `dirty` 由 `onFrame`（推进过才回调）置真，没动过就跳过这次全量序列化与写盘。 */
@@ -457,9 +457,19 @@ function preloadUpcoming() {
 
 /* ───────────────────────────── 每帧 ───────────────────────────── */
 
+/* K 线区宽度的缓存（2026-10-04 手势性能修）：`draw()` 每帧本来就要量一次并写进 `view.chartW`，
+   这里把它留下来给手势复用。原因：`panBy` / `zoomBy` 的每次 `pointermove` 都要这个宽度，
+   逐次调 `getBoundingClientRect()` 会**强制一次同步布局**，与上一帧的 DOM 写入交替
+   ⇒ 布局抖动（layout thrash），正是手机上拖动卡顿的主因之一。
+   缓存只在**量到真实可见宽度**时刷新（见 `draw()`），旋屏 / 切页都各有一帧 `draw(true)`，不会长期陈旧。 */
+let chartWCache = 0;      // 交易页那块 K 线区
+let rvChartWCache = 0;    // 回顾页那块 K 线区
+
 /** K 线区的 CSS 宽度。手势换算「一像素 = 多少根」要用**同一份**，所以单独留一个入口。
  *  ⚠️ 回顾页有自己那一块 K 线区（`rvWrap`）—— 两者可见性互斥，量哪个由 `rv` 决定。 */
 const chartW = () => {
+  const cached = rv ? rvChartWCache : chartWCache;
+  if (cached > 0) return cached;
   const node = rv ? refs.rvWrap : refs.chartWrap;
   return Math.max(1, Math.round(node.getBoundingClientRect().width));
 };
@@ -486,6 +496,19 @@ let overDrawn = !!s.over;
    `s.paused` 的那一拍之后不会再有 `onFrame`，那一帧若被 80ms 节流吞掉，遮罩就永远出不来。
    ⚠️ 变量按**真值**记（两种遮罩共用），具体画哪一个仍按 `s.pending` 的**值**分派。 */
 let pendingDrawn = !!s.pending;
+
+/* **手势重绘合并**（2026-10-04 性能修）：原来 pan / zoom 的每次 `pointermove` 都直接
+   `draw(true)` —— 手机上触控采样可达 120Hz，一次拖动等于每秒上百遍**整屏** `update()`
+   （几百次 DOM 写入 ＋ 强制布局），主线程被吃满，于是「拖动 / 捏合」明显掉帧。
+   这里用 `requestAnimationFrame` 合并：无论一帧里来了多少个事件，只重画一次 ——
+   手感不变（仍是每帧刷新），开销砍掉一个数量级。视野状态仍由 `view.js` 在每个事件里**同步**累积，
+   所以合并不会丢掉位移。 */
+let drawQueued = false;
+function queueDraw() {
+  if (drawQueued) return;
+  drawQueued = true;
+  requestAnimationFrame(() => { drawQueued = false; draw(true); });
+}
 
 /**
  * 把「刚刚发生的事」翻译成声音（Batch 4 · B20）。
@@ -643,6 +666,11 @@ function draw(force = false) {
        （与 `tab` 同一类：纯界面状态，不进 `s`。） */
     guide: guideStep != null,
   };
+  /* 刷新宽度缓存（手势复用，见 `chartW`）：只在**真的量到可见宽度**时写 ——
+     隐藏页量出来是 0 / 1px，写进去会把后续手势的「一像素 = 多少根」钉死成畸形值。 */
+  if (rect.width > 1) {
+    if (rv) rvChartWCache = view.chartW; else chartWCache = view.chartW;
+  }
 
   try {
     /* 回顾态走**另一条渲染线**：它只读 `rv`（模块级），一个字都不写 `s`，也绝不碰那几张遮罩。
