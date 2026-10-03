@@ -566,6 +566,9 @@ let lastMarketI = null;
  */
 function eventSound(last) {
   const text = last.text;
+  /* **爆仓潮**（NPC 强平级联）—— 排在**最前**：本作最剧烈的市场事件（十余年个位数次），
+     用一串随机下坠的潮音（L3）而不是一声 tick；重力感交 `heavy` 震动。 */
+  if (text.includes('爆仓潮')) { snd.liqWave(); return snd.buzz('heavy'); }
   if (text.includes('推高拥堵')) { snd.pulse(); return snd.buzz('light'); }
   if (last.kind === 'news') { snd.news(); return snd.buzz('light'); }
   if (text.includes('被盗削减') || / 归零/.test(text)) { snd.crash(); return snd.buzz('heavy'); }
@@ -574,40 +577,62 @@ function eventSound(last) {
 }
 
 /**
- * 行情音（T-1 · §2.2 ②）—— **不入日志**，直接读 K 线，每帧一次。
+ * 行情音（L1–L5 · 2026-10-04 重做）—— **不入日志**，直接读 K 线，每帧一次。
  * 为什么不能写日志：50x 下一局会灌出几万条，把日志条和浮层一起冲垮。
  *
- * 三道闸（§2.5）：① 优先级 `spike` > `surge` > `tick`（同一帧同币只发一声）
- * ② 同种音节流窗（在 `sound.js` 里，墙钟 120ms）③ 范围 ＝ **当前币 ＋ 持仓币**。
+ * **一帧最多一声**：先把这一帧跨过的每一根、每一个币各自算出一个 0..1 的强度，
+ * 再挑「最强的那一下」交给 `sound.js`（那里按 方向 × 强度 合成音簇，见 `marketMove`）。
+ * 这样 50x 下不会把几十根一起炸成机关枪 —— 听到的永远是这一帧里最值得听的那一根。
  *
- * ⚠️ 只判**当前那一根**，不补算被跳过的小时：标签页被挂起再切回来时 `s.i` 可能一次跳几百根，
- *    逐根补算会瞬间炸出一串音。首帧只记锚点（同 `lastLogKey` 那套）。
- * ⚠️ **取不到价就闭嘴**：`candleAt` / `closeAt` 在该币**首根真小时线之前**返回 `null`
+ * ⚠️ 只倒着扫**最近 240 根**：标签页被挂起再切回来时 `s.i` 可能一次跳几百根，
+ *    逐根补算会瞬间炸出一串音（与旧版同一条纪律），240 根已覆盖任何一帧的真实推进。
+ * ⚠️ **取不到价就跳过**：`candleAt` / `closeAt` 在该币**首根真小时线之前**返回 `null`
  *    （只有 BTC 有 2012 回溯段）。拿不齐「当根 ＋ 前一根」就直接跳过 ——
  *    不许用兜底价算涨跌幅，那会凭空造出一个行情音。
+ * ⚠️ 发声范围 = **当前币 ＋ 持仓币**（三道闸的第 ③ 条）。
  */
 function marketSounds(s) {
   if (lastMarketI === null) { lastMarketI = s.i; return; }   // 首帧只记锚点
   if (s.i === lastMarketI || s.i <= 0) return;
+  const from = lastMarketI + 1;
+  const to = s.i;
   lastMarketI = s.i;
 
+  const lo = Math.max(from, to - 239, 1);
+  let best = null;                 // { inten, dir, hot, spike }
   for (const sym of new Set([s.sym, ...heldSyms(s)])) {
-    const cur = candleAt(sym, s.i);
-    const prev = closeAt(sym, s.i - 1);
-    if (!cur || !(prev > 0) || !(cur.c > 0)) continue;
-    const sigma = dailySigma(sym, s.i);
+    const sigma = dailySigma(sym, to);
     if (!(sigma > 0)) continue;
     const unit = sigma / Math.sqrt(24);
-
-    /* ① **插针优先**（§2.2）：一根大阴线既跌又插针，不该叠两声 ——
-       插针更紧急，因为强平看的是**最低价**（`l`），不是收盘价。 */
-    if ((cur.h - cur.l) / cur.c >= K_AMP * unit) { snd.spike(); continue; }
-    /* 成交量那一项不用 θ：直接比**当日均值**（份额 ≥ 3/24），与量柱标尺的既有口径一致 */
-    if (volumeAt(sym, s.i) >= 3 / 24) { snd.surge(); continue; }
-    const d = cur.c / prev - 1;
-    if (d >= K_SIGMA * unit) snd.tickUp();
-    else if (d <= -K_SIGMA * unit) snd.tickDown();
+    for (let k = lo; k <= to; k++) {
+      const cur = candleAt(sym, k);
+      const prev = closeAt(sym, k - 1);
+      if (!cur || !(prev > 0) || !(cur.c > 0)) continue;
+      /* L1 强度：位移对**该币自己的**常态小时波动归一化，再并上量能份额 —— 同一个 0..1 刻度。
+         `K_SIGMA` 是「显著」的起点，取它的 2.5 倍当满格：常态波动不发声，异动才响
+         （否则 2013 的 BTC 日波动 5~8%，会每根都响）。量能那一项沿用旧阈值 3/24 当满格。 */
+      const moveI = Math.min(1, Math.abs(cur.c / prev - 1) / (K_SIGMA * unit * 2.5));
+      const volI = Math.min(1, volumeAt(sym, k) / (3 / 24));
+      const inten = Math.max(moveI, volI * 0.9);
+      if (inten < 0.15) continue;
+      if (!best || inten > best.inten) {
+        best = {
+          inten,
+          dir: cur.c >= prev ? 1 : -1,
+          hot: volI >= 1,
+          spike: (cur.h - cur.l) / cur.c >= K_AMP * unit,
+        };
+      }
+    }
   }
+  if (!best) return;
+  /* ① **插针优先**（§2.2）：一根大阴线既跌又插针，不该叠两声 ——
+     插针更紧急，因为强平看的是**最低价**（`l`），不是收盘价。 */
+  if (best.spike) { snd.spike(best.inten); return; }
+  /* ② **开仓潮**（L4）：一波够强的上行（散户追高涌入）—— 用镜向的潮音，比单声 tick 更沉。
+     阈值 0.85 是「显著」的 2.5 倍刻度上的高位，只有真正的拉盘才够得着。 */
+  if (best.dir > 0 && best.inten >= 0.85) { snd.openWave(best.inten); return; }
+  snd.marketMove(best.dir, best.inten, best.hot);
 }
 
 function soundFromTick(s) {
