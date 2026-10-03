@@ -317,6 +317,14 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     mkt: {},
 
     /**
+     * **标记价基差**（三价体系 · 2026-10-03）—— `mkb[sym] = EMA(last − index)`，
+     * 每小时由 `engine.advanceMarkBias` 推进一格（见 `engine.markPrice`）。
+     * 估值 / 保证金率 / 强平 / 资金费只读 mark，成交 / 已实现盈亏读 last。
+     * ⚠️ 旧存档没有这个键 ⇒ 读侧一律按 0 处理（等价于「mark = index」），**不升 `STATE_VERSION`**。
+     */
+    mkb: {},
+
+    /**
      * **玩家自己的成交量**（v17 新增 · v19 按所分账 · v20 按产品线分账 · v24 按币分账）——
      * `pvol[sym][i][exId][kind] = { u, b }`，`kind` = `'margin'` / `'fut'`：
      *   - `u` = 该小时、该币、在这家所、这条产品线上成交的**美元名义额**

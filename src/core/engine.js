@@ -13,7 +13,7 @@
  */
 
 import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
-import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
+import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCandleAt, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
@@ -84,35 +84,104 @@ export const timeOf = s => GAME.start + s.i * HOUR_MS;
 
 /* ───────────────────────────── 派生量 ───────────────────────────── */
 
-/** 某个币的**基准价**（用收盘价）—— **全市场共用一份**，只服务 K 线图 / 新闻 / 热度这些市场级读数。
- *  ⚠️ 玩家自己的钱（成交 / 盈亏 / 强平 / 保证金）**不许读它**，一律走下面的 `exPrice`（缺口 10）。 */
-export function markPrice(s, sym = s.sym) {
+/* ═══════════════════ 三价体系：index / mark / last（2026-10-03 拍板） ═══════════════════
+ * 现实口径（Binance 官方）：强平与未实现盈亏走**标记价 mark**，已实现盈亏走**最新价 last**，
+ * 而 `mark ≈ 指数价 index ＋ 基差的平滑`（`Mark = Median(P1, P2, Last)`）。这正是
+ * 「一笔插针不该把全场爆掉」的机制来源 —— 也是 mark price 存在的**全部**理由。
+ *
+ * 本作的病（2026-10-03 审计 §14.1 A1）：全局只有一个价（= 收盘价），于是
+ *   ① 未实现盈亏 / 保证金率 / 安全垫读**收盘价**，强平判据却读**当根高低点 ＋ 121 点布朗桥**
+ *      ⇒ 一根影线已经把你爆了，显示屏上「安全垫」还是健康的；
+ *   ② 玩家自己的推价（`advPush` / `npcDrift`）也乘进了高低点
+ *      ⇒ **你砸盘砸出的插针把你自己的仓打掉**。
+ *
+ * 三价的分工（拍板）：
+ *   · `indexPrice` = **原始行情**（`rawCloseAt`，不含任何位移）—— 那根「现货锚」；
+ *   · `lastPrice`  = 数据包 × 位移（`closeAt`）—— **实际成交价** / K 线 / 已实现盈亏；
+ *   · `markPrice`  = `index + EMA(last − index)`，基差半衰期 = `ADV.pushHalf`（同族缓动）——
+ *                    **未实现盈亏 / 保证金率 / 强平 / 资金费**只读它。
+ * ⇒ 位移里的**瞬时**部分（自己砸出的插针、NPC 级联脉冲）被低通滤掉；**持续**部分（真实行情移动、
+ *    有量支撑的位移）数小时内收敛进 mark。指数那一层永远即时 —— 真行情砸下来照样立刻爆你。
+ */
+
+/** 标记价基差的半衰期（小时）—— 复用档 2 推价的缓动常数，两者同族 */
+const MARK_HALF = ADV.pushHalf;
+/** 一阶低通系数 `α = 1 − 0.5^(1/半衰期)`（与 `stepAdvPush` 同一个式子） */
+const MARK_ALPHA = 1 - Math.pow(0.5, 1 / MARK_HALF);
+
+/** **指数价** —— 原始行情收盘，不含任何位移。取不到（未上线 / 越界）返回 null。 */
+export function indexPrice(s, sym = s.sym) {
+  return rawCloseAt(sym, s.i);
+}
+
+/** **最新价** —— 数据包 × 位移（玩家 + NPC）。成交 / 平仓 / K 线 / 已实现盈亏读它。
+ *  ⚠️ 它就是改动前的 `markPrice`（口径**逐位不变**），只是名字改成了它本来的身份。 */
+export function lastPrice(s, sym = s.sym) {
   return closeAt(sym, s.i);
 }
 
+/** 某个币当前的**标记价基差**（EMA 后的 `last − index`）；旧存档没有这个键 ⇒ 0。 */
+export function markBiasOf(s, sym) {
+  const b = s.mkb && s.mkb[sym];
+  return Number.isFinite(b) ? b : 0;
+}
+
+/** **标记价** = 指数价 ＋ 平滑后的基差 —— 未实现盈亏 / 保证金率 / 强平 / 资金费读它。 */
+export function markPrice(s, sym = s.sym) {
+  const idx = indexPrice(s, sym);
+  return idx == null ? null : idx + markBiasOf(s, sym);
+}
+
 /**
- * 某个币在**某家交易所**的**本所价**（缺口 10 · 2026-10-03 拍板）—— 玩家自己的钱只读它。
+ * 每小时把标记价基差推进一格（一阶低通）—— **唯一的写口径**，只许从时钟的写路径调用。
  *
- *     exPrice = markPrice × exDevOf(所, 币, 小时)
+ *     `bias ← bias + ((last − index) − bias) × α`
+ *
+ * ⚠️ 它必须排在 `liquidateAll` **之后**（见 `advanceOneHour`）：这一小时的基差要等本小时的强平
+ *    都判完才入账 ⇒ mark 在**当根**完全不含玩家自己刚砸出来的位移 —— 这正是
+ *    「你自己的插针不再把自己打爆」的落点。
+ */
+function advanceMarkBias(s, sym) {
+  const idx = rawCloseAt(sym, s.i);
+  if (idx == null) return;
+  const last = closeAt(sym, s.i);
+  if (last == null) return;
+  if (!s.mkb) s.mkb = {};
+  const prev = markBiasOf(s, sym);
+  s.mkb[sym] = prev + ((last - idx) - prev) * MARK_ALPHA;
+}
+
+/**
+ * 某个币在**某家交易所**的**最新价本所价**（缺口 10 · 2026-10-03 拍板）—— **成交 / 平仓**读它。
+ *
+ *     exPrice = lastPrice × exDevOf(所, 币, 小时)
  *
  * `exDevOf`（`god.js`）= **长期基差 ＋ 小噪声**：Bitfinex +0.1%，其余 ≈0；
  * 再叠一层逐小时白噪声（幅度按所压在一次往返手续费之内 ⇒ 不可套利）。
  *
- * ⚠️ **口径（拍板）**：成交 / 盈亏 / 强平 / 保证金**一律读本仓所在所（`pos.ex`）的本所价** ——
- *    成交价与估值价同源，消除「在便宜的所成交、按贵的所估值」的白赚口子。
- * ⚠️ 默认 `exId = s.ex`（当前所在所）；**估值 / 平仓 / 资金费必须显式传 `pos.ex`** ——
- *    玩家换所之后，旧仓仍按**它自己那家所**估值。
+ * ⚠️ **口径（拍板）**：成交 / 平仓**一律读本仓所在所（`pos.ex`）的本所价** —— 与估值同一家所，
+ *    消除「在便宜的所成交、按贵的所估值」的白赚口子（价格口径的差异见 `exMarkPrice`）。
+ * ⚠️ 默认 `exId = s.ex`（当前所在所）；**平仓必须显式传 `pos.ex`**。
  */
 export function exPrice(s, sym, exId = s.ex) {
+  const p = lastPrice(s, sym);
+  return p == null ? null : p * exDevOf(exId, sym, s.i);
+}
+
+/**
+ * 某个币在**某家交易所**的**标记价本所价** —— **估值 / 保证金率 / 强平 / 资金费**读它。
+ * 与 `exPrice` 只差价格口径（mark vs last）；`exDevOf` 那一层完全相同。
+ */
+export function exMarkPrice(s, sym, exId = s.ex) {
   const p = markPrice(s, sym);
   return p == null ? null : p * exDevOf(exId, sym, s.i);
 }
 
-/** 某个币的持仓的未实现盈亏（按**本仓所在所**的本所价 —— 缺口 10） */
+/** 某个币的持仓的未实现盈亏（按**本仓所在所**的**标记价** —— 三价体系 · 2026-10-03） */
 export function unrealizedOf(s, sym) {
   const pos = posOf(s, sym);
   if (!pos) return 0;
-  const p = exPrice(s, sym, pos.ex);
+  const p = exMarkPrice(s, sym, pos.ex);
   return p == null ? 0 : pnlOf(pos, p);
 }
 
@@ -139,7 +208,7 @@ export function equity(s) {
   if (s.transfer) sum += s.transfer.amount;
   for (const sym of heldSyms(s)) {
     const pos = s.positions[sym];
-    const p = exPrice(s, sym, pos.ex);
+    const p = exMarkPrice(s, sym, pos.ex);
     sum += p == null ? pos.margin : equityOf(pos, p);
   }
   return sum;
@@ -381,7 +450,7 @@ function advCurExposureOf(s, sym, raw) {
   if (!(raw > 0)) return 0;
   const pos = s.positions[sym];
   if (!pos || (isMargin(pos) && pos.lev === 1)) return 0;
-  const mark = markPrice(s, sym);
+  const mark = lastPrice(s, sym);
   return mark > 0 ? pos.size * mark / raw : 0;
 }
 
@@ -659,7 +728,7 @@ function permImpactFor(s, sym, i, notional) {
  */
 function absorbedImpact(s, sym, dir, impact) {
   if (!(impact > 0)) return impact;
-  const p = markPrice(s, sym);
+  const p = lastPrice(s, sym);
   if (!(p > 0)) return impact;
   return impact * absorbOf(levelsOf(sym, s.i), p, dir, impact);
 }
@@ -844,7 +913,7 @@ export function retailLongShareOf(s, sym) {
 function positionNotionalOf(s, sym) {
   const pos = s.positions && s.positions[sym];
   if (!pos || !(pos.size > 0)) return 0;
-  const p = markPrice(s, sym);
+  const p = lastPrice(s, sym);
   return p > 0 ? pos.size * p : 0;
 }
 
@@ -1269,7 +1338,7 @@ export function tickMarket(s, sym) {
   const liqDay = liqOf(sym, dayIndexOf(i));
   if (liqDay > 0) {
     const target = NPC.mom * (m.heat - HEAT.base) * liqDay;
-    const price = markPrice(s, sym);
+    const price = lastPrice(s, sym);
     for (let k = 0; k < NPC.ladder.length; k++) {
       const w = NPC.ladder[k].w;
       const floor = liqDay * NPC.floor * w;
@@ -1289,7 +1358,7 @@ export function tickMarket(s, sym) {
   }
   syncNpcDrift(s, sym, i, sig);
   /* ④ 踩踏级联。 */
-  stampede(s, sym, m, markPrice(s, sym));
+  stampede(s, sym, m, lastPrice(s, sym));
 }
 
 /**
@@ -2467,6 +2536,14 @@ export function advanceOneHour(s) {
 
   liquidateAll(s);
 
+  /* 标记价基差推进（三价体系 · 2026-10-03）：排在 `liquidateAll` **之后** ——
+     这一小时的基差要等本小时的强平都判完才入账 ⇒ mark 在**当根**完全不含玩家自己刚砸出来的
+     位移（这正是「自己的插针不再把自己打爆」的落点）；下一根起它才按半衰期缓缓收敛。
+     ⚠️ **五个币逐个小时都推**（不是只推持仓币）：没有位移时基差要能自然衰减回 0 ——
+        只推持仓币的话，平仓那一刻基差会**冻住**，下次再持有同一个币时那笔旧基差会诈尸。
+        `closeAt` / `rawCloseAt` 未加载时返回 null，`advanceMarkBias` 会自己跳过。 */
+  for (const c of COINS) advanceMarkBias(s, c.sym);
+
   /* 资金曲线采样（v13 · 方案 §4）排在**最后**：这一小时该结的资金费、该爆的仓都已经落账，
      此刻记下的才是「这一天真正剩下的钱」。上面几条 `return`（待决态 / 资金费爆仓）
      会跳过它 —— 无所谓，下一天照样采样，`sampleEquity` 的补记循环不会留下洞。 */
@@ -2515,6 +2592,7 @@ export function rewindTo(s, to) {
   s.pulse = [];
   s.flow = {};
   s.mkt = {};           // NPC 情绪 / 持仓（v26 · §73.5）同样是「进度」⇒ 回退时一并抹掉
+  s.mkb = {};           // 标记价基差（三价体系 · 2026-10-03）：同样依赖本局的位移史 ⇒ 一并抹掉
   s.pool = {};          // 瞬时深度池（v23）同样是「进度」⇒ 回退时一并抹掉（与 s.flow 同口径）
   s.adv = {};           // 对抗性流动性峰值台阶（v29）同样是「进度」⇒ 回退时一并抹掉
   s.advWarn = false;    // 预警闩锁也一并复原（否则回退后再进档 1 就永远不再提醒）
@@ -2617,7 +2695,7 @@ function settleFunding(s) {
     }
 
     if (!paysFunding(pos)) continue;                 // 1x 多头：两样都不付
-    const mark = exPrice(s, sym, pos.ex);            // 缺口 10：资金费也按**本仓所在所**的本所价
+    const mark = exMarkPrice(s, sym, pos.ex);       // 三价：资金费按**本仓所在所**的标记价（Binance 口径）
     if (!(mark > 0)) continue;
 
     /* **全市场多空失衡**驱动的资金费（v30 · 第 6 批 · 缺口 3）—— 真实资金费是**多空之间的
@@ -2687,12 +2765,21 @@ function liquidateAll(s) {
     const pos0 = s.positions[sym];
     if (!pos0 || !canLiquidate(pos0)) continue;
 
-    const c0 = candleAt(sym, s.i);
-    if (!c0) continue;
-    /* 缺口 10（2026-10-03）：强平按**本仓所在所**的本所价判 —— 与成交 / 估值同源。
-       整根等比缩放 ⇒ 与 `pathOf` 的「min ≡ l、max ≡ h」红线（S1 红线 1）不冲突。 */
+    /* 三价体系（2026-10-03 拍板）：强平判据走**标记价 K 线** ——
+       日内高低取**原始行情**（`rawCandleAt`，不含任何位移），整体平移**平滑后的基差**
+       （`markBiasOf`），再乘**本仓所在所**的本所价偏移（缺口 10）。
+       ⇒ ① 玩家自己砸出来的插针（位移那一层）根本不进高低点 ⇒ 不再「自己把自己打爆」；
+          ② 与未实现盈亏 / 保证金率（都读 mark）同源 ⇒ 不再「显示健康却被爆」。 */
+    const raw = rawCandleAt(sym, s.i);
+    if (!raw) continue;
+    const bias = markBiasOf(s, sym);
     const dv = exDevOf(pos0.ex, sym, s.i);
-    const c = dv === 1 ? c0 : { o: c0.o * dv, h: c0.h * dv, l: c0.l * dv, c: c0.c * dv };
+    const c = {
+      o: (raw.o + bias) * dv,
+      h: (raw.h + bias) * dv,
+      l: (raw.l + bias) * dv,
+      c: (raw.c + bias) * dv,
+    };
 
     /* 便宜的闸：**当根高低点**没打穿强平价、保证金率也没趴在维持线上 ⇒ 这一小时不必建细路径。
        （`pathOf` 是 121 个点的布朗桥，每根 K 线每个仓位都白建一次太浪费。） */

@@ -1728,15 +1728,31 @@ TRAILING_STOP_MARKET` ＋ `reduceOnly` ＋ `workingType` ＋ `priceProtect` ＋ 
 两条都是**修 bug 性质**，不是加功能 —— 前者在制造「看起来没事其实已经爆了」的假象，
 后者在给巨鲸发无限杠杆。**一次只做一块以便验证**（用户要求）。
 
-#### ① 三价体系 —— 待用户拍板的**唯一设计岔路：index 从哪来？**
+#### ① 三价体系 —— **已实现（2026-10-03）**
 
-| 方案 | 内容 | 评价 |
-|---|---|---|
-| **a（推荐）** | `index := rawCloseAt()`（**未含玩家/NPC 位移的真实行情**）；`last := closeAt()`（含位移）；`mark := index + EMA(last − index)`，半衰期取现实量级（2.5 分钟 ≈ 更短）或复用 `ADV.pushHalf` 的同族缓动 | 无需新数据源；**「你自己的冲击不再把自己打爆」立刻成立**；位移天然变成「基差」 |
-| b | 另建一条合成现货指数（多假想现货所中位数截断） | 更真，但要新增数据/参数，且本作没有现货这个产品线 |
+> 设计岔路「index 从哪来」按推荐**方案 a** 落地（用户 2026-10-03 未反对）：
+> `index := rawCloseAt()`（**未含玩家/NPC 位移的真实行情**）；`last := closeAt()`（含位移）；
+> `mark := index + EMA(last − index)`。半衰期取 `MARK_HALF = ADV.pushHalf = 6h`，即
+> `MARK_ALPHA = 1 − 0.5^(1/6)`。**无需新数据源**，位移天然变成「基差」。
 
-**共同要点**：强平与未实现盈亏**统一走 mark**；`last` 只留给已实现盈亏与 K 线；
-⚠️ 口径一改，`sim-audit.mjs` 第 1 节（强平价自洽）与上一轮「实测数字」都要重跑复核。
+**落点（代码）**
+
+| 位置 | 改动 |
+|---|---|
+| `market.js` | 新增 `rawCandleAt(sym, i)` —— 取该根 **OHLC 原值（不含任何位移）**，与既有 `rawCloseAt` 同族 |
+| `engine.js` | 新增 `indexPrice` / `lastPrice` / `markBiasOf` / `markPrice` / `exMarkPrice`；`advanceMarkBias` 只在 `advanceOneHour` 里推一格（**读路径绝不写状态**）；`rewindTo` 重置 `s.mkb = {}` |
+| `engine.js` | `liquidateAll` 强平判据改走**标记价 K 线**：日内高低 = `rawCandleAt` ＋ 平移 `markBiasOf`，再乘本所偏移 `exDevOf` |
+| `state.js` | 新增 `s.mkb`（标记价基差 `sym -> EMA(last−index)`）；旧档无此键 ⇒ 读侧一律按 0（**不升 `STATE_VERSION`**） |
+| `render.js` / `main.js` | 保证金率 / 安全垫 / 强平预警改读 `exMarkPrice`；K 线现价标记改读 `lastPrice` |
+
+**口径分工**：强平 / 保证金率 / 未实现盈亏 / 资金费 → `mark`；成交 / 已实现盈亏 / K 线现价 → `last`。
+**关键性质**：`advanceMarkBias` 排在 `liquidateAll` **之后** ⇒ mark 在**当根**不含玩家自己刚砸出的位移，
+玩家自伤插针不再打爆自己；下一根起按 6h 半衰期收敛。真行情暴跌（`rawCandleAt` 的日内低点）仍会立刻爆人。
+
+**验证**：`npm run build` ✓（26 modules / gzip 57.90 kB）；`node tools/sim-audit.mjs` ✓
+（**87 通过 · 0 失败**，第 1 节强平价自洽、第 2 节拒绝分支穷举均未受影响 —— 因审计建局未注入位移时
+`last == index`，mark 路径对这两节数值无影响）。运行时手测（临时脚本，已删）另证：旧口径下玩家自砸插针
+会爆自己，新口径不再爆；持续负基差下仍正常强平。
 
 #### ⑥ 名义阶梯杠杆封顶 —— 与既有维持保证金率**同表**
 

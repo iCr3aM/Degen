@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canCloseAt, canOpenAt, chanOf, equity, exPrice, futuresAvailable, heatOf, markPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canCloseAt, canOpenAt, chanOf, equity, exMarkPrice, futuresAvailable, heatOf, lastPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewHeatOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { HEAT } from '../core/god.js';
 import { canLiquidate, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -800,7 +800,7 @@ export function update(refs, s, view) {
   /* K 线：持仓条、图表标记、主按钮都只看**当前所选币**的仓位（多仓口径，2026-09-28 拍板） */
   const sym = s.sym;
   const cur = posOf(s, sym);
-  const mark = markPrice(s, sym);
+  const mark = lastPrice(s, sym);   // 三价：K 线画的是**最新价**，现价标记与它同源
   /* ⚠️ **K 线只在交易页画**（A6 · 方案 §6.2）：另两页没有 K 线，`.trade-page` 是 `display:none`，
      量出来的画布尺寸是 0×0。不跳过的话 `windowFor(dw≈1)` 会算出畸形视野，还会把夹取后的
      `yPx` 反写回 `view.js`（污染那一段的真实位移）。 */
@@ -809,7 +809,7 @@ export function update(refs, s, view) {
   /* 持仓条：只显示当前所选币；**无持仓也常驻**（三格填 `--`），见 mount() 的注释 */
   if (cur) {
     const p = cur;
-    const posMark = exPrice(s, p.sym, p.ex);   // 缺口 10：本仓按**它自己那家所**的本所价
+    const posMark = exMarkPrice(s, p.sym, p.ex);   // 三价：保证金率 / 安全垫按**标记价**（本仓所在所）
     setText(refs.posSide, isMargin(p)
       /* 字面（v9 · §15.6 N4）：杠杆写「买入 / 卖出」—— 与操作区那两枚键一一对应。
          原来这里笼统写「现货」两个字，是因为当年杠杆恒为 1x 做多；§15.6 N2 起杠杆**也带倍数、
@@ -1028,7 +1028,7 @@ export function update(refs, s, view) {
        · 能平仓（`canReduce`）⇒ 判 `canCloseAt`：分批低于**最小平仓金额**的那几档才灰（「全部」恒可）；
        · 否则 ⇒ 判 `canOpenAt`：两个方向都开不出来才灰 —— 玩家可能想开多、也可能想开空，只堵一边会误灰。
      ⚠️ 排在动作键**之后**，因为它要读 `tradable`（与那几枚共用同一个闸门）。
-     ⚠️ 数据包没到货时不判这两个（此时 `markPrice` 为 null，六个档全会闪一下灰）——
+     ⚠️ 数据包没到货时不判这两个（此时 `lastPrice` 为 null，六个档全会闪一下灰）——
         行情加载中由动作键那边的 `.off` 讲，这一排只是「下一单的参数」，不必跟着闪。 */
   const canReduce = !!cur && tradable;
   for (const [k, b] of refs.fracBtns) {
