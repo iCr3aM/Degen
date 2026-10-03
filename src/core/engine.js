@@ -829,33 +829,6 @@ function pushFlow(s, sym, dir, notional, give = 1, kind = 'fut', player = true) 
 /** 热度只读给 UI（缺格时返回中性 `HEAT.base` —— 与 `mktOf` 的初值一致）。 */
 export const heatOf = (s, sym) => (s.mkt && s.mkt[sym] ? s.mkt[sym].heat : HEAT.base);
 
-/**
- * **回顾页**的热度读数 —— 与实盘同一套方程，但只吃**原始历史行情**。
- *
- * 为什么回顾页可以「零耦合」：回顾那一屏 `factorFor ≡ 1`（见 `main.js` 的 factor 注入），
- * 显示的本来就是原始 K 线 ⇒ 热度是 `(sym, i)` 的**纯函数**，与存档无关，可以整条预计算后按索引取。
- * ⚠️ 游标只前进（`j` 从上次处续算），回看历史时直接查 `arr`，不重跑。
- */
-const rvHeat = new Map();
-
-export function reviewHeatOf(sym, i) {
-  const r = rangeOf(sym);
-  if (!r || i < r[0] || !isLoaded(sym)) return HEAT.base;
-  const upto = Math.min(i, r[1] - 1);
-  let c = rvHeat.get(sym);
-  if (!c) { c = { a: r[0], j: r[0] - 1, h: HEAT.base, arr: [] }; rvHeat.set(sym, c); }
-  for (let j = c.j + 1; j <= upto; j++) {
-    const sig = dailySigma(sym, j);
-    const p1 = rawCloseAt(sym, j);
-    const p0 = rawCloseAt(sym, j - HEAT.window);
-    const x = sig > 0 && p1 > 0 && p0 > 0 ? (p1 / p0 - 1) / sig : 0;
-    c.h = clamp01(c.h + HEAT.k1 * x - HEAT.k2 * (c.h - HEAT.base));
-    c.arr.push(c.h);
-    c.j = j;
-  }
-  return c.arr[upto - c.a] ?? HEAT.base;
-}
-
 /* ── 恐惧贪婪指数（**显示轨** · 2026-10-04 用户拍板「显示轨解耦」）────────────────
    详见 `god.FNG` 的常量注释：`heat` 是逐小时的**玩法引擎**（记忆 ≈ 14h，注定几天内横跳），
    本条是**每日 1 次**的慢速**只读**读数 —— 两条轨互不影响，`heat` 一个字不改。
@@ -920,7 +893,7 @@ export const fngBandOf = (s, sym) => (s.mkt && s.mkt[sym] && s.mkt[sym].fngBand)
 
 /**
  * **回顾页**的恐惧贪婪读数 —— 与实盘同一套方程 ＋ 同一条日频低通，但只吃**原始历史行情**。
- * 与 `reviewHeatOf` 同一条纪律：`(sym, i)` 的纯函数，游标只前进、回看查前缀数组。
+ * **纯函数纪律**：`(sym, i)` 的纯函数，游标只前进、回看查前缀数组（同 `reviewDrawdownOf`）。
  */
 const rvFng = new Map();
 
@@ -959,14 +932,14 @@ export function reviewFngBandOf(sym, i) {
    背景：持仓量 / 多空比 / 资金费率的历史在 2018 年之前**根本拿不到**（数据源从那时才起），
    回顾页不能拿它们当「历史读数」。改展示三样**只吃原始行情**就能算出来的真东西：
    24h 年化波动率、距历史高 / 低回撤、24h 绝对美元成交额。
-   三者与 `reviewHeatOf` 同一条纪律：`(sym, i)` 的**纯函数**，不碰 `s`、不写存档、不判破产。 */
+   三者都是 `(sym, i)` 的**纯函数**：不碰 `s`、不写存档、不判破产。 */
 
 /**
  * 近 24h 小时收益的**年化滚动波动率**。
  *
  * 口径：用 `[i−24, i]` 共 25 个收盘算 24 个对数收益 `ln(c_k / c_{k−1})`，取**总体标准差**
  * （与 `sigmaOf` / `dailySigma` 同一估计量，不是样本标准差），再乘 `√(24×365)` 年化。
- * ⚠️ 读 `rawCloseAt`（**不含位移**）：回顾页画的就是原始行情，与 `reviewHeatOf` 同一条口径。
+ * ⚠️ 读 `rawCloseAt`（**不含位移**）：回顾页画的就是原始行情，与 `reviewDrawdownOf` 同一条口径。
  * ⚠️ 窗口不满（上线头 24 小时）⇒ `NaN`，UI 层按 `--` 处理。
  */
 export function reviewVolOf(sym, i) {
@@ -991,7 +964,7 @@ export function reviewVolOf(sym, i) {
  *   `lo` = 现价 / 历史最低 − 1（≥ 0，正好在最低点就是 0）。
  *   「历史最高 / 最低」取 `[r[0], i]` 区间内**原始** K 线的 `h` / `l` 极值。
  *
- * ⚠️ 与 `reviewHeatOf` 同一套游标缓存：**逐根累积**，游标只前进（回看历史直接查前缀数组）。
+ * ⚠️ 与 `rvFng` 同一套游标缓存：**逐根累积**，游标只前进（回看历史直接查前缀数组）。
  *    `hi` / `lo` 是**前缀极值**（单调），故存成两条 `Float64Array` 而不是整段数组 ——
  *    回跳时按索引读到的仍是「那一刻为止」的极值。
  */
