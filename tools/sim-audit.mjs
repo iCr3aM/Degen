@@ -660,6 +660,209 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
   check('9g rewindTo 复位档 3 预警闩锁', s5.advWarn3 === false, `实得 ${s5.advWarn3}`);
 }
 
+/* ═══════════════════ 10 · 存档往返（存 → 读 → 再存 幂等 · 读回的盘能继续跑） ═══════════════════ */
+section('10 · 存档往返（JSON 序列化 ⇒ 逐位可复现 · 两槽互不覆盖）');
+{
+  const save = await import('../src/core/save.js');
+  const { STATE_VERSION } = await import('../src/core/state.js');
+
+  /* ⚠️ Node 里**没有** `localStorage`，而 `save.js` 直接读这个全局 —— 本小节**临时**装一个内存版，
+     跑完在 `finally` 里恢复原值（原本没有就删掉），绝不污染全局、也不改 `src/`。 */
+  const hadLS = 'localStorage' in globalThis;
+  const prevLS = globalThis.localStorage;
+  const mem = new Map();
+  globalThis.localStorage = {
+    getItem: k => (mem.has(String(k)) ? mem.get(String(k)) : null),
+    setItem: (k, v) => { mem.set(String(k), String(v)); },
+    removeItem: k => { mem.delete(String(k)); },
+    clear: () => mem.clear(),
+  };
+
+  /* ⚠️ 体例说明（**不伪装通过**）：任务书把 `shaped` / `parse` 列为 `save.js` 的导出，实际它们是
+     **模块内私有函数**（`src/core/save.js:62` / `:72`），Node 里 import 不到 —— 所以本小节不直接
+     调它们，改测它们的**效果**：`loadSlot()` / `hasSave()` 内部走的就是 `parse()` ⇒ `shaped()`，
+     回写一份 JSON 往返档后 `hasSave` 仍为真，即等价于「`shaped()` 没丢那 12 个键」。
+     另：`localStorage` 走上面的内存打桩，所以 `save` / `load` / `wipe` 在 Node 下**确实可用**。 */
+  try {
+    /* 跑一局：真下单 ⇒ 真持仓，再推进若干小时，让派生量非平凡（利息 / 价格位移都已经发生） */
+    const s = await mk({ scen: 'classic', sym: 'BTC', cash: 50000, i: idx(at(2020, 5)) });
+    s.mode = 'margin'; s.lev = 2;
+    const o = engine.openTrade(s, 'long', 0.5);
+    check('10 前置：存档局的仓开出来了', o.ok && !!s.positions.BTC, o.why || '');
+    for (let k = 0; k < 28; k++) engine.advanceOneHour(s);
+    const eq0 = engine.equity(s);
+
+    check('10 save() 落盘返回真', save.save(s) === true);
+    const back = save.load();
+    check('10 load() 拿回一份可用档（版本相符）', !!back && back.v === STATE_VERSION, back ? `v=${back.v}` : 'null');
+    if (back) {
+      check('10 往返后权益一致（1e-6 容差）',
+        Math.abs(engine.equity(back) - eq0) < 1e-6, `${f(engine.equity(back), 6)} vs ${f(eq0, 6)}`);
+      const p0 = s.positions.BTC, p1 = back.positions.BTC;
+      const dOk = !!p0 && !!p1
+        && Math.abs(P.liquidationPrice(p1) - P.liquidationPrice(p0)) < 1e-6
+        && Math.abs(p1.margin - p0.margin) < 1e-6
+        && Math.abs(p1.entry - p0.entry) < 1e-9
+        && Math.abs(p1.size - p0.size) < 1e-9;
+      check('10 往返后关键派生量一致（强平价 / 保证金 / 均价 / 数量）', dOk,
+        dOk ? `强平价差 ${f(Math.abs(P.liquidationPrice(p1) - P.liquidationPrice(p0)), 9)}` : '有字段漂移');
+      check('10 往返后时间 / 模式 / 所 / 币一并还原',
+        back.i === s.i && back.mode === s.mode && back.sym === s.sym && back.ex === s.ex,
+        `i=${back.i}/${s.i} mode=${back.mode}/${s.mode}`);
+
+      /* JSON 往返 + `SHAPE` 12 键白名单（键名照抄 `save.js:60`）—— 这正是 `shaped()` 的判据本身 */
+      const rt = JSON.parse(JSON.stringify(back));
+      const SHAPE_KEYS = ['books', 'positions', 'flow', 'overhang', 'pool', 'adv', 'mkt', 'pvol', 'stat', 'pulse', 'log', 'eq'];
+      const missing = SHAPE_KEYS.filter(k => !(k in rt));
+      check('10 JSON 往返后 SHAPE 的 12 个键一个不丢', missing.length === 0, missing.length ? `缺 ${missing.join(' / ')}` : '12 / 12');
+      /* 回写这份往返档后被 `hasSave` 接受 ⇒ `shaped()` 真的认它（第二把尺子） */
+      mem.set('degen_save_normal', JSON.stringify(rt));
+      check('10 回写往返档后 shaped() 仍认（hasSave 为真）', save.hasSave('normal') === true);
+
+      /* 读回来的盘继续跑：不抛异常、权益有限 */
+      const r2 = save.load();
+      let threw = null;
+      try { for (let k = 0; k < 3; k++) engine.advanceOneHour(r2); } catch (e) { threw = String((e && e.message) || e); }
+      check('10 读回的盘能继续 advanceOneHour（不抛异常）', threw === null, threw || '');
+      check('10 续跑后权益仍有限', !!r2 && Number.isFinite(engine.equity(r2)), r2 ? `权益 ${f(engine.equity(r2), 2)}` : 'null');
+    } else {
+      for (const nm of ['10 往返后关键派生量一致（强平价 / 保证金 / 均价 / 数量）',
+        '10 JSON 往返后 SHAPE 的 12 个键一个不丢',
+        '10 读回的盘能继续 advanceOneHour（不抛异常）']) check(nm, false, 'load() 返回 null，无法验证');
+    }
+
+    /* ── 两槽并存（`degen_save_normal` / `degen_save_challenge`）互不覆盖 ── */
+    const chal = await mk({ scen: 'degen', sym: 'BTC' });
+    check('10 槽位由 scen 推导：经典 ⇒ normal', save.saveSlotOf(s.scen) === 'normal', s.scen);
+    check('10 槽位由 scen 推导：年代局 ⇒ challenge', save.saveSlotOf(chal.scen) === 'challenge', chal.scen);
+    check('10 槽位显示名', save.slotName('normal') === '普通模式' && save.slotName('challenge') === '挑战模式');
+    mem.clear();
+    check('10 写 normal 槽成功', save.save(s) === true);
+    check('10 写 challenge 槽成功', save.save(chal) === true);
+    check('10 两槽互不覆盖（两个 hasSave 都为真）', save.hasSave('normal') === true && save.hasSave('challenge') === true);
+    const ln = save.loadSlot('normal'), lc = save.loadSlot('challenge');
+    check('10 两槽各自内容不同（scen 不同）', !!ln && !!lc && ln.scen !== lc.scen, `normal=${ln && ln.scen} / challenge=${lc && lc.scen}`);
+    check('10 开局缺省先读 normal 槽（普通优先于挑战）', save.load().scen === 'classic');
+
+    save.wipe('normal');
+    check('10 wipe(normal) 后该槽 hasSave 为假', save.hasSave('normal') === false);
+    check('10 wipe 只动本槽（challenge 仍可用）', save.hasSave('challenge') === true);
+    save.wipe('challenge');
+    check('10 wipe(challenge) 后该槽 hasSave 为假', save.hasSave('challenge') === false);
+  } finally {
+    if (hadLS) globalThis.localStorage = prevLS; else delete globalThis.localStorage;
+  }
+}
+
+/* ═══════════════════ 11 · 跨年代边界（开所 / 闭所 / 维护窗口 · 全时间线扫描） ═══════════════════ */
+section('11 · 跨年代边界：边界前后 openTrade 行为可解释 + 全时间线粗粒度扫描');
+{
+  /* 边界取自 `C.EXCHANGES`（开所 / 闭所 / 停机窗口）＋ 两类工具的**上线档**（`marginSteps` /
+     `futSteps` 的各档 `from`）—— 全部由 `Date.UTC` 构造，与配置逐位同源，不另编时刻。 */
+  const list = [];
+  for (const ex of C.EXCHANGES) {
+    if (ex.open >= C.GAME.start) list.push({ ex: ex.id, t: ex.open, kind: '开所' });
+    if (ex.close != null) list.push({ ex: ex.id, t: ex.close, kind: '闭所' });
+    for (const h of ex.halts || []) { list.push({ ex: ex.id, t: h.from, kind: '停机' }); list.push({ ex: ex.id, t: h.to, kind: '恢复' }); }
+    for (const [steps, lab] of [[ex.marginSteps, '杠杆上线'], [ex.futSteps, '合约上线']]) {
+      if (steps) for (const st of steps) list.push({ ex: ex.id, t: st.from, kind: lab });
+    }
+  }
+  /* 同一所同一时刻去重（开所日往往就是首档上线日）；按时刻升序，输出可读 */
+  const bounds = [...new Map(list.map(b => [`${b.ex}@${b.t}`, b])).values()].sort((a, b) => a.t - b.t);
+  console.log(`  边界 ${bounds.length} 个（开所 / 闭所 / 停机 / 工具上线）｜ 闭所 ` +
+    `${C.EXCHANGES.filter(e => e.close != null).length} 个（三家所 ` +
+    `${C.EXCHANGES.every(e => e.close == null) ? '全部活到时间线末尾' : '有闭所事件'}）`);
+
+  /* ⚠️ 「闭所日」在本时间线内**不可测**：`EXCHANGES[].close` 三家全为 `null` ——
+     相应地 `advanceOneHour` 里那条 `collapseExchange` 交易所归零路径在本数据包下是**死代码**。
+     如实记账，不伪造一条闭所边界。 */
+  check('11 闭所日：三家所 close 全为 null（本时间线无闭所事件可测）',
+    C.EXCHANGES.every(e => e.close == null),
+    C.EXCHANGES.map(e => `${e.id}:${e.close == null ? '—' : new Date(e.close).toISOString().slice(0, 10)}`).join(' '));
+
+  /* 打一根边界探针：把玩家放到**指定所**、同一时刻、同一本金（两格都给足，免被币种口径误拒） */
+  const probe = async ({ ex, t, side = 'long', mode = 'margin', lev = 1, cash = 1000 }) => {
+    const st = await mk({ sym: 'BTC', mode, i: idx(t) });
+    st.ex = ex; st.lev = lev;
+    st.books = { [ex]: { usd: cash, usdt: cash } };
+    try { return engine.openTrade(st, side); } catch (e) { return { ok: false, why: `抛异常：${(e && e.message) || e}` }; }
+  };
+  const tag = r => (r.ok ? 'ok' : `拒(${r.why})`);
+
+  for (const b of bounds) {
+    const A = await probe({ ex: b.ex, t: b.t - H });
+    const B = await probe({ ex: b.ex, t: b.t + H });
+    /* 硬要求 ①：边界前 1 小时与后 1 小时「要么理由不同、要么两边都放行」—— 行为确实在边界处翻转 */
+    const flipped = (A.ok !== B.ok) || (A.why || '') !== (B.why || '');
+    check(`11 ${b.kind}边界 ${b.ex} ${new Date(b.t).toISOString().slice(0, 13)}Z（前1h vs 后1h）`,
+      flipped || (A.ok && B.ok), `前 ${tag(A)} ／ 后 ${tag(B)}${flipped ? '' : '（两侧一致）'}`);
+    /* 工具上线日若同时改「有没有融资」⇒ 空头侧必须跟着翻（杠杆做空要先借到币） */
+    const finA = C.hasFinancingAt(b.t - H, b.ex), finB = C.hasFinancingAt(b.t + H, b.ex);
+    if (finA !== finB) {
+      const SA = await probe({ ex: b.ex, t: b.t - H, side: 'short', cash: 800 });
+      const SB = await probe({ ex: b.ex, t: b.t + H, side: 'short', cash: 800 });
+      check(`11 融资闸随 ${b.ex} 边界开启（空头理由翻转）${new Date(b.t).toISOString().slice(0, 13)}Z`,
+        (SA.why || '') !== (SB.why || ''), `前 ${tag(SA)} ／ 后 ${tag(SB)}`);
+    }
+  }
+
+  /* ── 停机窗口：±1h 在 1 小时窗口上可能整段落在窗口之外 ⇒ 单独锁「窗口内拒 / 恢复即放」 ── */
+  for (const ex of C.EXCHANGES) for (const h of ex.halts || []) {
+    const inWin = await probe({ ex: ex.id, t: h.from });
+    const outWin = await probe({ ex: ex.id, t: h.to });
+    check(`11 停机窗口内只平不开（${ex.id} ${new Date(h.from).toISOString().slice(0, 13)}Z）`,
+      !inWin.ok && /停机维护/.test(inWin.why || ''), tag(inWin));
+    check(`11 停机窗口结束即恢复开仓（${ex.id} ${new Date(h.to).toISOString().slice(0, 13)}Z）`,
+      outWin.ok, tag(outWin));
+  }
+
+  /* ── 全时间线粗粒度扫描：每个采样点权益有限、持仓无 NaN / 非正字段 ── */
+  {
+    const st = await mk({ sym: 'BTC', cash: 1000 });
+    st.hintOn = false;                        // 免去破产预警遮罩（它会让时钟停下、扫描卡住）
+    for (const sy of ['BTC', 'ETH', 'XRP', 'DOGE', 'SOL']) await market.loadCoin(sy);
+    let samples = 0, nanEq = 0, badPos = 0, heldSamples = 0;
+    while (samples < 200 && st.i < st.endI - 1) {
+      if (st.pending) st.pending = null;
+      if (!st.over && Object.keys(st.positions).length === 0) {
+        st.sym = 'BTC'; st.mode = 'margin'; st.lev = 1;
+        engine.openTrade(st, 'long', 1);       // 建一条 1x 多头：不借钱、不爆仓，全程有仓可查
+      }
+      for (let k = 0; k < 720 && st.i < st.endI - 1; k++) engine.advanceOneHour(st);
+      samples++;
+      if (!Number.isFinite(engine.equity(st))) nanEq++;
+      for (const sy of Object.keys(st.positions)) {
+        const p = st.positions[sy];
+        if (!(Number.isFinite(p.entry) && p.entry > 0
+          && Number.isFinite(p.size) && p.size > 0
+          && Number.isFinite(p.notional) && p.notional > 0
+          && Number.isFinite(p.margin) && p.margin > 0)) badPos++;
+      }
+      if (Object.keys(st.positions).length) heldSamples++;
+      if (st.over) break;
+    }
+    check('11 全时间线扫描：每个采样点权益有限', nanEq === 0, `${samples} 个采样点（步长 720h）`);
+    check('11 全时间线扫描：持仓无 NaN 价格 / 非正仓位', badPos === 0, `异常 ${badPos} 处`);
+    check('11 全时间线扫描：采样期确有持仓被检到（非空转）', heldSamples > 0, `${heldSamples}/${samples} 个采样点持仓`);
+  }
+
+  /* ── 挑战局 vs 经典局：终点不同，且挑战局确实落在自己的 endI ── */
+  {
+    const classicEnd = C.scenarioEndIndex('classic');
+    const chalEnd = C.scenarioEndIndex('degen');
+    const chal = createState('degen');
+    check('11 经典局终点 = GAME.candles（与改动前逐位相同）', classicEnd === C.GAME.candles, `${classicEnd} vs ${C.GAME.candles}`);
+    check('11 挑战局终点与经典局不同', chalEnd !== classicEnd, `degen ${chalEnd} vs classic ${classicEnd}`);
+    check('11 挑战局 s.endI === scenarioEndIndex(scen)', chal.endI === chalEnd, `${chal.endI} vs ${chalEnd}`);
+    let n = 0;
+    while (!chal.over && n < 6000) { if (chal.pending) chal.pending = null; engine.advanceOneHour(chal); n++; }
+    check('11 挑战局走满后确在 s.endI 结算（不陪跑到 2024）',
+      !!chal.over && chal.over.reason === 'settled' && chal.i === chal.endI - 1,
+      `${JSON.stringify(chal.over)} i=${chal.i} endI=${chal.endI}`);
+  }
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);
