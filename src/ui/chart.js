@@ -14,10 +14,10 @@
  *    y 平移）由 `view.js` 持有并传进来，但 **y 平移的限位必须在换算的同一处夹**
  *    —— 所以本函数会把「实际生效的 yPx」返回给调用方写回视野状态，见下方 `yPx` 段。
  *
- * ⚠️ **量柱是叠在 K 线上的展示层**（Batch 4 · B15）：价格区**吃满** `plotH`，量柱贴底、
- *    **半透明盖在 K 线之上**（图层二）。量柱与自己那根 K 线**同宽同色**，所以只会把背景压出一段
- *    「暗一档的柱身」，不会把相邻的 K 线染花；最大柱高另有上限（`VOL_MAX`），
- * 保证它不侵入 K 线的躯干密集区。柱高只服务观感，不参与任何玩法。
+ * ⚠️ **量柱是垫在 K 线之下的展示层**（Batch 4 · B15；2026-10-04 由「盖在之上」翻转为「画在之下」）：
+ *    价格区**吃满** `plotH`，量柱贴底、**先画**，K 线（涨烛空心 / 跌烛实心）再压上去。这样即使
+ *    同色也不糊，量柱只在 K 线躯干之外露出一段「淡淡的柱身」。最大柱高另有上限（`VOL_MAX`），
+ *    保证它不侵入 K 线的躯干密集区。柱高只服务观感，不参与任何玩法。
  */
 
 import { fmtMoneyShort } from '../core/format.js';
@@ -30,18 +30,19 @@ const PAD_B = 16;
  *  遮罩量不到时才退回这里 —— 10px 只是轴标签半高，遮罩有 28px 高，光靠它标签会被压进遮罩底下。 */
 const PAD_TOP = 10;
 /** 量柱**最大**高度占绘图高度的比例（Batch 4 · B15）—— 纯展示层，只服务观感。
- *  ⚠️ 取 **1/4** 而不是「先定 28% 再由上限兜」：实测这台机型画布高 214px（`plotH ≈ 186`），
- *     28% ⇒ 52px 的色带，比改版前那条约 45px 的量区明显更高、更抢戏；25% ⇒ 47px，
- *     与玩家已经认可的观感基本重合。「纯展示层不超过价格区 1/4」这条原则因此**由比例自己守住**，
- *     上限 `VOL_MAX` 只在超高的画布上才起作用（见下）。 */
-const VOL_RATIO = 0.25;
+ *  ⚠️ 实测这台机型画布高 214px（`plotH ≈ 186`）：0.22 ⇒ ≈41px 的色带。
+ *     2026-10-04 由 0.25 **轻微**收窄到 0.22（用户「降低量柱存在感」）—— 不再大砍高度，因为
+ *     高度一低像素档位就少、更容易「一排一样高」（那一项改由 P95 归一化解决）。「存在感」主要
+ *     靠**画在 K 线之下 ＋ 降 alpha**来降。上限 `VOL_MAX` 只在超高的画布上才起作用（见下）。 */
+const VOL_RATIO = 0.22;
 /** 量柱最大高度的下限（px）：矮屏（plotH≈100）也保证柱身有辨识高度，不退化成一条线 */
 const VOL_MIN = 20;
 /** 量柱最大高度的上限（px）：高屏（`plotH > 256`）不让量区跟着无限长高 —— 纯展示层不该超过价格区 1/4 */
 const VOL_MAX = 64;
-/** 量柱透明度：盖在 K 线上（Batch 4 · B15）。0.30 下是「压暗的同色带」，
- *  与**不透明**的 K 线天然分两档 —— 同色相也不糊，这正是「不与价格混为一体」的落点。 */
-const VOL_ALPHA = 0.30;
+/** 量柱透明度：垫在 K 线之下（2026-10-04 由 0.30 降到 0.20）。量柱本体先画、K 线再压上去 ——
+ *  跌烛实心整段遮住它，涨烛空心与柱间空隙里透出淡淡一段。0.20 下是「压暗的同色带」，与不透明的
+ *  K 线天然分两档 —— 同色相也不糊，这正是「不与价格混为一体」的落点。 */
+const VOL_ALPHA = 0.20;
 
 /** 画布要用的 CSS 变量名。键名只在本文件里用，值就是 `:root` 里那个变量。 */
 const THEME_VARS = {
@@ -62,10 +63,10 @@ const THEME_VARS = {
 
 let themeCache = null;
 
-/** 量柱 P90 的缓存（用户 2026-10-01 拍板）—— `windowFor` 每帧重建 `vols` 数组，
+/** 量柱 P95 的缓存（用户 2026-10-01 拍板）—— `windowFor` 每帧重建 `vols` 数组，
  *  所以不能用数组引用当键，改由调用方给一个「这份视野是谁」的字符串（`o.cacheKey`）。
- *  量柱是**原始成交额**、与价格位移无关，所以同一个键下 P90 恒定。 */
-let p90Cache = { key: '', v: 0 };
+ *  量柱是**原始成交额**、与价格位移无关，所以同一个键下 P95 恒定。 */
+let volCache = { key: '', v: 0 };
 
 /**
  * 把 `:root` 的变量读成计算值并缓存。
@@ -121,7 +122,7 @@ function axisLabel(p) {
  *   levels   Array<{p,w}>|null 历史压力位（ROADMAP §六十五）：`p` 价位、`w` 权重 0~1（越重越亮）。
  *                              一组横虚线，画在 K 线之后、开仓线之前；只画**落在本帧价格带内**的。
  *                              ⚠️ **只有回顾页传**（交易页恒 null）—— 见 `render.js` 的 `chartOpts`。
- *   cacheKey string            量柱 P90 的缓存键（`sym|mode|right|count`，见 `p90Cache`）。不给就不缓存。
+ *   cacheKey string            量柱 P95 的缓存键（`sym|mode|right|count`，见 `volCache`）。不给就不缓存。
  *   topInset number            顶部留白 = 左上角遮罩的实测高度（B27）。不传则退回 `PAD_TOP`。
  *   cssW/cssH number           容器尺寸（CSS 像素）
  *   yPx      number            价格轴的垂直平移（像素，向下为正；`view.js` 持有）
@@ -153,7 +154,7 @@ export function drawChart(canvas, o) {
   const top = topInset;
   const bot = top + plotH;              // 价格区下沿 = 量柱基线（贴住最下面那根网格线）
   // 价格区**吃满** plotH（Batch 4 · B15，原先是「价格 78% + 量区 22%」上下分栏）；
-  // 量柱改成叠在 K 线上的展示层，这里的 volH 是**量柱最大高度**，不再是分栏高度。
+  // 量柱改成垫在 K 线下的展示层，这里的 volH 是**量柱最大高度**，不再是分栏高度。
   const volH = clamp(Math.round(plotH * VOL_RATIO), VOL_MIN, VOL_MAX);
 
   if (!candles || !candles.length) {
@@ -235,53 +236,34 @@ export function drawChart(canvas, o) {
     ctx.fillText(axisLabel(p), plotW + 6, y);
   }
 
-  // ── K 线本体（图层一） ──
-  for (let k = 0; k < n; k++) {
-    const c = candles[k];
-    const up = c.c >= c.o;
-    const col = up ? T.UP : T.DOWN;
-    const x = xAt(k);
-    const yH = yOf(c.h), yL = yOf(c.l);
-    const yO = yOf(c.o), yC = yOf(c.c);
-
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(Math.round(x) + .5, yH);
-    ctx.lineTo(Math.round(x) + .5, yL);
-    ctx.stroke();
-
-    const yTop = Math.min(yO, yC);
-    const hBody = Math.max(1, Math.abs(yC - yO));
-    ctx.fillStyle = col;
-    ctx.fillRect(Math.round(x - bw / 2), Math.round(yTop), Math.round(bw), Math.round(hBody));
-  }
-
-  // ── 成交量柱（图层二：**盖在 K 线之上**，Batch 4 · B15） ──
-  // 柱高按**视野内的 P90**归一化（Batch 5 · B29，2026-09-29），不再是最大值：
+  // ── 成交量柱（图层一：**先画、垫在 K 线之下**，2026-10-04 由「盖在之上」翻转） ──
+  // 柱高按**视野内的 P95**归一化（Batch 5 · B29，2026-09-29；2026-10-04 由 P90 提到 P95）：
   //   份额是日内相对量，绝对量跨 7 个数量级，所以必须按视野自适应；
   //   但用 `vmax` 时，视野里只要出现一根极端柱（2017-12 / 2021-04），其余几十根全被压到几像素，
-  //   **看不见就等于没有**（量区是纯展示层）。取 P90 之后约 90% 的柱子保留真实相对高低，
-  //   超过 P90 的少数巨量柱封顶 —— 仍是最高的那一档，一眼可辨。
-  //   ⚠️ 视野内没有极端柱时 `vp90 ≈ vmax` ⇒ **自动退化成改版前的口径**，只在本来就读不出来时才生效。
+  //   **看不见就等于没有**（量区是纯展示层）。取分位之后绝大多数柱子保留真实相对高低，
+  //   超过分位的少数巨量柱封顶 —— 仍是最高的那一档，一眼可辨。
+  //   ⚠️ 为什么是 P95 而不是 P90（2026-10-04 实测证据）：份额集中在 p50≈0.45·p90 附近，
+  //      P90 ＋ 硬 clamp 会让 68 根里 8~11 根被顶到满高（实测出现过连续 5 根同高 `47,47,47,47,47`，
+  //      档位仅 15 档）⇒ 就是用户看到的「一排过去全是一样高」。P95 把顶格降到 4~5 根、档位升到
+  //      18 档（`47,45,41,47,39` 成梯度）；P98 更彻底但少数尖峰时柱带会显稀，故取 P95。
+  //   ⚠️ 视野内没有极端柱时 `vp95 ≈ vmax` ⇒ **自动退化成更早的口径**，只在本来就读不出来时才生效。
   // 无成交的根不画（柱高 0）。量区不画网格、不加轴标签 —— LESS IS MORE。
-  // ⚠️ 柱宽与柱心的取法与 K 线**完全一致** ⇒ 每根量柱正好盖住它自己那一根 K 线；
-  //    同色叠加下 K 线躯干看不出变化，只有背景被压出「暗一档的柱身」。
+  // ⚠️ 柱宽与柱心的取法与 K 线**完全一致** ⇒ 每根量柱正好落在它自己那一根 K 线之下。
   const V = vols || [];
   let vmax = 0;
   const nz = [];
   for (const v of V) if (v > 0) { nz.push(v); if (v > vmax) vmax = v; }
   let vscale = vmax;
   if (nz.length >= 10) {
-    /* ⚠️ P90 缓存（用户 2026-10-01 拍板）：同视野下每帧重排一次纯属浪费 ——
+    /* ⚠️ P95 缓存（用户 2026-10-01 拍板）：同视野下每帧重排一次纯属浪费 ——
        键由调用方给（`cacheKey`），命中就直接复用。 */
     const key = o.cacheKey;
-    if (key && p90Cache.key === key) {
-      vscale = p90Cache.v;
+    if (key && volCache.key === key) {
+      vscale = volCache.v;
     } else {
       nz.sort((a, b) => a - b);
-      vscale = nz[Math.min(nz.length - 1, Math.ceil(0.9 * nz.length) - 1)];   // 最近秩法 P90
-      if (key) p90Cache = { key, v: vscale };
+      vscale = nz[Math.min(nz.length - 1, Math.ceil(0.95 * nz.length) - 1)];   // 最近秩法 P95
+      if (key) volCache = { key, v: vscale };
     }
   }
   const PV = pvols || [];
@@ -305,11 +287,11 @@ export function drawChart(canvas, o) {
   // ── 玩家自己那一段：**只换色、不改高度**（v20 · 用户 2026-10-01 拍板） ──
   // 高度仍按同一把尺（`vscale` / `volH`）量，所以柱顶一格不动；变的是**下半段**的色相：
   //   杠杆 = `--pv-margin`、合约 = `--pv-fut`，两段从基线往上叠（杠杆在下、合约在上）。
-  // ⚠️ 为什么原来的玩家量「看不见」（2026-10-01 诊断结论）：柱高按**视野内 P90** 归一化
+  // ⚠️ 为什么原来的玩家量「看不见」（2026-10-01 诊断结论）：柱高按**视野内分位**归一化
   //    （B29），一屏 68 根小时线里市场自己的成交额动辄几万到几十亿美元，玩家那一笔被压到
   //    十几像素 —— **不是没接进来，而是被同一根柱子里的市场量淹了**。分色之后即使高度不变，
   //    也能一眼看出「这根里有多少是我的」。
-  // ⚠️ 本段用**不透明**（不吃 `VOL_ALPHA`）：量柱本体是 .30 的「压暗同色带」，玩家段若也压暗
+  // ⚠️ 本段用**不透明**（不吃 `VOL_ALPHA`）：量柱本体是 .20 的「压暗同色带」，玩家段若也压暗
   //    就与涨跌色糊在一起。不透明 ≠ 改高度，柱顶仍由 `vols` 决定。
   if (vscale > 0) {
     for (let k = 0; k < n; k++) {
@@ -334,6 +316,47 @@ export function drawChart(canvas, o) {
         ctx.fillStyle = col;
         ctx.fillRect(bx[k], y, Math.round(bw), sh);
       }
+    }
+  }
+
+  // ── K 线本体（图层二：**盖在量柱之上**） ──
+  // ⚠️ **涨烛画空心（描边）、跌烛画实心**（2026-10-04 用户拍板）：涨烛只留一圈边，
+  //    空心里能透出底下的量柱；跌烛实心、把量柱整段压住 —— 「涨＝轻、跌＝重」一眼可分。
+  //    ⚠️ 空心烛的影线**分上下两段**画：不这么切，竖线会从空心内部穿过去，看起来就成了实心柱。
+  for (let k = 0; k < n; k++) {
+    const c = candles[k];
+    const up = c.c >= c.o;
+    const col = up ? T.UP : T.DOWN;
+    const x = xAt(k);
+    const yH = yOf(c.h), yL = yOf(c.l);
+    const yO = yOf(c.o), yC = yOf(c.c);
+
+    const xc = Math.round(x) + .5;                 // 影线 x（半像素对齐，1px 才不糊）
+    const bodyTop = Math.round(Math.min(yO, yC));
+    const bodyBot = Math.round(Math.max(yO, yC));
+    const bwPx = Math.round(bw);
+    const bx0 = Math.round(x - bw / 2);
+
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1;
+    if (up) {
+      // 空心：影线分上下两段，避开柱身内部
+      ctx.beginPath();
+      ctx.moveTo(xc, yH);
+      ctx.lineTo(xc, bodyTop);
+      ctx.moveTo(xc, bodyBot);
+      ctx.lineTo(xc, yL);
+      ctx.stroke();
+      // 柱身描边（半像素对齐）
+      ctx.strokeRect(bx0 + .5, bodyTop + .5, Math.max(1, bwPx - 1), Math.max(1, bodyBot - bodyTop - 1));
+    } else {
+      // 实心：影线整根穿过，柱身填充
+      ctx.beginPath();
+      ctx.moveTo(xc, yH);
+      ctx.lineTo(xc, yL);
+      ctx.stroke();
+      ctx.fillStyle = col;
+      ctx.fillRect(bx0, bodyTop, bwPx, Math.max(1, bodyBot - bodyTop));
     }
   }
 

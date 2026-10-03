@@ -1279,8 +1279,8 @@ function chartOpts({ canvas, head, sym, i, view, mark, cur, own = true, ns = '',
     /* 历史锚点刻度（P2-C）—— 与最右那根一起交给图上换算槽位 */
     anchors: anchorMarks,
     right: win.right,
-    /* 量柱 P90 的缓存键（用户 2026-10-01 拍板）：`windowFor` 每帧重建 `vols`，所以不能用引用当键 ——
-       用「这份视野是谁」的字符串。同一视野（未换币 / 未换粒度 / 未拖动）下 P90 恒定。 */
+    /* 量柱 P95 的缓存键（用户 2026-10-01 拍板）：`windowFor` 每帧重建 `vols`，所以不能用引用当键 ——
+       用「这份视野是谁」的字符串。同一视野（未换币 / 未换粒度 / 未拖动）下 P95 恒定。 */
     cacheKey: `${sym}|${win.mode}|${win.right}|${win.count}`,
     /* 顶部留白 = 左上角遮罩的**实测**高度（Batch 5 · B27）：量不到时由 `chart.js` 退回自己的兜底常量。
        ⚠️ 量一次就缓存（用户 2026-10-01 拍板）：它只随**容器宽度**（换行）与**文案长度**变，
