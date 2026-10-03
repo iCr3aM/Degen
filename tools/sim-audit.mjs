@@ -228,15 +228,18 @@ for (const mode of ['margin', 'fut']) {
 /* ═══════════════════ 4 · 成本量级（对照现实基准） ═══════════════════ */
 section('4 · 成本量级表（按年代，供现实对照）');
 const eras = [[2013, 8], [2016, 3], [2018, 0], [2020, 2], [2021, 3], [2023, 0], [2024, 6]].map(([y, m]) => at(y, m));
-console.log('  年月       所        taker(margin)  taker(fut)  借贷日息   资金费率上限/8h  σ30日估');
+console.log('  年月       所        taker(margin)  taker(fut)  借USDT/日   借币/日     币/标价  资金费率上限/8h  σ30日估');
 for (const t of eras) {
   const ex = t < C.exchangeOf('binance').open ? 'bitfinex' : 'binance';
   const fm = C.feeRateOf(ex, t, 'margin', null);
   const ff = C.hasLeverageKindAt(t, ex, 'fut') ? C.feeRateOf(ex, t, 'fut', null) : NaN;
-  const d = C.marginDailyRateAt(t);
-  console.log(`  ${new Date(t).toISOString().slice(0, 7)}  ${ex.padEnd(9)}  ${f(fm * 100, 4)}%       ${Number.isFinite(ff) ? f(ff * 100, 4) + '%' : '—'}       ${f(d * 100, 4)}%/日  ${f(P.FR.max * 100, 2)}%             见第 5 节`);
+  const dq = C.marginDailyRateAt(t, 'quote');
+  const dc = C.marginDailyRateAt(t, 'coin');
+  console.log(`  ${new Date(t).toISOString().slice(0, 7)}  ${ex.padEnd(9)}  ${f(fm * 100, 4)}%       ${Number.isFinite(ff) ? f(ff * 100, 4) + '%' : '—'}       ${f(dq * 100, 4)}%/日  ${f(dc * 100, 4)}%/日   ${f(dc / dq, 2)}×     ${f(P.FR.max * 100, 2)}%             见第 5 节`);
 }
-check('借贷日息年代阶梯单调（早年 ≥ 近年）', C.marginDailyRateAt(at(2013, 0)) >= C.marginDailyRateAt(at(2021, 0)));
+check('借贷日息长周期降息（2013 口径 ≥ 2020 口径）',
+  C.marginDailyRateAt(at(2013, 0), 'quote') >= C.marginDailyRateAt(at(2021, 0), 'quote')
+  && C.marginDailyRateAt(at(2013, 0), 'coin') >= C.marginDailyRateAt(at(2021, 0), 'coin'));
 
 /* ═══════════════════ 4b · 资金费率公式（真实化 · 2026-10-03） ═══════════════════ */
 section('4b · 资金费率两段式：F = clamp( P + clamp(I − P, ±0.05%), ±cap )');
@@ -375,6 +378,120 @@ for (const t of [at(2013, 8), at(2016, 5), at(2018, 0), at(2021, 3), at(2024, 6)
   const s = await mk({ sym: 'BTC', i: idx(t) });
   const dayLiq = market.liqOf('BTC', market.dayIndexOf(s.i));
   console.log(`     ${new Date(t).toISOString().slice(0, 7)}  日流动性 $${(dayLiq / 1e6).toFixed(1)}M  ⇒  门槛 $${(dayLiq * impact.SLIP.threshold / 1e6).toFixed(1)}M`);
+}
+
+/* ═══════════════════ 9 · 本批口径（B26 小时计息 / 借贷额度 / ② 库存倍率 / ③ 价格保护带） ═══════════════════ */
+section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 价格保护带');
+
+/* ── 9a · 借贷日息的两条阶梯（多头借标价币 / 空头借标的币） ── */
+{
+  const qx = y => C.marginDailyRateAt(at(y, 0), 'quote');
+  const cx = y => C.marginDailyRateAt(at(y, 0), 'coin');
+  console.log(`  借标价币：2013 ${f(qx(2013) * 100, 4)}%/日 → 2017 ${f(qx(2018) * 100, 4)}% → 2020 ${f(qx(2021) * 100, 4)}%`);
+  console.log(`  借标的币：2013 ${f(cx(2013) * 100, 4)}%/日 → 2017 ${f(cx(2018) * 100, 4)}% → 2020 ${f(cx(2021) * 100, 4)}%`);
+  /* ⚠️ 只断言**长周期**（2013 口径 ≥ 2020 口径）—— 中间 2017 那档是**牛市尖峰**（借贷需求旺，
+     两条曲线一起抬），故不是逐档单调：硬要求单调会把真实形态改坏。 */
+  check('9a 两条阶梯长周期降息（2013 口径 ≥ 2020 口径）', qx(2013) >= qx(2021) && cx(2013) >= cx(2021));
+  check('9a 借币（空头）比借钱（多头）便宜 5× 以上', cx(2021) * 5 <= qx(2021), `币/标价 = ${f(cx(2021) / qx(2021), 3)}`);
+  check('9a 借哪个币由方向定（多头 quote / 空头 coin）',
+    P.borrowCurOf({ side: 'long' }) === 'quote' && P.borrowCurOf({ side: 'short' }) === 'coin');
+}
+
+/* ── 9b · 逐小时计息（堵掉「开仓不足 8 小时就平 ⇒ 一分利息不付」那个漏洞） ── */
+{
+  const s = await mk({ sym: 'BTC', i: idx(at(2021, 5, 1, 1)), cash: 100000 });
+  s.mode = 'margin'; s.lev = 3;
+  const r = engine.openTrade(s, 'long', 0.5);
+  check('9b 前置：杠杆多仓开出来了', r.ok && s.positions.BTC, r.why || '');
+  const m0 = s.positions.BTC.margin;
+  engine.advanceOneHour(s);                       // 只走 1 小时，且落在**非** 8h 整点上
+  const d1 = m0 - s.positions.BTC.margin;
+  const exp = P.borrowedOf(s.positions.BTC) * C.marginDailyRateAt(engine.timeOf(s), 'quote') / 24;
+  check('9b 持有一小时就扣息（改动前此处为 0）', d1 > 0, `1h 扣 $${f(d1, 8)}`);
+  check('9b 每小时利息 = 借入 × 日息 ÷ 24', Math.abs(d1 - exp) < 1e-9, `实得 ${f(d1, 8)} 期望 ${f(exp, 8)}`);
+  /* 再跑 23 小时：借贷利息日志必须是 8h 一条（不是 24 条） */
+  for (let j = 0; j < 23; j++) engine.advanceOneHour(s);
+  const n = s.log.filter(l => /^借贷利息/.test(String(l.text))).length;
+  check('9b 24 小时最多 3 条借贷利息日志（8h 节奏、不刷屏）', n >= 1 && n <= 3, `实得 ${n} 条`);
+}
+
+/* ── 9c · 借贷额度上限（结果借入 ≤ 当日全市场流动性 × quota） ── */
+{
+  const t = at(2013, 8);
+  const s0 = await mk({ sym: 'BTC', i: idx(t) });
+  const cap = market.liqOf('BTC', market.dayIndexOf(s0.i)) * C.MARGIN.quota;
+  console.log(`  2013-09 BTC 日流动性 $${f(market.liqOf('BTC', market.dayIndexOf(s0.i)) / 1e6, 2)}M ⇒ 额度 $${f(cap / 1e3, 1)}K`);
+  const s1 = await mk({ sym: 'BTC', i: idx(t), cash: 20000 });
+  s1.ex = 'bitfinex'; s1.mode = 'margin'; s1.lev = 1;
+  const r1 = engine.openTrade(s1, 'long', 1);
+  check('9c 1x 多头借入为 0 ⇒ 额度闸不拦', r1.ok, r1.why || '');
+  const s3 = await mk({ sym: 'BTC', i: idx(t), cash: 20000 });
+  s3.ex = 'bitfinex'; s3.mode = 'margin'; s3.lev = 3;
+  const r3 = engine.openTrade(s3, 'long', 1);
+  check('9c 借到超过当日额度 ⇒ 开仓被拒', !r3.ok && /借贷额度/.test(r3.why), r3.why || '');
+}
+
+/* ── 9d · ② 做市库存动态（betaFast 随库存冲击放大，上界 2×） ── */
+{
+  const coinBase = god.SHOCK_MODE.coin.betaFast;
+  check('9d 倍率 1 ⇒ 逐位返回共享常量（改动前零差异）',
+    god.shockParamsOf('fut', 1) === god.SHOCK_MODE.fut && god.shockParamsOf('coin') === god.SHOCK_MODE.coin);
+  check('9d 倍率 2 ⇒ betaFast 翻倍、perm 不动',
+    Math.abs(god.shockParamsOf('fut', 2).betaFast - god.SHOCK_MODE.fut.betaFast * 2) < 1e-12
+    && god.shockParamsOf('fut', 2).perm === god.SHOCK_MODE.fut.perm);
+  check('9d 上界恰为 2×（kInv × qCap = 1）', Math.abs(god.INV.kInv * god.INV.qCap - 1) < 1e-12);
+  /* 集成：同一时刻、同一形态，**更大的单**必然拿到更大的 `betaFast`。
+     ⚠️ 断言刻意做成「相对关系」而不是绝对值：`hourLiqRaw` 与**该小时成交份额**挂钩（份额每日均值为 1，
+        忙碌时段可以明显 > 1），写死一个倍率会在别的时刻脆断。相对关系 + 上界才是这里要锁的性质。 */
+  const one = async cash => { const s = await mk({ sym: 'BTC', i: idx(at(2013, 8)), cash }); s.ex = 'bitfinex'; s.mode = 'margin'; s.lev = 1; return s; };
+  const sS = await one(2000), sB = await one(40000);
+  const rS = engine.openTrade(sS, 'long', 1), rB = engine.openTrade(sB, 'long', 1);
+  const tailOf = s => (s.flow.BTC ? s.flow.BTC[s.flow.BTC.length - 1] : null);
+  const tS = tailOf(sS), tB = tailOf(sB);
+  const okBoth = rS.ok && rB.ok && !!tS && !!tB;
+  check('9d 薄盘：更大的单拿到更大的 betaFast（库存效应真的接上了）',
+    okBoth && tB.betaFast > tS.betaFast && tS.betaFast >= coinBase,
+    okBoth ? `$2K→${f(tS.betaFast, 4)}  $40K→${f(tB.betaFast, 4)}（基准 ${coinBase}）` : (rS.why || rB.why || '无 flow'));
+  check('9d perm 不随库存变（只动快分量，永久痕迹照旧）',
+    okBoth && tS.perm === god.SHOCK_MODE.coin.perm && tB.perm === god.SHOCK_MODE.coin.perm);
+  check('9d 库存倍率有上界（恒 ≤ 2× 基准）', okBoth && tB.betaFast <= coinBase * 2 + 1e-12, `实得 ${okBoth ? f(tB.betaFast, 4) : '—'}`);
+}
+
+/* ── 9e · ③ 价格保护带（仅 Binance 永续 · 只拦开仓 · 锁 2h · 一个区间一条日志） ── */
+{
+  const sym = 'BTC';
+  const end = idx(at(2024, 11));
+  let hit = -1;
+  for (let i = idx(C.BAND.from); i < end; i++) {
+    const c1 = market.rawCloseAt(sym, i), c0 = market.rawCloseAt(sym, i - 1);
+    if (!(c1 > 0) || !(c0 > 0)) continue;
+    const lim = Math.max(C.BAND.k * engine.dailySigma(sym, i), C.BAND.floor);
+    if (Math.abs(c1 / c0 - 1) >= lim) { hit = i; break; }
+  }
+  check('9e Binance 永续年代确有触发保护带的行情（不是死代码）', hit > 0,
+    hit > 0 ? `首个 ${new Date(C.GAME.start + hit * H).toISOString().slice(0, 16)}Z` : '未找到');
+  if (hit > 0) {
+    const lock = async i => { const s = await mk({ sym, i, cash: 100000 }); s.ex = 'binance'; s.mode = 'fut'; s.lev = 5; s.books.binance = { usd: 0, usdt: 100000 }; return s; };
+    const s = await lock(hit + 1);
+    const r = engine.openTrade(s, 'long');
+    check('9e 窗口内 Binance 永续开仓被拒 ｜ 只允许平仓', !r.ok && /只允许平仓/.test(r.why), r.why || '');
+    const s2 = await lock(hit);                 // 触发那一根：还能开（闸从收线之后才算）
+    const r2 = engine.openTrade(s2, 'long');
+    check('9e 触发当根仍可开仓（闸从收线之后才算）', r2.ok, r2.why || '');
+    /* 平仓是逃生通道：窗口内照样能平 */
+    const s3 = await lock(hit);
+    const r3 = engine.openTrade(s3, 'long', 0.5);
+    engine.advanceOneHour(s3);                  // 进闸
+    const c3 = engine.closeTrade(s3);
+    check('9e 窗口内平仓不受影响（逃生通道）', r3.ok && c3.ok, r3.why || c3.why || '');
+    /* 预警日志：进闸那一根播一条，锁定期内不重复 */
+    const s4 = await lock(hit);
+    engine.advanceOneHour(s4);
+    const n1 = s4.log.filter(l => /极端行情 只允许平仓/.test(String(l.text))).length;
+    engine.advanceOneHour(s4);
+    const n2 = s4.log.filter(l => /极端行情 只允许平仓/.test(String(l.text))).length;
+    check('9e 进闸播一条预警、锁定期内不重复', n1 === 1 && n2 === 1, `进闸 ${n1} 条 / 再走 1h ${n2} 条`);
+  }
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

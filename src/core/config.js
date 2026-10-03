@@ -365,6 +365,32 @@ export const exchangeOf = id => EXCHANGES.find(e => e.id === id) || null;
 export const haltedAt = (t, exId) =>
   !!exchangeOf(exId)?.halts?.some(h => t >= h.from && t < h.to);
 
+/**
+ * **价格保护带**（③ · 2026-10-03 拍板）—— 极端行情里**只允许平仓**的窗口。
+ *
+ * ⚠️ 现实口径（这是本作**唯一**带价格涨跌幅的闸门）：加密**没有 A 股那种涨跌停**；
+ *    Binance 永续的 `PERCENT_PRICE` 过滤器（**2019-09-13** 随 BTCUSDT 永续首日生效）限制的也只是
+ *    「单笔委托价相对标记价的偏离」，不是停牌。BitMEX / Bitfinex 在 2013–2016 **没有任何熔断**。
+ *    ⇒ 本闸**只从 Binance 永续开始**、且**只做「只允许平仓」**（不做拒单、不改成交价）：
+ *    真实交易所遇到极端波动是「用户可以跑、不能加」——那正是 2020-03-12 那种行情里唯一合理的姿态。
+ *
+ * 触发判据（在 `engine.js` 里按原始行情算，见 `bandBreachAt`）：
+ *   单小时原始收益率 `|rawClose(i) / rawClose(i−1) − 1| ≥ max(k × σ_30日, floor)`
+ *   ⇒ `k = 2.5`（现货/永续的极端单小时跳变常年在 2–3σ 以上）、`floor = 3%`（薄盘年代 σ 很小时兜底，
+ *   避免「σ = 0.5% ⇒ 1.25% 就停开仓」这种把窄幅震荡误判成极端行情）。
+ *
+ * ⚠️ 用 **`rawCloseAt`（原始行情）** 而非玩家位移后的价：玩家自己砸出来的插针不该触发交易所风控。
+ * ⚠️ **锁定 `hours = 2`**：从触发那根 K 线**收线之后**起算，覆盖接下来 2 小时（见 `priceBandAt`）。
+ * ⚠️ 全程只影响**开仓**：`closeTrade` 一个字都不动（与 `haltedAt` 同纪律）。
+ */
+export const BAND = {
+  ex: 'binance',                 // 仅 Binance（永续上线即带 PERCENT_PRICE）
+  from: Date.UTC(2019, 8, 13),   // 2019-09-13 = Binance BTCUSDT 永续首日
+  k: 2.5,                        // σ 倍数
+  floor: 0.03,                   // 绝对下限 3%/小时
+  hours: 2,                      // 锁定时长（小时）
+};
+
 /** 取某家交易所某一类的杠杆阶梯（`kind`：`'margin'` 杠杆 / `'fut'` 合约）；该所不提供时为 `null`
  *  ⚠️ 不导出（2026-10-02 审计）：它只服务本文件的 `maxLeverageAt` / `hasLeverageKindAt`
  *     与 `leverageOptionsAt` —— 对外那几件事都由它们转述，别再开一个裸阶梯的入口。 */
@@ -444,15 +470,40 @@ export const MARGIN = {
   /** 杠杆仓的维持保证金率（权益口径）—— CFTC Docket 16-19 史实 */
   maint: 0.15,
   /**
-   * **借贷日息**（B26）—— 史实只有「用户间 P2P 按市场利率计息」这个形态（Bitfinex 的
-   * Margin Funding Provider），**具体数值是合成值**：按年代收敛，早年借贷市场薄、利率高，
-   * 近年廉价。形态取自真实机制，数字需在 GDD 声明为合成。
+   * **借贷日息**（B26 · 2026-10-03 拆两档）—— 史实只有「用户间 P2P 按市场利率计息」这个形态
+   * （Bitfinex 的 Margin Funding Provider），**具体数值是合成值**：按年代收敛，早年借贷市场薄、
+   * 利率高，近年廉价。形态取自真实机制，数字需在 GDD 声明为合成。
+   *
+   * ⚠️ **必须分「借标价币」与「借标的币」两条**：多头借钱（USD / USDT）、空头借币（BTC…），
+   *    这是**两个独立的市场**（两条 funding book）。标的币的池子小、出借方少，但利率**远低**于
+   *    标价币 —— 现实中「借币做空」的日息常是「借 USDT」的 1/5～1/10（Bitfinex 早年 USD 档
+   *    万分之几到千分之一、BTC 档低一个数量级）。合并成一条曲线会把空头的成本口径整个算错。
+   * ⚠️ 数字是**合成值**（形态取自真实机制，量级对齐上述区间）⇒ GDD 声明为合成。
    */
-  daily: [
-    { from: Date.UTC(2013, 0, 1),  v: 0.0003 },   // 2013–2016：0.03% / 日
-    { from: Date.UTC(2017, 0, 1),  v: 0.0005 },   // 2017–2019：0.05% / 日
-    { from: Date.UTC(2020, 0, 1),  v: 0.0002 },   // 2020 起   ：0.02% / 日
-  ],
+  daily: {
+    /** 借**标价币**（多头：USD / USDT）—— 日息 */
+    quote: [
+      { from: Date.UTC(2013, 0, 1), v: 0.0005 },   // 2013–2016：0.05% / 日
+      { from: Date.UTC(2017, 0, 1), v: 0.0010 },   // 2017–2019：0.10% / 日（牛市借贷需求旺）
+      { from: Date.UTC(2020, 0, 1), v: 0.0003 },   // 2020 起   ：0.03% / 日（稳定币供给泛滥）
+    ],
+    /** 借**标的币**（空头：BTC / ETH …）—— 日息，**恒为标价币那一档的 1/5～1/10** */
+    coin: [
+      { from: Date.UTC(2013, 0, 1), v: 0.00006 },  // 2013–2016：0.006% / 日（≈ 1/8）
+      { from: Date.UTC(2017, 0, 1), v: 0.00020 },  // 2017–2019：0.02%  / 日（≈ 1/5，牛市同涨）
+      { from: Date.UTC(2020, 0, 1), v: 0.00005 },  // 2020 起   ：0.005% / 日（≈ 1/6）
+    ],
+  },
+  /**
+   * **借贷额度上限** ＝ 该币**当日全市场流动性**（`liqOf`）× 本值。
+   *
+   * 现实里没有「硬额度」这回事 —— 能借多少由 funding book 的**深度**决定（Bitfinex 的资金市场
+   * 是逐档撮合的订单簿，借满就要往上吃更贵的利率）。本作用一条**与滑点门槛同尺**的上限来近似
+   * 那层深度：`SLIP.threshold = 10%` 也是「当日全市场成交额 × 10%」—— 于是「单笔大到开始被收
+   * 滑点」与「借到额度上限」落在同一个量级，两把尺子不会互相打架。
+   * ⚠️ 只卡**开仓**（与 `haltedAt` 同纪律），平仓永远放行。
+   */
+  quota: 0.10,
 };
 
 /** 强平清算费（B20）—— 触发强平那一刻，从**残余权益**里先扣掉 `名义 × 本值`，抵剩下的才返还。 */
@@ -631,10 +682,16 @@ export function notionalMaxLevAt(exId, notional, kind = 'perp') {
   return 1;
 }
 
-/** 该时刻的**借贷日息**（B26）—— 升序取「最后一个 `from <= t`」 */
-export function marginDailyRateAt(t) {
-  let v = MARGIN.daily[0].v;
-  for (const s of MARGIN.daily) { if (s.from <= t) v = s.v; else break; }
+/**
+ * 该时刻、该币种的**借贷日息**（B26 · 2026-10-03 拆两档）—— 升序取「最后一个 `from <= t`」。
+ * @param {number} t   时刻（毫秒）
+ * @param {'quote'|'coin'} cur 借的是**标价币**还是**标的币** —— 判据见 `positions.borrowCurOf`
+ *   （多头借美元 / U ⇒ `'quote'`；空头借币 ⇒ `'coin'`）。缺省 `'quote'`，与旧调用点逐位兼容。
+ */
+export function marginDailyRateAt(t, cur = 'quote') {
+  const ladder = cur === 'coin' ? MARGIN.daily.coin : MARGIN.daily.quote;
+  let v = ladder[0].v;
+  for (const s of ladder) { if (s.from <= t) v = s.v; else break; }
   return v;
 }
 

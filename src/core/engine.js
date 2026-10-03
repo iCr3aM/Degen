@@ -12,18 +12,18 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, notionalMaxLevAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MARGIN, MIN_NOTIONAL, minNotionalAt, notionalMaxLevAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, BAND, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
 import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCandleAt, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { HEAT, NPC, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
+import { HEAT, INV, NPC, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
   equityOf, isLiquidatable, isMargin, liquidationPrice, maintRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
-  FUNDING, INSURE, fundingOf, premiumIndexOf, fundingRateOf, canLiquidate, paysFunding, paysInterest, borrowedOf, shockKindOf,
+  FUNDING, INSURE, fundingOf, premiumIndexOf, fundingRateOf, canLiquidate, paysFunding, paysInterest, borrowedOf, borrowCurOf, shockKindOf,
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
@@ -120,7 +120,18 @@ export function lastPrice(s, sym = s.sym) {
   return closeAt(sym, s.i);
 }
 
-/** 某个币当前的**标记价基差**（EMA 后的 `last − index`）；旧存档没有这个键 ⇒ 0。 */
+/**
+ * 某个币当前的**标记价基差**（EMA 后的 `last − index`）；旧存档没有这个键 ⇒ 0。
+ *
+ * ⚠️ **口径注（④ · 2026-10-03 调研结论）—— 这个「基差」不是期现基差，别拿它对标现实。**
+ *    它 = `EMA(last − rawClose)`，而 `last − rawClose` 是**位移层**（玩家冲击 ＋ NPC 漂移）里
+ *    还没来得及被低通滤掉的那部分 ⇒ 它是一个**订单流位移的平滑量（伪基差）**：量级随
+ *    「你自己砸了多少」走，而不是随「永续与现货的价差」走。
+ *    真实的**期现基差 / 年化基差 / 期限结构**需要**同一时刻的两个工具价**（现货 vs 永续、
+ *    当月 vs 次月），本作的行情包只有**一条价序列**，造不出第二只工具 ⇒ **本轮不做**：
+ *    先得有数据源，其次才是模型；现在硬写一条「基差」只会是一条读不通的数（GDD 声明为合成）。
+ *    本键存在的**唯一**目的是「别让玩家的插针立刻打爆自己」（三价体系，见上面的段落），别无他用。
+ */
 export function markBiasOf(s, sym) {
   const b = s.mkb && s.mkb[sym];
   return Number.isFinite(b) ? b : 0;
@@ -748,7 +759,15 @@ function absorbedImpact(s, sym, dir, impact) {
  */
 function pushFlow(s, sym, dir, notional, give = 1, kind = 'fut', player = true) {
   const v = dir * give * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
-  if (addFlow(s, sym, v, shockParamsOf(kind))) invalidateSigma();
+  /* ② **做市库存动态**（2026-10-03 拍板）：本笔相对**本小时基准深度**的占比越大 ⇒ 做市商吃下的
+     库存越多 ⇒ 回补越急（`betaFast` 越快）。口径见 `god.INV`：
+       `betaFast = 基准 × (1 + kInv × min(q, qCap))`，`q = 本笔名义 ÷ hourLiqRaw`
+     ⇒ `q = 0`（小额单 / 深度取不到）时倍率恰为 1，逐位等于改动前；`q ≥ qCap` 时到上界 2×。
+     分母用的就是**滑点 / 对抗性流动性那同一把尺子**（`hourLiqRaw`，折减前的基准深度）⇒ 不新开刻度。 */
+  const raw = hourLiqRaw(s, sym, s.i);
+  const q = raw > 0 ? notional / raw : 0;
+  const invMul = 1 + INV.kInv * Math.min(q, INV.qCap);
+  if (addFlow(s, sym, v, shockParamsOf(kind, invMul))) invalidateSigma();
   if (player && notional > 0) mktOf(s, sym).pv += notional;
 }
 
@@ -1692,6 +1711,27 @@ function applyFill(s, { sym, side, fill, margin, notional, lev, feeRate, marginM
  *   | {ok:true, lev:number, kind:'margin'|'fut', feeRate:number, mustUsdt:boolean, prev:object|null,
  *      otc:boolean, isMarginOrder:boolean, margin:number, fee:number, notional:number, cost:number, fill:number}}
  */
+/* ── ③ 价格保护带（BAND · 2026-10-03）—— 判据与锁定窗口都是 `(sym, i)` 的**纯函数** ──
+   不存状态、不写存档：触发与否只由**原始行情**决定 ⇒ 读路径可以随便调（`openCheck` 每帧都在调）。 */
+
+/** 第 `i` 根小时是否**触发了价格保护带**（单小时原始收益 ≥ `max(kσ, floor)`）。 */
+function bandBreachAt(sym, i) {
+  if (GAME.start + i * HOUR_MS < BAND.from) return false;   // 这家所那时还没这规矩
+  const c1 = rawCloseAt(sym, i), c0 = rawCloseAt(sym, i - 1);
+  if (!(c1 > 0) || !(c0 > 0)) return false;                 // 行情没加载 / 该币还没上线
+  const lim = Math.max(BAND.k * dailySigma(sym, i), BAND.floor);
+  return Math.abs(c1 / c0 - 1) >= lim;
+}
+
+/**
+ * 此刻是否处于**只允许平仓**的窗口 —— 触发那根 K 线**收线之后**起算，覆盖接下来 `BAND.hours` 根。
+ * （`i` 触发的行情在 `i` 这根里已经走完 ⇒ 要锁的是 `i+1 … i+hours`。）
+ */
+function priceBandAt(sym, i) {
+  for (let k = 1; k <= BAND.hours; k++) if (bandBreachAt(sym, i - k)) return true;
+  return false;
+}
+
 function openCheck(s, side, frac = 1) {
   if (s.over) return { ok: false, why: '本局已结束' };
 
@@ -1733,6 +1773,15 @@ function openCheck(s, side, frac = 1) {
   /* ⚠️ `kind` 一处算好、三处共用（费率 / 30 天量 / 记量柱）—— v20 起这三者必须同源，
      否则会出现「按合约费率收钱、却把量记到杠杆账上」这种自相矛盾。 */
   const kind = isMarginOrder ? 'margin' : 'fut';
+  /* ③ 价格保护带（BAND · 2026-10-03 拍板）：极端行情窗口里 **只允许平仓**。
+     ⚠️ 只对 **Binance 永续**生效（2019-09-13 起）：其余所在那之前**没有任何熔断**（史实），
+        这条闸不是「所有所的通用风控」—— 所以判据里必须带 `s.ex` 与 `kind` 两个条件。
+     ⚠️ 判据走**原始行情**（`bandBreachAt`），玩家自己砸出来的插针不触发。
+     ⚠️ 只拦开仓；`closeTrade` 一个字都不动（逃生通道，与 `haltedAt` 同纪律）。
+     文案与停机维护**分开**：那是「所坏了」，这是「行情太野」—— 两句话读起来必须不一样。 */
+  if (!isMarginOrder && s.ex === BAND.ex && priceBandAt(s.sym, s.i)) {
+    return { ok: false, why: '极端行情 ｜ 只允许平仓' };
+  }
   /* 费率带上这家所**近 30 天、这一条产品线**的成交量（v19 · 阶梯手续费）：巨鲸买单便宜、散户落在首档。
      ⚠️ 取的是**本笔之前**的量 —— 这一笔自己不该把自己打进下一档。 */
   const feeRate = feeRateOf(s.ex, timeOf(s), kind, vol30Of(s, s.ex, s.i, kind));
@@ -1800,6 +1849,21 @@ function openCheck(s, side, frac = 1) {
   const notional = margin * lev;
   const cost = otc ? otcPremiumFor(s, s.sym, notional) : impactFor(s, s.sym, s.i, notional);
   const fill = fillPrice(price, side === 'long' ? 1 : -1, cost);
+
+  /* 借贷额度上限（B26 · 2026-10-03 拍板）：能借多少由资金市场的**深度**决定 ——
+     `当日全市场流动性 × MARGIN.quota`（与滑点门槛同一把尺子，见 `config.MARGIN.quota` 注释）。
+     判的是**结果仓位**的借入量（已有仓 ＋ 这一单），且**只卡开仓**、不卡平仓（同 `haltedAt` 纪律）。
+     ⚠️ 只有**杠杆单**才有借入（合约不借钱、只付资金费）⇒ 非杠杆单整条跳过。
+     ⚠️ 取不到当日流动性（该币还没上线 / 数据缺格）⇒ `liqOf` 返回 `null` ⇒ **放行**：宁可漏放这条约束，
+        也不能因为一个数据缺格就把所有单子按「额度已满」处理（与 `floatShareOf` 同一纪律）。 */
+  if (isMarginOrder) {
+    const liqToday = liqOf(s.sym, dayIndexOf(s.i));
+    const borrowCap = liqToday > 0 ? liqToday * MARGIN.quota : Infinity;
+    const addBorrowed = side === 'short' ? notional : notional * (1 - 1 / lev);
+    if (borrowedOf(prev) + addBorrowed > borrowCap) {
+      return { ok: false, why: `借贷额度不足 ｜ ${s.sym} 当日可借约 ${fmtMoneyShort(borrowCap)}` };
+    }
+  }
 
   /* 供应量上限（P2-B2 · §15.1 / §15.4）：买入会从市场里锁走一部分币，锁走的枚数不得越界。
      ⚠️ 校验必须排在**动账之前** —— 下面那几行一旦执行，钱已经扣了，这时再拒绝就没法干净地退回。
@@ -2585,8 +2649,19 @@ export function advanceOneHour(s) {
      排在 `tickMarket` 之后 —— 玩家的 `pv` 刚被清掉、持仓也刚跟着这一根的行情更新过。 */
   advTick(s);
 
-  // 持仓成本每 8 游戏小时结算一次（B26：永续扣资金费、杠杆保证金扣借贷利息；1x 多头无借入 ⇒ 不扣）
-  if (s.i % FUNDING.hours === 0 && settleFunding(s)) return;
+  /* ③ 价格保护带预警（BAND）：极端行情把 Binance 永续闸到「只允许平仓」，**进闸那一刻**播一条。
+     判据是**上升沿**（`priceBandAt(i) && !priceBandAt(i−1)`）—— 纯函数、不需要闩锁字段：
+     锁定区间内后续各根的前一根也为真 ⇒ 自动不重复播（一个区间只有一条）。
+     ⚠️ 只在玩家**此刻就待在 Binance** 时播（与「交易所级预警」同一先例）：你不在这儿，这条与你无关。 */
+  if (s.ex === BAND.ex && priceBandAt(s.sym, s.i) && !priceBandAt(s.sym, s.i - 1)) {
+    pushLog(s, `${exchangeOf(s.ex)?.name ?? s.ex} 永续 ｜ 极端行情 只允许平仓 ${BAND.hours} 小时`, 'bad', 'mkt');
+  }
+
+  /* 持仓成本**每小时**结算一次（2026-10-03 改版 · B26）：
+     永续资金费仍只在 8h 整点扣（`settleFunding` 内部按相位分流），
+     杠杆保证金则**逐小时**扣借贷利息（持仓不足 8 小时也照付，堵掉「短炒免息」那个漏洞）。
+     1x 多头无借入 ⇒ 两样都不扣。 */
+  if (settleFunding(s)) return;
 
   liquidateAll(s);
 
@@ -2651,6 +2726,7 @@ export function rewindTo(s, to) {
   s.adv = {};           // 对抗性流动性峰值台阶（v29）同样是「进度」⇒ 回退时一并抹掉
   s.advWarn = false;    // 预警闩锁也一并复原（否则回退后再进档 1 就永远不再提醒）
   s.advWarn2 = false;   // 档 2 推价预警闩锁，同上
+  s.intWin = { ied: 0, grossM: 0 };   // 借贷利息的 8h 窗口累计（持仓已清空 ⇒ 窗口归零）
   /* 保险基金（v30 · 缺口 5）也是「进度」⇒ 回退时抹成 `null`，让它按**跳转后那一天**的
      流动性重新播种（写死绝对值会在跨年代回退时失真）。 */
   s.fund = null;
@@ -2716,12 +2792,16 @@ export function invalidateSigma() {
  *     **不含 `dir`**：方向只在 `fundingOf` 里出现一次（v30 · 缺口 3 修掉原来的双重 `dir` bug）。
  *     费率由**全市场多空失衡**（`longShareOf`，含玩家自己的名义）驱动，玩家可真收可付；
  *     「仓位越大越贵 / 越赚」自动保持，不再由行情动量决定。口径见 `positions.js` 的 `FR` 注释。
- *   - **杠杆（margin）**：借贷利息 —— `借入量 × 日息 × (8/24)`（2026-10-03 起按**借入量**，
- *     不再按名义）。史实里 Bitfinex 的「杠杆」是用户间 P2P 借美元/借 BTC（出借方叫
- *     Margin Funding Provider），按市场利率计息；多头借的是美元（`名义 − 保证金`）、
- *     空头借的是币（**全额名义**）—— 见 `borrowedOf`。
- *     日息**按年代取值**（`config.MARGIN.daily`）且**数字是合成值** ⇒ GDD 声明。
- *     2016-05-13 之前世界上没有永续，那时的杠杆仓全落进这一支。
+ *   - **杠杆（margin）**：借贷利息 —— **按小时**计息（2026-10-03 拍板）：`借入量 × 日息 ÷ 24`。
+ *     史实里 Bitfinex 的「杠杆」是用户间 P2P 借美元/借 BTC（出借方叫 Margin Funding Provider），
+ *     **按小时计息、不足 1 小时记满 1 小时**（平台再抽 15% 手续费，本作不建模那一层）。多头借的是
+ *     美元（`名义 − 保证金`）、空头借的是币（**全额名义**）—— 见 `borrowedOf`；两条 funding book
+ *     的利率各走一条曲线（`config.MARGIN.daily.quote` / `.coin`，见 `borrowCurOf`）。
+ *     ⚠️ 改动前是「每 8 小时扣一次 `借入 × 日息 × 8/24`」，于是**开仓不足 8 小时就平仓 ⇒ 一分利息
+ *     不付**（漏洞）。改成逐小时扣之后持仓 1 小时也照付，但**日志仍只在 8 小时整点播一次**
+ *     （把这 8 小时的累计一起报，避免 24 条/日刷屏）—— 窗口累计见下面的 `s.intWin`。
+ *     日息**按年代取值**且**数字是合成值** ⇒ GDD 声明。2016-05-13 之前世界上没有永续，
+ *     那时的杠杆仓全落进这一支。
  *
  * ⚠️ **两条路各写一条日志**（标签不同、不能合并成一条）：`paysInterest` 与 `paysFunding` 互斥，
  *    同时持有两种仓位时玩家需要分别看到两笔成本的费率。1x **多头**（无借入）两样都不付；
@@ -2730,28 +2810,35 @@ export function invalidateSigma() {
  */
 function settleFunding(s) {
   const syms = heldSyms(s);
-  if (!syms.length) return false;
 
   const t = timeOf(s);
-  const daily = marginDailyRateAt(t);              // 借贷日息按年代，同一时刻所有所一样
+  /* 永续资金费仍只在这 8 小时整点上结；**借贷利息每根小时都结**（见下面的注释）——
+     `settleFunding` 因此改为**每小时**被调用，两个分支各自按自己的相位走。 */
+  const isFundingHour = s.i % FUNDING.hours === 0;
+
+  /* 借贷利息的 **8 小时窗口累计**（只影响那条日志，不影响落账 —— 利息本身逐小时已扣进 `margin`）。
+     ⚠️ 旧存档没有这个键 ⇒ 懒建（与 `s.adv` 同一先例，**不升 `STATE_VERSION`**）。 */
+  if (!s.intWin) s.intWin = { ied: 0, grossM: 0 };
 
   let fed = 0, grossP = 0;   // 永续：净支出（> 0 = 玩家付出）/ 参与结算的名义和
-  let ied = 0, grossM = 0;   // 杠杆保证金：应付利息 / 借来的名义和
+  let ied = 0, grossM = 0;   // 杠杆保证金：本小时的应付利息 / 借来的名义和
   for (const sym of syms) {
     const pos = s.positions[sym];
 
-    /* ── 杠杆保证金：借贷利息（B26）—— 按**借入量**计息（2026-10-03）──
-       多头借美元（名义 − 保证金）、空头借币（全额）。1x 多头借入为 0 ⇒ 落不进来。 */
+    /* ── 杠杆保证金：借贷利息（B26）—— 按**借入量**、**按小时**计息（2026-10-03）──
+       多头借美元（名义 − 保证金）、空头借币（全额）。1x 多头借入为 0 ⇒ 落不进来。
+       利率按**借的币种**取（多头走 quote、空头走 coin —— 两条独立 funding book，见 `borrowCurOf`）。 */
     if (paysInterest(pos)) {
       const borrowed = borrowedOf(pos);
-      const fee = borrowed * daily * (FUNDING.hours / 24);
+      const fee = borrowed * marginDailyRateAt(t, borrowCurOf(pos)) / 24;
       pos.margin -= fee;
       s.realized -= fee;
       ied += fee;
-      grossM += borrowed;                            // 报出去的费率 = ied / grossM ≡ daily
+      grossM += borrowed;                            // 报出去的费率口径见下面窗口累计处
       continue;
     }
 
+    if (!isFundingHour) continue;                    // 永续资金费只在 8h 整点结
     if (!paysFunding(pos)) continue;                 // 1x 多头：两样都不付
     const mark = exMarkPrice(s, sym, pos.ex);       // 三价：资金费按**本仓所在所**的标记价（Binance 口径）
     if (!(mark > 0)) continue;
@@ -2793,19 +2880,31 @@ function settleFunding(s) {
      文案（Batch 4 · B18，2026-09-29 拍板）：金额一律是**玩家视角的总收益**，
      「收益 +$0.03」= 拿到 U、「收益 −$0.05」= 付出 U ——
      正负号本身就是方向，不再写「支出 / 收入」四个字（日志条一行 nowrap，多两个汉字就挤爆）。 */
+  /* 借贷利息：逐小时的钱**已经在上面落账**，这里只做 **窗口累计 ＋ 8 小时整点播报**
+     （24 小时最多一条，不刷屏）。
+     `grossM` 取**本小时**的借入名义和当代表值 ⇒ `rate = Σ利息 ÷ 借入` 就是**这个窗口的有效费率**
+     （借入不变、满 8 小时时逐位等于改动前的 `日息 × 8/24`；持仓不满一个窗口时也如实反映）。
+     ⚠️ 无持仓的那几小时 `grossM = 0` ⇒ **不动窗口**（把已累计的留着，等边界一起播）。 */
+  if (grossM > 0 && ied !== 0) {
+    s.intWin.ied += ied;
+    s.intWin.grossM = grossM;
+  }
+  if (isFundingHour && s.intWin.grossM > 0 && s.intWin.ied !== 0) {
+    const rate = s.intWin.ied / s.intWin.grossM;
+    pushLog(s, `借贷利息 ${fmtRate(Math.abs(rate), 4)} ｜ 收益 ${fmtMoney(-s.intWin.ied, { sign: true })}`,
+      'bad', 'cost');
+    s.intWin.ied = 0;
+    s.intWin.grossM = 0;
+  }
   if (grossP > 0 && fed !== 0) {
     const rate = fed / grossP;
     const pool = s.mkt && s.mkt[s.sym] ? s.mkt[s.sym].npcFund : 0;
     pushLog(s, `资金费率 ${fmtRate(Math.abs(rate), 4)} ｜ 收益 ${fmtMoney(-fed, { sign: true })} ｜ 对手方池 ${fmtMoneyShort(pool)}`,
       fed > 0 ? 'bad' : 'ok', 'cost');
   }
-  if (grossM > 0 && ied !== 0) {
-    const rate = ied / grossM;
-    pushLog(s, `借贷利息 ${fmtRate(Math.abs(rate), 4)} ｜ 收益 ${fmtMoney(-ied, { sign: true })}`,
-      'bad', 'cost');
-  }
 
-  return checkRuin(s);
+  /* 无持仓时不判破产 —— 与改动前的早退逐位等价（那时 `syms` 为空直接 `return false`）。 */
+  return syms.length ? checkRuin(s) : false;
 }
 
 /**

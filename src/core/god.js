@@ -44,6 +44,7 @@
  */
 
 import { exchangeOf, GAME } from './config.js';
+import { SLIP } from './impact.js';
 import { hashStr, rand } from './rng.js';
 
 /** 冲击模型的常数（实证取值，见方案文档 §2.6 / §27.4-B1） */
@@ -148,8 +149,42 @@ export const SHOCK_MODE = {
   fut:  { perm: 0.40, betaFast: 2.0 },
 };
 
-/** 取某一笔成交（按形态 `'coin'` / `'fut'`）的衰减参数；未知值一律按合成盘 */
-export const shockParamsOf = kind => (kind === 'coin' ? SHOCK_MODE.coin : SHOCK_MODE.fut);
+/**
+ * 取某一笔成交（按形态 `'coin'` / `'fut'`）的**衰减参数**。
+ * @param {'coin'|'fut'} kind 形态（见 `positions.shockKindOf`）
+ * @param {number} [invMul] **库存倍率**（② · 见下面的 `INV`；`engine.pushFlow` 算好传进来）。
+ *   缺省 1 ⇒ 逐位等于改动前；`≤ 1` 时**直接返回共享常量**（不做分配）—— 绝大多数调用点走这一支。
+ */
+export const shockParamsOf = (kind, invMul = 1) => {
+  const base = kind === 'coin' ? SHOCK_MODE.coin : SHOCK_MODE.fut;
+  if (!(invMul > 1)) return base;
+  return { perm: base.perm, betaFast: base.betaFast * invMul };
+};
+
+/**
+ * **做市库存动态**（② · 2026-10-03 拍板）—— 让快回指数 `betaFast` **随这一笔的库存冲击变大**。
+ *
+ * 现实依据：Avellaneda–Stoikov 的保留价随库存**线性**偏移；Guéant–Lehalle–Fernandez-Tapia (2013)
+ * 给出同一形态的闭式解 —— 做市商吃下的库存越多、回补越急（快分量衰减越快）。
+ * 2025-10-10 崩盘实测：做市商约 **35 分钟**恢复九成深度（快分量半衰期 ≈ 10 分钟），
+ * 而平静时段同一批做市商要几小时才回补 —— 差别正来自**库存规模**，而不是两套不同的人。
+ *
+ * 形态（`engine.pushFlow` 在**写时**算，落进每一笔 `s.flow` 项自带的 `betaFast`）：
+ *
+ *     betaFast = 基准 × (1 + kInv × min(q, qCap))        q = 本笔名义 ÷ 本小时基准深度
+ *
+ * ⇒ `q = 0`（小额单 / 深度取不到）时**逐位等于基准**（老存档与改动前零差异）；
+ *   `q = qCap` 时到达上界 **2×**（快分量半衰期减半 ⇒ 回补明显更快）。
+ * `qCap = SLIP.cap = 0.25` 与滑点的自变量上限**同一把尺子**（`q` 的口径也同一个）⇒ 不新立第二条刻度。
+ * ⚠️ 只动**快分量**（`betaFast`）：`perm` / `betaSlow` 一个字不改 —— 「永久痕迹留多少」是另一回事，
+ *    库存冲击不改变**长期**参考价，只改变**回补速度**。
+ * ⚠️ **不是新状态**：这些参数本来就存在每一笔冲击上（`god.addFlow` 的 `p`），这里只是换个算法填它
+ *    ⇒ 旧存档读出来仍是老值、行为不变，**不升 `STATE_VERSION`**。
+ */
+export const INV = {
+  kInv: 4,          // 库存敏感度：q 每涨 0.25 就把快回速度抬一倍
+  qCap: SLIP.cap,   // q 的上限 ＝ 滑点的自变量上限（0.25）⇒ 倍率上界恰为 2×
+};
 
 /**
  * **市场情绪 / 热度**参数（§73.5 · 2026-10-02 拍板）—— NPC 那层「散户」的行为常数。
