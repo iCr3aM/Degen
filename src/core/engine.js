@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MIN_NOTIONAL, minNotionalAt, notionalMaxLevAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
 import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCandleAt, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
@@ -1741,6 +1741,19 @@ function openCheck(s, side, frac = 1) {
      ⚠️ 门槛只卡**开仓**，不卡平仓 —— 卡平仓会把玩家困在一条「币价跌下来、名义已不足门槛」的仓位上。 */
   const otcMin = otcMinAt(timeOf(s));
   if (otc && margin * lev < otcMin) return { ok: false, why: `OTC 单笔最少 ${fmtMoneyShort(otcMin)}` };
+
+  /* ⑥ 名义阶梯杠杆封顶（2026-10-03 用户拍板）—— Binance 永续按**结果名义**判档：名义越大、
+     可开的杠杆越低（真实 BTCUSDT 杠杆档位表，与维持保证金率同一张表 `config.notionalMaxLevAt`）。
+     判据 = 「本单名义 ＋ 已有仓位按**现价**的名义」⇒ **加仓与价格漂移**都会被重判；
+     超档**直接拒绝**（不静默把杠杆压下去 —— 那样会在玩家没察觉时改掉下单参数）。
+     ⚠️ **只拦开仓 / 加仓**：已在场的仓位即使被行情顶超档也照样持有（用户拍板「只挡新单，不动老仓」），
+        平仓是逃生通道，一个字都不动。
+     ⚠️ OTC 的 `OTC.levMax = 5` 远低于任何档位的杠杆上限 ⇒ 这条闸对 OTC 天然不生效。 */
+  const heldNotional = positionNotionalOf(s, s.sym);
+  const tierMaxLev = notionalMaxLevAt(s.ex, heldNotional + margin * lev, kind);
+  if (lev > tierMaxLev + 1e-9) {
+    return { ok: false, why: `名义 ${fmtMoneyShort(heldNotional + margin * lev)} 超过该档杠杆上限 ｜ 本档最高 ${tierMaxLev}x` };
+  }
 
   /* 成交价（P2-B1 / P2-B3）：盘口价 ± 代价 —— 买抬、卖压，**永远对玩家不利**。
      代价有两种，同一时刻只有一种成立：盘口是平方根冲击、OTC 是「基准点差 × 市况倍数」（不吃滑点）。

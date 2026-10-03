@@ -529,15 +529,40 @@ export function minNotionalAt(exId, t, kind = 'margin') {
 }
 
 /**
- * Binance 永续的维持保证金率四档（名义价值越大越严）。
- * 尾档 `>= $500 万` 取 5%；真正的 1 亿以上 10–15% 不实现（本作资金量级到不了）。
+ * Binance 永续的**杠杆 / 保证金阶梯**（名义价值越大、维持保证金率越严、可开杠杆越低）。
+ *
+ * ⚠️ 2026-10-03（⑥）**由 5 档补全为真实 BTCUSDT 全表**：此前顶部压成「≥$500 万一律 5%」一桶，
+ *    于是巨鲸在 `$100M` 名义上照样能开 10x（现实只有 3x）—— 这正是「给巨鲸发无限杠杆」那条 bug。
+ *    现在 `rate`（维持保证金率）与 `maxLev`（本档最高杠杆）**同表并列**，不写第二个常数。
+ *
+ * | 名义（USDT） | 最高杠杆 | 维持保证金率 |
+ * |---|---|---|
+ * | 0 – 50,000 | 125x | 0.40% |
+ * | 50,000 – 250,000 | 100x | 0.50% |
+ * | 250,000 – 1,000,000 | 50x | 1.00% |
+ * | 1,000,000 – 5,000,000 | 20x | 2.50% |
+ * | 5,000,000 – 20,000,000 | 10x | 5.00% |
+ * | 20,000,000 – 50,000,000 | 5x | 10.00% |
+ * | 50,000,000 – 100,000,000 | 4x | 12.50% |
+ * | 100,000,000 – 200,000,000 | 3x | 15.00% |
+ * | 200,000,000 – 300,000,000 | 2x | 25.00% |
+ * | > 300,000,000 | 1x | 50.00% |
+ *
+ * 出处：Binance 官方杠杆及保证金阶梯（2021 版与 2026 年现行表一致，见方案 §14.4 调研）。
+ * ⚠️ 前四档与改动前**逐位相同**；`≥ $5M` 那一段的维持保证金率由统一的 5% 细化为 5/10/12.5/15/25/50%
+ *    ⇒ 巨鲸会**更早**被强平（更真实，也是本轮有意的手感变化）。
  */
 const BINANCE_MARGIN_TIERS = [
-  { upTo: 5e4,       rate: 0.004 },
-  { upTo: 2.5e5,     rate: 0.005 },
-  { upTo: 1e6,       rate: 0.01 },
-  { upTo: 5e6,       rate: 0.025 },
-  { upTo: Infinity,  rate: 0.05 },
+  { upTo: 5e4,       rate: 0.004,  maxLev: 125 },
+  { upTo: 2.5e5,     rate: 0.005,  maxLev: 100 },
+  { upTo: 1e6,       rate: 0.01,   maxLev: 50  },
+  { upTo: 5e6,       rate: 0.025,  maxLev: 20  },
+  { upTo: 2e7,       rate: 0.05,   maxLev: 10  },
+  { upTo: 5e7,       rate: 0.10,   maxLev: 5   },
+  { upTo: 1e8,       rate: 0.125,  maxLev: 4   },
+  { upTo: 2e8,       rate: 0.15,   maxLev: 3   },
+  { upTo: 3e8,       rate: 0.25,   maxLev: 2   },
+  { upTo: Infinity,  rate: 0.50,   maxLev: 1   },
 ];
 
 /**
@@ -584,6 +609,26 @@ export function maintRateAt(exId, notional, kind = 'perp', lev = 0) {
   const n = Number.isFinite(notional) && notional > 0 ? notional : 0;
   for (const t of BINANCE_MARGIN_TIERS) if (n < t.upTo) return t.rate;
   return GAME.maintRate;
+}
+
+/**
+ * 该所 / 该工具 / 该名义档允许的**最高杠杆**（⑥ 名义阶梯杠杆封顶 · 2026-10-03）。
+ *
+ * 与 `maintRateAt` **同一张表**（`BINANCE_MARGIN_TIERS`）：名义越大、可开的杠杆越低。
+ * 只有 **Binance 永续**吃这张表 —— 其余所、以及**杠杆（`margin`）**一律返回 `Infinity`（不设限，
+ * 那些产品的杠杆已由 `EXCHANGES[].marginSteps` / 各自的保证金水平口径封住）。
+ *
+ * ⚠️ 这是「**下单那一刻**按结果名义判档」用的判据（`engine.openCheck`），**不是**选择器的过滤器 ——
+ *    选杠杆时还没有名义，真实交易所也是让用户先选倍数、再按名义拒绝超档的单。
+ *
+ * @param {number} notional 结果名义（本单名义 ＋ 已有仓位按现价的名义）
+ * @returns {number} 该档允许的最高杠杆；不设限时 `Infinity`
+ */
+export function notionalMaxLevAt(exId, notional, kind = 'perp') {
+  if (kind === 'margin' || exId !== 'binance') return Infinity;
+  const n = Number.isFinite(notional) && notional > 0 ? notional : 0;
+  for (const t of BINANCE_MARGIN_TIERS) if (n < t.upTo) return t.maxLev;
+  return 1;
 }
 
 /** 该时刻的**借贷日息**（B26）—— 升序取「最后一个 `from <= t`」 */

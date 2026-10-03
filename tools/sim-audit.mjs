@@ -149,6 +149,40 @@ const noteWhy = (r) => { if (!r.ok) seen.set(r.why, (seen.get(r.why) || 0) + 1);
 for (const [why, n] of [...seen.entries()].sort((a, b) => b[1] - a[1])) console.log(`   ×${n}  ${why}`);
 check('拒绝分支 ≥ 8 类可达', seen.size >= 8, `实得 ${seen.size} 类`);
 
+/* ── 2b · ⑥ 名义阶梯杠杆封顶（Binance 永续按**结果名义**判档 · 真实 BTCUSDT 表） ── */
+section('2b · ⑥ 名义阶梯杠杆封顶（Binance 永续 · 真实 BTCUSDT 阶梯，与维持保证金率同表）');
+{
+  console.log('  名义档 → 最高杠杆 / 维持保证金率');
+  for (const n of [3e4, 1e5, 5e5, 3e6, 1e7, 3e7, 7e7, 2e8, 5e8]) {
+    const label = n >= 1e6 ? `$${(n / 1e6).toFixed(0)}M` : `$${(n / 1e3).toFixed(0)}K`;
+    console.log(`   ${label.padEnd(6)} → ${String(C.notionalMaxLevAt('binance', n, 'fut')).padStart(3)}x   维持 ${f(C.maintRateAt('binance', n, 'perp') * 100, 2)}%`);
+  }
+  check('125x 只在 ≤$5 万档（边界闭区间在下档）', C.notionalMaxLevAt('binance', 5e4 - 1, 'fut') === 125 && C.notionalMaxLevAt('binance', 5e4, 'fut') === 100);
+  check('$1 亿名义只能 4x（旧表会给到 10x+）', C.notionalMaxLevAt('binance', 1e8 - 1, 'fut') === 4);
+  check('$3 亿以上 1x', C.notionalMaxLevAt('binance', 3e8, 'fut') === 1);
+  check('非 Binance 永续不受此限（返回 Infinity）', C.notionalMaxLevAt('bitmex', 1e8, 'fut') === Infinity);
+  check('Binance 杠杆（margin）不受此限', C.notionalMaxLevAt('binance', 1e8, 'margin') === Infinity);
+  check('维持保证金率与杠杆同表单调（名义越大越严）',
+    C.maintRateAt('binance', 3e6, 'perp') < C.maintRateAt('binance', 1e7, 'perp')
+    && C.maintRateAt('binance', 1e7, 'perp') < C.maintRateAt('binance', 7e7, 'perp'));
+}
+// 2b.1 巨鲸在 Binance 永续上被档位卡住（2020-06 该所上限 125x；现金 $20 万 × 125x ≈ $2380 万名义 ⇒ 5x 档）
+{
+  const s = await mk({ i: idx(at(2020, 6)) });
+  s.ex = 'binance'; s.mode = 'fut'; s.lev = 125;
+  s.books.binance = { usd: 0, usdt: 200000 };
+  const r = noteWhy(engine.openTrade(s, 'long'));
+  check('⑥ 超档巨鲸单被拒绝', !r.ok && /超过该档杠杆上限/.test(r.why || ''), r.why || '（竟然开出来了）');
+}
+// 2b.2 同所同年代：档内的单照常放行（杠杆 20x × $5K ≈ $10 万名义 ⇒ 100x 档）
+{
+  const s = await mk({ i: idx(at(2020, 6)) });
+  s.ex = 'binance'; s.mode = 'fut'; s.lev = 20;
+  s.books.binance = { usd: 0, usdt: 5000 };
+  const r = engine.openTrade(s, 'long');
+  check('⑥ 档内的单照常放行', r.ok, r.why || '');
+}
+
 /* ═══════════════════ 3 · 资金守恒（开 → 平 / 开 → 走 N 小时） ═══════════════════ */
 section('3 · 资金守恒：同一小时开平的净损耗 == 两次手续费');
 for (const mode of ['margin', 'fut']) {
