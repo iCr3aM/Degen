@@ -419,13 +419,18 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
 {
   const t = at(2013, 8);
   const s0 = await mk({ sym: 'BTC', i: idx(t) });
-  const cap = market.liqOf('BTC', market.dayIndexOf(s0.i)) * C.MARGIN.quota;
-  console.log(`  2013-09 BTC 日流动性 $${f(market.liqOf('BTC', market.dayIndexOf(s0.i)) / 1e6, 2)}M ⇒ 额度 $${f(cap / 1e3, 1)}K`);
-  const s1 = await mk({ sym: 'BTC', i: idx(t), cash: 20000 });
+  const dayLiq = market.liqOf('BTC', market.dayIndexOf(s0.i));
+  const cap = dayLiq * C.MARGIN.quota;
+  console.log(`  2013-09 BTC 日流动性 $${f(dayLiq / 1e6, 2)}M ⇒ 额度 $${f(cap / 1e3, 1)}K`);
+  /* ⚠️ 本金取**当日额度的 0.8 倍**，不写死绝对值：流动性锚逐年会变（2026-10-04 修正过 BTC 早期年，
+     2013-09 额度从 $11.4K 抬到 $607K）—— 写死 $20,000 在新锚下根本够不到闸门，断言会退化成空转。
+     3x 多头借入 = 名义 × 2/3 = 本金 × 2 = 1.6×额度 > 额度 ⇒ 必被拒。 */
+  const cash = cap * 0.8;
+  const s1 = await mk({ sym: 'BTC', i: idx(t), cash });
   s1.ex = 'bitfinex'; s1.mode = 'margin'; s1.lev = 1;
   const r1 = engine.openTrade(s1, 'long', 1);
   check('9c 1x 多头借入为 0 ⇒ 额度闸不拦', r1.ok, r1.why || '');
-  const s3 = await mk({ sym: 'BTC', i: idx(t), cash: 20000 });
+  const s3 = await mk({ sym: 'BTC', i: idx(t), cash });
   s3.ex = 'bitfinex'; s3.mode = 'margin'; s3.lev = 3;
   const r3 = engine.openTrade(s3, 'long', 1);
   check('9c 借到超过当日额度 ⇒ 开仓被拒', !r3.ok && /借贷额度/.test(r3.why), r3.why || '');
@@ -531,8 +536,14 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
     check('9f 保护带只认 Binance（同一时刻 BitMEX 照常可开）', false, '未找到触发点，无法验证');
   }
 
-  /* f3 · 额度闸**只拦开仓**：先建空头（过闸）⇒ 加仓被顶住 ⇒ 平仓永远放行（与 `haltedAt` 同纪律） */
-  const s3 = await mk({ sym: 'BTC', i: idx(at(2013, 8)), cash: 20000 });
+  /* f3 · 额度闸**只拦开仓**：先建空头（过闸）⇒ 加仓被顶住 ⇒ 平仓永远放行（与 `haltedAt` 同纪律）
+     ⚠️ 本金取**当日额度的 1.5 倍**，不写死绝对值：2013-09 的额度随流动性锚变动
+     （2026-10-04 修正 BTC 早期年 ⇒ $11.4K 抬到 $607K），写死 $20,000 在新锚下根本够不到闸门。
+     1x 空头借入 = 名义 = 本金 ⇒ 半仓 0.75×额度（过闸），全仓 1.5×额度（被拒）。 */
+  const sPre = await mk({ sym: 'BTC', i: idx(at(2013, 8)) });
+  const cap2013 = market.liqOf('BTC', market.dayIndexOf(sPre.i)) * C.MARGIN.quota;
+  const cash2013 = cap2013 * 1.5;
+  const s3 = await mk({ sym: 'BTC', i: idx(at(2013, 8)), cash: cash2013 });
   s3.ex = 'bitfinex'; s3.mode = 'margin'; s3.lev = 1;
   const r1 = engine.openTrade(s3, 'short', 0.5);
   const r2 = engine.openTrade(s3, 'short', 1);
@@ -548,18 +559,21 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
   check('9f rewindTo 清掉利息窗口', s4.intWin && s4.intWin.ied === 0 && s4.intWin.grossM === 0, JSON.stringify(s4.intWin));
 
   /* f5 · 额度闸**只认盘口通道**：OTC 走到最低单也绝不因额度被拦。
-     背景（本断言就是为它立的）：BTC 2013 的 OTC 最低单 $17K > 当日可借额度 $14K
-     （`liqOf` $138K × 10%），拿**盘口**口径去卡**场外**通道会卡出一个死结
-     —— 玩家同时看到「最少 $17K」与「最多借 $14K」。用户 2026-10-03 拍板 OTC 整条豁免。 */
+     立这条的起因是 2026-10-03 的**死结**：当时 BTC 2013 的 OTC 最低单 $17K > 当日可借额度 $14K
+     （旧锚 `liqOf` $138K × 10%），拿**盘口**口径去卡**场外**通道会卡出一个死结
+     —— 玩家同时看到「最少 $17K」与「最多借 $14K」。
+     ⚠️ 2026-10-04 修正 BTC 早期年锚后，那个具体死结已**不再存在**（2013-10 额度 ≈ $2.2M），
+        但 OTC 与盘口本就是两把尺子（场外撮合不吃盘口深度）⇒ 豁免照旧保留。
+     本金取**当日额度的 1.5 倍**（不写死绝对值，同 f3）：权益须先过 OTC 解锁门槛。 */
   const big = async () => {
-    const s = await mk({ sym: 'BTC', i: idx(at(2013, 8)), cash: 400000 });
+    const s = await mk({ sym: 'BTC', i: idx(at(2013, 8)), cash: cash2013 });
     s.ex = 'bitfinex'; s.mode = 'margin'; s.lev = 1;
-    return s;                                       // 权益 $40 万 > OTC 解锁门槛（$20 万）
+    return s;                                       // 权益 1.5×额度 > OTC 解锁门槛（$20 万）
   };
   const sOtc = await big(); sOtc.chan = 'otc';
   const rOtc = engine.openTrade(sOtc, 'short', 1);
   check('9f OTC 通道豁免额度闸（BTC 2013 做空不再死结）',
-    rOtc.ok && !/借贷额度不足/.test(rOtc.why || ''), `${rOtc.why || 'ok'} ｜ 名义 $400K vs 额度 $14K`);
+    rOtc.ok && !/借贷额度不足/.test(rOtc.why || ''), `${rOtc.why || 'ok'} ｜ 名义 ${f(cash2013 / 1e3, 0)}K vs 额度 ${f(cap2013 / 1e3, 0)}K`);
   const sBook = await big();                        // 同规模、同一时刻，只把通道换成盘口
   const rBook = engine.openTrade(sBook, 'short', 1);
   check('9f 同一笔走盘口仍被额度闸拦（豁免只给 OTC，不是把闸删了）',
@@ -652,11 +666,17 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
       nearOff.ok && near.push > nearOff.push + 1e-12,
       `开 ${f(near.push * 100, 3)}% vs 关 ${f(nearOff.push * 100, 3)}%`);
 
-    /* ② 距离闸（§5.4 不做凭空针对）：远强平线时 `kAim` 开 / 关**逐位相同**（`amp` 恰为 1） */
+    /* ② 距离闸（§5.4 不做凭空针对）：远强平线时 `kAim` 开 / 关**逐位相同**（`amp` 恰为 1）。
+       ⚠️ 2026-10-04：由「严格 `===`」放宽为**相对 1e-9 容差**。数学上 `amp = 1` ⇒ 两次运行逐位相同，
+          但引擎存在**跨运行末位漂移**（本块开头的注释已记过）：`kAim` 先开 4 档、再关 3 档，
+          浮点累加次序不同 ⇒ 实测分叉在 **5e-11（相对）** 量级（1.3878247659369e-2 vs
+          1.3878247658617e-2），显示到小数点后 3 位完全一样。1e-9 的容差仍能抓出任何真实的
+          `amp ≠ 1`（档 3 的倍率 ≥ 1.05 量级 ⇒ 差异 ≥ 5%，差三个数量级）。 */
     const farOff = await run(far.lev, 0);
-    check('9g 距离闸：远强平线（d ≥ dRef）时档 3 一个字都不改（逐位相同）',
-      farOff.ok && far.push === farOff.push,
-      `开 ${f(far.push * 100, 3)}% vs 关 ${f(farOff.push * 100, 3)}%`);
+    const farAmpErr = Math.abs(far.push - farOff.push) / Math.max(Math.abs(far.push), 1e-12);
+    check('9g 距离闸：远强平线（d ≥ dRef）时档 3 一个字都不改（amp = 1）',
+      farOff.ok && farAmpErr <= 1e-9,
+      `开 ${f(far.push * 100, 3)}% vs 关 ${f(farOff.push * 100, 3)}%（相对差 ${farAmpErr.toExponential(1)}）`);
 
     /* ③ 上界：唯一允许破 σ 的地方，但仍是**有界**的（`aimCap × σ`） */
     const cap = C.ADV.aimCap * SIG;
