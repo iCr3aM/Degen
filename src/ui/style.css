@@ -204,10 +204,13 @@ b, strong { font-weight: 600; }
   display: flex;
   align-items: center;
   gap: 8px;
-  /* 52 → **48px**（Batch 5 · B26，2026-09-29）：`.who` 两行内容 33.75px、按钮 32px，48 都放得下。
-     省下的 4px 全部让给 K 线区 —— 这一版所有纵向压缩都是同一个目的。 */
-  height: calc(48px * var(--ui));
-  border-bottom: 1px solid var(--line);
+  /* 52 → 48px（Batch 5 · B26，2026-09-29）→ **44px**（2026-10-05 用户拍板）。
+     原来这里挂着 `border-bottom` 那道分隔线，但它下面紧跟的第一块 —— 交易页的两格账户
+     （`.hud .cell`）、资产页的抬头、设置页的 `.set-card`、回顾 / 档案页的卡片 —— **自己就带边框**
+     ⇒ 是「两圈框中间再夹一条线」，重复。撤掉那道线后，顶栏从 48 收到 44px
+     （`.who` 两行内容 33.75px、按钮 32px，四周仍各留 5px，都放得下），
+     省下的 4px 与上一次 52→48 一样**全部让给 K 线区**。 */
+  height: calc(44px * var(--ui));
 }
 .top .who {
   display: flex;
