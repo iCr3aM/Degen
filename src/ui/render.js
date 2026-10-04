@@ -1068,6 +1068,8 @@ export function update(refs, s, view) {
        玩家的第一反应是「点了没反应」，而不是「现在是暂停」。画灰才是诚实的状态。
        ⚠️ 只禁**下单 / 平仓 / 换所 / 切通道**这四类（用户拍板）；杠杆档 / 金额档 / 切模式 /
           切币 / 切页 / 日志浮层 / 设置 / 上帝面板**照常可用**，所以这里一个字都不碰它们。
+       ⚠️ **买 U 不在其中**（2026-10-04 用户拍板）：它是纯换汇、无市场冲击，暂停时照常可用 ——
+          详见资产页买 U 块那段注释。
        ⚠️ `view.guide` 豁免：新手引导期间 `s.paused` 恒为真，而**第 6 步**正高亮着「买入」教玩家怎么用 ——
           把那一枚画成灰与引导自相矛盾（详见 `main.js` 里 `view.guide` 那段注释）。 */
   const frozen = s.paused && !view.guide;
@@ -1226,15 +1228,18 @@ export function update(refs, s, view) {
     refs.uCard.hidden = !usdtLive;
     if (usdtLive) {
       setText(refs.uPrice, `1 USDT = $${usdtPriceAt(now).toFixed(3)}`);
-      /* 买 U 这一排同样吃**暂停闸门**与**下单一小时锁**（§73.8/§73.9）：换 U 与下单共用 `s.sizeFrac`，
-         两者都被拦时这一排留着可点只会让玩家以为「换 U 也能钻空子」。 */
+      /* 买 U 这一排**不吃暂停闸门、也不吃下单一小时锁**（2026-10-04 用户拍板）：
+         它是**纯换汇** —— `engine.buyUsdt` 按 `usdtPriceAt(now)` 把当前所的美元换成 USDT，
+         **不写 `s.lockI`、无市场冲击**（价格是时间的纯函数）⇒ 两道闸门对它都无防作弊意义。
+         暂停时照常可用（那正是玩家「停下来把钱换成 U」的时刻）。
+         ⚠️ 仍受 `lockedUI`（结束 / 待借贷决策）约束 —— 与操作区那几排同源口径。 */
       for (const [k, b] of refs.uFracBtns) {
         b.classList.toggle('on', Math.abs(s.sizeFrac - Number(k)) < 1e-9);
-        b.disabled = frozen || locked;
+        b.disabled = lockedUI;
       }
       /* 没有美元可换 ⇒ 键画灰（`.act:disabled` 那档，与「暂停时画灰」同一副样子）。
          判据与 `engine.buyUsdt` 的 `!(usd > 0)` **同源** —— 那正是这一下点下去会失败的唯一原因。 */
-      refs.uBuyBtn.disabled = frozen || locked || !(usd > 0);
+      refs.uBuyBtn.disabled = lockedUI || !(usd > 0);
     }
 
     /* ⑥ 持仓列表（R24）：**只在结构变化时重建 DOM**（集合 / 方向 / 杠杆 / 性质 / 开仓价），

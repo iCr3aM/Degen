@@ -842,14 +842,17 @@ function dispatch(node) {
 
   /* ── 暂停闸门（本轮 ① · 操作逻辑审计）──────────────────────────────────
      **暂停时必须被拦住的只有「会动钱」的动作**：下单（`buy`/`sell`/`long`/`short`）、
-     平仓（`close`）、换所（`ex` 弹层 ＋ `exok` 二次确认）、盘口 ⇄ OTC 切换（`chan`）、
-     **买 U（`buyu`）**。
+     平仓（`close`）、换所（`ex` 弹层 ＋ `exok` 二次确认）、盘口 ⇄ OTC 切换（`chan`）。
      其余一律**照常可用**（用户 2026-09-29 拍板）：杠杆档 / 金额档 / 杠杆合约 / 切币 /
      粒度 / 切页 / 日志浮层 / 设置页（音量·行情音·震动·动效·新手提示·重开）/ 上帝面板 / 暂停键本身。
      理由：那些只改「下一单的参数」，此时既没有行情在走、也没有一笔单会成交 ——
      拦它们只会让玩家以为界面坏了。
+     2026-10-04 补 · 用户拍板：**买 U（`buyu`）从这张拦截表里移出**。它是**纯换汇** ——
+     `engine.buyUsdt` 只把当前所的美元按 `usdtPriceAt(now)` 换成 USDT，**不写 `s.lockI`、
+     不产生任何市场冲击**（价格是时间的纯函数，玩家换多少次都套不出价差）⇒ 暂停与下单一小时锁
+     对它都没有防作弊意义，拦下来只会让资产页那排键在暂停时无故变灰。
 
-     ⚠️ **下面这个 `if` 只兜三个「没有 disabled 按钮可挡」的入口**（`exok` / `chan` / `buyu`，
+     ⚠️ **下面这个 `if` 只兜两个「没有 disabled 按钮可挡」的入口**（`exok` / `chan`，
         外加 `ex` 弹层本身）。`buy`/`sell`/`long`/`short`/`close` 这五枚是**真按钮**，
         暂停时已由渲染层的 `frozen`（`s.paused && !view.guide`）**真禁用**，
         点都点不出来 ⇒ 这里再拦一遍纯属重复。
@@ -861,7 +864,7 @@ function dispatch(node) {
      ⚠️ 回顾态走自己的 `rv.paused`，且那一屏不碰账户 ⇒ 这里只在正常玩法下生效（`!rv`）。
      ⚠️ 给一条日志而不是静默吞掉：玩家按了键没反应时，「为什么」比「没反应」重要。 */
   if (!rv && s.paused && (d.ex !== undefined || d.exok !== undefined
-    || d.chan !== undefined || d.buyu !== undefined)) {
+    || d.chan !== undefined)) {
     pushLog(s, '已暂停 ｜ 先点顶栏「继续」再进行交易', 'info');
     after();
     return;
@@ -870,10 +873,11 @@ function dispatch(node) {
   /* **下单一小时锁**（§73.8 · 2026-10-02 用户拍板）：暂停允许下单，但一笔成交后 `s.lockI = s.i`，
      必须点「继续」走满 1 游戏小时（`s.i > s.lockI`）才能再动钱 —— 封堵
      「疯狂点 继续/暂停 把同一根 K 线的行情切成多笔成交」。判据 `pauseLocked` 与渲染层置灰同源。
-     ⚠️ 与上面那条分开：上面那条讲「已暂停，先继续」，这条讲「刚成交过，等一小时」。 */
+     ⚠️ 与上面那条分开：上面那条讲「已暂停，先继续」，这条讲「刚成交过，等一小时」。
+     ⚠️ **买 U 不进这条**（2026-10-04）：它不写 `s.lockI`、无市场冲击，不存在「切碎同一根 K 线」的问题。 */
   if (!rv && pauseLocked(s) && (d.buy !== undefined || d.sell !== undefined
     || d.act === 'long' || d.act === 'short' || d.act === 'close'
-    || d.ex !== undefined || d.exok !== undefined || d.chan !== undefined || d.buyu !== undefined)) {
+    || d.ex !== undefined || d.exok !== undefined || d.chan !== undefined)) {
     pushLog(s, '刚成交 ｜ 走满 1 小时后再交易', 'info');
     after();
     return;
