@@ -1056,16 +1056,23 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     ...o,
   });
 
-  /* ── A · 12 种「玩家画像」→ 风格称号逐条命中 ──────────────────────
-     「全量模拟不同玩家的操作」落到**记录层**：每一种操作风格（空仓 / 反复爆仓 / 极限杠杆 /
-     满世界搬家 / 借救济金 / 高频 / 单币 / 多币 / 偏爱合约 / 偏爱杠杆 / 低频长持 / 均衡）
-     各造一条画像，都能**唯一命中**对应的一枚风格称号。 */
+  /* ── A · 14 种「玩家画像」→ 风格称号逐条命中 ──────────────────────
+     「全量模拟不同玩家的操作」落到**记录层**：每一种操作风格（空仓 / 反复爆仓 /
+     极限杠杆 / 满世界搬家 / 借救济金 / 高频 / 单币 / 多币 / 偏爱合约 / 偏爱杠杆 /
+     低频长持 / 均衡 / **爆仓收场** / **续命失败**）各造一条画像，都能**唯一命中**
+     对应的一枚风格称号。
+     ⚠️ 末尾两条是**同一批行为、不同结局**（2026-10-05 用户实测修）：
+        「反复爆仓」活到结算叫「不死鸟」、破产则叫「爆仓常客」；
+        「领过救济金」活到结算叫「向死而生」、破产则叫「续命无果」——
+        这两对专门证明**破产结局不会拿到暗示「活下来」的称号**。 */
   const STYLES = [
     ['空仓看客', { open: 0, margin: 0, win: 0, loss: 0, maxLev: 1 }],
     ['不死鸟', { open: 20, liq: 15, maxLev: 5 }],
+    ['爆仓常客', { open: 20, liq: 15, maxLev: 5, reason: OVER.LIQUIDATED }],
     ['梭哈战神', { open: 5, fut: 3, margin: 2, maxLev: 125 }],
     ['逐利游牧', { open: 5, move: 12, maxLev: 5 }],
     ['向死而生', { open: 5, loan: 1, maxLev: 5 }],
+    ['续命无果', { open: 5, loan: 1, maxLev: 5, reason: OVER.GAVEUP }],
     ['高频猎手', { open: 150, days: 1000, maxLev: 5 }],
     ['单币信徒', { open: 20, syms: ['BTC'], maxLev: 5 }],
     ['全能多面手', { open: 20, syms: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP'], maxLev: 5 }],
@@ -1077,7 +1084,60 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
   const STYLE_SET = new Set(STYLES.map(([w]) => w));
   for (const [want, o] of STYLES) {
     const got = T.styleOf(rec(o));
-    check(`12 画像 «${want}» 命中风格称号`, got === want, got === want ? '' : `实得 «${got}»`);
+    check(`14 画像 «${want}» 命中风格称号`, got === want, got === want ? '' : `实得 «${got}»`);
+  }
+
+  /* ── A2 · 主称号「结局 × 倍数」穷举矩阵（2026-10-05 用户实测修）──────────────────
+     上一版只对四档结局写死（爆仓 / 收摊各一枚），**破产档完全没按「曾经多高」分** ⇒
+     峰顶 7.1m、终值 −265k 的局被叫「收摊的人」，与事实不符（用户原话）。
+     现在：破产档按**峰顶倍数**分三档，结算档按终值倍数分六档。这里把两条轴都穷举一遍。 */
+  const BUST_TITLES = ['黄粱一梦', '高台跳水', '归零者'];
+  const LIVE_TITLES = ['陪跑的', '活下来的', '翻倍的人', '钻石手', '币圈锦鲤', '百倍战神'];
+  const TITLE_SET = new Set([...BUST_TITLES, ...LIVE_TITLES]);
+  check('12 主称号档位恰 9 枚（破产 3 ＋ 结算 6）',
+    TITLE_SET.size === 9, `${TITLE_SET.size}`);
+  /* 破产档：`reason` 两种都算破产，逐条按峰顶倍数验。 */
+  for (const reason of [OVER.LIQUIDATED, OVER.GAVEUP]) {
+    const cases = [[0, '归零者'], [9.99, '归零者'], [10, '高台跳水'], [99.9, '高台跳水'],
+      [100, '黄粱一梦'], [1000, '黄粱一梦']];
+    for (const [peakMult, want] of cases) {
+      const got = T.titleOf(rec({ reason, cash0: 1000, peak: peakMult * 1000, final: -265000 }));
+      check(`12 破产档（${reason}）峰顶 ${peakMult}x ⇒ «${want}»`, got === want,
+        got === want ? '' : `实得 «${got}»`);
+    }
+  }
+  /* 结算档：按终值倍数验，含末档 `else` 兜底。 */
+  for (const [m, want] of [[0.5, '陪跑的'], [1, '活下来的'], [4.9, '翻倍的人'],
+    [19.9, '钻石手'], [99.9, '币圈锦鲤'], [100, '百倍战神'], [1e6, '百倍战神']]) {
+    const got = T.titleOf(rec({ reason: OVER.SETTLED, cash0: 1000, final: m * 1000 }));
+    check(`12 结算档终值 ${m}x ⇒ «${want}»`, got === want, got === want ? '' : `实得 «${got}»`);
+  }
+  /* 硬规矩：**破产局的称号一定落在破产三档里**（不许混进结算六档），反之亦然。 */
+  {
+    let crossed = 0;
+    for (const reason of [OVER.LIQUIDATED, OVER.GAVEUP]) {
+      for (const pk of [0, 1, 5, 20, 100, 500]) {
+        if (!BUST_TITLES.includes(T.titleOf(rec({ reason, cash0: 1000, peak: pk * 1000, final: -1 })))) crossed++;
+      }
+    }
+    for (const f of [0.1, 0.5, 1, 2, 10, 50, 200, 1e5]) {
+      if (!LIVE_TITLES.includes(T.titleOf(rec({ reason: OVER.SETTLED, cash0: 1000, final: f * 1000 })))) crossed++;
+    }
+    check('12 结局轴互不串档（破产 3 档 ⇄ 结算 6 档）', crossed === 0, `串档 ${crossed} 次`);
+  }
+  /* 硬规矩：**破产局不许拿到任何「暗示活下来」的风格称号**。 */
+  {
+    const lie = ['不死鸟', '向死而生'];
+    let lied = 0;
+    for (const reason of [OVER.LIQUIDATED, OVER.GAVEUP]) {
+      for (const liq of [0, 1, 10, 20, 88, 120]) {
+        for (const loan of [0, 1, 2]) {
+          const got = T.styleOf(rec({ reason, open: 20, liq, loan, maxLev: 5 }));
+          if (lie.includes(got)) lied++;
+        }
+      }
+    }
+    check('12 破产局风格称号不说「活下来了」', lied === 0, `出现 ${lied} 次`);
   }
 
   /* ── B · 徽章池 20 枚全部可达（无死徽章）＋ 输出无未登记名称 ── */
@@ -1124,7 +1184,7 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
   const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
   const pick = n => Math.floor(rnd() * n);
   const reasons = [OVER.LIQUIDATED, OVER.SETTLED, OVER.GAVEUP];
-  let emptyStyle = 0, unknownStyle = 0, emptyTitle = 0, dupBadge = 0, maxBadges = 0;
+  let emptyStyle = 0, unknownStyle = 0, emptyTitle = 0, unknownTitle = 0, dupBadge = 0, maxBadges = 0;
   for (let n = 0; n < 4000; n++) {
     const symCount = pick(7);
     const open = pick(300);
@@ -1151,10 +1211,12 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     if (bs.length > maxBadges) maxBadges = bs.length;
     const ti = T.titleOf(r);
     if (!ti || typeof ti !== 'string') emptyTitle++;
+    else if (!TITLE_SET.has(ti)) unknownTitle++;
   }
   check('12 fuzz ×4000：风格称号永不为空', emptyStyle === 0, `空 ${emptyStyle} 次`);
-  check('12 fuzz ×4000：风格称号恒在已登记 12 档内', unknownStyle === 0, `越界 ${unknownStyle} 次`);
+  check('12 fuzz ×4000：风格称号恒在已登记 14 档内', unknownStyle === 0, `越界 ${unknownStyle} 次`);
   check('12 fuzz ×4000：主称号永不为空', emptyTitle === 0, `空 ${emptyTitle} 次`);
+  check('12 fuzz ×4000：主称号恒在已登记 9 档内', unknownTitle === 0, `越界 ${unknownTitle} 次`);
   check('12 fuzz ×4000：单局徽章无重复', dupBadge === 0, `重复 ${dupBadge} 次`);
   /* 理论上界 14：工具 1 ＋ 杠杆烈度 1 ＋ 分散度 1 ＋ 爆仓 1 ＋ 行为 5（闪电战 / 长跑选手互斥）
      ＋ 曲线 3 ＋ 神枪手 1 ＋ 危机幸存者 1 —— 海报两行放得下的上限。 */
