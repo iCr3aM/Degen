@@ -1237,6 +1237,12 @@ canvas.curve {
 .boot {
   position: fixed;
   inset: 0;
+  /* ⚠️ **必须是全站最高层**（2026-10-05 遮罩审计修）：`z-index` 原来没写（`auto`），
+     而结束遮罩 `.over` 是 `z-index: 10`、弹层容器 `#overlay` 是 `20` —— 两者都在 `.boot`
+     之上。`maskReload()` 先铺 `.boot` 再 reload，若那一拍 `.over` 还挂在 `#app` 里
+     （玩家从结算遮罩点「重开」），旧画面就会从 `.boot` 底下透出来 ⇒ 回到「旧状态残留一小会」。
+     给 `.boot` 一个高于全站（现最高 20）的层号，任何遮罩都压不住它。 */
+  z-index: 100;
   display: flex;
   flex-direction: column;
   align-items: center;

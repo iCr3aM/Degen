@@ -1168,6 +1168,23 @@ function baseBookOiOf(sym, i) {
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 /**
+ * **已存在各币 `heat` 的算术均值**（排除 `sym` 自身）—— 新格子 `heat` 的起手值。
+ * 没有任何已存在的币时退回 `HEAT.base`（⇒ 开局那唯一一个格子的口径逐位不变）。
+ * @param {object} s 状态
+ * @param {string} sym 即将建格的币（尚未在 `s.mkt` 里，排除是**防御性**的）
+ * @returns {number} 0–1
+ */
+function meanHeatOf(s, sym) {
+  let sum = 0, n = 0;
+  for (const k in s.mkt) {
+    if (k === sym) continue;
+    const o = s.mkt[k];
+    if (o && Number.isFinite(o.heat)) { sum += o.heat; n++; }
+  }
+  return n ? clamp01(sum / n) : HEAT.base;
+}
+
+/**
  * 某个币的 NPC 情绪 / 持仓格子（懒建）：
  *   `heat` ∈ [0,1]，0.5 中性；
  *   `npc`（**v28 · §4.2**）＝ **6 档杠杆阶梯** —— 每档 `{ long, longAvg, short, shortAvg,
@@ -1189,7 +1206,14 @@ const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 function mktOf(s, sym) {
   if (!s.mkt) s.mkt = {};
   return s.mkt[sym] || (s.mkt[sym] = {
-    heat: HEAT.base,
+    /* ⚠️ **新格子的热度不取中性 0.5，而取「已存在各币的情绪均值」**（2026-10-05 G2 自洽审计修）。
+       病根：`crossHeat` 只能把偏差推给**已在 `s.mkt` 里**的币 —— 玩家「砸崩 BTC，再**第一次**
+       切到 ETH」时 ETH 的格子还不存在，推不进去；等 `tickMarket('ETH')` 把它懒建出来，
+       若按 `HEAT.base` 起手，则 ETH 恰好**什么都没发生** —— 正是 `crossHeat` 表头点名要避免的
+       那种失真（现实的单一加密因子下，新币一上市就与大盘同呼吸）。
+       修法：起手值 = 已有各币 `heat` 的算术均值（没有任何已有币时退回 `HEAT.base`，即开局 BTC 的
+       口径逐位不变）。⚠️ **只在建格那一刻取一次**，之后仍由 `crossHeat` / 情绪更新正常演进。 */
+    heat: meanHeatOf(s, sym),
     npc: NPC.ladder.map(() => ({
       long: 0, longAvg: 0, short: 0, shortAvg: 0,
       longStopped: false, shortStopped: false,      // 亏损侧止损带（`NPC.stopFrac`）

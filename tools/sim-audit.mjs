@@ -1643,6 +1643,25 @@ section('9l–9o · 模拟深度：跨币危机共振 · 处置效应盈利侧 �
   const bDown = await read(0.0), bUp = await read(1.0);
   check('9l 回读项双向（邻币低 ⇒ 本币被拉低；邻币高 ⇒ 被拉高）', bDown < bUp - 0.005,
     `邻低 ${f(bDown, 4)} < 邻高 ${f(bUp, 4)}`);
+
+  /* 新币**首次建格**的起手热度 —— 必须取自「已有各币 heat 的均值」，不是死的中性 0.5。
+     病根：`crossHeat` 只能推给**已在 `s.mkt` 里**的币。玩家「砸崩 BTC 再第一次切 ETH」时 ETH
+     的格子还不存在 ⇒ 若按 0.5 起手，则 ETH 恰好什么都没发生（本块要钉死这条自洽性）。 */
+  const fresh = async (btcHeat) => {
+    const s = await mk({ sym: 'ETH', i: T, mode: 'fut' });
+    /* 只留一个邻币 BTC 的格子，ETH 的格子**不存在** ⇒ 模拟「从没看过 ETH」。
+       （`crossHeat` 只读邻币的 `heat`，故这个桩只需 `heat`，同上面 9l 那两处。） */
+    s.mkt = { BTC: { heat: btcHeat } };
+    engine.tickMarket(s, 'ETH');               // 首次 tick ⇒ `mktOf` 懒建 ETH
+    return s.mkt.ETH.heat;
+  };
+  const fLow = await fresh(0.05), fHigh = await fresh(0.95);
+  check('9l 新币首次建格 ⇒ 起手热度取邻币均值（恐慌市建格就偏恐慌）', fLow < 0.3,
+    `BTC 0.05 ⇒ ETH 起手 ${f(fLow, 4)}`);
+  check('9l 新币首次建格 ⇒ 起手热度取邻币均值（贪婪市建格就偏贪婪）', fHigh > 0.7,
+    `BTC 0.95 ⇒ ETH 起手 ${f(fHigh, 4)}`);
+  check('9l 起手热度随邻币单调（不再钉死在中性 0.5）', fHigh - fLow > 0.5,
+    `低 ${f(fLow, 4)} → 高 ${f(fHigh, 4)}，差 ${f(fHigh - fLow, 4)}`);
 }
 
 /* ── 9m · G1：处置效应盈利侧（盈利的 NPC 多单被止盈 · 一次性 · 止盈比止损急） ── */
