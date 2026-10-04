@@ -17,13 +17,13 @@ import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, raw
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { FNG, HEAT, INV, NPC, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
+import { CDRI, FNG, HEAT, INV, NPC, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
   equityOf, isLiquidatable, isMargin, liquidationPrice, maintRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
-  FUNDING, INSURE, fundingOf, premiumIndexOf, fundingRateOf, canLiquidate, paysFunding, paysInterest, borrowedOf, borrowCurOf, shockKindOf,
+  FUNDING, FR, INSURE, fundingOf, premiumIndexOf, fundingRateOf, canLiquidate, paysFunding, paysInterest, borrowedOf, borrowCurOf, shockKindOf,
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
@@ -1181,6 +1181,113 @@ function positionNotionalOf(s, sym) {
   if (!pos || !(pos.size > 0)) return 0;
   const p = lastPrice(s, sym);
   return p > 0 ? pos.size * p : 0;
+}
+
+/** 把一个原始量按 `[lo, hi]` 线性归一化到 0–100、两端夹住（非有限值一律给中性 50）。 */
+const cdriNorm = (x, lo, hi) => (Number.isFinite(x) ? Math.max(0, Math.min(100, (x - lo) / (hi - lo) * 100)) : 50);
+
+/**
+ * **隐藏基准：CDRI 衍生品风险读数**（2026-10-04）—— **纯读、不在任何 UI 出现、不参与任何玩法判定**。
+ *
+ * 目的（用户原话）：「先放入游戏内，但不加入游戏内显示，用于测试我们的游戏基准是否接近现实」。
+ * 口径对齐 Coinglass 官方 CDRI（定义与来源见 `god.CDRI` 的表头注释）。**7 项输入 → 本作 5 项**：
+ *
+ *   | Coinglass 输入 | 本作取值 | 说明 |
+ *   |---|---|---|
+ *   | Total OI | `openInterestOf(s,sym) ÷ reviewVolUsdOf(sym,s.i)` | 用**换手倍数**替代「绝对量＋变化率」：本作 OI 在早期年代不可比 |
+ *   | Funding Rate | `|fundingForecastOf(s,sym).rate| ÷ FR.max` | `rate` 可能为 `null` ⇒ 按中性 50 处理 |
+ *   | Average Leverage | NPC 六档 ＋ 做市盘 ＋ 玩家，**名义加权平均** | `Σ名义 ÷ Σ(名义/杠杆)`；杠杆过 `npcLevOf` 年代封顶 |
+ *   | Long/Short Imbalance | `|retailLongShareOf(s,sym) − 0.5| ÷ 0.5` | `null`（散户未建仓）⇒ 中性 50 |
+ *   | Implied Volatility | **❌ 本作无期权 ⇒ 用已实现波动率代理**（`dailySigma` 年化 ×√365） | 拿不到 σ 再退 `reviewVolOf` 兜底 |
+ *   | 24h Liquidation Volume | **❌ 不进复合读数**（引擎没有 24h 清算台账，加了要动存档）⇒ 由 `tools/bench-cdri.mjs` 独立测 |
+ *   | Volume Heat Change | **✅ 已含在 oi 项**的成交额分母里 | 换手倍数本身就是「相对成交量」的热度 |
+ *
+ * 五项各自归一化到 0–100 后按 `CDRI.w` 加权；任一输入取不到时按**中性 50** 计入（不抽掉权重，
+ * 免得「少一项 ⇒ 总分裂」；`parts` 里用 `ok:false` 标出来供校准脚本区分）。
+ *
+ * ⚠️ **纯读纪律**：只调既存的只读导出（`openInterestOf` / `fundingForecastOf` / `retailLongShareOf`
+ *    / `dailySigma` / `reviewVolOf` / `reviewVolUsdOf` / `lastPrice` / `npcLevOf`），**绝不**调
+ *    `mktOf`（那是懒初始化、只在写路径可达）⇒ 不会给 `s` / `s.mkt[sym]` 新增任何需持久化的字段
+ *    （不升 `STATE_VERSION`）。
+ *
+ * @param {object} s 局状态
+ * @param {string} [sym] 币种（缺省当前币）
+ * @returns {{ v:number, band:'low'|'mid'|'high'|'extreme',
+ *             parts:Record<'oi'|'fund'|'lev'|'ls'|'vol',{raw:number,score:number,ok:boolean}> }}
+ */
+export function cdriOf(s, sym = s.sym) {
+  const t = timeOf(s);
+  const parts = {};
+
+  /* ① OI ÷ 24h 美元成交额（换手倍数）—— 成交额取不到（未上线 / 越界）⇒ 中性。 */
+  {
+    const oi = openInterestOf(s, sym);
+    const vol24 = reviewVolUsdOf(sym, s.i);
+    const raw = oi > 0 && vol24 > 0 ? oi / vol24 : NaN;
+    parts.oi = { raw, score: cdriNorm(raw, CDRI.ref.oi.lo, CDRI.ref.oi.hi), ok: Number.isFinite(raw) };
+  }
+
+  /* ② |资金费率| ÷ 上限（0.75%/8h）—— `fundingForecastOf` 可能 null（分不出多空比）⇒ 中性。 */
+  {
+    const fc = fundingForecastOf(s, sym);
+    const raw = fc ? Math.abs(fc.rate) / FR.max : NaN;
+    parts.fund = { raw, score: cdriNorm(raw, CDRI.ref.fund.lo, CDRI.ref.fund.hi), ok: !!fc };
+  }
+
+  /* ③ 名义加权平均杠杆 = Σ名义 ÷ Σ(名义/杠杆)。四个来源的口径**必须**与写侧同源：
+        · NPC 六档 —— 名义 `long+short`、杠杆过 `npcLevOf`（年代封顶，不直读 `.lev`）；
+        · 做市盘 —— `NPC.mm.lev`（3x，不参与封顶）；
+        · 玩家该币仓位 —— `pos.lev`（开仓时已由 `openCheck` 钳过，含 OTC 的 `OTC.levMax` 封顶）。
+      ⚠️ 一律**不读** `s.lev`（那是「下次下单想用的杠杆」，与已持仓的杠杆可能不同）。
+      没有任何仓位（Σ名义 = 0）⇒ 中性 50。 */
+  {
+    let num = 0, den = 0;
+    const m = s.mkt && s.mkt[sym];
+    if (m && m.npc) for (let k = 0; k < m.npc.length; k++) {
+      const g = m.npc[k];
+      const n = g.long + g.short;
+      const lv = NPC.ladder[k] ? npcLevOf(t, NPC.ladder[k].lev) : 1;
+      if (n > 0 && lv > 0) { num += n; den += n / lv; }
+    }
+    if (m && m.mm) {
+      const n = m.mm.long + m.mm.short;
+      if (n > 0 && NPC.mm.lev > 0) { num += n; den += n / NPC.mm.lev; }
+    }
+    const pos = s.positions && s.positions[sym];
+    if (pos && pos.size > 0 && pos.lev > 0) {
+      const n = positionNotionalOf(s, sym);
+      const lv = chanOf(s) === 'otc' ? Math.max(1, Math.min(pos.lev, OTC.levMax)) : Math.max(1, pos.lev);
+      if (n > 0) { num += n; den += n / lv; }
+    }
+    const raw = den > 0 ? num / den : NaN;
+    parts.lev = { raw, score: cdriNorm(raw, CDRI.ref.lev.lo, CDRI.ref.lev.hi), ok: Number.isFinite(raw) };
+  }
+
+  /* ④ 散户多空偏离：`|share − 0.5| ÷ 0.5`，方向越拥挤越危险。`null`（散户未建仓）⇒ 中性。 */
+  {
+    const sh = retailLongShareOf(s, sym);
+    const raw = sh == null ? NaN : Math.abs(sh - 0.5) / 0.5;
+    parts.ls = { raw, score: cdriNorm(raw, CDRI.ref.ls.lo, CDRI.ref.ls.hi), ok: Number.isFinite(raw) };
+  }
+
+  /* ⑤ 已实现波动率（IV 代理）：`dailySigma` 是**日**σ ⇒ ×√365 年化。
+        ⚠️ 本作**没有期权**，这是代理而非隐含波动率（见函数头）。`dailySigma` 拿不到
+        （理论上不会 —— `sigmaOf` 有兜底）再用 `reviewVolOf`（已是年化）兜底。 */
+  {
+    const sig = dailySigma(sym, s.i);
+    let ann = Number.isFinite(sig) && sig > 0 ? sig * Math.sqrt(365) : NaN;
+    if (!Number.isFinite(ann)) { const rv = reviewVolOf(sym, s.i); if (Number.isFinite(rv)) ann = rv; }
+    parts.vol = { raw: ann, score: cdriNorm(ann, CDRI.ref.vol.lo, CDRI.ref.vol.hi), ok: Number.isFinite(ann) };
+  }
+
+  /* 加权求和（权重再归一一次，防手改失配）＋ 四档。 */
+  const w = CDRI.w;
+  let acc = 0, wsum = 0;
+  for (const k of ['oi', 'fund', 'lev', 'ls', 'vol']) { acc += w[k] * parts[k].score; wsum += w[k]; }
+  const v = Math.max(0, Math.min(100, wsum > 0 ? acc / wsum : 0));
+  const [b0, b1, b2] = CDRI.bands;
+  const band = v < b0 ? 'low' : v < b1 ? 'mid' : v < b2 ? 'high' : 'extreme';
+  return { v, band, parts };
 }
 
 /**
