@@ -3008,18 +3008,18 @@ function forceLiquidate(s, pos, atPrice) {
 }
 
 /**
- * 把这一局写进**交易档案**（M2 · 2026-10-01）。
+ * 把「当前这一局」摊平成**一条档案记录**（M2 · 2026-10-01；2026-10-05 抽出为独立导出）。
  *
- * ⚠️ **幂等**：由 `endGame` 用 `!s.over` 把门 —— 本局只写一条。`rewindTo`（上帝跳日期）
- *    会把 `s.over` 清回 `null`，所以「结束 → 回退 → 再结束」会各写一条，这是对的：
- *    那是两次不同的结局，档案本来就该各记一笔。
+ * ⚠️ **为什么抽成导出**：结局弹窗（`render.js` 的 `renderOver`）要据此给**分档评语**
+ *    （`titles.epitaphOf`），它与写进档案的那一条**必须是同一份数** ——
+ *    两处各算一遍（尤其 `peak` 那条 `s.eq` 扫描）迟早漂。
  * ⚠️ 记录是**自洽的**（把展示要用的数都摊平存进去）—— 档案页因此不必回头翻那一局的存档，
  *    而存档在重开时已经没了。
  */
-function recordCareer(s, reason) {
+export function careerOf(s, reason) {
   let peak = equity(s);
   for (const v of s.eq) if (v > peak) peak = v;
-  addCareer({
+  return {
     scen: s.scen,
     reason,
     start: GAME.start + s.day0 * 24 * HOUR_MS,
@@ -3035,7 +3035,18 @@ function recordCareer(s, reason) {
     syms: Object.keys(s.stat.syms),
     /* M4：抽稀后的资金曲线（首尾必留）—— 分享卡拿它画那条线。 */
     eq: thinEq(s.eq),
-  });
+  };
+}
+
+/**
+ * 把这一局写进**交易档案**（M2 · 2026-10-01）。
+ *
+ * ⚠️ **幂等**：由 `endGame` 用 `!s.over` 把门 —— 本局只写一条。`rewindTo`（上帝跳日期）
+ *    会把 `s.over` 清回 `null`，所以「结束 → 回退 → 再结束」会各写一条，这是对的：
+ *    那是两次不同的结局，档案本来就该各记一笔。
+ */
+function recordCareer(s, reason) {
+  addCareer(careerOf(s, reason));
 }
 
 function endGame(s, reason) {

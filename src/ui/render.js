@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canAdjustMargin, canCloseAt, canOpenAt, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, marginCapsOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, marginCapsOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
@@ -21,7 +21,7 @@ import { confirmationsOf, congestionLabel, congestionOf } from '../core/congesti
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
-import { OVER_LABEL, badgesOf, multOf, styleOf, titleOf } from '../core/titles.js';
+import { OVER_LABEL, badgesOf, epitaphOf, multOf, styleOf, titleOf } from '../core/titles.js';
 import { drawChart, drawEquityCurve } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 import { vibSupported } from './sound.js';
@@ -1672,6 +1672,10 @@ export function renderOver(root, s) {
       : `账户归零\n倒在 ${fmtDate(timeOf(s))}`);
 
   box.append(el('b', win ? 'up' : 'down', title), el('p', null, body));
+  /* 结局评语（2026-10-05 用户拍板）：不再只显示「结束 ＋ 收益额」，按
+     **结局 × 倍数 × 峰顶 × 时长 × 行为**给 1–2 句。与档案页 / 海报读的是**同一条记录**
+     （`engine.careerOf` ⇒ `titles.epitaphOf`）⇒ 三处的说法永远对得上（LESS IS MORE）。 */
+  box.append(el('p', 'epitaph', epitaphOf(careerOf(s, reason))));
   const btn = el('button', null, '重新开始');
   btn.dataset.restart = '';
   /* 第二枚出口（2026-10-02 审计修）：「回主菜单」。原来整张遮罩只有「重新开始」一条路 ——
@@ -2639,6 +2643,10 @@ function careerRow(r) {
   const mult = multOf(r);
   num.append(el('u', tone, `×${mult.toFixed(mult < 10 ? 2 : 1)}`));
   row.append(num);
+
+  /* 结局评语（2026-10-05 用户拍板）：与弹窗 / 海报共用 `titles.epitaphOf` —— 同一局在哪儿看
+     都是同一句话。放在「终值 ＋ 倍数」之下、徽章之上：先给结论，再补细节。 */
+  row.append(el('div', 'career-ep', epitaphOf(r)));
 
   const badges = badgesOf(r);
   if (badges.length) {

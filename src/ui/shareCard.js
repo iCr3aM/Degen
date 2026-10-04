@@ -29,7 +29,7 @@
 
 import { scenarioOf } from '../core/config.js';
 import { fmtDate, fmtMoneyShort } from '../core/format.js';
-import { OVER_LABEL, badgesOf, multOf, styleOf, titleOf } from '../core/titles.js';
+import { OVER_LABEL, badgesOf, epitaphOf, multOf, styleOf, titleOf } from '../core/titles.js';
 import { OVER } from '../core/engine.js';
 import { theme } from './chart.js';
 
@@ -124,7 +124,7 @@ function drawCurve(ctx, x, y, w, h, eq, base, tone, t) {
  * **版面（从上到下）**：
  *   ① DEGEN ＋ 副题 / ② 局名 ＋ **结局** / ③ **主称号 ＋ 风格称号** / ④ 徽章（自动折行）
  *   ⑤ **账本三格**（本金 · 峰值 · 最高杠杆）＋ **交易币种**一整行
- *   ⑥ 资金曲线 / ⑦ 终值 ＋ 倍数 / ⑧ 起止 ＋ 天数 / ⑨ **交易统计** / ⑩ 水印
+ *   ⑥ 资金曲线 / ⑦ 终值 ＋ 倍数 / ⑧ 起止 ＋ 天数 / ⑨ **结局评语** / ⑩ **交易统计** / ⑪ 水印
  * ⚠️ ⑤ 与 ⑨ 是 2026-10-02 补的（用户圈定「必要内容」）：原来只有曲线和终值，
  *    看不出**怎么结束的 / 本钱多少 / 打得怎么样**。
  */
@@ -277,13 +277,21 @@ export function drawCard(rec) {
   ctx.font = `400 28px ${SANS}`;
   ctx.fillText(`${fmtDate(rec.start, false)} → ${fmtDate(rec.end, false)} · ${rec.days} 天`, P, 1196);
 
+  /* 结局评语（2026-10-05 用户拍板）—— 与弹窗 / 档案页**同一句话**（`titles.epitaphOf`）。
+     ⚠️ 取 `short`（只档位句）：补白句会让这一行放不下，而海报是单行版面。
+     ⚠️ `fitFont` 只降字号、不截断 ⇒ 无论多长都不会溢出画布（档位句最长约 33 字，降不到 20px 以下）。 */
+  const ep = epitaphOf(rec, { short: true });
+  ctx.fillStyle = t.MUT || '#8f9aa6';
+  fitFont(ctx, ep, 28, cw, SANS, 400);
+  ctx.fillText(ep, P, 1244);
+
   /* 交易统计 —— 一局打得怎么样，一行说完 */
-  ctx.fillText(`开仓 ${rec.open} 笔 · 胜 ${rec.win} · 负 ${rec.loss} · 爆仓 ${rec.liq}`, P, 1246);
+  ctx.fillText(`开仓 ${rec.open} 笔 · 胜 ${rec.win} · 负 ${rec.loss} · 爆仓 ${rec.liq}`, P, 1294);
 
   /* 水印 */
   ctx.textAlign = 'center';
   ctx.font = `400 26px ${SANS}`;
-  ctx.fillText('icr3am.com/degen', W / 2, 1300);
+  ctx.fillText('icr3am.com/degen', W / 2, 1338);
   ctx.textAlign = 'left';
 
   return cv;

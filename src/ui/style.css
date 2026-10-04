@@ -940,6 +940,9 @@ canvas.curve {
 }
 .over b { font-size: calc(20px * var(--ui)); }
 .over p { margin: 0; font-size: calc(13px * var(--ui)); color: var(--mut); line-height: 1.7; }
+/* 结局评语（2026-10-05）—— 弹窗里那段「一句话故事」，与上面那两行账目**分开**：
+   上面是事实（日期 / 权益），这里是评述。用 `--fg` 提到正文亮度、限宽 30em 免得一行拉太长。 */
+.over p.epitaph { margin-top: 4px; max-width: 30em; color: var(--fg); opacity: .82; }
 .over button {
   height: calc(44px * var(--ui));
   padding: 0 20px;
@@ -1555,6 +1558,9 @@ button { user-select: none; -webkit-user-select: none; }
 .career-num { margin-top: 4px; display: flex; align-items: baseline; gap: 8px; font-feature-settings: "tnum"; }
 .career-num b { font-size: calc(14px * var(--ui)); }
 .career-num u { margin-left: auto; text-decoration: none; font-size: calc(12px * var(--ui)); }
+/* 结局评语（2026-10-05）—— 档案卡里的一行故事，字号与 `.career-sub` 同档（11px），
+   但用 `--mut` 而非 `--mut-2`：它是「评述」，比日期 / 天数那类元数据更该被读到。 */
+.career-ep { margin-top: 4px; font-size: calc(11px * var(--ui)); color: var(--mut); line-height: 1.6; }
 /* 分享键（M4）—— 挂在 `career-head` 末位（`u` 的 `margin-left:auto` 把这两枚一起顶到最右） */
 .career-share {
   font-family: inherit;

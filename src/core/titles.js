@@ -12,6 +12,8 @@
  *
  * ── 词表规模（2026-10-05 用户拍板「称号越多越好」）────────────────
  * 主称号 **20 枚**（活着 13 ＋ 破产 7）／风格称号 **22 枚**／徽章 **29 枚**，合计 **71 枚**标签。
+ * 另有 `epitaphOf` 的**结局评语**（16 档档位句 ＋ 8 条补白，弹窗 / 档案页 / 海报共用的「一句话故事」）——
+ * 它不是一个「标签」，不计入上面那 71 枚。
  * 扩充的依据是**同类游戏的通行做法**（联网调研 2026-10-05）：
  *   · 增量 / 经营游戏（Frosty Farms、Vending Empire、Idle Cash Clicker）用**金额里程碑阶梯**
  *     给称号（Backyard DIY Farmer → … → Legendary Uptime Land Farmer；Soda Apprentice → Vending God），
@@ -186,6 +188,76 @@ export function titleOf(rec) {
   if (m < mThr(1e4, k)) return '千倍传奇';
   if (m < mThr(1e8, k)) return '万倍传奇';
   return '亿倍传奇';
+}
+
+/* ── 结局评语（2026-10-05 用户拍板「弹窗给一小段文案，覆盖不同玩家」）──────────────
+ *
+ * **输入**：一条档案记录（与 `titleOf` 同源）；**输出**：1–2 句中文评语（恒非空）。
+ *
+ * 与主称号的分工：主称号是**一个词**（海报 96px 大字），评语是**一句话**（结局弹窗正文 /
+ * 档案页）。两者读的是同一条记录 ⇒「称号说打成什么样、评语说这局是什么故事」永远对齐。
+ *
+ * 两层结构：
+ *   ① **档位句**（16 档 = 破产 7 ＋ 存活 9，与 `titleOf` 的结局 × 倍数同构）—— 先交代结局；
+ *   ② **补白句**（可选，最多 1 句）—— 按时长 / 行为的**一个小细节**加一句，让落在同一档位的
+ *      不同玩家也读得出差别（上帝之手 / 空仓 / 救济金 / 百倍杠杆 / 反复爆仓 / 换所 /
+ *      闪电局 / 十年长跑，按此优先级取**第一条命中**）。
+ *
+ * ⚠️ **破产局（`bustOf`）绝不说「活下来」**：档位句与补白句都不得出现
+ *    「活下来 / 活着 / 幸存 / 挺过来 / 撑到」这类词 —— 账户是清零的，那是假话
+ *    （与「不死鸟 / 向死而生」在破产局替换成「爆仓常客 / 续命无果」同一条规矩）。
+ * ⚠️ 纯函数，与 `titleOf` 一样不读 DOM / 不碰 localStorage。
+ * @param {object} rec  档案记录（`engine.careerOf` / `core/careers.js`）
+ * @param {{short?: boolean}} [opts]  `short = true` 只返回**档位句**（不含补白）——
+ *   海报那种**单行**版面用（补白句会让一行放不下；弹窗 / 档案页是流式排版，`short` 默认 `false`）
+ * @returns {string} 1–2 句中文评语（恒非空）
+ */
+export function epitaphOf(rec, { short = false } = {}) {
+  if (!rec) return '';
+  const k = durKOf(rec);
+  const line = bustOf(rec) ? bustLine(rec, k) : liveLine(rec, k);
+  if (short) return line;
+  const tail = tailLine(rec);
+  return tail ? line + tail : line;
+}
+
+/** 破产档评语 —— 按**峰顶倍数**分（6 档 ＋ 欠钱置顶），与 `titleOf` 的破产轴同构。 */
+function bustLine(rec, k) {
+  if (rec.final < 0) return '借钱加码，连本金之外也赔了进去。市场从不欠你一次翻本。';
+  const p = multAt(rec.peak, rec.cash0);
+  if (p >= mThr(1000, k)) return '你摸到过千倍的边缘，却在离场前还了回去。比没赢更痛的，是赢过。';
+  if (p >= mThr(100, k)) return '从百倍高峰直坠地面。你证明过火箭能飞多高，也证明它没有返回舱。';
+  if (p >= mThr(20, k)) return '二十倍的账面曾属于你，一觉醒来只剩账面。热闹是别人的，爆仓是你的。';
+  if (p >= mThr(5, k)) return '站上过五倍高台，入水的姿势不太优雅。';
+  if (p >= mThr(2, k)) return '账户短暂翻过倍，随后交了学费。纸面富贵，落袋才算数。';
+  return '从零开始，也回到了零。市场收走了本金，收不走这一课。';
+}
+
+/** 存活档评语 —— 按**终值倍数**分 9 档。 */
+function liveLine(rec, k) {
+  const m = multOf(rec);
+  if (m < 1) return '忙了一整场，账户还是缩了水。没亏光，也算一种本事。';
+  if (m < mThr(2, k)) return '没有暴富，也没有阵亡。在币圈，活着本身就是阿尔法。';
+  if (m < mThr(5, k)) return '跑赢了通胀，也跑赢了大多数追高的人。';
+  if (m < mThr(20, k)) return '本金翻了几番。靠的不是运气，是没在最热的时候满仓。';
+  if (m < mThr(100, k)) return '接近百倍。你已经站在金字塔的上半层了。';
+  if (m < mThr(1000, k)) return '百倍落地。别人在做梦的时候，你在做仓位管理。';
+  if (m < mThr(1e4, k)) return '千倍。这个词在圈里通常是传说，你把它写进了账户。';
+  if (m < mThr(1e8, k)) return '万倍。这已经不是交易，是一个能讲给孙子听的故事。';
+  return '亿倍。这个数字属于都市传说——记得落袋。';
+}
+
+/** 补白句（可空）：按时长 / 行为取**第一条命中**，给同一档位加一点个人色彩。 */
+function tailLine(rec) {
+  if (rec.god) return '上帝模式动过这一局，盈亏仍记在你名下。';
+  if (rec.open === 0) return '整场一单没开，你在场边看完了整轮牛熊。';
+  if ((rec.loan || 0) >= 1) return '你领过交易所的救济金——那是这轮周期里最贵的一课。';
+  if ((rec.maxLev || 0) >= 100) return '百倍杠杆是你的签名：推你上去和推你下来的，是同一股力。';
+  if ((rec.liq || 0) >= 10) return '强平记录十几次，市场的脾气你比谁都熟。';
+  if ((rec.move || 0) >= 10) return '换所十来次，你在追的其实不是行情。';
+  if ((rec.days || 0) <= 30 && (rec.open || 0) > 0) return '不到一个月就走完全程，快得像是没来得及后悔。';
+  if ((rec.days || 0) >= 3650) return '十年长跑，你没有错过任何一轮周期。';
+  return '';
 }
 
 /**

@@ -1395,7 +1395,7 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
   const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
   const pick = n => Math.floor(rnd() * n);
   const reasons = [OVER.LIQUIDATED, OVER.SETTLED, OVER.GAVEUP];
-  let emptyStyle = 0, unknownStyle = 0, emptyTitle = 0, unknownTitle = 0, dupBadge = 0, maxBadges = 0;
+  let emptyStyle = 0, unknownStyle = 0, emptyTitle = 0, unknownTitle = 0, dupBadge = 0, maxBadges = 0, emptyEp = 0;
   for (let n = 0; n < 4000; n++) {
     const symCount = pick(7);
     const open = pick(300);
@@ -1423,16 +1423,72 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     const ti = T.titleOf(r);
     if (!ti || typeof ti !== 'string') emptyTitle++;
     else if (!TITLE_SET.has(ti)) unknownTitle++;
+    if (!T.epitaphOf(r)) emptyEp++;
   }
   check('12 fuzz ×4000：风格称号永不为空', emptyStyle === 0, `空 ${emptyStyle} 次`);
   check('12 fuzz ×4000：风格称号恒在已登记 22 档内', unknownStyle === 0, `越界 ${unknownStyle} 次`);
   check('12 fuzz ×4000：主称号永不为空', emptyTitle === 0, `空 ${emptyTitle} 次`);
   check('12 fuzz ×4000：主称号恒在已登记 20 档内', unknownTitle === 0, `越界 ${unknownTitle} 次`);
   check('12 fuzz ×4000：单局徽章无重复', dupBadge === 0, `重复 ${dupBadge} 次`);
+  check('12 fuzz ×4000：结局评语永不为空', emptyEp === 0, `空 ${emptyEp} 次`);
   /* 理论上界 14：工具 1 ＋ 杠杆烈度 1 ＋ 分散度 1 ＋ 爆仓 1 ＋ 时长 1 ＋ 交易量 1 ＋ 节奏 1
      ＋ 曲线 1 ＋ 现金流 1 ＋ 行为 3 ＋ 神枪手 1 ＋ 危机幸存者 1 —— 海报两行放得下的上限。
      ⚠️ 每组内部互斥；**新增徽章必须并入某个互斥组**，不许再挂独立 `if` 把上限顶破。 */
   check('12 fuzz：单局徽章数 ≤ 14（海报两行放得下）', maxBadges <= 14, `实测最多 ${maxBadges} 枚`);
+
+  /* ── A4 · 结局评语 `epitaphOf`（2026-10-05 用户拍板「弹窗给一小段文案」）───────────
+     16 档档位句逐一取到、恒非空；破产局**绝不说「活下来」**（与称号同一条硬规矩）；
+     8 条补白各自能被一条画像触发；`short` 版恒为全句前缀（海报单行版不许多出一个字）。 */
+  {
+    /* 破产 7 档（欠钱置顶 ＋ 峰顶 6 档）—— 代表画像，`final` 定欠钱、`peak` 定阶梯。 */
+    const EPI_BUST = [
+      { final: -1, peak: 0 },              // 负债累累
+      { final: 0, peak: 5000 * 1000 },     // 功亏一篑（≥1000x）
+      { final: 0, peak: 500 * 1000 },      // 登月坠落（≥100x）
+      { final: 0, peak: 50 * 1000 },       // 黄粱一梦（≥20x）
+      { final: 0, peak: 10 * 1000 },       // 高台跳水（≥5x）
+      { final: 0, peak: 3 * 1000 },        // 纸上富贵（≥2x）
+      { final: 0, peak: 1 * 1000 },        // 归零者
+    ];
+    /* 存活 9 档 —— 按终值倍数取代表点（含末档 1e9 盖过亿倍门槛）。 */
+    const EPI_LIVE = [0.5, 1.5, 3, 10, 50, 500, 5000, 1e6, 1e9];
+    const FORBID = ['活下来', '活着', '幸存', '挺过来', '撑到'];
+    const texts = [];
+    let empty = 0, lied = 0;
+    for (const o of EPI_BUST) {
+      const t = T.epitaphOf(rec({ reason: OVER.LIQUIDATED, cash0: 1000, ...o }));
+      if (!t || typeof t !== 'string') empty++;
+      if (FORBID.some(w => t.includes(w))) lied++;
+      texts.push(t);
+    }
+    for (const m of EPI_LIVE) {
+      const t = T.epitaphOf(rec({ reason: OVER.SETTLED, cash0: 1000, final: m * 1000 }));
+      if (!t || typeof t !== 'string') empty++;
+      texts.push(t);
+    }
+    check('12 结局评语：16 档全部取到且非空', empty === 0, `空 ${empty} 档`);
+    check('12 结局评语：破产局绝不说「活下来」', lied === 0, `出现 ${lied} 次`);
+    check('12 结局评语：16 档产出 ≥ 12 种不同句子（覆盖不同玩家）',
+      new Set(texts).size >= 12, `${new Set(texts).size} 种`);
+
+    /* 补白句：8 条画像各触发一次，且**比 `short` 版更长**（证明真的加了一句）。 */
+    const TAILS = [
+      { god: true }, { open: 0 }, { loan: 1 }, { maxLev: 100 },
+      { liq: 12 }, { move: 12 }, { days: 20, open: 3 }, { days: 4000 },
+    ];
+    let noTail = 0, notPrefix = 0;
+    for (const o of TAILS.concat([{}])) {
+      const r = rec({ reason: OVER.SETTLED, cash0: 1000, final: 2000, ...o });
+      const full = T.epitaphOf(r), sh = T.epitaphOf(r, { short: true });
+      if (!full.startsWith(sh)) notPrefix++;
+    }
+    for (const o of TAILS) {
+      const r = rec({ reason: OVER.SETTLED, cash0: 1000, final: 2000, ...o });
+      if (!(T.epitaphOf(r).length > T.epitaphOf(r, { short: true }).length)) noTail++;
+    }
+    check('12 结局评语：8 条补白各自可触发（全句比 short 版长）', noTail === 0, `未触发 ${noTail} 条`);
+    check('12 结局评语：short 版恒为全句前缀（海报单行版）', notPrefix === 0, `不符 ${notPrefix} 条`);
+  }
 
   /* ── D · 真引擎端到端：真打一局 ⇒ 真实 `s.stat` 摊成记录 ⇒ 三轴合计 ≥ 2 枚称号 ── */
   {
