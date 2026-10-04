@@ -1906,6 +1906,49 @@ section('9p · 上帝沙盒：旋钮归一 · 预设合法性 · shock 线性 ·
   check('9p 恒等默认逐位 == 不开沙盒', a0 === a1, `${a0} vs ${a1}`);
 }
 
+/* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════
+   这一节**不跑引擎**，只对上一轮修好的几处做**源码 / 数据面**的固化断言 —— 谁把修复删回去，这里立刻红。
+   目标五件事：
+     · PWA 安装时的**整包预缓存**：清单里每个数据包都要在盘上真实存在（覆盖无缺口）；
+     · `sw.js` 的预缓存**从 `data/index.json` 现读**（不写死文件名）＋ install 三段齐全；
+     · 断网兜底**只对导航请求**回退 HTML（T8）＋ `cache.put` 有 catch（T9）；
+     · `main.js` 侧：SW 注册带构建指纹 · `prefetchAllCoins` 首帧后空闲预热 · `maskReload` 先铺垫再 reload。
+   ⚠️ 断言只咬**行为锚点**（关键函数名 / 关键判据），不咬逐字文本 —— 改实现而不改行为时不该红。 */
+section('13 · 回归护栏：PWA 预缓存覆盖 · 断网兜底 · 预热与遮罩（已修 bug 防复发）');
+{
+  const readSrc = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const sw = readSrc('public/sw.js');
+  const mainSrc = readSrc('src/main.js');
+  const man = JSON.parse(fs.readFileSync(path.join(ROOT, 'public/data/index.json'), 'utf8'));
+
+  /* ① 预缓存覆盖：清单里每条 `file` 都必须在盘上且非空（`precacheData` 正是照着这份清单 cache.add） */
+  const files = [];
+  for (const sym in (man.coins || {})) { const f0 = man.coins[sym] && man.coins[sym].file; if (f0) files.push(f0); }
+  if (man.liq && man.liq.file) files.push(man.liq.file);
+  check('13 清单含 ≥5 个币 ＋ 流动性包', files.length >= 6, `共 ${files.length} 个`);
+  const missing = files.filter(f0 => {
+    try { return fs.statSync(path.join(ROOT, 'public/data', f0)).size <= 0; } catch { return true; }
+  });
+  check('13 预缓存清单每个文件都在盘上且非空（覆盖无缺口）', missing.length === 0, missing.join(', '));
+
+  /* ② sw.js 从清单现读，不写死文件名；install 三段齐全 */
+  check('13 sw.js 从 data/index.json 现读预缓存清单', sw.includes('data/index.json'));
+  check('13 sw.js 不写死任何 .bin 文件名', !/data\/[a-z0-9_-]+\.bin/i.test(sw));
+  check('13 sw.js install 三段齐全（shell ＋ assets ＋ data）',
+    sw.includes('addAll(SHELL)') && sw.includes('precacheAssets(') && sw.includes('precacheData('));
+
+  /* ③ 断网兜底只对导航请求回退 HTML（T8）＋ 写缓存失败已 catch（T9） */
+  check('13 断网兜底只对导航请求回退 index.html（T8）', sw.includes("req.mode === 'navigate'"));
+  check('13 cache.put 写缓存失败已 catch（T9）', /cache\.put\(.*?\)\s*\.catch\(/.test(sw));
+
+  /* ④ main.js：SW 注册带构建指纹 · 预热走空闲回调 · 遮罩先铺垫再 reload */
+  check('13 SW 注册带构建指纹（?v=）', /register\([^)]*sw\.js\?v=/.test(mainSrc));
+  check('13 prefetchAllCoins 走 requestIdleCallback（不挡首帧）',
+    /function prefetchAllCoins\(\)[\s\S]{0,200}requestIdleCallback\(/.test(mainSrc));
+  check('13 maskReload 先铺遮罩、再 rAF→reload',
+    /function maskReload\(\)[\s\S]{0,240}requestAnimationFrame\(\(\) => setTimeout\(\(\) => location\.reload\(\)/.test(mainSrc));
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);
