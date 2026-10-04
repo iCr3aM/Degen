@@ -1012,6 +1012,10 @@ function dispatch(node) {
      同样以 `s.god` 非空兜底（状态机不靠 DOM）。 */
   if (d.sb !== undefined || d.sbpreset !== undefined || d.sbseed !== undefined || d.sbroll !== undefined) {
     if (!s.god) return;
+    /* ⚠️ 旧档兜底：`s.god.sb` 只在 `enableGod` 里创建，而 `STATE_VERSION` 未随新增字段升版
+       ⇒ 存在「v31、god 已开、但没有 sb」的档。读侧 `sbOf` 有兜底，写侧（`onSb` /
+       `onSbPreset`）直接写 `s.god.sb[key]` 会抛 TypeError ⇒ 在这里补一份恒等默认。 */
+    if (!s.god.sb) s.god.sb = { ...SB_DEFAULT };
     if (d.sb !== undefined) return onSb(d.sb);
     if (d.sbpreset !== undefined) return onSbPreset(d.sbpreset);
     if (d.sbseed !== undefined) return onSbSeed(node);

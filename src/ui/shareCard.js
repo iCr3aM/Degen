@@ -285,7 +285,10 @@ export function drawCard(rec) {
   fitFont(ctx, ep, 28, cw, SANS, 400);
   ctx.fillText(ep, P, 1244);
 
-  /* 交易统计 —— 一局打得怎么样，一行说完 */
+  /* 交易统计 —— 一局打得怎么样，一行说完。
+     ⚠️ `fitFont` 只改 `ctx.font`、不还原（它把 `ctx` 留在最后一档字号上）⇒ 这里必须**显式重设字号**，
+        否则本行会继承上一行评语被压缩后的字号（评语越长、统计越小）。 */
+  ctx.font = `400 28px ${SANS}`;
   ctx.fillText(`开仓 ${rec.open} 笔 · 胜 ${rec.win} · 负 ${rec.loss} · 爆仓 ${rec.liq}`, P, 1294);
 
   /* 水印 */
