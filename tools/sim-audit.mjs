@@ -1037,6 +1037,165 @@ section('11 · 跨年代边界：边界前后 openTrade 行为可解释 + 全时
   }
 }
 
+/* ═══════════════════ 12 · 称号三轴：覆盖矩阵 ＋ fuzz（无缺口） ═══════════════════ */
+section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩阵 ＋ 随机 fuzz（无缺口）');
+{
+  /* ⚠️ `titles.js` 是**纯函数**（不读 localStorage、不碰 DOM），所以本小节既不用打桩、也不改 src。 */
+  const T = await import('../src/core/titles.js');
+  const { OVER } = engine;
+
+  /* 一条完整档案记录的**标准底稿**（键名照抄 `engine.recordCareer`），各画像只覆盖差异字段。 */
+  const rec = (o = {}) => ({
+    scen: 'classic', reason: OVER.SETTLED,
+    start: Date.UTC(2018, 0), end: Date.UTC(2023, 0), days: 1000,
+    cash0: 1000, final: 2000, peak: 2000, realized: 0,
+    open: 10, win: 5, loss: 5, liq: 0,
+    margin: 10, fut: 0, maxLev: 2,
+    move: 0, god: false, loan: 0,
+    syms: ['BTC', 'ETH', 'SOL'], eq: [1000, 2000],
+    ...o,
+  });
+
+  /* ── A · 12 种「玩家画像」→ 风格称号逐条命中 ──────────────────────
+     「全量模拟不同玩家的操作」落到**记录层**：每一种操作风格（空仓 / 反复爆仓 / 极限杠杆 /
+     满世界搬家 / 借救济金 / 高频 / 单币 / 多币 / 偏爱合约 / 偏爱杠杆 / 低频长持 / 均衡）
+     各造一条画像，都能**唯一命中**对应的一枚风格称号。 */
+  const STYLES = [
+    ['空仓看客', { open: 0, margin: 0, win: 0, loss: 0, maxLev: 1 }],
+    ['不死鸟', { open: 20, liq: 15, maxLev: 5 }],
+    ['梭哈战神', { open: 5, fut: 3, margin: 2, maxLev: 125 }],
+    ['逐利游牧', { open: 5, move: 12, maxLev: 5 }],
+    ['向死而生', { open: 5, loan: 1, maxLev: 5 }],
+    ['高频猎手', { open: 150, days: 1000, maxLev: 5 }],
+    ['单币信徒', { open: 20, syms: ['BTC'], maxLev: 5 }],
+    ['全能多面手', { open: 20, syms: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP'], maxLev: 5 }],
+    ['合约狂人', { open: 15, fut: 12, margin: 3, maxLev: 10 }],
+    ['杠杆老兵', { open: 15, fut: 0, margin: 15, maxLev: 10 }],
+    ['长线猎手', { open: 10, fut: 5, margin: 5, days: 1000, maxLev: 3 }],
+    ['稳健交易员', { open: 6, fut: 3, margin: 3, days: 200, maxLev: 3 }],
+  ];
+  const STYLE_SET = new Set(STYLES.map(([w]) => w));
+  for (const [want, o] of STYLES) {
+    const got = T.styleOf(rec(o));
+    check(`12 画像 «${want}» 命中风格称号`, got === want, got === want ? '' : `实得 «${got}»`);
+  }
+
+  /* ── B · 徽章池 20 枚全部可达（无死徽章）＋ 输出无未登记名称 ── */
+  const ALL_BADGES = [
+    '躺平', '现货党', '杠杆党', '百倍玩家', '杠杆赌徒',
+    '单一信仰', '五币全通', '九死一生', '爆仓机器',
+    '搬家达人', '续命者', '上帝之手', '交易狂魔', '闪电战', '长跑选手',
+    '过山车', '落袋为安', '给交易所打工', '神枪手', '危机幸存者',
+  ];
+  const BADGE_PROFILES = [
+    rec({ open: 0, margin: 0, win: 0, loss: 0, maxLev: 1 }),        // 躺平
+    rec({ open: 5, fut: 0, maxLev: 1 }),                            // 现货党
+    rec({ open: 5, fut: 0, maxLev: 5 }),                            // 杠杆党
+    rec({ open: 5, fut: 5, maxLev: 100 }),                          // 百倍玩家
+    rec({ open: 5, fut: 5, maxLev: 30 }),                           // 杠杆赌徒
+    rec({ syms: ['BTC'] }),                                         // 单一信仰
+    rec({ syms: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP'] }),            // 五币全通
+    rec({ liq: 60 }),                                               // 九死一生
+    rec({ liq: 25 }),                                               // 爆仓机器
+    rec({ move: 10 }),                                              // 搬家达人
+    rec({ loan: 1 }),                                               // 续命者
+    rec({ god: true }),                                             // 上帝之手
+    rec({ open: 200 }),                                             // 交易狂魔
+    rec({ open: 3, days: 20 }),                                     // 闪电战
+    rec({ days: 3650 }),                                            // 长跑选手
+    rec({ peak: 10000, final: 1500 }),                              // 过山车
+    rec({ realized: 500 }),                                         // 落袋为安
+    rec({ open: 60, final: 500 }),                                  // 给交易所打工
+    rec({ win: 12, loss: 3 }),                                      // 神枪手
+    rec({ start: Date.UTC(2019, 0), end: Date.UTC(2021, 0) }),      // 危机幸存者
+  ];
+  const seen = new Set();
+  for (const p of BADGE_PROFILES) for (const b of T.badgesOf(p)) seen.add(b);
+  const missBadge = ALL_BADGES.filter(b => !seen.has(b));
+  const unknownBadge = [...seen].filter(b => !ALL_BADGES.includes(b));
+  check('12 徽章池恰 20 枚', ALL_BADGES.length === 20, `${ALL_BADGES.length}`);
+  check('12 徽章 20 枚全部可达（无死徽章）', missBadge.length === 0,
+    missBadge.length ? `缺 ${missBadge.join(' / ')}` : `覆盖 ${seen.size} / 20`);
+  check('12 徽章输出无未登记名称', unknownBadge.length === 0, unknownBadge.join(' / ') || '');
+
+  /* ── C · fuzz：在**行为空间**上随机撒 4000 个点，验证三轴永不返回空 ──────────────────────
+     ⚠️ 固定种子（LCG）⇒ 每次跑出的数完全一样，不引入偶发红灯。 */
+  let seed = 20261004;
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+  const pick = n => Math.floor(rnd() * n);
+  const reasons = [OVER.LIQUIDATED, OVER.SETTLED, OVER.GAVEUP];
+  let emptyStyle = 0, unknownStyle = 0, emptyTitle = 0, dupBadge = 0, maxBadges = 0;
+  for (let n = 0; n < 4000; n++) {
+    const symCount = pick(7);
+    const open = pick(300);
+    const r = rec({
+      reason: reasons[pick(3)],
+      start: Date.UTC(2013 + pick(10), pick(12)),
+      end: Date.UTC(2015 + pick(10), pick(12)),
+      days: pick(4000),
+      cash0: [0, 1, 1000, 100000][pick(4)],
+      final: pick(1e9),
+      peak: pick(1e10),
+      realized: pick(2e6) - 1e6,
+      open, win: pick(open + 1), loss: pick(open + 1), liq: pick(120),
+      margin: pick(open + 1), fut: pick(open + 1),
+      maxLev: [1, 2, 5, 20, 50, 100, 125][pick(7)],
+      move: pick(20), god: rnd() < 0.1, loan: pick(3),
+      syms: Array.from({ length: symCount }, (_, k) => 'C' + k),
+    });
+    const st = T.styleOf(r);
+    if (!st || typeof st !== 'string') emptyStyle++;
+    else if (!STYLE_SET.has(st)) unknownStyle++;
+    const bs = T.badgesOf(r);
+    if (new Set(bs).size !== bs.length) dupBadge++;
+    if (bs.length > maxBadges) maxBadges = bs.length;
+    const ti = T.titleOf(r);
+    if (!ti || typeof ti !== 'string') emptyTitle++;
+  }
+  check('12 fuzz ×4000：风格称号永不为空', emptyStyle === 0, `空 ${emptyStyle} 次`);
+  check('12 fuzz ×4000：风格称号恒在已登记 12 档内', unknownStyle === 0, `越界 ${unknownStyle} 次`);
+  check('12 fuzz ×4000：主称号永不为空', emptyTitle === 0, `空 ${emptyTitle} 次`);
+  check('12 fuzz ×4000：单局徽章无重复', dupBadge === 0, `重复 ${dupBadge} 次`);
+  /* 理论上界 14：工具 1 ＋ 杠杆烈度 1 ＋ 分散度 1 ＋ 爆仓 1 ＋ 行为 5（闪电战 / 长跑选手互斥）
+     ＋ 曲线 3 ＋ 神枪手 1 ＋ 危机幸存者 1 —— 海报两行放得下的上限。 */
+  check('12 fuzz：单局徽章数 ≤ 14（海报两行放得下）', maxBadges <= 14, `实测最多 ${maxBadges} 枚`);
+
+  /* ── D · 真引擎端到端：真打一局 ⇒ 真实 `s.stat` 摊成记录 ⇒ 三轴合计 ≥ 2 枚称号 ── */
+  {
+    const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'margin', cash: 200000, i: idx(at(2021, 5)) });
+    s.mode = 'margin'; s.lev = 3;
+    let opened = 0;
+    for (let k = 0; k < 40 && !s.over; k++) {
+      if (s.pending) s.pending = null;
+      if (Object.keys(s.positions).length === 0) {
+        if (engine.openTrade(s, 'long', 0.3).ok) opened++;
+      } else {
+        engine.closeTrade(s, '测试');
+      }
+      engine.advanceOneHour(s);
+    }
+    let peak = engine.equity(s);
+    for (const v of s.eq) if (v > peak) peak = v;
+    const r = rec({
+      reason: s.over ? s.over.reason : OVER.SETTLED,
+      start: C.GAME.start + s.day0 * 24 * H,
+      end: engine.timeOf(s),
+      days: Math.max(1, Math.round((s.i - s.day0 * 24) / 24)),
+      cash0: s.cash0, final: engine.equity(s), peak, realized: s.realized,
+      open: s.stat.open, win: s.stat.win, loss: s.stat.loss, liq: s.stat.liq,
+      margin: s.stat.margin, fut: s.stat.fut, maxLev: s.stat.maxLev,
+      move: s.stat.move, god: s.stat.god, loan: s.stat.loan,
+      syms: Object.keys(s.stat.syms),
+    });
+    check('12 真引擎跑一局：确实开过仓（统计非空转）', opened > 0 && s.stat.open > 0,
+      `open=${s.stat.open} liq=${s.stat.liq} 胜/负=${s.stat.win}/${s.stat.loss}`);
+    check('12 真引擎跑一局：风格称号非空且在已登记清单内',
+      !!T.styleOf(r) && STYLE_SET.has(T.styleOf(r)), `«${T.styleOf(r)}»`);
+    check('12 真引擎跑一局：主称号 ＋ 风格称号合计 ≥ 2 枚',
+      !!T.titleOf(r) && !!T.styleOf(r), `${T.titleOf(r)} · ${T.styleOf(r)} · 徽章 ${T.badgesOf(r).length} 枚`);
+  }
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);

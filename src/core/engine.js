@@ -29,6 +29,9 @@ import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldS
 import { pathOf } from './simulate.js';
 import { hashStr, rand } from './rng.js';
 import { addCareer, thinEq } from './careers.js';
+/* 结束本局时要把**本槽的档**清掉（2026-10-04 用户拍板）—— 已结束的局不许再被「读取存档」捞回来。
+   与 `careers.js` 同一条分层豁免：两者都是「跨局/落盘」的事，收在 core 里比让 UI 反向记住更干净。 */
+import { saveSlotOf, wipe } from './save.js';
 
 /** 交易所归零前多少毫秒给一条预警日志（7 天） */
 const WARN_LEAD = 7 * 24 * HOUR_MS;
@@ -2922,6 +2925,12 @@ function endGame(s, reason) {
   if (!s.over) recordCareer(s, reason);
   s.over = { reason, at: s.i };
   s.paused = true;
+  /* 清掉本局所在的槽（2026-10-04 用户拍板 · 用户原话「打完之后应该清除存档」）：
+     已结束的局**不许**再被主菜单「读取存档」捞回来续玩。只清**这一局落在的那个槽**
+     （普通 / 挑战各一半），另半边的档一个字不动。
+     ⚠️ 这里**不能**用 `disableSave()`：`rewindTo`（上帝跳日期）会把 `s.over` 清回 null，
+        那时 `save()` 必须能重新落盘；写侧那条「`s.over` 非空即跳过」的闸（`save.js`）才是正解。 */
+  wipe(saveSlotOf(s.scen));
   /* 结算文案的日期跟着**本局自己的终点**走（§73.7）：挑战局 2–4 个月就收摊，
      再写死「2024-12-31」会与玩家刚经历的那一个月完全对不上。 */
   const text = reason === OVER.SETTLED

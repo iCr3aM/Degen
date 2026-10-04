@@ -29,7 +29,7 @@
 
 import { scenarioOf } from '../core/config.js';
 import { fmtDate, fmtMoneyShort } from '../core/format.js';
-import { OVER_LABEL, badgesOf, multOf, titleOf } from '../core/titles.js';
+import { OVER_LABEL, badgesOf, multOf, styleOf, titleOf } from '../core/titles.js';
 import { OVER } from '../core/engine.js';
 import { theme } from './chart.js';
 
@@ -122,7 +122,7 @@ function drawCurve(ctx, x, y, w, h, eq, base, tone, t) {
  * 画一张卡（返回 `<canvas>`；只在这里碰 DOM）。
  *
  * **版面（从上到下）**：
- *   ① DEGEN ＋ 副题 / ② 局名 ＋ **结局** / ③ 主称号 / ④ 徽章
+ *   ① DEGEN ＋ 副题 / ② 局名 ＋ **结局** / ③ **主称号 ＋ 风格称号** / ④ 徽章（自动折行）
  *   ⑤ **账本三格**（本金 · 峰值 · 最高杠杆）＋ **交易币种**一整行
  *   ⑥ 资金曲线 / ⑦ 终值 ＋ 倍数 / ⑧ 起止 ＋ 天数 / ⑨ **交易统计** / ⑩ 水印
  * ⚠️ ⑤ 与 ⑨ 是 2026-10-02 补的（用户圈定「必要内容」）：原来只有曲线和终值，
@@ -175,17 +175,29 @@ export function drawCard(rec) {
   ctx.fillText(OVER_LABEL[rec.reason] || '结束', W - P, 236);
   ctx.textAlign = 'left';
 
-  /* 主称号 */
+  /* 主称号 ＋ 风格称号（2026-10-04 · 用户拍板「主称号 ＋ 风格称号 ＋ 徽章池」）——
+     主称号大字（**结局 × 倍数**，答「打成什么样」），风格称号小字**并列其后**
+     （纯行为判定，答「你是哪种玩家」），中间一枚「·」。
+     ⚠️ 两枚都走 `core/titles.js` ⇒ 与档案页同一套字（LESS IS MORE）。 */
+  const main = titleOf(rec);
   ctx.fillStyle = t.FG || '#dbe4f0';
   ctx.font = `700 96px ${SANS}`;
-  ctx.fillText(titleOf(rec), P, 352);
+  ctx.fillText(main, P, 352);
+  const mainW = ctx.measureText(main).width;
+  ctx.fillStyle = t.MUT || '#8f9aa6';
+  /* 自适应降字号：主称号最长 4 字、风格称号最长 5 字，正常都放得下；
+     万一放不下**只降风格称号的字号**（主称号是主角，不缩）。 */
+  fitFont(ctx, '· ' + styleOf(rec), 40, Math.max(96, cw - mainW - 56), SANS, 500);
+  ctx.fillText('· ' + styleOf(rec), P + mainW + 32, 352);
 
-  /* 徽章（0–7 枚，一行；放不下就自然超出，档案本身也极少满配） */
-  let bx = P;
-  const by = 400, bh = 52;
+  /* 徽章 —— 按宽度**自动折行**（最多 2 行；池子扩到 20 枚后一行放不下）。
+     ⚠️ 分隔线与下面几块的位置**跟着最后一行徽章走**（徽章只有一行时版面与旧版逐位一致）。 */
+  let bx = P, by = 400, row = 0;
+  const bh = 46, gapX = 14, gapY = 8, ROW_MAX = 2;
   ctx.font = `500 26px ${SANS}`;
   for (const b of badgesOf(rec)) {
     const bw = ctx.measureText(b).width + 44;
+    if (bx + bw > W - P && row < ROW_MAX - 1) { bx = P; by += bh + gapY; row++; }
     roundRect(ctx, bx, by, bw, bh, 12);
     ctx.strokeStyle = t.LINE || '#232b34';
     ctx.lineWidth = 2;
@@ -194,19 +206,23 @@ export function drawCard(rec) {
     ctx.textBaseline = 'middle';
     ctx.fillText(b, bx + 22, by + bh / 2 + 1);
     ctx.textBaseline = 'alphabetic';
-    bx += bw + 14;
+    bx += bw + gapX;
   }
+  /* 分隔线顶点：徽章底 ＋ 40，且不低于旧版的 500（一行徽章时版面不动）。 */
+  const sepY = Math.max(500, by + bh + 40);
 
   /* 分隔线 */
   ctx.strokeStyle = t.LINE || '#232b34';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(P, 500);
-  ctx.lineTo(W - P, 500);
+  ctx.moveTo(P, sepY);
+  ctx.lineTo(W - P, sepY);
   ctx.stroke();
 
-  /* 账本三格 —— 标签在上（小字灰）、数值在下（等宽大字） */
+  /* 账本三格 —— 标签在上（小字灰）、数值在下（等宽大字）。
+     ⚠️ 三段纵坐标**全部相对 `sepY`**（`+56 / +112 / +182`）—— 徽章折行、分隔线下移时整段跟着走。 */
   const colW = cw / 3;
+  const yLbl = sepY + 56, yVal = sepY + 112, ySym = sepY + 182;
   const ledger = [
     ['本金', fmtMoneyShort(rec.cash0)],
     ['峰值', fmtMoneyShort(rec.peak)],
@@ -216,25 +232,25 @@ export function drawCard(rec) {
     const x = P + k * colW;
     ctx.fillStyle = t.MUT2 || '#6b7480';
     ctx.font = `400 26px ${SANS}`;
-    ctx.fillText(label, x, 556);
+    ctx.fillText(label, x, yLbl);
     ctx.fillStyle = t.FG || '#dbe4f0';
     fitFont(ctx, value, 46, colW - 16, MONO, 700);
-    ctx.fillText(value, x, 612);
+    ctx.fillText(value, x, yVal);
   });
 
   /* 交易币种 —— 单独一整行（名字可能很长，右对齐 ＋ 自适应降字号，不截断） */
   const symTxt = Array.isArray(rec.syms) && rec.syms.length ? rec.syms.join(' · ') : '—';
   ctx.fillStyle = t.MUT2 || '#6b7480';
   ctx.font = `400 26px ${SANS}`;
-  ctx.fillText('交易币种', P, 682);
+  ctx.fillText('交易币种', P, ySym);
   ctx.textAlign = 'right';
   ctx.fillStyle = t.FG || '#dbe4f0';
   fitFont(ctx, symTxt, 30, cw - 200, SANS, 500);
-  ctx.fillText(symTxt, W - P, 682);
+  ctx.fillText(symTxt, W - P, ySym);
   ctx.textAlign = 'left';
 
   /* 曲线 */
-  const cy = 740, chh = 290;
+  const cy = sepY + 240, chh = 290;
   const eq = Array.isArray(rec.eq) ? rec.eq : [];
   if (eq.length >= 2) {
     drawCurve(ctx, P, cy, cw, chh, eq, rec.cash0, tone, t);

@@ -11,7 +11,7 @@
  * 所有会变的数字都挂在 `refs` 上，`update()` 是唯一的写入口。
  */
 
-import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
+import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, canAdjustMargin, canCloseAt, canOpenAt, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, marginCapsOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
@@ -21,7 +21,7 @@ import { confirmationsOf, congestionLabel, congestionOf } from '../core/congesti
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
-import { OVER_LABEL, badgesOf, multOf, titleOf } from '../core/titles.js';
+import { OVER_LABEL, badgesOf, multOf, styleOf, titleOf } from '../core/titles.js';
 import { drawChart, drawEquityCurve } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 import { vibSupported } from './sound.js';
@@ -335,15 +335,27 @@ export function mount(root) {
     fracRow.append(b);
     fracBtns.set(String(f), b);
   }
-  /* 模式键（U1 · ROADMAP §21.4；v9 · §15.6 N3 加条件）：铺在**「金额」行末尾**
-     （用户裁决 —— 不新增行，保住 431px 固定块）。
-     与通道键 / 粒度小字同一约定：**字面即现状**（显示「杠杆」就是杠杆模式）。
-     ⚠️ v9 起它决定的是**整张杠杆表 ＋ 整行动作键的字面**（杠杆＝买入/卖出、合约＝做多/做空/平仓），
-        不再是「只影响 1x 做多」那一个小开关。
-     ⚠️ 该所此刻**没有合约**时整枚不出现（`futuresAvailable`）——「没有的选项不显示」。 */
-  const tradeModeBtn = el('button', 'opt', '杠杆');
-  tradeModeBtn.dataset.mode2 = 'toggle';
-  fracRow.append(tradeModeBtn);
+  /* ── 工具行（2026-10-04 用户拍板 · 杠杆 / 合约**分家**）──
+     原来那枚「金额」行末尾的小字是**切换键**（字面即现状：显示「杠杆」就是杠杆模式，点一下翻过去）。
+     问题是它把**两件性质不同的事**挤成一枚按钮：杠杆与合约是**两种工具**，各自有独立的杠杆表、
+     独立的动作键（杠杆＝买入/卖出、合约＝做多/做空/平仓），却长得像「同一个旋钮的两档」——
+     玩家看得见当前是哪一种，却看不出「还有另一种可选、点哪里换」。
+     现在单开一行段控：**两枚并列、选中那枚亮主色**（`.on`）——与速度 / 杠杆档同一副样子，
+     一眼同时看清「有哪些工具」与「我现在用的是哪个」。
+     ⚠️ `data-mode2`（这一行）与 `data-mode`（K 线粒度小字）是**两个不同的键**，别混。
+     ⚠️ 该所此刻**没有合约**时整行不出现（`futuresAvailable`）——「没有的选项不显示」；
+        只剩「杠杆」一种工具时无需段控，与「金额」行末尾那枚旧键的可见性一致（不引入布局跳动）。
+     ⚠️ 有**任何**持仓时两枚一律真禁用（`disabled`，见 `update()`）——杠杆仓与合约仓不能并存
+        （`posGate`），切过去只会看见一排按不动的动作键，自相矛盾。锁定原因由 `main.js` 回话。 */
+  const toolRow = el('div', 'row');
+  toolRow.append(el('span', 'lbl', '工具'));
+  const toolBtns = new Map();            // 'margin' | 'fut' → 按钮
+  for (const [k, label] of [['margin', '杠杆'], ['fut', '合约']]) {
+    const b = el('button', 'opt', label);
+    b.dataset.mode2 = k;
+    toolRow.append(b);
+    toolBtns.set(k, b);
+  }
 
   const levRow = el('div', 'row');
   levRow.append(el('span', 'lbl', '杠杆'));
@@ -385,7 +397,7 @@ export function mount(root) {
   actRow.append(chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn);
 
   const trade = el('div', 'trade');
-  trade.append(fracRow, levRow, spdRow, actRow);
+  trade.append(toolRow, fracRow, levRow, spdRow, actRow);
 
   /* ══════════════ 三页框架（A6 · 方案 §6）══════════════
      三页只切**可见性**（`.page.on`），骨架仍然只建一次 —— 与全屏「只改文字与 class」同一条规矩。
@@ -692,7 +704,7 @@ export function mount(root) {
     heatChip, heatBar, heatTxt, oiTxt, lsTxt,
     posbar, posSide, posPnl, posRate,
     logline, logRows,
-    fracBtns, levRow, levBtns, spdBtns, tradeModeBtn,
+    fracBtns, toolRow, toolBtns, levRow, levBtns, spdBtns,
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asList,
     asCurve, eqRangeBtns, asBusy, asOnway, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
@@ -986,19 +998,27 @@ export function update(refs, s, view) {
      必须走满 1 游戏小时才解锁。判据 `pauseLocked` 与 `main.js` 闸门**同源**（不各算一遍）。 */
   const locked = pauseLocked(s);
 
-  /* 模式键（U1 · §21.4；v9 · §15.6 N3）：字面是**当前**模式。`合约` 时走 `.on` ——
-     与通道键同一约定：偏离默认态（杠杆）才高亮，让玩家一眼看见「我这一单是合约」。
-     ⚠️ **该所此刻没有合约时整枚不出现**，且一切按杠杆处理。
+  /* 工具行（2026-10-04 用户拍板）：`杠杆` / `合约` 两枚并列，选中那枚落 `.on`。
+     ⚠️ **该所此刻没有合约时整行不出现**（与旧那枚切换键同一可见性），且一切按杠杆处理。
         `s.mode` 的回退在 `engine.normalizeLeverage` 里做 —— 渲染层**只读不写**状态。 */
   const futAvail = futuresAvailable(s);
   const fut = futAvail && s.mode !== 'margin';
-  refs.tradeModeBtn.hidden = !futAvail;
-  refs.tradeModeBtn.textContent = fut ? '合约' : '杠杆';
-  refs.tradeModeBtn.classList.toggle('on', fut);
-  /* **持仓时不许切模式**（2026-10-02 用户拍板）：杠杆仓与合约仓不能并存（`posGate`）——
-     切过去只会看见一排按不动的动作键，自相矛盾。两个方向都锁（合约仓也不许切回杠杆），
-     先平仓再切。⚠️ 暂停 / 锁定期**照旧放行**：它只改「下一单的参数」，不动钱（见下面 `frozen` 那段）。 */
-  refs.tradeModeBtn.disabled = !!cur;
+  refs.toolRow.hidden = !futAvail;
+  /* **有任何持仓时不许切工具**（2026-10-02 拍板；2026-10-04 修**只锁当前币**的漏洞）：
+     判据从 `posOf(s, s.sym)`（只认当前币）改成 `anyHeld(s)`（跨币）—— 义项见 `main.js` 分派层那段注释。
+     ⚠️ **选中那一枚照旧高亮**（`.on`）：玩家得看得见自己此刻在哪种工具里，两枚一起灰掉就没人知道现状。
+        **另一枚**置灰（`.off`：比 `:disabled` 更暗一档 ＋ 点线边框）但**保留可点**——
+        点一下由 `main.js` 回一句「有持仓 ｜ 先全部平仓再切换」，而不是把点击吞掉、零反馈
+        （用户既定口径：不可用按钮要置灰，且**要能说明为什么**）。 */
+  const modeLocked = anyHeld(s);
+  for (const [k, b] of refs.toolBtns) {
+    const on = (k === 'fut') === fut;
+    b.classList.toggle('on', on);
+    const lockedOff = modeLocked && !on;
+    b.classList.toggle('off', lockedOff);
+    if (lockedOff) b.setAttribute('aria-disabled', 'true');
+    else b.removeAttribute('aria-disabled');
+  }
 
   /* 该所此刻开没开**融资**（v10）—— 一个数决定两件事：「卖出」能不能开空、杠杆行是不是置灰。
      ⚠️ 只查**杠杆表**，与当前模式无关 —— 合约做空是保证金交易，不需要借币。 */
@@ -1760,13 +1780,21 @@ export function pickExchange(s, anchor) {
     l1.append(el('b', null, ex.name), el('u', null, feeTxt));
     /* 到账口径跟着通道走（§11.6）：链上通道仍报「确认数 ＋ 小时」，电汇时代改成「通道 ＋ 天数」
        —— 2013 年那行「2 确认 · 预估 3h」是链上才有的说法，电汇根本不吃拥堵。 */
+    /* 目标所此刻有没有「我正在用的那件工具」（2026-10-04 用户反馈「切过去才说没有融资」）：
+       换所本身是**能成功**的，问题是切之前没人说这家所在这个年代只做 1x / 还没上合约 ——
+       切过去才看到杠杆行置灰、还配一句像报错的话。这里把这件事**提前写到行上**。
+       ⚠️ 排在 `holding` 之后：有持仓时这些行本来就点不动，先讲清「为什么不能选」更要紧。 */
+    const lackFut = s.mode === 'fut' && !hasLeverageKindAt(t, ex.id, 'fut');
+    const lackFin = s.mode === 'margin' && !hasFinancingAt(t, ex.id);
     const note = notYet ? '还没开业'
       : dead ? '已归零'
         : s.transfer ? '转账在途'
           : isCur ? '当前所'
             : holding ? '有持仓，先平仓'
-              : rail.hours ? `${rail.label} · ${Math.round(n / 24)} 天`
-                : `${confirmationsOf(ex.id)} 确认 · 预估 ${n}h`;
+              : lackFut ? '该所此刻无合约'
+                : lackFin ? '该所此刻无融资 · 只能 1x 做多'
+                  : rail.hours ? `${rail.label} · ${Math.round(n / 24)} 天`
+                    : `${confirmationsOf(ex.id)} 确认 · 预估 ${n}h`;
     row.append(l1, el('em', 'pick-note', note));
 
     panel.append(row);
@@ -2555,6 +2583,9 @@ function careerRow(r) {
   const head = el('div', 'career-head');
   head.append(el('b', null, scenarioOf(r.scen).name));
   head.append(el('em', 'career-title', titleOf(r)));
+  /* 风格称号（2026-10-04）—— 与主称号**并列**（中间一枚「·」）：主称号说「打成什么样」，
+     风格说「怎么打的」。两枚都走 `core/titles.js` ⇒ 与海报同一份字（LESS IS MORE）。 */
+  head.append(el('em', 'career-style', '· ' + styleOf(r)));
   head.append(el('u', OVER_TONE[r.reason] || 'mut', OVER_LABEL[r.reason] || '结束'));
   const del = el('button', 'career-del', '删除');
   del.dataset.careers = 'del:' + r.id;

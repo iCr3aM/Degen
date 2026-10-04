@@ -27,7 +27,8 @@ export const ACTION_KEYS = [
         `goddate` 随原生日期框一起删除，日期改由 `godyear` / `godmon` / `godday` 三排档位选择、
         `godgo` 才真正跳（2026-09-30）。 */
   'god', 'godcash', 'godyear', 'godmon', 'godday', 'godgo', 'godoff',
-  /* U1（ROADMAP §21.4）：`mode2`（操作区「金额」行末尾那枚「杠杆 / 合约」模式键）。
+  /* U1（ROADMAP §21.4）：`mode2`（2026-10-04 起是操作区顶部「工具」行里的两枚段控
+     「杠杆」/「合约」—— `data-mode2="margin"` / `"fut"`，取代旧那枚「金额」行末尾的切换键）。
      ⚠️ 用 `mode2` 而不是 `mode` —— `mode` 已被 K 线左上角那枚**粒度**小字占用（`main.js` 的 `d.mode`）。
      v9（§15.3 N4）：`buy` / `sell` ＝ 杠杆模式那两枚动作键（借 U 买入 / 借币卖出）。
      ⚠️ **2026-10-03 补 `chan`（盘口 ⇄ OTC 切换键）** —— 它一直在 `render.js` 里被创建

@@ -41,6 +41,10 @@ export function disableSave() { disabled = true; }
 
 export function save(s) {
   if (disabled) return false;
+  /* 已结束的局**不落盘**（2026-10-04 用户拍板 · 「打完之后应该清除存档」）：
+     `engine.endGame` 已经 `wipe` 掉本槽，若这里再把 `s.over` 写回去，那条档就复活了。
+     `rewindTo`（上帝跳日期）把 `s.over` 清回 null 之后，写盘自然恢复。 */
+  if (s.over) return false;
   try {
     localStorage.setItem(KEY_OF[saveSlotOf(s.scen)], JSON.stringify(s));
     return true;
@@ -75,13 +79,15 @@ function shaped(s) {
   return true;
 }
 
-/** 读**一个槽**：没有档、解析失败、**版本不符**、或字段形状不对，一律返回 `null` */
+/** 读**一个槽**：没有档、解析失败、**版本不符**、字段形状不对、或**已结束**，一律返回 `null`
+ *  ⚠️ `s.over` 非空 = 这局早就打完了（2026-10-04 用户拍板）—— 一并当成「没有档」，
+ *     连旧版本残留的那份「已结束档」也读不出来（写侧那道闸管不到历史遗留的档）。 */
 function parse(slot) {
   try {
     const raw = localStorage.getItem(KEY_OF[slot] || KEY_OF.normal);
     if (!raw) return null;
     const s = JSON.parse(raw);
-    if (!s || typeof s !== 'object' || s.v !== STATE_VERSION || !shaped(s)) return null;
+    if (!s || typeof s !== 'object' || s.v !== STATE_VERSION || !shaped(s) || s.over) return null;
     return s;
   } catch {
     return null;

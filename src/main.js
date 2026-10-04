@@ -8,7 +8,7 @@
  */
 
 import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, cashCurAt, exchangeOf, hasFinancingAt, isChallenge, maxLeverageAt, scenarioOf, scenarioStartIndex } from './core/config.js';
-import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
+import { anyHeld, createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
 import { createClock, chanOf, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf } from './core/engine.js';
@@ -1007,7 +1007,7 @@ function dispatch(node) {
        `disabled`，正是为了能让这一下走到这里 —— 给一句「暂不可用 ｜ 为什么」，而不是毫无反应。
        判据与渲染层、与 `engine.openTrade` 同源（`hasFinancingAt`），三处不各算一遍。 */
     if (levKind(s) === 'margin' && !hasFinancingAt(timeOf(s), s.ex)) {
-      pushLog(s, '杠杆 暂不可用 ｜ 该所此刻没有融资业务', 'info');
+      pushLog(s, '杠杆 暂不可用 ｜ 该所此刻没有融资业务（只能 1x 做多）', 'info');
       snd.deny(); snd.buzz('light');   // 按得动却没反应最难受：给一声「不行」＋ 一记触感
       after();
       return;
@@ -1033,23 +1033,29 @@ function dispatch(node) {
     return;
   }
   if (d.speed !== undefined) { s.speed = Number(d.speed); after(); return; }
-  /* 模式切换（U1 · ROADMAP §21.4；v9 · §15.6 N3）：杠杆 ⇄ 合约。它决定的是**整张杠杆表**
+  /* 模式切换（U1 · ROADMAP §21.4；v9 · §15.6 N3；2026-10-04 改为操作区顶部「工具」行里的**两枚显式档**）：
+     `杠杆` / `合约` 各挂一个值（`data-mode2="margin"` / `"fut"`）。它决定的是**整张杠杆表**
      与**整行动作键的字面**（杠杆＝买入/卖出、合约＝做多/做空/平仓），见 `engine.marginOf` / `levKind`。
-     ⚠️ `data-mode2`（操作区那枚模式键），不是 `data-mode`（那是 K 线粒度小字）。
-     ⚠️ 该所此刻**没有合约**时这枚键根本不显示，但**状态机不靠 DOM 兜底**（同 `onChan`）：
-        少了这一行，`s.mode` 就会切到一张不存在的杠杆表上。 */
+     ⚠️ `data-mode2`（「工具」行），不是 `data-mode`（那是 K 线粒度小字）。
+     ⚠️ 该所此刻**没有合约**时「合约」那一枚根本不出现（整行隐藏），但**状态机不靠 DOM 兜底**
+        （同 `onChan`）：少了下面那行护栏，`s.mode` 就会切到一张不存在的杠杆表上。 */
   if (d.mode2 !== undefined) {
-    if (!futuresAvailable(s)) return;
-    /* **持仓时不许切模式**（2026-10-02 用户拍板）：杠杆仓与合约仓不能并存（`posGate`），
-       切过去只会得到一排按不动的「做多 / 做空 / 平仓」。两个方向都锁 ——
-       合约仓也不许切回杠杆，一律先平仓再切。
-       ⚠️ 渲染层已经把这一枚画成 `disabled`，这一行是**状态机不靠 DOM 兜底**（同 `onChan`）。 */
-    if (posOf(s, s.sym)) {
-      pushLog(s, `${s.sym} 有持仓 ｜ 先平仓再切换杠杆 / 合约`, 'info');
+    const want = d.mode2 === 'fut' ? 'fut' : 'margin';
+    if (want === 'fut' && !futuresAvailable(s)) return;
+    if (s.mode === want) return;              // 点的是**已经选中**的那一枚：不动，也就不必回话
+    /* **任何持仓都不许切模式**（2026-10-02 拍板；2026-10-04 修**只锁当前币**的漏洞）：
+       原来这里判的是 `posOf(s, s.sym)` —— 只认**当前这个币**。于是「持着 BTC 合约仓、切到 ETH
+       看盘」时这一枚又变回可点，能把 `s.mode` 翻回杠杆，而 BTC 那条合约仓还挂着 ——
+       与「杠杆仓与合约仓不能并存」（`posGate`）直接打架，UI 与真实仓位就此对不上。
+       改成 `anyHeld(s)`：**只要手上还有任何一条仓位**，两个方向一律锁死，先全部平仓再切。
+       ⚠️ 渲染层把**另一枚**画成 `.off`（灰、点线、仍可点）⇒ 这里必须回话，否则点了零反馈
+          （用户既定口径：不可用要**说明原因**；这条日志就是那句话）。 */
+    if (anyHeld(s)) {
+      pushLog(s, '有持仓 ｜ 先全部平仓再切换杠杆 / 合约', 'info');
       after();
       return;
     }
-    s.mode = s.mode === 'margin' ? 'fut' : 'margin';
+    s.mode = want;
     /* 切模式后重新夹取杠杆：两张表的上限不同（如 Binance 杠杆 5x / 合约 125x），
        不夹的话从合约切回杠杆会带着一个杠杆拿不到的档位（`engine.normalizeLeverage` 顺带兜住模式）。 */
     normalizeLeverage(s);
@@ -1102,7 +1108,7 @@ function dispatch(node) {
        （渲染层对这种情况**保留可点**、只画灰 ⇒ 这条分支才真的能被触发，P1-16/17 · 2026-10-04 审计）。
        `engine.openTrade` 那边本来就是对的（先 `posOf` 再判融资），这里补的是主入口。 */
     if (!pos && side === 'short' && levKind(s) === 'margin' && !hasFinancingAt(timeOf(s), s.ex)) {
-      pushLog(s, '杠杆做空 暂不可用 ｜ 该所此刻没有融资业务', 'info');
+      pushLog(s, '杠杆做空 暂不可用 ｜ 该所此刻没有融资业务（借不到币）', 'info');
       snd.deny(); snd.buzz('light');
       after();
       return;
@@ -1432,9 +1438,12 @@ function onMenu(kind, node) {
 function menuSlots() {
   const cur = saveSlotOf(s.scen);
   /* 第二项：**当前这一局的槽**（给「回菜单又接着玩」留一个入口）—— 但全新一局且**还没落盘**时
-     不算（`!isNewGame` 或该槽已有档），否则会在没有任何档的情况下凭空列出「普通模式」。 */
+     不算（`!isNewGame` 或该槽已有档），否则会在没有任何档的情况下凭空列出「普通模式」。
+     ⚠️ **本局已结束（`s.over`）时不再列出**（2026-10-04 用户拍板）：`engine.endGame` 已经清掉
+        本槽的档，这里若还按 `k === cur && !isNewGame` 把内存里那份「已打完的局」列出来，
+        玩家点一下又会回到结算遮罩 —— 那正是本次要堵的路。 */
   return SAVE_SLOTS
-    .filter(k => hasSave(k) || (k === cur && !isNewGame))
+    .filter(k => hasSave(k) || (k === cur && !isNewGame && !s.over))
     .map(key => {
       /* 当前这一局的槽读**内存里那份** `s`（比盘上那份多一次 `boot` 里的权益采样），
          另一个槽只能读盘。 */

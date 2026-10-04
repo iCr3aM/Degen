@@ -1499,6 +1499,10 @@ button { user-select: none; -webkit-user-select: none; }
 .career-head u { margin-left: auto; text-decoration: none; font-size: calc(12px * var(--ui)); }
 /* 主称号（M3）—— 局名右边一枚，比局名轻、比副行重；`u` 仍由 `margin-left:auto` 顶到最右 */
 .career-title { font-style: normal; font-size: calc(11px * var(--ui)); color: var(--mut); }
+/* 风格称号（2026-10-04）—— 与主称号并列（「· 不死鸟」）。
+   ⚠️ 用 `--accent` 而不是主称号的 `--mut`：两枚并排放着，颜色必须一眼分得开，
+      否则读起来像一句被拆成两半的话（语义不同：一枚是结局、一枚是人设）。 */
+.career-style { font-style: normal; font-size: calc(11px * var(--ui)); color: var(--accent); }
 /* 徽章排（M3）—— 无徽章时整条不渲染（`careerRow` 里判 `length`）
    ⚠️ `margin-top: 6` → **4**（2026-10-03 修）：卡内四段（head / 徽章 / 副行 / 数值）原来是 6、4、6
    混排，段与段的呼吸一眼不齐 —— 统一到 4，与 `.career-sub` 同档。 */
