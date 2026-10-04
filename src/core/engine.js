@@ -17,7 +17,7 @@ import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, raw
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { CDRI, FNG, HEAT, INV, NPC, OI, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -1191,9 +1191,14 @@ function mktOf(s, sym) {
   return s.mkt[sym] || (s.mkt[sym] = {
     heat: HEAT.base,
     npc: NPC.ladder.map(() => ({
-      long: 0, longAvg: 0, short: 0, shortAvg: 0, longStopped: false, shortStopped: false,
+      long: 0, longAvg: 0, short: 0, shortAvg: 0,
+      longStopped: false, shortStopped: false,      // 亏损侧止损带（`NPC.stopFrac`）
+      longTp: false, shortTp: false,                // G1 · 盈利侧止盈带（`NPC.tpFrac`）
     })),
-    mm: { long: 0, longAvg: 0, short: 0, shortAvg: 0, longStopped: false, shortStopped: false },
+    mm: {
+      long: 0, longAvg: 0, short: 0, shortAvg: 0,
+      longStopped: false, shortStopped: false, longTp: false, shortTp: false,
+    },
     npcDrift: null, npcShock: null, npcFund: 0, advPush: 0, pv: 0,
     /* 恐惧贪婪**显示轨**（2026-10-04）：旧档缺这三个键 ⇒ 由 `fngDay === null` 触发首次结算
        （首日直接吸附到原始读数），行为自洽 ⇒ **不升 `STATE_VERSION`**（同 `m.heat` 先例）。 */
@@ -1464,12 +1469,13 @@ function stepNpc(slot, side, target, price, floor, speed = NPC.speed) {
   const key = long ? 'long' : 'short';
   const avgKey = long ? 'longAvg' : 'shortAvg';
   const stopKey = long ? 'longStopped' : 'shortStopped';
+  const tpKey = long ? 'longTp' : 'shortTp';
   const cur = slot[key];
   const next = cur + (Math.max(0, target) - cur) * speed;
   if (next < floor) {                                                                // 残尾 ⇒ 直接清零
-    /* ⚠️ 连**止损标志**一起清（v28）：这一档该侧已经空了，下一轮建仓是**新的仓**，
-       必须能重新触发止损 —— 否则「上一轮止过损」会一直压着新仓不让它止损。 */
-    if (cur !== 0) { slot[key] = 0; slot[avgKey] = 0; slot[stopKey] = false; }
+    /* ⚠️ 连**止损 / 止盈标志**一起清（v28 / G1）：这一档该侧已经空了，下一轮建仓是**新的仓**，
+       必须能重新触发止损 / 止盈 —— 否则「上一轮止过损 / 止过盈」会一直压着新仓不让它触发。 */
+    if (cur !== 0) { slot[key] = 0; slot[avgKey] = 0; slot[stopKey] = false; slot[tpKey] = false; }
     return;
   }
   const delta = next - cur;
@@ -1548,7 +1554,11 @@ function pushNpcShock(s, sym, m, dir, notional) {
      「级联↑⇒σ↑⇒级联位移↑」的自反馈环；② 再乘 `NPC.synthGive` ——真实数据已含真实清算潮的
      价位影响，避免重复计算。级联的**频率/次数/方向**不变，只改每一步的**幅度**。
      理由见 `rawPermImpactFor` 与 `god.NPC.synthGive`。 */
-  const v = dir * SHOCK.share * NPC.synthGive * absorbedImpact(s, sym, dir, rawPermImpactFor(s, sym, s.i, notional));
+  /* G4 · 方向不对称（2026-10-05）：聚合强平长期以多头为主（62–85%）、熊市羊群更强
+     （Gemayel & Preda 2024）⇒ 向下的级联冲击 × `NPC.downAsym`（向上不变）。
+     ⚠️ 只放大**级联这一条通道**的幅度，不动玩家侧的成交代价 / 位移（红线 A · 不双重计价）。 */
+  const amp = dir < 0 ? NPC.downAsym : 1;
+  const v = dir * amp * SHOCK.share * NPC.synthGive * absorbedImpact(s, sym, dir, rawPermImpactFor(s, sym, s.i, notional));
   if (!Number.isFinite(v) || v === 0) return;
   const tab = m.npcShock || (m.npcShock = { at: [], v: [] });
   const n = tab.at.length;
@@ -1692,10 +1702,10 @@ function adl(s, sym, m, price, need) {
       pushNpcShock(s, sym, m, it.long ? -1 : 1, cut);
       if (it.long) {
         g.long -= cut;
-        if (g.long <= 0) { g.long = 0; g.longAvg = 0; g.longStopped = false; }
+        if (g.long <= 0) { g.long = 0; g.longAvg = 0; g.longStopped = false; g.longTp = false; }
       } else {
         g.short -= cut;
-        if (g.short <= 0) { g.short = 0; g.shortAvg = 0; g.shortStopped = false; }
+        if (g.short <= 0) { g.short = 0; g.shortAvg = 0; g.shortStopped = false; g.shortTp = false; }
       }
       /* ⚠️ **不再 `pushLog`**（2026-10-03 拍板）：NPC 档的减仓是市场内部对手盘的调整 ——
          玩家看不到、也无法据此做任何决策，播出来只会把日志刷满（用户：「ADL 不该显示别人的」）。
@@ -1856,6 +1866,8 @@ function stampede(s, sym, m, price) {
 /**
  * **一个持仓格子的逐档击穿**（趋势盘六档与做市盘**共用**这一条，缺口 6-A 抽出）——
  *   ① 多头：先自愿止损（平 50%、一次性），跌破强平线则全平并复位；空头镜像（逼空 ⇒ 热度上冲）。
+ *      **G1（2026-10-05）**：盈利侧再加一条**止盈带**（`NPC.tpFrac`，比止损带更近）—— 处置效应
+ *      （Odean 1998：盈利单卖出率 ≈ 亏损单 1.5×）⇒ 涨势里散户「见好就收」，不再只加不减。
  *   ② 返回本格本小时被**强平**的名义额（不含自愿止损波）—— 缺口 16 的「爆仓潮」只认这一笔。
  *
  * ⚠️ 杠杆由调用侧传入（趋势盘 `NPC.ladder[k].lev`、做市盘 `NPC.mm.lev`）⇒ 强平线 / 止损带
@@ -1865,6 +1877,7 @@ function flushSlot(s, sym, m, g, lev, price) {
   const maint = GAME.maintRate;                     // 0.5% 基准档（与玩家侧 `GAME.maintRate` 同源）
   const drop = 1 / lev - maint;                     // 该档距入场价多远爆
   const stop = drop * NPC.stopFrac;                 // 止损带：强平线 × 0.6
+  const take = drop * NPC.tpFrac;                   // G1 · 止盈带（0.4 < 0.6 ⇒ 盈利侧比亏损侧更急）
   let liqNotional = 0;
   /* 多头：先自愿止损（平 50%、一次性），跌破强平线则全平并复位。 */
   if (g.long > 0 && g.longAvg > 0) {
@@ -1873,14 +1886,26 @@ function flushSlot(s, sym, m, g, lev, price) {
       m.heat = clamp01(m.heat - HEAT.panicDrop);
       liqNotional += g.long;                        // 缺口 16：只认这一笔（强平潮）
       fundSettle(s, g.long, g.longAvg, lev, 1, price);   // 缺口 5 ①②：盈余入池 / 穿仓掏池
-      g.long = 0; g.longAvg = 0; g.longStopped = false;
-    } else if (!g.longStopped && price < g.longAvg * (1 - stop)) {
-      const cut = g.long * 0.5;
-      pushNpcShock(s, sym, m, -1, cut);
-      g.long -= cut;
-      g.longStopped = true;
-    } else if (g.longStopped && price >= g.longAvg * (1 - stop)) {
-      g.longStopped = false;                        // 回升出带 ⇒ 下一轮可再触发
+      g.long = 0; g.longAvg = 0; g.longStopped = false; g.longTp = false;
+    } else {
+      /* 亏损侧止损带（平 50%、一次性）。 */
+      if (!g.longStopped && price < g.longAvg * (1 - stop)) {
+        const cut = g.long * 0.5;
+        pushNpcShock(s, sym, m, -1, cut);
+        g.long -= cut;
+        g.longStopped = true;
+      } else if (g.longStopped && price >= g.longAvg * (1 - stop)) {
+        g.longStopped = false;                      // 回升出带 ⇒ 下一轮可再触发
+      }
+      /* G1 · 盈利侧止盈带（平 50%、一次性）—— 处置效应：见 `NPC.tpFrac`。 */
+      if (!g.longTp && price > g.longAvg * (1 + take)) {
+        const cut = g.long * 0.5;
+        pushNpcShock(s, sym, m, -1, cut);           // 卖出兑现 ⇒ 向下
+        g.long -= cut;
+        g.longTp = true;
+      } else if (g.longTp && price <= g.longAvg * (1 + take)) {
+        g.longTp = false;                           // 回落出带 ⇒ 下一轮可再触发
+      }
     }
   }
   /* 空头镜像：逼空 ⇒ 热度反而上冲。 */
@@ -1890,17 +1915,68 @@ function flushSlot(s, sym, m, g, lev, price) {
       m.heat = clamp01(m.heat + HEAT.panicDrop);
       liqNotional += g.short;
       fundSettle(s, g.short, g.shortAvg, lev, -1, price);
-      g.short = 0; g.shortAvg = 0; g.shortStopped = false;
-    } else if (!g.shortStopped && price > g.shortAvg * (1 + stop)) {
-      const cut = g.short * 0.5;
-      pushNpcShock(s, sym, m, 1, cut);
-      g.short -= cut;
-      g.shortStopped = true;
-    } else if (g.shortStopped && price <= g.shortAvg * (1 + stop)) {
-      g.shortStopped = false;                       // 回落出带 ⇒ 下一轮可再触发
+      g.short = 0; g.shortAvg = 0; g.shortStopped = false; g.shortTp = false;
+    } else {
+      /* 亏损侧止损带（平 50%、一次性）。 */
+      if (!g.shortStopped && price > g.shortAvg * (1 + stop)) {
+        const cut = g.short * 0.5;
+        pushNpcShock(s, sym, m, 1, cut);
+        g.short -= cut;
+        g.shortStopped = true;
+      } else if (g.shortStopped && price <= g.shortAvg * (1 + stop)) {
+        g.shortStopped = false;                     // 回落出带 ⇒ 下一轮可再触发
+      }
+      /* G1 · 盈利侧止盈带（平 50%、一次性）—— 处置效应：见 `NPC.tpFrac`。 */
+      if (!g.shortTp && price < g.shortAvg * (1 - take)) {
+        const cut = g.short * 0.5;
+        pushNpcShock(s, sym, m, 1, cut);            // 买回平空兑现 ⇒ 向上
+        g.short -= cut;
+        g.shortTp = true;
+      } else if (g.shortTp && price >= g.shortAvg * (1 - take)) {
+        g.shortTp = false;                          // 回升出带 ⇒ 下一轮可再触发
+      }
     }
   }
   return liqNotional;
+}
+
+/**
+ * **G2 · 跨币危机共振**（2026-10-05）—— 把当前币的情绪偏差传导给邻币，并被邻币市场均值回拉。
+ *
+ * 为什么需要（见 `god.CONTAGION` 的设计依据）：`tickMarket` 每小时只跑当前币，其余币的
+ * `m.heat` 默认**冻结**。若不显式传导，「砸崩 BTC 再切 ETH」会发现 ETH 什么都没发生 ——
+ * 与现实里「单一加密因子解释 ~80% 方差、熊市相关性 > 0.9」完全相反。
+ *
+ * 口径（**只动合成的情绪层，不碰任何真实 OHLC**）：
+ *   ① **外溢**：本币 `|heat − base| > stressRef` 时，按 `sev` 强度把 `(本币 heat − 邻币 heat)`
+ *      的一部分推给每个邻币 ⇒ 崩盘数小时内邻币一起被拖出中性带；
+ *   ② **回读**：本币再朝「邻币 heat 均值」的偏差回拉 `read` 比例 —— 邻币全中性时该项恒为 0
+ *      （`Σ(heat − base) = 0`），不会凭空制造偏差，只让共振**双向收敛**。
+ * ⚠️ 邻币 `heat` 变了 ⇒ 玩家切过去时 NPC 建仓靶心（`mom × (heat − base) × liqDay`）随之偏离
+ *    ⇒「级联更容易触发」自然涌现，不需要单独改任何强平线公式。
+ * @param {object} m 当前币的 mkt 格子（`heat` 已被本小时的情绪更新写定）
+ */
+function crossHeat(s, sym, m) {
+  if (!s.mkt) return;
+  const dev = m.heat - HEAT.base;
+  const span = HEAT.base - CONTAGION.stressRef;
+  const sev = span > 0 ? Math.min(1, Math.max(0, (Math.abs(dev) - CONTAGION.stressRef) / span)) : 0;
+  if (sev > 0) {
+    const push = CONTAGION.push * sev;
+    for (const k in s.mkt) {
+      if (k === sym) continue;
+      const o = s.mkt[k];
+      if (!o || !Number.isFinite(o.heat)) continue;
+      o.heat = clamp01(o.heat + push * (m.heat - o.heat));
+    }
+  }
+  let sum = 0, cnt = 0;
+  for (const k in s.mkt) {
+    if (k === sym) continue;
+    const o = s.mkt[k];
+    if (o && Number.isFinite(o.heat)) { sum += o.heat - HEAT.base; cnt++; }
+  }
+  if (cnt) m.heat = clamp01(m.heat + CONTAGION.read * (sum / cnt));
 }
 
 /**
@@ -1910,6 +1986,9 @@ function flushSlot(s, sym, m, g, lev, price) {
  * ③ NPC 顺势建仓（正反馈）③′ **做市盘**建到趋势盘对面（缺口 6-A）④ 踩踏级联（仅杠杆模式）。
  * ⚠️ 只对**当前币**跑（`s.sym`）：玩家只在这个币上下单，其余币的 NPC 状态冻结 ——
  *    省掉「每个币每小时各跑一次」的整表开销，也不影响玩法（持仓的其它币走行情本身）。
+ *    **G2 例外（2026-10-05）**：其余币的 `m.heat` **不再完全冻结** —— `crossHeat` 会把当前币的
+ *    情绪偏差外溢过去（跨币危机共振），故「其余币的 NPC 状态冻结」现在只对**持仓 / 台阶表**
+ *    成立，`heat` 是唯一被跨币耦合的量。
  */
 export function tickMarket(s, sym) {
   const m = mktOf(s, sym);
@@ -1953,6 +2032,8 @@ export function tickMarket(s, sym) {
      `pv` 的口径是「本小时」⇒ 跨过这一根就该归零（哪怕那一小时该加的料因切走而错过，
      也比在图上看不到的时段里攒一句「凭空情绪」干净）。 */
   for (const k in s.mkt) if (k !== sym && s.mkt[k] && s.mkt[k].pv) s.mkt[k].pv = 0;
+  /* ②′ G2 · 跨币危机共振（2026-10-05）—— 一币情绪崩 ⇒ 邻币被拖着走（见 `crossHeat`）。 */
+  crossHeat(s, sym, m);
   /* ③ NPC 顺势建仓：热度高于中性 ⇒ 净多头，低于中性 ⇒ 净空头。取不到深度就不建（不凭空造量）。
      ⚠️ 靶心与残尾阈值都用**日流动性**（与 `syncNpcDrift` 同一把尺子）：用逐小时深度时，
         冷门小时（占比 1/24）的靶心被压小、热门小时又被放大 ⇒ 散户仓位跟着小时形状剧烈抖动。
@@ -3624,9 +3705,6 @@ function settleFunding(s) {
     }
 
     if (!isFundingHour) continue;                    // 永续资金费只在 8h 整点结
-    if (!paysFunding(pos)) continue;                 // 1x 多头：两样都不付
-    const mark = exMarkPrice(s, sym, pos.ex);       // 三价：资金费按**本仓所在所**的标记价（Binance 口径）
-    if (!(mark > 0)) continue;
 
     /* **全市场多空失衡**驱动的资金费（v30 · 第 6 批 · 缺口 3）—— 真实资金费是**多空之间的
        点对点转移**（拥挤方付、另一侧收），交易所只当中介。费率**不含方向**（`dir` 只在
@@ -3638,11 +3716,26 @@ function settleFunding(s) {
     if (share == null) continue;                     // 没有任何仓位 ⇒ 无多空比可言，不收费
     const rate = fundingRateOf(premiumIndexOf(share));
 
+    const m = mktOf(s, sym);
+    /* **G3 · NPC 也付费率**（2026-10-05）—— 资金费是**全市场多空的点对点转移**，`npcFund` 是
+       对手方池，NPC 侧的净头寸当然也走同一条费率：`N = Σlong − Σshort`（名义），净额 `rate × N`
+       进 / 出池。⇒「负费率逼空」不再只作用于玩家，池被真实的市场净额补给、不会被玩家单方面抽干
+       （改动前只有玩家缴费入池 ⇒ 长局里池结构性失血，`funding` 那条日志的池读数长期贴 0）。
+       ⚠️ 符号与玩家那一支同源：`rate > 0`（多头拥挤）⇒ 净多头付费入池、净空头掏池；池余额恒 ≥ 0。
+       ⚠️ 本项**不依赖玩家自己那一刻持的是什么工具**：永续资金费是全市场机制 —— 玩家即便持的是
+          杠杆仓（`!paysFunding`，自己不参与），散户那一侧的净头寸照样按同一条费率进出对手方池。
+          ⇒ 必须落在 `paysFunding` 这个 `continue` **之前**，否则池只会在「玩家恰好开着永续仓」时才被补给。 */
+    const npcN = npcNet(m);
+    if (npcN !== 0) m.npcFund = Math.max(0, (m.npcFund || 0) + rate * npcN);
+
+    if (!paysFunding(pos)) continue;                 // 1x 多头 / 杠杆仓：自己不付资金费（改付借贷利息）
+    const mark = exMarkPrice(s, sym, pos.ex);       // 三价：资金费按**本仓所在所**的标记价（Binance 口径）
+    if (!(mark > 0)) continue;
+
     let fee = fundingOf(pos, mark, rate);
     /* **对手方池**（`s.mkt[sym].npcFund` · 缺口 3）：玩家付出 ⇒ 入池；玩家收取 ⇒ 从池出。
        ⚠️ 池**只付得起它有的部分**（＝偿付上限）：付不起就按余额打折 —— 池余额恒 ≥ 0，
           这正是「对手方不足以覆盖」时真实平台的处境。 */
-    const m = mktOf(s, sym);
     if (fee > 0) m.npcFund += fee;
     else if (fee < 0) {
       const paid = Math.min(-fee, m.npcFund > 0 ? m.npcFund : 0);

@@ -1488,6 +1488,150 @@ section('9h–9j · 模拟深度：跨所价差压力放大 · 借贷利率利�
   check('9k 杠杆多头 / 1x 空头都走杠杆档（1.25%）', feeOf(marg) === C.LIQ.feeMargin && feeOf(mShort) === C.LIQ.feeMargin);
 }
 
+/* ═══════════════ 9l–9o · 模拟深度 G1–G4（跨币共振 / 处置效应 / NPC 资金费 / 方向不对称） ═══════════════ */
+section('9l–9o · 模拟深度：跨币危机共振 · 处置效应盈利侧 · NPC 资金费 · 方向不对称');
+
+/* ── 9l · G2：跨币危机共振（一币崩 ⇒ 邻币被拖 · 中性不外溢 · 回读双向） ── */
+{
+  const T = idx(at(2021, 5, 10));
+  /* 同一小时、同一份行情，唯一变量是「本币 tick 前的 heat」：极端档 vs 中性档。 */
+  const run = async (h) => {
+    const s = await mk({ sym: 'BTC', i: T, mode: 'fut' });
+    s.mkt.ETH = { heat: 0.5 };                 // 一个中性邻币（`crossHeat` 只读它的 heat）
+    s.mkt.BTC.heat = h;
+    engine.tickMarket(s, 'BTC');
+    return s.mkt.ETH.heat;
+  };
+  const hExt = await run(0.0);
+  const hNeu = await run(0.5);
+  check('9l 极端档把邻币情绪拖低（一币崩 ⇒ 邻币共振）', hExt < hNeu - 0.02,
+    `极端 ${f(hExt, 4)} vs 中性 ${f(hNeu, 4)}`);
+  check('9l 中性档基本不外溢', Math.abs(hNeu - 0.5) < 0.2, `邻币 ${f(hNeu, 4)}`);
+  check('9l 耦合参数有方向（push > read > 0，本币主导）',
+    god.CONTAGION.push > god.CONTAGION.read && god.CONTAGION.read > 0,
+    `push ${god.CONTAGION.push} / read ${god.CONTAGION.read}`);
+
+  /* 回读项双向：本币 heat 相同、邻币一低一高 ⇒ 本币被拉的方向相反（差值 = read×2×偏移）。 */
+  const read = async (ethHeat) => {
+    const s = await mk({ sym: 'BTC', i: T, mode: 'fut' });
+    s.mkt.ETH = { heat: ethHeat };
+    s.mkt.BTC.heat = god.HEAT.base;
+    engine.tickMarket(s, 'BTC');
+    return s.mkt.BTC.heat;
+  };
+  const bDown = await read(0.0), bUp = await read(1.0);
+  check('9l 回读项双向（邻币低 ⇒ 本币被拉低；邻币高 ⇒ 被拉高）', bDown < bUp - 0.005,
+    `邻低 ${f(bDown, 4)} < 邻高 ${f(bUp, 4)}`);
+}
+
+/* ── 9m · G1：处置效应盈利侧（盈利的 NPC 多单被止盈 · 一次性 · 止盈比止损急） ── */
+{
+  check('9m 止盈带比止损带更急（tpFrac < stopFrac，比值 ≈ 1/1.5）',
+    god.NPC.tpFrac > 0 && god.NPC.tpFrac < god.NPC.stopFrac
+    && Math.abs(god.NPC.stopFrac / god.NPC.tpFrac - 1.5) < 0.15,
+    `tp ${god.NPC.tpFrac} / stop ${god.NPC.stopFrac} ⇒ 比值 ${f(god.NPC.stopFrac / god.NPC.tpFrac, 3)}`);
+
+  const T = idx(at(2021, 5, 10));
+  const s = await mk({ sym: 'BTC', i: T, mode: 'fut' });
+  const price = engine.lastPrice(s, 'BTC');
+  const g = s.mkt.BTC.npc[0];
+  g.long = 1e7; g.longAvg = price * 0.5; g.short = 0; g.shortAvg = 0;   // 浮盈 100% ⇒ 远超止盈带
+  g.longStopped = false; g.longTp = false;
+  const L0 = g.long;
+  /* ⚠️ 冻结 NPC 建仓（`stepNpc`）—— 否则① 建仓会同时改 `long`（污染「减半」读数）、
+     `syncNpcDrift` 还会挪动显示价。本段只想量 `flushSlot` 的止盈带，故把两个 speed 都钉 0。 */
+  const sp = god.NPC.speed, spMM = god.NPC.mm.speed;
+  god.NPC.speed = 0; god.NPC.mm.speed = 0;
+  try {
+    engine.tickMarket(s, 'BTC');
+    check('9m 盈利的多单被止盈（落标志 ＋ 名义减半）',
+      g.longTp === true && Math.abs(g.long - L0 * 0.5) < L0 * 0.01,
+      `long ${f(L0, 0)} → ${f(g.long, 0)}，longTp=${g.longTp}`);
+
+    const L1 = g.long;
+    engine.tickMarket(s, 'BTC');                 // 价格仍在带内 ⇒ 一次性，不再二次减半
+    check('9m 止盈一次性（带内不再反复减半）', g.long >= L1 * 0.99,
+      `第二次后 long ${f(g.long, 0)}（首减后 ${f(L1, 0)}）`);
+  } finally { god.NPC.speed = sp; god.NPC.mm.speed = spMM; }
+}
+
+/* ── 9n · G3：NPC 也付费率（玩家零缴费时对手方池仍被市场净额补给） ── */
+{
+  const F = P.FUNDING.hours;
+  const T = idx(at(2021, 5, 10));
+  const s = await mk({ sym: 'BTC', i: T, mode: 'margin', cash: 1e7 });
+  /* 玩家开 1x 多头：`isMargin` 且有借入为 0 ⇒ 既不计息、也不付费率 ⇒ 对池零贡献。 */
+  s.lev = 1;
+  engine.openTrade(s, 'long', 0.3);
+  const pos = s.positions.BTC;
+  check('9n 前置：玩家 1x 多头对池零贡献（不计息、不付费率）',
+    !!pos && P.borrowedOf(pos) === 0 && !P.paysFunding(pos) && !P.paysInterest(pos));
+
+  /* `s.i + 1` 落在 8h 整点（先定相位，再取价 ∵ 均价要按那一刻的现价给）。 */
+  s.i = Math.floor(s.i / F) * F + (F - 1);
+  const price = engine.lastPrice(s, 'BTC');
+  const g = s.mkt.BTC.npc[0];
+  g.long = 5e8; g.longAvg = price; g.short = 0; g.shortAvg = 0;          // NPC 净多头（均价=现价 ⇒ 不强平）
+  g.longStopped = false; g.shortStopped = false; g.longTp = false; g.shortTp = false;
+  s.mkt.BTC.heat = god.HEAT.base;
+  s.mkt.BTC.npcFund = 0;
+  /* 冻结 NPC 建仓：让 `npcNet` 保持在我们摆好的净多头上（否则建仓会在结算前改动它）。 */
+  const sp = god.NPC.speed, spMM = god.NPC.mm.speed;
+  god.NPC.speed = 0; god.NPC.mm.speed = 0;
+  try {
+    engine.advanceOneHour(s);
+  } finally { god.NPC.speed = sp; god.NPC.mm.speed = spMM; }
+  check('9n 玩家零缴费时对手方池仍被补给（NPC 净多头付费率）',
+    Number.isFinite(s.mkt.BTC.npcFund) && s.mkt.BTC.npcFund > 0, `池 ${f(s.mkt.BTC.npcFund, 2)}`);
+  check('9n 池余额恒 ≥ 0', s.mkt.BTC.npcFund >= 0, `池 ${f(s.mkt.BTC.npcFund, 2)}`);
+}
+
+/* ── 9o · G4：方向不对称（下行级联冲击被放大；上行不受影响） ── */
+{
+  const T = idx(at(2021, 5, 10));
+  /* 同一场景切换 `NPC.downAsym`，唯一变量就是那个倍数 —— 逐位比值即它本身。 */
+  const shockOf = async (dir, amp) => {
+    const old = god.NPC.downAsym;
+    const sp = god.NPC.speed, spMM = god.NPC.mm.speed;
+    god.NPC.downAsym = amp;
+    god.NPC.speed = 0; god.NPC.mm.speed = 0;         // 冻结建仓 ⇒ 只有被摆弄的那一档会写冲击
+    try {
+      const s = await mk({ sym: 'BTC', i: T, mode: 'fut' });
+      const price = engine.lastPrice(s, 'BTC');
+      /* 其余五档与做市盘清零（它们的 `flushSlot` 也会写 `npcShock`，会把符号相反的项混进来）。 */
+      for (let k = 1; k < s.mkt.BTC.npc.length; k++) {
+        const o = s.mkt.BTC.npc[k];
+        o.long = 0; o.longAvg = 0; o.short = 0; o.shortAvg = 0;
+        o.longStopped = false; o.shortStopped = false; o.longTp = false; o.shortTp = false;
+      }
+      if (s.mkt.BTC.mm) {
+        const o = s.mkt.BTC.mm;
+        o.long = 0; o.longAvg = 0; o.short = 0; o.shortAvg = 0;
+        o.longStopped = false; o.shortStopped = false; o.longTp = false; o.shortTp = false;
+      }
+      const g = s.mkt.BTC.npc[0];
+      if (dir < 0) { g.long = 1e8; g.longAvg = price * 2; g.short = 0; g.shortAvg = 0; }   // 多头跌穿强平线
+      else { g.short = 1e8; g.shortAvg = price * 0.5; g.long = 0; g.longAvg = 0; }          // 空头涨穿强平线
+      g.longStopped = false; g.shortStopped = false; g.longTp = false; g.shortTp = false;
+      s.mkt.BTC.heat = god.HEAT.base;                // 中性 ⇒ 建仓靶心 ≈ 0 ⇒ 不摊平均价（保平/保跌不变）
+      engine.tickMarket(s, 'BTC');
+      const tab = s.mkt.BTC.npcShock;
+      let sum = 0;
+      if (tab) for (const v of tab.v) sum += v;
+      return sum;
+    } finally { god.NPC.downAsym = old; god.NPC.speed = sp; god.NPC.mm.speed = spMM; }
+  };
+  const d13 = await shockOf(-1, 1.3), d10 = await shockOf(-1, 1.0);
+  const u13 = await shockOf(1, 1.3), u10 = await shockOf(1, 1.0);
+  check('9o 下行级联冲击被放大（幅度比 = downAsym）',
+    d10 !== 0 && d13 !== 0 && Math.abs(d13 / d10 - god.NPC.downAsym) < 0.05,
+    `downAsym=1.3 时 ${f(d13, 0)} vs =1.0 时 ${f(d10, 0)} ⇒ 比 ${f(d13 / d10, 4)}`);
+  check('9o 上行级联冲击不受影响（只放大下行）',
+    u10 !== 0 && Math.abs(Math.abs(u13) / Math.abs(u10) - 1) < 1e-9,
+    `上行 ${f(u13, 0)} vs ${f(u10, 0)}`);
+  check('9o 参数值 > 1（下行更重）', god.NPC.downAsym > 1, `downAsym ${god.NPC.downAsym}`);
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);
