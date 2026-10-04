@@ -27,9 +27,10 @@
  *      详见 `TONE_GAIN` 与 `busOf()` 的注释（旧参数把大半单音压在压缩拐点区往下削）。
  *
  * ── 沉浸层（2026-10-04 拍板，对标 aggr.trade / Bookmap 的订单流听感） ────
- *   ⑨ **行情音重做为 L1–L5**（见下方「行情音」一段）：强度分级 / 势头连击 / 空间化，
- *      外加两种**事件潮**（`liqWave` 爆仓潮 / `openWave` 开仓潮）。零音频文件、零依赖不变，
+ *   ⑨ **行情音重做为「打击式」**（见下方「行情音」一段）：强度分级（音高 / 响度 / 亮度）
+ *      ＋ 空间化，外挂一种**事件潮**（`liqWave` 爆仓潮）。零音频文件、零依赖不变，
  *      也**不新增任何设置项** —— 全部挂在既有的「行情音」开关（`prefs.market`）下。
+ *   ⚠️ **2026-10-04 用户拍板删掉 `openWave`（开仓潮）与 L2 五声音阶连击**（见行情音段注释）。
  */
 
 const KEY = 'degen_settings';
@@ -86,7 +87,7 @@ export function setVol(v) {
   }
 }
 
-/** 行情音开关（默认开）。它只管 `marketMove` / `spike` / `liqWave` / `openWave` —— 事件音不受它影响。 */
+/** 行情音开关（默认开）。它只管 `marketMove` / `spike` / `liqWave` —— 事件音不受它影响。 */
 export const isMarketOn = () => prefs.market;
 
 export function setMarketOn(v) {
@@ -223,7 +224,7 @@ function applyMaster() {
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
-/** 音序子总线（L3/L4 专用，2026-10-04）：自己的增益 ＋ 独立限幅器，再汇入主总线。
+/** 音序子总线（爆仓潮专用，2026-10-04）：自己的增益 ＋ 独立限幅器，再汇入主总线。
  *  一串潮音有 8~20 粒、彼此紧邻，若直接进主总线会把同时段的行情音/事件音顶到限幅里变闷。
  *  先在这里压到 0.6 并限幅，主总线那一层就只负责「总响度」。 */
 let seqGain = null;
@@ -258,7 +259,7 @@ const TONE_GAIN = 3.2;
  * 线性衰减会拖出一条尾巴。⚠️ 指数斜坡的目标值**不能是 0**（规范里是非法值），所以写 0.0001。
  *
  * @param {number} pan  L5 空间化：−1 全左 ～ +1 全右（0 = 居中，默认）。
- * @param {boolean} seq 走音序子总线（L3/L4 的潮音）而不是直连主总线。
+ * @param {boolean} seq 走音序子总线（爆仓潮的粒音）而不是直连主总线。
  */
 function tone({ f, to = 0, dur = 0.08, type = 'triangle', gain = 0.05, at = 0, pan = 0, seq = false }) {
   const a = audio();
@@ -288,12 +289,11 @@ function tone({ f, to = 0, dur = 0.08, type = 'triangle', gain = 0.05, at = 0, p
   osc.stop(t0 + dur + 0.02);
 }
 
-/* ───────────────────────── 行情音（L1–L5 · 2026-10-04 重做） ─────────────────────────
+/* ───────────────────────── 行情音（L1 / L5 · 2026-10-04 重做） ─────────────────────────
  * 由**真实 K 线**驱动（判据在 `main.js` 的 `marketSounds`），不是逐笔成交流。
  *
- *   L1 **强度分级**：`i ∈ 0..1` 驱动**音数 / 音程跨度 / 响度 / 音色亮度**；`i < 0.15` 不发声
+ *   L1 **强度分级**：`i ∈ 0..1` 驱动**音高 / 响度 / 音色亮度**；`i < 0.15` 不发声
  *      （把「噪音」挡在外面 —— 每一根小波动都响就是噪音，不是信息）。
- *   L2 **势头连击**：同向连击踩着五声音阶（`PENTA`）逐级上行，换向清零并给一记低音「换挡」。
  *   L5 **空间化**：涨 / 买偏左耳、跌 / 卖偏右耳（见 `tone` 的 `pan`）。
  *   `spike`（长插针）仍单列：它比涨跌更紧急 —— 强平看的是最低价 `l`，不是收盘价。
  *
@@ -317,70 +317,61 @@ function gate(kind, gap = MARKET_GAP) {
   return true;
 }
 
-/** 十二平均律：一个半音的频率比 */
-const SEMI = 2 ** (1 / 12);
-/** 大调五声音阶（半音偏移）。五声比七声「干净」，连击叠起来也不会糊成一团。 */
-const PENTA = [0, 2, 4, 7, 9];
-/** 第 `n` 级（可跨八度）的五声音阶频率：`base` × 2^(半音 / 12)。 */
-const pentaFreq = (base, n) => base * 2 ** ((PENTA[((n % 5) + 5) % 5] + 12 * Math.floor(n / 5)) / 12);
-
-/* L2 的连击状态：同向一步步往上爬，换向就清零重来。 */
-let combo = 0;        // 同向连击数
-let lastDir = 0;      // 上一次的方向（0 = 还没响过）
-
 /**
- * 行情音（L1 ＋ L2 ＋ L5）。`main.js` 每帧**至多调一次**（它已把一帧跨过的所有根、所有币
+ * 行情音（L1 ＋ L5）。`main.js` 每帧**至多调一次**（它已把一帧跨过的所有根、所有币
  * 压成一个「最强的那一下」）。
+ *
+ * ⚠️ **2026-10-04 用户拍板重做：删掉 L2 五声音阶连击**（原来同向连击踩 `PENTA` 逐级上行、
+ *    换向再给一记「换挡」低音）。病根：那是一串**旋律**——连击叠起来像琶音，听感「好听但
+ *    不 aggr」；又和 `openWave` 撞在一起，几乎一直在响。aggr.trade / Bookmap 的订单流听感是
+ *    「**一记短促打击**，音高 / 响度 / 亮度只随这一笔的**方向与规模**」——不做音阶、不做连击。
+ *    ⇒ 现在：**一帧一声**，`i` 只驱动**音高 ＋ 响度 ＋ 亮度**三个连续量。
  * @param {1|-1} dir 方向（涨 / 跌）
  * @param {number} i  强度 0..1（< 0.15 不发声）
  * @param {boolean} hot 是否「量能异常」（份额 ≥ 3/24）—— 追加一记低频闷响
  */
 export function marketMove(dir, i, hot = false) {
   if (!prefs.market) return;
-  if (!(i >= 0.15)) { combo = 0; return; }
+  if (!(i >= 0.15)) return;
   if (!gate('market')) return;
   const up = dir > 0;
-  if (up !== (lastDir > 0)) {
-    /* L2 换向：清零 ＋ 一记低音「换挡」—— 玩家不看屏也能听出「这一波掉头了」。 */
-    combo = 0;
-    tone({ f: up ? 150 : 190, to: up ? 230 : 128, dur: 0.12, type: 'sine', gain: 0.03, pan: up ? -0.45 : 0.45 });
-  }
-  lastDir = dir;
-  const step = combo++;
   const pan = up ? -0.5 : 0.5;
-  const base = up ? 494 : 622;                    // 上行基音偏低、下行偏高 —— 两条曲线分开音区
-  const notes = 1 + Math.round(i * 2);            // 弱 1 声 / 中 2 声 / 强 3 声
-  const span = 1 + Math.round(i * 3);             // 连击的跨度也随强度拉开
-  for (let k = 0; k < notes; k++) {
-    tone({
-      f: pentaFreq(base, step + k * span),
-      dur: 0.05 + 0.03 * i,
-      type: i > 0.6 ? 'sawtooth' : 'triangle',    // 越强越亮
-      gain: ((0.028 + 0.03 * i) / notes) * 1.6,
-      at: k * 0.045,
-      pan,
-    });
-  }
+  const base = up ? 340 : 430;                    // 上行基音偏低、下行偏高 —— 两条曲线分开音区
+  const f0 = base * (1 + 0.9 * i);                // 强度 → 音高（越重越高、越「硬」）
+  tone({
+    f: f0,
+    to: up ? f0 * 1.22 : f0 * 0.78,               // 方向 → 滑向（上行抬、下行压）
+    dur: 0.045 + 0.03 * i,
+    type: i > 0.6 ? 'sawtooth' : 'triangle',       // 强度 → 亮度
+    gain: 0.032 + 0.034 * i,
+    pan,
+  });
   if (hot) tone({ f: 160, to: 90, dur: 0.16, type: 'sine', gain: 0.04, pan });
 }
 
 /** 长插针（振幅超阈值）：一记尖锐的「针」，高频短促，强度决定落点高低。 */
 export const spike = (i = 0.5) => {
   if (!gate('market')) return;
-  combo = 0;
-  lastDir = 0;
   tone({ f: 1700 + 500 * clamp(i, 0, 1), to: 880, dur: 0.07, type: 'triangle', gain: 0.03 });
 };
 
-/* ── L3 / L4：事件潮（爆仓潮 / 开仓潮）────────────────────────────────────
+/* ── L3：事件潮（**只剩爆仓潮**）──────────────────────────────────────────
  * 现实里的强平不是「一声钟」，是一串爆豆子 —— 间隔 30~90ms **随机**才是那个听感
  * （Bookmap 的 Market Pulse 就是这个隐喻：越密 = 越近、越响 = 越重）。
  * ⚠️ 走**独立子总线**（`seqOf`）：粒多且彼此叠，先在自己那一层压一档再汇入主总线。
- * ⚠️ 节流窗比行情音长得多：潮是**一件事**，不该每帧重来一遍。 */
+ * ⚠️ 节流窗比行情音长得多：潮是**一件事**，不该每帧重来一遍。
+ *
+ * ⚠️ **2026-10-04 用户拍板：`openWave`（开仓潮）整体删除。** 三条理由：
+ *    ① 它**不是事件驱动** —— 由「某根上行且强度 ≥ 0.85」触发，本质是 `marketMove` 的加料版，
+ *       没有对应的真实事件（不像爆仓潮有日志 / 有强平台账）；
+ *    ② 画门行情下**每堵上墙都触发**，套 2.5s 闸也变成「几乎一直在响」（用户原话：
+ *       「太连续了，不好听，没有 aggr 的感觉」）；
+ *    ③ 音色是 300→760Hz 滑音 ＋ 8~20 颗上行琶音 —— **旋律化**，与 aggr 的打击式听感相反。
+ *    ⇒ 上行那一侧现在只由 `marketMove`（一记短促打击）表达。 */
 
-const WAVE_GAP = 2500;        // 两次「潮」之间的最小间隔（墙钟毫秒）
+const WAVE_GAP = 2500;        // 「爆仓潮」两次之间的最小间隔（墙钟毫秒）
 
-/** 一串短音：`dir` = ±1（+ 开仓上行 / − 爆仓下坠），`n` 粒、起点频率落在 `[f0, f1)`。 */
+/** 一串短音：`dir` = ±1（+ 上行 / − 下坠），`n` 粒、起点频率落在 `[f0, f1)`。 */
 function grains({ n, dir, f0, f1, at0 = 0.1, gain = 0.028, pan = 0 }) {
   let t = at0;
   for (let k = 0; k < n; k++) {
@@ -399,20 +390,20 @@ function grains({ n, dir, f0, f1, at0 = 0.1, gain = 0.028, pan = 0 }) {
   }
 }
 
-/** L3 爆仓潮：低频下坠打头 ＋ 一串随机下坠的短音（粒数 / 密度随烈度）。 */
+/**
+ * L3 爆仓潮：低频下坠打头 ＋ 一串随机下坠的短音（粒数 / 密度随烈度）。
+ *
+ * ⚠️ **2026-10-04 用户拍板「减粒 ＋ 独立闸」**（配合 `openWave` 删除）：
+ *    · **粒数下收**：`8 + 12p`（8~20 粒，串长最长 ≈1.8s）⇒ `6 + 8p`（6~14 粒，≈1.1s）。
+ *      现实强平潮是「一阵爆豆子」不是「一直爆」——粒数收到 14 上限后每一声才听得清。
+ *    · **闸门独立**：原来与 `openWave` 共用 `kind='wave'`（互相挤占）；`openWave` 删除后
+ *      `'wave'` 只剩本函数，语义自然独立。
+ */
 export function liqWave(power = 0.75) {
   if (!gate('wave', WAVE_GAP)) return;
   const p = clamp(power, 0, 1);
   tone({ f: 420, to: 70, dur: 0.5, type: 'sawtooth', gain: 0.06, pan: 0.35, seq: true });
-  grains({ n: 8 + Math.round(12 * p), dir: -1, f0: 620, f1: 1240, gain: 0.024 + 0.012 * p, pan: 0.4 });
-}
-
-/** L4 开仓潮：L3 的镜像 —— 上行打头 ＋ 一串落在**偏高音区**的上行短音。 */
-export function openWave(power = 0.7) {
-  if (!gate('wave', WAVE_GAP)) return;
-  const p = clamp(power, 0, 1);
-  tone({ f: 300, to: 760, dur: 0.28, type: 'triangle', gain: 0.045, pan: -0.35, seq: true });
-  grains({ n: 8 + Math.round(12 * p), dir: 1, f0: 900, f1: 1700, gain: 0.02 + 0.012 * p, pan: -0.4 });
+  grains({ n: 6 + Math.round(8 * p), dir: -1, f0: 620, f1: 1240, gain: 0.024 + 0.012 * p, pan: 0.4 });
 }
 
 /* ───────────────────────── 事件音（8 声 · 不节流） ───────────────────────── */
@@ -441,8 +432,12 @@ export const open = () => { tone({ f: 523, dur: 0.09, type: 'triangle', gain: 0.
 /** 平仓：下行两度 */
 export const close = () => { tone({ f: 784, dur: 0.09, type: 'triangle', gain: 0.05 }); tone({ f: 523, dur: 0.1, type: 'triangle', gain: 0.05, at: 0.07 }); };
 
-/** 新闻 / 锚点播报：两声**定音**音铃（与 `notice` 的一声滑音上行区分） */
-export const news = () => { tone({ f: 880, dur: 0.11, type: 'sine', gain: 0.045 }); tone({ f: 1174, dur: 0.2, type: 'sine', gain: 0.045, at: 0.12 }); };
+/** 新闻 / 锚点播报：两声**定音**音铃。
+ *  ⚠️ **2026-10-04 用户拍板：整体抬高一个音区**（880 + 1174 ⇒ 1319 + 1760，皆是 sine 定音）。
+ *     病根：旧版与 `pick`（选中）**用的是同一对频率**（880 / 1174，都用正弦族），只差间距
+ *     （120ms vs 30ms）—— 切币那种日常操作和新事件撞音，分不出来。抬高一个音区后两者
+ *     在**音高上就分开**了（`pick` 是中音区的「咔哒」、`news` 是更高更亮的「播报铃」）。 */
+export const news = () => { tone({ f: 1319, dur: 0.11, type: 'sine', gain: 0.045 }); tone({ f: 1760, dur: 0.2, type: 'sine', gain: 0.045, at: 0.12 }); };
 
 /** 交易所灾难（交易所归零 / Bitfinex 被盗削减）：比 `liq` 更闷更慢 —— 听感是「塌方」而非「被打穿」 */
 export const crash = () => { tone({ f: 196, to: 98, dur: 0.5, type: 'sawtooth', gain: 0.06 }); tone({ f: 392, to: 196, dur: 0.32, type: 'triangle', gain: 0.05 }); };

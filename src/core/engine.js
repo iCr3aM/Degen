@@ -372,6 +372,31 @@ function dailySigmaFast(sym, i) {
   return v;
 }
 
+/* σ 的**原始行情版**（2026-10-04 · 缺口「画门」根因修）—— 与 `dailySigma` **逐字同估计量 /
+   同窗口**（`sigmaOf` 总体标准差、30 个日收益、`d×24+23` 的日收盘），唯一差别是读 `rawCloseAt`
+   （**不含任何位移**）。专供 NPC 层把「净持仓」折成价位偏移（`syncNpcDrift` / `stepAdvPush`）。
+
+   ⚠️ **为什么必须另开一份**（实测病根）：`dailySigma` 读 `closeAt`（**含位移**），而 `npcDrift`
+      的位移又拿 `dailySigma` 当 σ ⇒ **自反馈环**：位移↑ ⇒ σ↑ ⇒ 位移↑。12 年实测把 σ 从原始
+      行情的年化 **0.51** 顶到 **4.50**（×9）、`npcDrift` 顶到 **±30%**、显示价 **20.2%** 的时间被
+      钉死在 `riseMax=+20%` 夹子上（另有 2.5% 钉在 `−45%`）—— 这正是玩家看到的**「画门」**
+      （阶梯跳变 + 平顶 + 与原始行情脱钩的方波）。用**不含位移**的 σ 折算，这条环路断开。
+   ⚠️ **不需要 `invalidateSigma()`**：它不读任何位移 ⇒ 位移变了它也不变（这正是目的）。 */
+const daySigmaRawCache = new Map();
+function rawDailySigma(sym, i) {
+  const day = dayIndexOf(i);
+  const hit = daySigmaRawCache.get(sym);
+  if (hit && hit.day === day) return hit.v;
+
+  const closes = [];
+  for (let d = day - SLIP.window - 1; d < day; d++) {
+    closes.push(rawCloseAt(sym, d * HOURS_PER_DAY + HOURS_PER_DAY - 1));
+  }
+  const v = sigmaOf(closes);
+  daySigmaRawCache.set(sym, { day, v });
+  return v;
+}
+
 /**
  * **玩家持仓占可交易浮筹的比例**（`0 ~ 1`）—— 「持仓影响市场」那份唯一的占比（`config.FLOAT`）。
  *
@@ -640,7 +665,10 @@ function advTick(s) {
           多落一级、改变既有行为。跳过 ⇒ 当前币语义一字不动。
        ⚠️ 其余**持有币 / 疤痕币**必须在这里补：`tickMarket` 只跑当前币，而「拿着大仓去看别的币」
           时那个大仓同样要被推价；**平仓之后**这一步会写回 0 把推价释放（否则它会永远粘住）。 */
-    const sig = dailySigma(sym, s.i);
+    /* ⚠️ 2026-10-04：σ 改读**原始行情**（`rawDailySigma`）。这里折的是**价位偏移**
+       （推价 / 净持仓），拿「含位移」的 σ 当尺子就是自反馈环（见 `rawDailySigma` 表头）。
+       同源改动：`tickMarket` 的 `syncNpcDrift` 那一处、以及下面 `advAimAmp` 的距离参考。 */
+    const sig = rawDailySigma(sym, s.i);
     if (sym !== s.sym) syncNpcDrift(s, sym, s.i, sig);   // 内含 `stepAdvPush`（缓动后）的写
     /* 报警读的必须是**缓动之后**实际生效的推价（`m.advPush`），不是那个瞬时目标值：
        `s.sym` 的缓动刚在 `tickMarket` 里走过，其余币刚在上面这一行走过 ⇒ 两者都是本小时的值。
@@ -1344,9 +1372,13 @@ function stepNpc(slot, side, target, price, floor, speed = NPC.speed) {
  * 口径与玩家侧同一把尺子：`q = |净持仓| ÷ 日流动性`，偏移 = `±permImpactOf(q, σ)`。
  * 稳态下 `q ≤ NPC.mom/2 = 7.5%`（靶心封顶）⇒ 偏移 `≤ 0.548σ`：2024 年 σ≈3.5% ⇒ ±1.9%，
  * 2013 年 σ≈16% ⇒ ±9%。**不累积、清仓即归零**。
- * ⚠️ 实测极值 `|npcDrift| = 15.7%`（2013-04-20，σ=16.5%）：那一天正好落在流动性骤降的
- *    年份形状谷底，而持仓按 `speed=0.15` 只每小时衰减 15% ⇒ `q` 短暂冲到 0.228（越过稳态上界）。
- *    仍远低于 `riseMax=20%` 的夹子（全程顶夹时间 0.000%），属可接受的历史极端。
+ *
+ * ⚠️ **`σ` 一律是 `rawDailySigma`（2026-10-04 修 · 画门根因）**，不是 `dailySigma`：
+ *    后者读 `closeAt`（含位移），而本函数的输出**又是**位移 ⇒ 拿它当 σ 就是自反馈环。
+ *    实测（修前）：σ 被自己的位移从年化 0.51 顶到 4.50（×9）、`npcDrift` 到 **±30%**、
+ *    显示价 **20.2%** 的时间钉死 +20% 夹子 —— 「画门」；改成原始行情 σ 后这条环路断开。
+ *    ⇒ 上面那两行「σ≈3.5% / 16%」的估算**现在才真正成立**（修前那个 σ 是虚高的）。
+ * ⚠️ `NPC.driftCap = 10%` 是**兜底**（历史极端 / 将来调参），正常年份碰不到。
  *
  * ⚠️ 分母用**日流动性**、不是逐小时深度（2026-10-02 审计修）：`hourLiqBase` 是「日流动性 ×
  *    该小时占比(×24) × 收缩」，占比逐小时在 0.3~3 之间摆动 ⇒ 同一笔净持仓的折算偏移**逐小时跳变**，
@@ -1369,7 +1401,10 @@ function syncNpcDrift(s, sym, i, sig) {
         但推价按半衰期**渐近释放**，不是「下一根瞬间弹回去」—— 那正是玩家实测的「画门」。
      ⚠️ `stepAdvPush` **改状态**，故本函数只能从每小时的写路径调用（`tickMarket` / `advTick`），
         不得挂到 `render` 每帧都碰的读路径上。 */
-  const v = (net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig)) + stepAdvPush(s, sym, i, sig);
+  const raw = (net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig)) + stepAdvPush(s, sym, i, sig);
+  /* 硬上界（2026-10-04 · 「画门」根因修的第二道闸）：见 `god.NPC.driftCap`。
+     第一道闸是本函数拿到的 `sig` 已改为 `rawDailySigma`（不含位移）；本夹只是兜底历史极端。 */
+  const v = Math.max(-NPC.driftCap, Math.min(NPC.driftCap, raw));
   /* 非有限值守卫（2026-10-02 审计修 · 风险 R2）：NaN / Infinity 落进台阶表后，`JSON.stringify`
      写成 `null`、读回 `NaN`，整条价格曲线会跟着变 NaN。上游目前都被夹在有限区间，这里是兜底。 */
   if (!Number.isFinite(v)) return;
@@ -1786,7 +1821,10 @@ export function tickMarket(s, sym) {
       stepNpc(m.mm, 'short', -targetMM, price, floorMM, NPC.mm.speed);
     }
   }
-  syncNpcDrift(s, sym, i, sig);
+  /* ⚠️ 2026-10-04：这里传的是**原始行情 σ**（`rawDailySigma`），不是上面那个给热度用的
+     `sig`（`dailySigma`，含位移）。理由见 `rawDailySigma` 表头 —— 净持仓折价位、以及推价的
+     距离参考，都必须用不含自身位移的 σ，否则「位移↑ ⇒ σ↑ ⇒ 位移↑」自激（画门根因）。 */
+  syncNpcDrift(s, sym, i, rawDailySigma(sym, i));
   /* ④ 踩踏级联。 */
   stampede(s, sym, m, lastPrice(s, sym));
   /* ⑤ 恐惧贪婪**显示轨**（2026-10-04 · 日频 · 只读）：每个新的一天把当日原始读数经一阶低通

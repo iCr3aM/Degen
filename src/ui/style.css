@@ -1587,6 +1587,18 @@ button { user-select: none; -webkit-user-select: none; }
               background-color var(--dur-fast) var(--ease);
 }
 
+/* 落点 1b（2026-10-04 用户拍板 · A1）：**通道切换键**（`.act.chan`）补进选中过渡组。
+   ⚠️ 不能直接塞进上面那条选择器列表：`.act.chan.on`（0,3,0）比 `.act`（0,1,0）更特异，
+      只写 color / border / background 三条会把 `.act` 基类那条 **transform / filter** 过渡
+      整条顶掉 ⇒ 选中 OTC 之后按压回弹会变成瞬跳。所以这里**五条一起写**。 */
+.act.chan.on {
+  transition: color var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease),
+              background-color var(--dur-fast) var(--ease),
+              transform var(--dur-fast) var(--ease),
+              filter var(--dur-fast) var(--ease);
+}
+
 /* 落点 3：切页只**淡入**（不位移 —— 位移会让 K 线区在动画期间尺寸不稳）。
    用 `animation` 而不是 `transition`：`.page` 是靠 `display:none ⇄ flex` 切的，
    display 不参与过渡，只有插入式动画能在「刚显示出来」那一帧跑起来。 */
@@ -1599,8 +1611,17 @@ button { user-select: none; -webkit-user-select: none; }
       「每次打开都淡入」，不存在纪律 ② 的每帧重建问题。
    ⚠️ 不挂 `#overlay` 本身 —— 它是 `index.html` 里常驻的空容器，只在开机那一帧插进去，
       挂它等于永不播放。 */
-.pick-back, .logs, .confirm, .poster, .over, .menu-back { animation: fadeIn var(--dur) var(--ease); }
+.pick-back, .over, .menu-back { animation: fadeIn var(--dur) var(--ease); }
 @keyframes fadeIn { from { opacity: 0; } }
+
+/* 落点 4b（2026-10-04 用户拍板 · A5）：居中面板（`.logs` / `.confirm` / `.poster`）在淡入的
+   同时**轻微上移 6px** —— 多这一下就有了「浮起来」的方向感，不再只是凭空出现。
+   ⚠️ 只给这三块**真正浮在中间的面板**；暗底（`.pick-back` / `.menu-back`）与整屏遮罩（`.over`）
+      保持纯淡入 —— 给整屏加位移等于把整页挪一下，没有「浮起」的意思，反而像抖动。
+   ⚠️ 这三块自身都用 `transform: translateY(-50%)` 垂直居中 ⇒ `from` 必须写成
+      `calc(-50% + 6px)`，否则动画起点会丢掉居中量、面板从屏幕外突然跳进来（`to` 不写 = 元素自身的 −50%）。 */
+.logs, .confirm, .poster { animation: riseIn var(--dur) var(--ease); }
+@keyframes riseIn { from { opacity: 0; transform: translateY(calc(-50% + 6px)); } }
 
 /* 落点 5：资产页「总资产」换值 —— **只这一格**（§7.12 ⑤）。
    主色淡底一闪即退；由 render.js 在检测到数值变化的那些帧上重挂 `.flash` 触发。

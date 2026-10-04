@@ -661,9 +661,8 @@ function marketSounds(s) {
   /* ① **插针优先**（§2.2）：一根大阴线既跌又插针，不该叠两声 ——
      插针更紧急，因为强平看的是**最低价**（`l`），不是收盘价。 */
   if (best.spike) { snd.spike(best.inten); return; }
-  /* ② **开仓潮**（L4）：一波够强的上行（散户追高涌入）—— 用镜向的潮音，比单声 tick 更沉。
-     阈值 0.85 是「显著」的 2.5 倍刻度上的高位，只有真正的拉盘才够得着。 */
-  if (best.dir > 0 && best.inten >= 0.85) { snd.openWave(best.inten); return; }
+  /* ② 上行不再特殊处理（2026-10-04 用户拍板删 `openWave`）：那一侧与下跌走**同一个**
+     `marketMove`（一记短促打击，音高 / 响度 / 亮度随强度）—— 见 `sound.js` 的 L3 注释。 */
   snd.marketMove(best.dir, best.inten, best.hot);
 }
 
