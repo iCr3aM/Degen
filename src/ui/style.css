@@ -398,6 +398,10 @@ b, strong { font-weight: 600; }
   flex: 1 1 auto;
   min-height: 0;
   position: relative;
+  /* ⚠️ `overflow: hidden` 是**触边回弹的前提**（2026-10-04）：画布撞边界那一下会 `translateX` 几像素，
+     不裁的话画布会越出边框压到上下的 HUD / 持仓条上。裁掉之后露出的是本区底色 —— 正是「弹」的观感。
+     区内的浮层（`.chart-head` / `.chart-side`）都是 `absolute` 贴边放置，没有任何东西**故意**越界。 */
+  overflow: hidden;
   background: var(--panel-2);
   border: 1px solid var(--line);
 }
@@ -1618,6 +1622,19 @@ button { user-select: none; -webkit-user-select: none; }
       `translateY` 不占布局，不会推挤下面任何东西。 */
 .lg-row.in { animation: logIn .16s var(--ease); }
 @keyframes logIn { from { opacity: 0; transform: translateY(4px); } }
+
+/* 落点 7（2026-10-04 用户拍板「边界震动 ＋ 视觉回弹」）：K 线拖到数据尽头 /
+   缩到极限那一下，画布朝受限方向轻轻顶一下再弹回 —— 与那记轻震配成一对「到底了」。
+   由 `main.js` 的 `bumpChart` 重挂 class 触发（先摘 class 强制重排，贴着边界连撞也能重播）。
+   两条纪律与「按下即缩」同源：① 只动 `transform`（零布局成本）；
+   ② 不挂基类 `transition`，一次性动画自己弹回 —— 每次重挂就是一次独立回弹。
+   `--bump-x` 由 JS 按方向写（拖到「新」＝向右顶、拖到「旧」＝向左顶）。
+   `.fx-low` **保留**它（撞边界是「我碰到了」的状态回应，不是分心闪烁）；
+   `.fx-off` 里 `animation-duration: 0.01ms` 会自然把它归零。 */
+.chart-wrap > canvas.bump-x { animation: chBumpX .18s var(--ease); }
+.chart-wrap > canvas.bump-z { animation: chBumpZ .18s var(--ease); }
+@keyframes chBumpX { from { transform: translateX(var(--bump-x, 0)); } to { transform: none; } }
+@keyframes chBumpZ { from { transform: scale(1.012); } to { transform: none; } }
 
 /* 色盲第二通道（B6-c · §7.6）：给**有符号语义**的盈亏数字挂一枚 ▲/▼ ——
    颜色之外多一条**形状**线索，红绿色盲同样读得出来。

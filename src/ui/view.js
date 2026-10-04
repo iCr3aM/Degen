@@ -197,17 +197,24 @@ export function windowFor(sym, i, cssW, own = true, ns = '') {
  *
  * @param {number} dxPx 手指水平位移（右为正 ⇒ 看更早的行情）
  * @param {number} dyPx 手指垂直位移（下为正）
+ * @returns {{ v: object, edge: ''|'new'|'old' }} `edge` ＝ 「这一下被边界夹住了」（2026-10-04）：
+ *   `'new'` ＝ 已经顶到当前根（想再往新看没有了）、`'old'` ＝ 已经顶到数据首根。调用方拿它播
+ *   触边反馈（`main.js` 的 `edgeFeedback`）；没撞边界就是 `''`。
  */
 export function panBy(sym, dxPx, dyPx, i, cssW, ns = '') {
   const { v, start, maxRight } = norm(sym, i, cssW, ns);
+  let edge = '';
   if (dxPx) {
     v.locked = true;                                   // 只有沿时间轴拖动才锁（否则拖到一半被时间拽回去）
     const bw = Math.max(1, cssW - PAD_R) / v.count;    // 一像素等于多少根
-    v.right -= dxPx / bw;
+    const want = (v.right -= dxPx / bw);
     clampRight(v, start, maxRight);
+    /* 被夹住 ⇒ 撞边界。`clamp` 只会把值往下压（`v.right` 变小 = 更靠「过去」）或往上顶到
+       `maxRight`（＝当前根）⇒ 用夹取前后的差值判方向，不必再算第二遍。 */
+    if (v.right !== want) edge = want > v.right ? 'new' : 'old';
   }
   if (dyPx) v.yPx += dyPx;
-  return v;
+  return { v, edge };
 }
 
 /**
@@ -216,15 +223,22 @@ export function panBy(sym, dxPx, dyPx, i, cssW, ns = '') {
  * 而且「看最新」这个最常用的姿态在缩放时天然稳定。
  *
  * ⚠️ 缩到最细就是 12 根（`MIN_BARS`），**不再换档** —— 细刻度档已于 2026-10-01 移除（ROADMAP §四十）。
+ * @returns {{ v: object, edge: ''|'in'|'out' }} `edge` ＝ 这一下被缩放的边界夹住了（2026-10-04），
+ *   `'in'` ＝ 已到最细、`'out'` ＝ 已到最宽（或该币数据不足）。
  */
 export function zoomBy(sym, factor, i, cssW, ns = '') {
   const { v } = norm(sym, i, cssW, ns);
   /* ⚠️ **不再强制锁视野**（2026-10-01 修）：缩放只是「看近一点」，右端本来就锚在当前根上
      ⇒ 没理由让它冻结。留着 `locked` 原状 —— 玩家先拖到历史里再缩放，锁仍然在（`norm` 会保住位置）；
      玩家本来就是跟随姿态，缩放后继续跟随。原来无条件置真会把这两者都冻住，症状与垂直拖动那条一样。 */
-  v.count = clamp(Math.round(v.count * factor), MIN_BARS, MAX_BARS);
+  const want = Math.round(v.count * factor);
+  v.count = clamp(want, MIN_BARS, MAX_BARS);
   norm(sym, i, cssW, ns);      // 缩放后按边界再夹一次
-  return v;
+  /* 撞边界判据（2026-10-04）：`want` 与最终 `count` 不一致 ⇒ 被 `MIN_BARS` / `MAX_BARS` /
+     该币数据长度中的某一条夹住。`'in'` ＝ 已放到最细（12 根）、`'out'` ＝ 已摊到最宽。 */
+  let edge = '';
+  if (v.count !== want) edge = want > v.count ? 'out' : 'in';
+  return { v, edge };
 }
 
 /** 双击复位：回到最新根 ＋ 恢复默认根数 ＋ 价格轴归零（**只复位当前币**） */

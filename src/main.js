@@ -358,17 +358,18 @@ async function boot() {
   /* K 线手势（Batch 3 · B13/B14）：三个回调都只动**视野**（`view.js`），
      不碰 `s`、不写存档，唯一副作用是把重画排到下一帧（`queueDraw` 合并，拖动不能被 80ms 节流吞掉）。
      复位只在**当前币**上生效；每帧的限位（`chart.js` 里夹）会把越界的视野拉回来。
-     ⚠️ 拖动（pan / zoom）刻意**不出声** —— 手指划一下就响，比没声音还吵。 */
+     ⚠️ 拖动（pan / zoom）本身刻意**不出声** —— 手指划一下就响，比没声音还吵；
+        只有**撞到边界那一下**才给反馈（`edgeFeedback`：一记轻震 ＋ 画布回弹，见下）。 */
   bindChart(refs.canvas, {
-    pan: (dx, dy) => { panBy(s.sym, dx, dy, s.i, chartW()); queueDraw(); },
-    zoom: f => { zoomBy(s.sym, f, s.i, chartW()); queueDraw(); },
+    pan: (dx, dy) => { edgeFeedback(refs.canvas, panBy(s.sym, dx, dy, s.i, chartW()).edge); queueDraw(); },
+    zoom: f => { edgeFeedback(refs.canvas, zoomBy(s.sym, f, s.i, chartW()).edge); queueDraw(); },
     reset: () => { snd.tap(); resetView(s.sym); queueDraw(); },
   });
   /* 回顾页那块 K 线的同一套手势（方案 §3.2「复用 `simulate.js` / `view.js`」）——
      唯一区别是它推的是 `rv.i` 而不是 `s.i`（回顾的「当前」在 `rv` 里）。 */
   bindChart(refs.rvCanvas, {
-    pan: (dx, dy) => { if (!rv) return; panBy(rv.sym, dx, dy, rv.i, chartW(), RV_NS); queueDraw(); },
-    zoom: f => { if (!rv) return; zoomBy(rv.sym, f, rv.i, chartW(), RV_NS); queueDraw(); },
+    pan: (dx, dy) => { if (!rv) return; edgeFeedback(refs.rvCanvas, panBy(rv.sym, dx, dy, rv.i, chartW(), RV_NS).edge); queueDraw(); },
+    zoom: f => { if (!rv) return; edgeFeedback(refs.rvCanvas, zoomBy(rv.sym, f, rv.i, chartW(), RV_NS).edge); queueDraw(); },
     reset: () => { if (!rv) return; snd.tap(); resetView(rv.sym, RV_NS); queueDraw(); },
   });
   /* 存档：玩家每次动作走 `after()` 即时落盘；这个定时器只给「时间自己走」兜底 ——
@@ -477,6 +478,37 @@ const chartW = () => {
   const node = rv ? refs.rvWrap : refs.chartWrap;
   return Math.max(1, Math.round(node.getBoundingClientRect().width));
 };
+
+/* K 线触边回弹（2026-10-04 用户拍板「边界震动 ＋ 视觉回弹」）：
+   拖到数据尽头 / 缩到极限那一下给一记轻触觉，并让画布朝受限方向轻轻顶一下再弹回 ——
+   手感上的「到底了」。`view.js` 的 `panBy` / `zoomBy` 返回的 `edge`（'' / 'new' / 'old' / 'in' / 'out'）
+   就是这个信号。两条纪律：
+     ① **只有撞边界那一下**才有反馈 —— pan / zoom 过程本身仍不出声（沿用「划一下就响太吵」的旧判据）；
+     ② **节流 280ms**：手指贴着边界继续划时，每次 `pointermove` 都会报 edge，不能每帧都震、都重播动画。
+   离开边界（edge 为空）时把节流计时归零 ⇒ 松手再撞一次还能响。 */
+const EDGE_GAP = 280;
+const edgeAt = new WeakMap();
+
+/** 画布回弹动画：拖动 → 朝拖动方向平移几像素（`--bump-x`）；缩放 → 轻微缩一下。 */
+function bumpChart(canvas, edge) {
+  const cls = edge === 'in' || edge === 'out' ? 'bump-z' : 'bump-x';
+  if (cls === 'bump-x') canvas.style.setProperty('--bump-x', edge === 'old' ? '6px' : '-6px');
+  /* 先摘 class 并强制一次重排 —— 否则贴着边界连撞时，浏览器认为 class 没变、不重播动画。 */
+  canvas.classList.remove(cls);
+  void canvas.offsetWidth;
+  canvas.classList.add(cls);
+  canvas.addEventListener('animationend', () => canvas.classList.remove(cls), { once: true });
+}
+
+/** 把一次手势的 `edge` 变成反馈（触觉 ＋ 视觉）。`canvas` 作节流键 —— 交易页与回顾页各一块画布。 */
+function edgeFeedback(canvas, edge) {
+  if (!edge) { edgeAt.set(canvas, 0); return; }
+  const now = performance.now();
+  if (now - (edgeAt.get(canvas) || 0) < EDGE_GAP) return;
+  edgeAt.set(canvas, now);
+  snd.buzz('light');
+  bumpChart(canvas, edge);
+}
 
 /**
  * 渲染节流到 ~12fps。K 线一秒钟最多走 50 根（50x），12fps 足够把每一根都画出来，
