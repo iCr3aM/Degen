@@ -27,6 +27,15 @@
   <link rel="stylesheet" href="/src/ui/style.css" />
 </head>
 <body>
+  <!-- 首屏遮罩（**静态** · 2026-10-05）—— 新文档的**第一帧**就是它，把上一局残留的画面盖住。
+       ⚠️ 病根：`.boot` 原来只由 JS（`render.renderBoot`）创建 ⇒ 新文档在新 JS 跑起来之前
+          `#app` 是空的（背景色），而 `location.reload()` 期间浏览器仍会重绘**旧文档**（上一局的
+          canvas）⇒ 玩家看到「旧状态残留一小会，之后才出现遮罩」。把遮罩写成 HTML 静态节点后，
+          新文档一提交就自带一层全屏遮罩；JS 起来后 `renderBoot` 复用同一个节点换文案，
+          `hideBoot` 摘掉它（见 `main.js` 的 `boot()` / `render.js` 的 `renderBoot`）。
+       ⚠️ 样式 `.boot` 已定义在 `style.css`（`position:fixed; inset:0; background:var(--bg)`），
+          而 `<link rel="stylesheet">` 是渲染阻塞的 ⇒ 首次绘制时它一定已经就位，不会闪白。 -->
+  <div class="boot" id="boot">正在加载…</div>
   <div id="app"></div>
   <!-- 弹窗层（#overlay）放在 #app 之外：主界面骨架只建一次，弹层是独立的一层，不被主结构改动波及。
        平时带 hidden（否则这层会盖住整屏、把所有点击都吃掉），由 render.pickExchange 摘掉。 -->

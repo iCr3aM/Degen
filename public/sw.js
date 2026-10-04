@@ -61,12 +61,40 @@ async function precacheAssets(cache) {
   } catch { /* 拉不到 index.html 就退回按需缓存（fetch 处理器仍会在联网时补上） */ }
 }
 
+/**
+ * **行情包全量预缓存**（2026-10-05 用户拍板）—— PWA 安装后应当**整包离线可用**，
+ * 而不是「走到哪个币才下哪个币」。
+ *
+ * 病根：行情包（`/data/*.bin`）原来只走 fetch 处理器里的 stale-while-revalidate ⇒ 只有
+ * **被请求过**的币才会进缓存。玩家装了 PWA 之后一旦断网，没点开过的币 K 线就是空白。
+ * 整个数据包仅 ~4.4MB（BTC 1.1 / DOGE 0.97 / XRP 0.94 / ETH 0.89 / SOL 0.40 ＋ 清单与流动性），
+ * 一次装完完全可接受 ⇒ 安装时把清单里列出的**每一个币的数据包 ＋ 流动性包**都 `cache.add`。
+ *
+ * ⚠️ 文件名**从 `data/index.json` 现读**（`coins[*].file` / `liq.file`），不写死 ——
+ *    与上面 `precacheAssets` 同一条纪律：换数据包时这里一个字都不用改。
+ * ⚠️ 单个资源失败 / 清单拉不到都不拖垮安装，退回原来的按需缓存。
+ */
+async function precacheData(cache) {
+  try {
+    const base = new URL('./data/index.json', self.location.href);
+    const res = await fetch(base.href, { cache: 'no-store' });
+    if (!res || !res.ok) return;
+    const man = await res.json();
+    const urls = [base.href];
+    const add = f => { if (f) urls.push(new URL(f, base).href); };
+    for (const sym in (man.coins || {})) add(man.coins[sym] && man.coins[sym].file);
+    if (man.liq) add(man.liq.file);
+    await Promise.all(urls.map(u => cache.add(u).catch(() => {})));
+  } catch { /* 清单拉不到 / 解析失败：退回按需缓存（fetch 处理器仍会在联网时补上） */ }
+}
+
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE)
       .then(async c => {
         await c.addAll(SHELL).catch(() => {});   // 单个 404 不该让整个安装失败
         await precacheAssets(c);                  // ＋ 解析 HTML 里的哈希产物一起预缓存
+        await precacheData(c);                    // ＋ 全部行情包（PWA 整包离线可用）
       })
       .then(() => self.skipWaiting())
   );

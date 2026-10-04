@@ -352,6 +352,8 @@ async function boot() {
      新闻是 `s.i` 的纯函数，所以这里只做一件事：窗口里别让节流把这一帧吞掉。 */
   clock = createClock(s, { onFrame: () => { dirty = true; preloadUpcoming(); draw(!!anchorAt(s.i)); } });
   draw();
+  /* 全量预热（2026-10-05）：首帧已出，后台把剩下的币种行情拉完 —— 切币不再等网络。 */
+  prefetchAllCoins();
 
   /* ⚠️ `bindActions` 已提前到本函数开头（见那里的注释）—— 这里不再挂第二遍，
      否则同一个 `pointerdown` 会被派发两次（下单 / 平仓这类动作会真的做两笔）。 */
@@ -454,6 +456,23 @@ function preloadUpcoming() {
     const at = Math.round((c.unlock - GAME.start) / HOUR_MS);
     if (Math.abs(at - s.i) <= PRELOAD_HOURS && !isLoaded(c.sym)) ensureCoin(c.sym);
   }
+}
+
+/**
+ * **全量预热**（2026-10-05 用户拍板「其他币种的 K 线图应该提前加载」）——首帧画完之后，
+ * 在**后台**把剩余币种的行情包全下下来，之后切币零等待。
+ *
+ * ⚠️ 放在**首帧之后**、且走 `requestIdleCallback`（不支持则退回 `setTimeout`）：整包 ~4.4MB，
+ *    绝不能挡住第一屏；玩家的当前币已经由 `ensureCoin(s.sym)` 在首帧前保证到位。
+ * ⚠️ 与 `preloadUpcoming` **不冲突**（`ensureCoin` 自带「已加载即跳过」与并发去重）：
+ *    后者是「快解锁了才提前拉」的精准窗，这里是「反正就 4MB，一次拉完」的兜底。
+ * ⚠️ PWA 侧另有 SW 安装时的整包预缓存（`sw.js` 的 `precacheData`）—— 两条路互为补充：
+ *    SW 管**离线可用**，这里管**本次会话切币丝滑**。
+ */
+function prefetchAllCoins() {
+  const go = () => { for (const c of COINS) if (!isLoaded(c.sym)) ensureCoin(c.sym); };
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(go, { timeout: 3000 });
+  else setTimeout(go, 0);
 }
 
 /* ───────────────────────────── 每帧 ───────────────────────────── */
@@ -1489,6 +1508,21 @@ function slotMoney(sv) {
 }
 
 /**
+ * 重开 / 换档 / 清档前的**同步遮罩 ＋ reload**（2026-10-05）。
+ *
+ * ⚠️ 为什么必须遮：`location.reload()` 在**新文档提交之前**，浏览器一直显示**旧文档**（上一局的
+ *    canvas 画面）—— 弱网 / 冷启动时这段空窗可达几百毫秒，玩家看到的就是「旧状态残留一小会」。
+ *    先在本页 `renderBoot` 铺一层全屏遮罩，它会在导航空窗期把旧画面盖住；新文档那边再由
+ *    `index.html` 的静态 `.boot` 无缝接力（见那里的注释）。
+ * ⚠️ 用 `rAF → setTimeout` 而不是直接 `reload()`：插入 DOM 是同步的，但**绘制**要等本任务让出；
+ *    直接 reload 会在这一帧重绘之前就发起导航，遮罩可能一帧都没画出来。
+ */
+function maskReload() {
+  try { renderBoot('正在重新载入…'); } catch { /* 遮罩失败不该挡着 reload */ }
+  requestAnimationFrame(() => setTimeout(() => location.reload(), 0));
+}
+
+/**
  * 开一局新的（经典全程 / 某张年代卡共用）—— 投年代信箱 ＋ 清掉该槽的档 ＋ reload。
  * ⚠️ 清的是**这一局将要占用的那个槽**（`saveSlotOf(scenId)`），另半边的档一个字不动 ——
  *    这正是「普通 / 挑战各一槽、互不覆盖」的落点。`disableSave` 必须在 `wipe` 之前：
@@ -1499,7 +1533,7 @@ function startNewGame(scenId) {
   stashScen(scenId);
   disableSave();
   wipe(saveSlotOf(scenId));
-  location.reload();
+  maskReload();
 }
 
 /** 挑一个存档槽（主菜单「读取存档」那两行，`data-slot`）。 */
@@ -1526,7 +1560,7 @@ function onSlot(slot) {
   /* 换一槽：投信箱后 reload（新一槽的档由开机那趟读进 `s`）。
      ⚠️ 不调 `disableSave` —— 当前这一局的进度要照常落回**它自己的槽**。 */
   stashSlot(slot);
-  location.reload();
+  maskReload();
 }
 
 /**
@@ -2407,7 +2441,7 @@ function doRestart() {
 function onWipe() {
   disableSave();
   for (const slot of SAVE_SLOTS) wipe(slot);
-  location.reload();
+  maskReload();
 }
 
 function after() {
