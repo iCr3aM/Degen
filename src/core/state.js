@@ -618,15 +618,18 @@ export const heldSyms = s => Object.keys(s.positions);
  *   - 只有**多头方向**算数：空头并没有把币从市场里拿走
  *   - 只有**杠杆通道**算数（v18 · 2026-10-01 用户拍板）：**合约多头是衍生品，实物一枚都没动**。
  *     原来不分产品线、一律计入，是本次收窄前的口径。判据走 `isMargin`（开仓时写死在仓位上的字段）。
- *   - **OTC 买来的币不算**（§15.3：对手方私下一口价，不从市场拿走流通量）
+ *   - **OTC 买来的币也算**（2026-10-04 · F3 修正）：场外单**同样是从卖方钱包里划走真实代币**
+ *     —— 一次 OTC 不可能交割超过全市场流通量的币（现实里最极端一例：Strategy 2024-11 单周买入
+ *     55,500 BTC ≈ 流通量的 0.28%）。旧口径把它排除，等于允许 OTC 无上限吃货且市场零反应。
  *   - 没持仓 ⇒ 0
  *
  * ⚠️ 这份数**同时**服务三处（改口径必须三处一起想）：§15.1 的买入闸门、`engine.hourLiqOf` 的
  *    深度折减、`config.FLOAT` 的抛压折价。
+ *     F3 起 OTC 多头一并计入 ⇒ 三条约束对 OTC 也生效（囤走的浮筹一样变少、潜在抛压一样在）。
  */
 export function capturedOf(s, sym) {
   const pos = s.positions[sym];
-  if (!pos || !isMargin(pos) || pos.side !== 'long' || pos.otc) return 0;
+  if (!pos || !isMargin(pos) || pos.side !== 'long') return 0;
   return pos.size;
 }
 

@@ -49,6 +49,18 @@ const { createState } = await import('../src/core/state.js');
 const engine = await import('../src/core/engine.js');
 const market = await import('../src/core/market.js');
 const god = await import('../src/core/god.js');
+const { sigmaOf } = await import('../src/core/impact.js');
+
+/* 「原始行情的**日收盘**年化 σ」—— 与 CDRI 的 vol 项（`dailySigma × √365`）**逐字同估计量 /
+   同窗口**（`sigmaOf` 总体标准差、30 个日收益、`d×24+23` 的日收盘），唯一差别是读 `rawCloseAt`
+   （**不含任何位移**）。用来把「显示 σ / 原始 σ」的**放大倍数**量出来 —— 与现实带来回比。 */
+const rawDailyVolOf = (sym, i) => {
+  const d = Math.floor(i / 24);
+  if (d < 32) return NaN;
+  const arr = [];
+  for (let k = d - 31; k < d; k++) arr.push(market.rawCloseAt(sym, k * 24 + 23));
+  return sigmaOf(arr) * Math.sqrt(365);
+};
 
 const SYMS = ['BTC', 'ETH', 'SOL', 'DOGE'];
 const f = (n, d = 2) => (Number.isFinite(n) ? n.toFixed(d) : '--');
@@ -107,6 +119,7 @@ async function run(sym) {
       /* 原始行情波动率（**不含 NPC 位移**）—— 供下面 vol 项交叉核对：基准读的 `dailySigma` 含位移，
          而它才是「数据包历史行情本身」的量级。 */
       res.rv = engine.reviewVolOf(sym, s.i);
+      res.rvDaily = rawDailyVolOf(sym, s.i);   // 同日收盘估计量下的**原始** σ（隔离位移层）
       samples.push({ i: s.i, ...res });
       const oi = engine.openInterestOf(s, sym);
       liqRatios.push({ i: s.i, ratio: oi > 0 ? ringSum / oi : NaN, liq: ringSum, oi });
@@ -166,6 +179,14 @@ for (const sym of SYMS) {
         级联开着时 `npcShock` 位移会顶高 σ ⇒ 前者偏高；后者才是数据包历史行情本身的量级，用来隔离成因。 */
   const rvq = q(samples.map(x => x.rv));
   console.log(`   · ${'年化波动率 · 原始行情'.padEnd(22)} ${rvq.map(x => f(x, 3)).join(' / ')}  （reviewVolOf，不含位移；现实 0.30–1.20）`);
+  /* ②c **同估计量**的放大倍数：显示 σ（CDRI vol 项，读 `dailySigma` 含位移）vs 原始 σ
+        （`rawDailyVolOf`，同一「日收盘」估计量、读 `rawCloseAt`）。倍数 ≈ 1 即「与真实行情同量级」。 */
+  const dvq = q(samples.map(x => x.rvDaily));
+  const medDisp = q(samples.map(x => x.parts.vol.raw), [0.5])[0];
+  const medRaw = dvq[2];
+  const amp = medRaw > 0 ? medDisp / medRaw : NaN;
+  console.log(`   · ${'年化波动率 · 同日收盘原始'.padEnd(22)} ${dvq.map(x => f(x, 3)).join(' / ')}  （sigmaOf(rawCloseAt)，与显示 σ 同估计量）`);
+  console.log(`     ⇒ 显示 σ ÷ 原始 σ（中位）= ${f(amp, 2)}×  ${Number.isFinite(amp) && amp <= 1.25 ? '**贴近现实**' : '**偏高**'}`);
 
   /* ③ 独立测量的 24h 清算强度（清算额 ÷ OI） */
   const ratios = liqRatios.map(x => x.ratio);

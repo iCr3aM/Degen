@@ -1119,21 +1119,22 @@ export function update(refs, s, view) {
      链上转账，属于「会动钱」四类之一 —— 暂停时它必须也点不动，否则玩家会以为只有下单被拦。 */
   refs.exBtn.disabled = frozen || locked;
 
-  /* 通道切换键**四档状态**（P2-B 修订 · GDD §15.3；2026-10-02 加第四档）：
+  /* 通道切换键**三档状态**（P2-B 修订 · GDD §15.3；2026-10-04 F4 去掉「持仓时禁用」那一档）：
        ① 权益 ≤ 当年解锁线（`otcUnlockAt`，2020 起 $500 万）⇒ `hidden` ——
           一个 $1,000 开局的玩家不该看见自己用不了的东西
        ② 权益够、但**当前币**还没开通 OTC ⇒ 可见但禁用（灰框）——
           这一级存在的意义就是「切币时按钮不再忽隐忽现」，所以不能藏
-       ③ **手上有仓位** ⇒ 禁用（2026-10-02 审计修）：通道是**这一笔交易身份**的一部分，
-          加仓必须同通道（`posGate`）——「盘口仓 ＋ 切到 OTC」会让这一枚仓加不了仓。
-          与「持仓不许切杠杆 / 合约」同一条规矩：**会改变这一笔交易身份的开关，持仓期间一律锁住**。
-       ④ 其余 ⇒ 可用
+       ③ 其余 ⇒ 可用
+     ⚠️ **持仓期间也允许切换**（2026-10-04 · F4 · 用户拍板「放宽」）：旧的第 ③ 档（`|| !!cur`）
+        把持仓期间的通道锁死，遇到「OTC 仓位 ＋ 权益跌破解锁线」时玩家既加不了仓、又切不回盘口
+        （死结）。现在放开 —— 跨通道**加仓**仍由 `posGate` 拦（提示「先切回同一通道」），
+        而「切回去看盘口 / 平仓」这条路不再被堵死。
      字面与高亮都跟着**生效通道**走 —— 看 `chanOf` 而不是 `s.chan`，
      否则会出现「键藏起来了、单子却还在走 OTC」这种玩家看不见的通道。 */
   const chan = chanOf(s);
   const unlocked = otcUnlocked(s);
   refs.chanBtn.hidden = !unlocked;
-  refs.chanBtn.disabled = !(unlocked && otcOpenFor(s)) || frozen || locked || !!cur;
+  refs.chanBtn.disabled = !(unlocked && otcOpenFor(s)) || frozen || locked;
   refs.chanBtn.textContent = chan === 'otc' ? 'OTC' : '盘口';
   refs.chanBtn.classList.toggle('on', chan === 'otc');
 

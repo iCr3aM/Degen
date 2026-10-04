@@ -17,7 +17,7 @@ import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, raw
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { CDRI, FNG, HEAT, INV, NPC, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
+import { CDRI, FNG, HEAT, INV, NPC, OI, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -428,7 +428,7 @@ function rawDailySigma(sym, i) {
 /**
  * **玩家持仓占可交易浮筹的比例**（`0 ~ 1`）—— 「持仓影响市场」那份唯一的占比（`config.FLOAT`）。
  *
- *   分子 = `capturedOf`（**杠杆通道多头**的枚数）
+ *   分子 = `capturedOf`（**杠杆多头**的枚数；F3 起含 OTC 多头 —— 见 `state.capturedOf`）
  *   分母 = 当年真实流通量 × `FLOAT.frac`（可交易浮筹）
  *
  * ⚠️ 取不到流通量（该币不在清单里 / `manifest` 未加载 / 该币此刻还没上线）⇒ 返回 0、**不折减**：
@@ -830,6 +830,25 @@ function permImpactFor(s, sym, i, notional) {
 }
 
 /**
+ * **NPC 侧专用的行情位移** —— 与 `permImpactFor` 逐字同形，唯一差别是把 σ 换成
+ * `rawDailySigma`（**不含任何位移**）。专供 `pushNpcShock`（级联 / 止损波那一条有界瞬时通道）。
+ *
+ * ⚠️ **为什么 NPC 侧必须用原始 σ**（2026-10-04 实测病根 · 用户拍板「基础要贴近现实」）：
+ *    `permImpactFor` 读的 `dailySigma` 走 `closeAt`（**含位移**），而 NPC 级联本身就在制造位移
+ *    ⇒ 又一条自反馈环：级联↑ ⇒ σ↑ ⇒ 级联位移↑。实测无玩家一局的**显示 σ** 被顶到原始行情的
+ *    **1.8–2.4×**（BTC 0.51→0.89、ETH 0.68→1.63、SOL 0.95→2.28）—— 现实数据本身已含真实崩盘，
+ *    引擎再叠一层自己的爆仓冲击，就是**波动率重复计算**。改用原始 σ 折算，这条环断开，
+ *    级联的**频率 / 次数 / 方向**一字不改，只把每一步的**位移幅度**按真实行情量级归一。
+ * ⚠️ 玩家自己的成交（`pushFlow`）仍走含位移的 `dailySigma` —— 那反映「当前市场有多脆」，
+ *    是玩家**能感知**的对抗性反馈，不属于本处要断的自激环。
+ */
+function rawPermImpactFor(s, sym, i, notional) {
+  const liq = hourLiqOf(s, sym, i);
+  if (!(liq > 0) || !(notional > 0)) return 0;
+  return permImpactOf(notional / liq, rawDailySigma(sym, i));
+}
+
+/**
  * 这一笔成交**实际能推动多少价** —— 原始冲击先被沿途的**历史压力位**吸掉一部分
  * （ROADMAP §六十四，2026-10-02 用户拍板「接入行情、不画线」）。
  *
@@ -1087,6 +1106,17 @@ export function reviewVolUsdOf(sym, i) {
   return usd > 0 ? usd : NaN;
 }
 
+/**
+ * **非散户簿基础仓**（F2 · 2026-10-04）＝ `OI.bookTurn × 近 24h 美元成交额` —— 常年在线的
+ * 做市 / 对冲 / 套利库存。**纯派生**（只读 `reviewVolUsdOf`），进 `openInterestOf`、
+ * **不进**多空比、不参与级联。理由与标定见 `god.OI`。
+ * @returns {number} 名义额（USD）；成交额取不到（未上线 / 越界）⇒ 0
+ */
+function baseBookOiOf(sym, i) {
+  const v = reviewVolUsdOf(sym, i);
+  return Number.isFinite(v) && v > 0 ? OI.bookTurn * v : 0;
+}
+
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 /**
@@ -1145,8 +1175,8 @@ function npcNet(m) {
 /**
  * 某币**此刻的持仓量（OI）**（缺口 4 · 2026-10-02 用户拍板）—— `Σ(long + short)`。
  *
- * ⚠️ 口径：NPC 六档阶梯 ＋ 做市盘 ＋ **玩家在该币的持仓名义**（`size × 现价`）
- *    ＋ **对手方的镜像名义**（1:1 · 2026-10-03 拍板，见下）。
+ * ⚠️ 口径：NPC 六档阶梯 ＋ 做市盘 ＋ **非散户簿基础仓**（F2 · 2026-10-04，见 `god.OI`）
+ *    ＋ **玩家在该币的持仓名义**（`size × 现价`）＋ **对手方的镜像名义**（1:1 · 2026-10-03 拍板，见下）。
  *    这才是「市场上所有未平仓头寸」的现实定义 —— 只看 NPC 会漏掉自己那一份，
  *    而且玩家开一单把 OI 推高、读数却不动的观感很假。
  * ⚠️ **纯读**：不调 `mktOf`（那是懒初始化、只在写路径可达），缺失就只算 NPC 部分 ——
@@ -1158,6 +1188,7 @@ export function openInterestOf(s, sym) {
   let oi = 0;
   if (m && m.npc) for (const g of m.npc) oi += g.long + g.short;
   if (m && m.mm) oi += m.mm.long + m.mm.short;      // 缺口 6-A：做市盘也计入 OI
+  oi += baseBookOiOf(sym, s.i);                     // F2（2026-10-04）：非散户簿基础仓（见 `god.OI`）
   /* 玩家 ＋ **其对手方**（1:1 配对 · 2026-10-03 拍板）：用户审计指出「玩家做空，那必然有人做多」——
      OI 的定义是「市场上所有未平仓头寸」，一张合约**两侧各算一次**。原来只加玩家这一侧（`pn`），
      巨鲸 $45B 的仓在读数上「没有对手方」；补上镜像的 `pn` 之后，巨鲸开一单 OI 涨两倍名义，
@@ -1429,7 +1460,9 @@ function syncNpcDrift(s, sym, i, sig) {
         但推价按半衰期**渐近释放**，不是「下一根瞬间弹回去」—— 那正是玩家实测的「画门」。
      ⚠️ `stepAdvPush` **改状态**，故本函数只能从每小时的写路径调用（`tickMarket` / `advTick`），
         不得挂到 `render` 每帧都碰的读路径上。 */
-  const raw = (net === 0 ? 0 : Math.sign(net) * permImpactOf(q, sig)) + stepAdvPush(s, sym, i, sig);
+  /* ⚠️ 2026-10-04（F1）：净持仓这一层合成位移乘 `NPC.synthGive`（真实数据已含散户的价位影响
+     ⇒ 不再重复叠加全额）。`stepAdvPush`（玩家驱动的对抗性推价）**不折** —— 见 `NPC.synthGive`。 */
+  const raw = (net === 0 ? 0 : Math.sign(net) * NPC.synthGive * permImpactOf(q, sig)) + stepAdvPush(s, sym, i, sig);
   /* 硬上界（2026-10-04 · 「画门」根因修的第二道闸）：见 `god.NPC.driftCap`。
      第一道闸是本函数拿到的 `sig` 已改为 `rawDailySigma`（不含位移）；本夹只是兜底历史极端。 */
   const v = Math.max(-NPC.driftCap, Math.min(NPC.driftCap, raw));
@@ -1458,7 +1491,11 @@ function syncNpcDrift(s, sym, i, sig) {
  * @param {number} notional 该笔被动平仓的名义额（USD）
  */
 function pushNpcShock(s, sym, m, dir, notional) {
-  const v = dir * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
+  /* ⚠️ 2026-10-04（F1）：位移量 ① 改走 `rawPermImpactFor`（原始 σ，**不含位移**）——断开
+     「级联↑⇒σ↑⇒级联位移↑」的自反馈环；② 再乘 `NPC.synthGive` ——真实数据已含真实清算潮的
+     价位影响，避免重复计算。级联的**频率/次数/方向**不变，只改每一步的**幅度**。
+     理由见 `rawPermImpactFor` 与 `god.NPC.synthGive`。 */
+  const v = dir * SHOCK.share * NPC.synthGive * absorbedImpact(s, sym, dir, rawPermImpactFor(s, sym, s.i, notional));
   if (!Number.isFinite(v) || v === 0) return;
   const tab = m.npcShock || (m.npcShock = { at: [], v: [] });
   const n = tab.at.length;
@@ -2184,7 +2221,7 @@ function applyFill(s, { sym, side, fill, margin, notional, lev, feeRate, marginM
     pos.ex = s.ex;                    // 仓位挂在哪家所 —— 归零事件据此精确作废（GDD §7.2）
     pos.openFee = fee;
     pos.mix = mix;                    // 保证金的两格构成（v13）—— 平仓原路退回
-    if (otc) pos.otc = true;          // 只给 OTC 仓位打标（`capturedOf` 见到它就跳过）
+    if (otc) pos.otc = true;          // 只给 OTC 仓位打标（通道守卫 / 不写盘口冲击用；F3 起 `capturedOf` 仍计入）
     s.positions[sym] = pos;
   }
   return pos;
@@ -2367,11 +2404,12 @@ function openCheck(s, side, frac = 1) {
 
   /* 供应量上限（P2-B2 · §15.1 / §15.4）：买入会从市场里锁走一部分币，锁走的枚数不得越界。
      ⚠️ 校验必须排在**动账之前** —— 下面那几行一旦执行，钱已经扣了，这时再拒绝就没法干净地退回。
-     ⚠️ 只有多头方向消耗供应量（空头没把币拿走）；**OTC 买入不算**（对手方私下一口价，
-        不从市场拿走流通量），所以这里直接跳过 —— 落点就是下面那句 `pos.otc = true`。
+     ⚠️ 只有多头方向消耗供应量（空头没把币拿走）；**OTC 买入同样消耗**（2026-10-04 · F3）：
+        场外单也从卖方钱包划走真实代币 ⇒ 一样受流通量上限约束。旧口径整条豁免 OTC，等于
+        允许「一口气买超过流通量且市场零反应」—— 与用户审计指令直接冲突。
      闸门 = 占比 × 当年真实流通量（`supplyCapOf`），整局不会触发 ⇒ **不为它新增终局**（GDD §16 只有两种收场）。 */
   const cap = supplyCapOf(s.sym, s.i);
-  if (!otc && side === 'long' && capturedOf(s, s.sym) + margin * lev / fill > cap) {
+  if (side === 'long' && capturedOf(s, s.sym) + margin * lev / fill > cap) {
     return { ok: false, why: `${s.sym} 已触及供应量上限，无法继续买入` };
   }
 
@@ -3118,6 +3156,11 @@ export function advanceOneHour(s) {
      ⚠️ 回到「OTC 可用」或「玩家自己切回盘口」时**解除闩锁**，这样下一次真的跌落还能再报一次。 */
   if (s.chan === 'otc' && chanOf(s) === 'book') {
     if (!s.otcOff) { s.otcOff = true; pushLog(s, OTC_OFF, 'bad', 'mkt'); }
+    /* ⚠️ 2026-10-04（F4）：把 `s.chan` 一并切回 `'book'` —— 旧实现只播日志、不改 `s.chan`
+       ⇒ 留下「`s.chan='otc'` 而 `chanOf='book'`」的**残留状态**，正是玩家「有仓位时切不回盘口」
+       那个死结的一半成因（另一半是按钮/守卫锁死，已在 render.js / main.js 放开）。
+       一次性对齐后，本闩锁自然不再触发（不会重复播报）。 */
+    s.chan = 'book';
   } else if (s.otcOff) {
     s.otcOff = false;
   }
