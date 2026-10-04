@@ -123,6 +123,112 @@ section('1b · Binance 杠杆维持线（F3 修复复核 · 按保证金水平�
   check('同杠杆下 Binance 杠杆强平更晚（维持线更低）', bn3 < bi3, `binance ${f(bn3 * 100, 2)}% < bitfinex ${f(bi3 * 100, 2)}%`);
 }
 
+/* ═════ 1c · 实际杠杆口径（effLevOf · 2026-10-05 用户实测质疑） ═════
+   用户问：「1x 减保证金后为什么不显示强平价 / 1x 真的能减保证金吗？」
+   结论（已确认）：**能** —— 抽走保证金 ＝ 开始借钱 ＝ 实际杠杆上升。为此新增只读派生
+   `effLevOf = 名义 ÷ 保证金`，并让 `maintRateOf` / `safetyOf` 的档位与参考值改用它。
+   本节把三条钉在真实数值上（不做假绿：全部读真实函数 / 真引擎）：
+     ① virgin 仓（没调整过保证金）`effLevOf` **严格等于**开仓杠杆（snap 生效 ⇒ 现有玩法零影响）；
+     ② virgin 仓的维持率 / 安全垫 / 强平价与「按 pos.lev 现算」的参考口径一致；
+     ③ 真引擎滚仓减保证金后实际杠杆**严格上升**，该仓转为可强平、强平价方向正确。 */
+section('1c · 实际杠杆口径（effLevOf）：未调整仓不变 · 减保证金后杠杆必升');
+{
+  /* c1 · virgin 仓：断言覆盖 所 × 工具 × 杠杆 全格。 */
+  let strict = 0, n = 0, guard = 0, idOk = 0, refOk = 0;
+  for (const ex of ['bitfinex', 'bitmex', 'binance']) {
+    for (const mode of ['margin', 'fut']) {
+      const t = at(2021, 5);
+      if (!C.hasLeverageKindAt(t, ex, mode) || C.exchangeOf(ex).open > t) continue;
+      for (const lev of C.leverageOptionsAt(t, ex, mode).filter(v => v >= 1)) {
+        const pos = P.openPosition('BTC', 'long', 30000, NOTIONAL / lev, lev, 0.0004, mode === 'margin');
+        pos.ex = ex;
+        n++;
+        if (P.effLevOf(pos) === lev) strict++;
+        /* 主式一致性（virgin 时 snap 允许 1 ULP 差，故用相对 1e-9）。 */
+        if (Math.abs(P.effLevOf(pos) - pos.notional / pos.margin) <= 1e-9 * Math.max(1, lev)) idOk++;
+        /* 退化护栏：维持线必须严格低于初始保证金率（结构上杜绝「开仓即强平」）。 */
+        if (P.maintRateOf(pos) < 1 / P.effLevOf(pos)) guard++;
+        /* 参考口径：把实现里的 `effLevOf` 换成**开仓杠杆 `pos.lev`** 重算一遍 ——
+           virgin 仓两者必须一致（这正是「不影响现有玩法」的量化说法）。 */
+        const refOpen = 1 / pos.lev;
+        const refM = C.maintRateAt(ex, pos.notional, P.instrumentOf(pos), pos.lev);
+        const refMaint = refM < refOpen ? refM : refOpen * 0.5;
+        const PX = 28000;                       // 用偏离开仓价的价格，安全垫才不是恒 1
+        const refSafe = !P.canLiquidate(pos) ? 1 : (() => {
+          const span = refOpen - refMaint;
+          return span > 0 ? (P.marginRateOf(pos, PX) - refMaint) / span : 0;
+        })();
+        const refLiq = 30000 + (refMaint * pos.notional - pos.margin) / pos.size;
+        if (Math.abs(P.maintRateOf(pos) - refMaint) < 1e-12
+          && Math.abs(P.safetyOf(pos, PX) - refSafe) < 1e-12
+          && Math.abs(P.liquidationPrice(pos) - refLiq) < 1e-9) refOk++;
+      }
+    }
+  }
+  check('1c virgin 仓实际杠杆严格等于开仓杠杆（snap 生效 ⇒ 现有玩法零影响）',
+    n > 0 && strict === n, `${strict}/${n}`);
+  check('1c 任意仓 |effLevOf − 名义/保证金| ≤ 1e-9×杠杆（主式一致）',
+    n > 0 && idOk === n, `${idOk}/${n}`);
+  check('1c 退化护栏：维持线严格 < 1/实际杠杆（所 × 工具 × 杠杆 全格）',
+    n > 0 && guard === n, `${guard}/${n}`);
+  check('1c virgin 仓的维持率 / 安全垫 / 强平价与「按 pos.lev 现算」一致',
+    n > 0 && refOk === n, `${refOk}/${n}`);
+
+  /* c2 · 真引擎：1x 多头滚仓「减保证金」后实际杠杆**严格上升**、转为可强平。 */
+  const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'margin', cash: 200000, i: idx(at(2021, 4, 10)) });
+  s.mode = 'margin'; s.lev = 1;
+  const ro = engine.openTrade(s, 'long', 1);
+  check('1c 前置：1x 多仓开出来了（后续真实行为的载体）', ro.ok && !!s.positions.BTC, ro.why || '');
+  if (s.positions.BTC) {
+    const before = P.effLevOf(s.positions.BTC);
+    check('1c 前置：virgin 1x 仓实际杠杆 = 1', before === 1, `effLev=${f(before, 6)}`);
+    const step = engine.marginStepOf(s, 'BTC', 0.25, false);
+    const r = step > 0 ? engine.adjustMargin(s, 'BTC', -step) : { ok: false, why: '步进为 0' };
+    check('1c 1x 多头**可以**减保证金（抽走保证金 ＝ 开始借钱 —— 回答用户质疑）',
+      r.ok && step > 0, r.why || `step=${f(step, 2)}`);
+    const pos = s.positions.BTC;
+    const after = P.effLevOf(pos);
+    check('1c 减保证金后实际杠杆**严格上升**（保证金↓ ⇒ 杠杆↑）',
+      after > before + 1e-9, `${f(before, 4)}x → ${f(after, 4)}x`);
+    check('1c 减保证金后借入 > 0 且转为可强平（UI 才会显示强平价）',
+      P.borrowedOf(pos) > 0 && P.canLiquidate(pos),
+      `borrowed=${f(P.borrowedOf(pos), 2)} canLiq=${P.canLiquidate(pos)}`);
+    check('1c 减保证金后强平价有限、方向正确（多头在开仓价下方）',
+      Number.isFinite(P.liquidationPrice(pos)) && P.liquidationPrice(pos) < pos.entry,
+      `lp=${f(P.liquidationPrice(pos), 2)} entry=${f(pos.entry, 2)}`);
+    check('1c 减保证金后维持线仍严格 < 1/实际杠杆（不会「开仓即强平」）',
+      P.maintRateOf(pos) < 1 / after, `maint=${f(P.maintRateOf(pos), 4)} < ${f(1 / after, 4)}`);
+  }
+
+  /* c3 · 方向性：同一仓位减保证金 ⇒ 实际杠杆上升、可承受跌幅收窄（强平线更近）。
+     ⚠️ 用 3x → 6x（Bitfinex 杠杆维持 15%）：两档都非退化格，跌幅是真实收窄而非被护栏夹平。 */
+  {
+    const p3 = P.openPosition('BTC', 'long', 30000, NOTIONAL / 3, 3, 0.0004, true);
+    p3.ex = 'bitfinex';
+    const lean = { ...p3, margin: p3.margin / 2 };      // 抽走一半保证金 ⇒ 实际 6x
+    const span0 = 1 / P.effLevOf(p3) - P.maintRateOf(p3);
+    const span1 = 1 / P.effLevOf(lean) - P.maintRateOf(lean);
+    check('1c 减保证金 ⇒ 实际杠杆上升、可承受跌幅收窄（强平线更近）',
+      P.effLevOf(lean) > P.effLevOf(p3) + 1e-9 && span1 < span0,
+      `effLev ${f(P.effLevOf(p3), 3)}→${f(P.effLevOf(lean), 3)} · 可承受跌幅 ${f(span0 * 100, 3)}%→${f(span1 * 100, 3)}%`);
+  }
+
+  /* c4 · 维持档必须钉在「开仓杠杆档」上，**不得**随利息复利漂移 ——
+     借贷利息逐小时从 `pos.margin` 里扣（`engine.settleFunding` 的 `pos.margin -= fee`）⇒
+     实际杠杆连续微漂；若档次改读实际杠杆，Binance 杠杆的 `lev ≤ 5` 那格会在持有 1 小时后
+     被 1 ULP 级漂移翻档（维持率 12% → 8%，强平价无端跳远）。 */
+  {
+    const p5 = P.openPosition('BTC', 'long', 30000, NOTIONAL / 5, 5, 0.0004, true);
+    p5.ex = 'binance';
+    const m0 = P.maintRateOf(p5);
+    const drifted = { ...p5, margin: p5.margin * (1 - 1e-4) };   // 模拟复利若干小时后的保证金
+    const m1 = P.maintRateOf(drifted);
+    check('1c 维持档钉在开仓杠杆档（利息复利造成的实际杠杆微漂不换档）',
+      P.effLevOf(drifted) > 5 && m0 === m1,
+      `effLev ${f(P.effLevOf(drifted), 6)} · 维持 ${f(m0, 4)} → ${f(m1, 4)}`);
+  }
+}
+
 /* ═══════════════════ 2 · openCheck 全分支可达性 ═══════════════════ */
 section('2 · 下单拒绝分支穷举（每一条 `why` 是否可达 / 是否合理）');
 const seen = new Map();
@@ -2140,6 +2246,28 @@ section('9p · 上帝沙盒：旋钮归一 · 预设合法性 · shock 线性 ·
   };
   const a0 = await identOf(false), a1 = await identOf(true);
   check('9p 恒等默认逐位 == 不开沙盒', a0 === a1, `${a0} vs ${a1}`);
+}
+
+/* ═══════════════════ 9q · 上帝面板分页接线（2026-10-05 · 源码锚点） ═══════════════════
+   ⚠️ 这一节**不跑 DOM**（Node 无浏览器）：只对「页签接线」做**锚点断言** —— 咬的是
+      「三个文件里必须同时出现同一根线」。漏接的后果正是本项目踩过的病根：
+      `data-*` 不在 `bind.js` 的 `ACTION_KEYS` 里 ⇒ 点了完全没反应（见 `chan` 那一次的真实事故）。
+   真正的视觉 / 交互验证留给浏览器自检；本审计不做实机（用户既定口径）。 */
+section('9q · 上帝面板分页接线（data-godtab ⇄ ACTION_KEYS ⇄ onGodTab）');
+{
+  const readSrc = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const bindSrc = readSrc('src/ui/bind.js');
+  const renderSrc = readSrc('src/ui/render.js');
+  const mainSrc = readSrc('src/main.js');
+  check('9q `godtab` 进了 `ACTION_KEYS`（否则页签点了没反应）',
+    /['"]godtab['"]/.test(bindSrc));
+  check('9q 面板生成页签（`dataset.godtab`）＋ 两页 `.confirm-rows` 互斥显隐',
+    /dataset\.godtab/.test(renderSrc)
+    && /rowsA\.style\.display/.test(renderSrc) && /rowsB\.style\.display/.test(renderSrc));
+  check('9q `openGod` 收 `page` 入参（签名三参）',
+    /export function openGod\(s, sel = null, page = 0\)/.test(renderSrc));
+  check('9q 分派层有 `onGodTab`，且 `showGod` 把 `godPage` 传下去',
+    /function onGodTab\(/.test(mainSrc) && /openGod\(s, godSel, godPage\)/.test(mainSrc));
 }
 
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════

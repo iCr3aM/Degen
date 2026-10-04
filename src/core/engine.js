@@ -24,7 +24,7 @@ import {
   equityOf, isLiquidatable, isMargin, liquidationPrice, maintRateOf, marginRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
   FUNDING, FR, INSURE, fundingOf, premiumIndexOf, fundingRateOf, canLiquidate, paysFunding, paysInterest, borrowedOf, borrowCurOf, shockKindOf,
-  bankruptcyFillPrice,
+  bankruptcyFillPrice, effLevOf,
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
@@ -36,6 +36,16 @@ import { saveSlotOf, wipe } from './save.js';
 
 /** 交易所归零前多少毫秒给一条预警日志（7 天） */
 const WARN_LEAD = 7 * 24 * HOUR_MS;
+
+/**
+ * 交易日志里的**倍数标签**（2026-10-05）—— 读**实际杠杆**（`effLevOf`）而不是开仓冻结的 `pos.lev`。
+ *
+ * ⚠️ 为什么：滚仓抽走保证金后仓位真的更杠杆化了（保证金↓ ⇒ 杠杆↑），日志若还写开仓倍数，
+ *    就会与持仓条 / 资产页 / 调整保证金弹窗（都已改读实际杠杆）**自相矛盾** —— 玩家会看到
+ *    「持仓条写 5x、平仓日志写 1x」。整数不显小数、非整数保留 1 位，与 `render.js` 同一套格式化。
+ * ⚠️ virgin 仓 `effLevOf` snap 回 `pos.lev` ⇒ 未调整过保证金的仓位日志**一字不变**。
+ */
+const lvTagOf = pos => `${Math.round(effLevOf(pos) * 10) / 10}x`;
 
 /* ── 逐步强平（2026-10-01 拍板 · 2026-10-03 对齐 Binance） ──
  * 触发时**只平一档**，把剩余仓位的保证金率拉回 `PARTIAL_TARGET` 倍维持线，而不是整条打掉。
@@ -1810,7 +1820,7 @@ function adlPlayerReduce(s, pos, take, price) {
     };
   }
   refreshOverhang(s, pos.sym, SHOCK.closeGive);
-  pushLog(s, `ADL 自动平仓 ${pos.sym} ${pos.lev}x｜平仓 ${fmtMoneyShort(notional)} @ ${fmtLogPrice(price)}`, 'bad', 'liq');
+  pushLog(s, `ADL 自动平仓 ${pos.sym} ${lvTagOf(pos)}｜平仓 ${fmtMoneyShort(notional)} @ ${fmtLogPrice(price)}`, 'bad', 'liq');
   return pnl * f;                                      // 实际收走的浮盈（触发残余闸时 ＝ 全部浮盈）
 }
 
@@ -2952,7 +2962,7 @@ export function closeTrade(s, why = '手动', frac = 1) {
      它是纯文本（core 不认识 UI，不挂 `.sign` 伪元素），与「盈利 / 亏损」两个字面并存。 */
   const verdict = `${netRound >= 0 ? '盈利 ▲' : '亏损 ▼'} ${fmtMoneyShort(netRound)} · ${why}｜手续费 ${fmtMoneyShort(fees)}${tag}`;
   if (f >= 1) {
-    pushLog(s, `平仓 ${sym} ${pos.lev}x｜${verdict}`, netRound >= 0 ? 'ok' : 'bad', 'trade');
+    pushLog(s, `平仓 ${sym} ${lvTagOf(pos)}｜${verdict}`, netRound >= 0 ? 'ok' : 'bad', 'trade');
     delete s.positions[sym];
   } else {
     /* 分批平仓那一条把**平仓的比例**写在脸上（`25%` / `50%`）—— 否则玩家分不清
@@ -3046,8 +3056,8 @@ function forceLiquidate(s, pos, atPrice) {
      ⚠️ 正文用「强平」而不是「爆仓」—— 这与标签 `'liq'`（`state.js` 映射为「强平」）一致：
         这里平掉的是**单笔仓位**（可发生多次、含部分强平 / ADL），「爆仓」只指账户归零的结局。 */
   pushLog(s, back > 1e-9
-    ? `强平 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)}｜退回 ${fmtMoneyShort(back)} @ ${fmtLogPrice(atPrice)}`
-    : `强平 ${pos.sym} ${pos.lev}x｜保证金 ${fmtMoneyShort(pos.margin)} 全部损失 @ ${fmtLogPrice(atPrice)}`,
+    ? `强平 ${pos.sym} ${lvTagOf(pos)}｜保证金 ${fmtMoneyShort(pos.margin)}｜退回 ${fmtMoneyShort(back)} @ ${fmtLogPrice(atPrice)}`
+    : `强平 ${pos.sym} ${lvTagOf(pos)}｜保证金 ${fmtMoneyShort(pos.margin)} 全部损失 @ ${fmtLogPrice(atPrice)}`,
     'bad', 'liq');
 
   if (back > 1e-9) credit(s, pos.ex, back, pos.mix);   // 退回**当初开仓那家所**（原路：按 mix 比例分两格）
@@ -4007,7 +4017,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   s.stat.liq += 1;                         // 统计（2026-10-02 审计修）：逐步强平同样计入 —— 与 `forceLiquidate` 同口径
   s.stat.liqNotional += notional;          // §17.3（2026-10-04）：部分强平的成交名义同口径计入（与 `forceLiquidate` 一致）
   s.positions[pos.sym] = r.pos;
-  pushLog(s, `部分强平 ${pos.sym} ${pos.lev}x｜平仓 ${fmtRate(frac, 1)}｜保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad', 'liq');
+  pushLog(s, `部分强平 ${pos.sym} ${lvTagOf(pos)}｜平仓 ${fmtRate(frac, 1)}｜保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad', 'liq');
   refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：部分强平也是卖出 ⇒ 折价同比例释放
 }
 

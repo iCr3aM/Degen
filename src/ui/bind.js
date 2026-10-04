@@ -23,10 +23,11 @@ export const ACTION_KEYS = [
   'tab',
   /* 上帝模式：`god`（顶栏标题连点 5 次的隐藏入口）
      / `godcash` `godyear` `godmon` `godday` `godgo` `godoff`（上帝面板内的各枚按钮）
+     / `godtab`（2026-10-05 分页后新增：面板顶部的两枚页签「资金·时间」/「沙盒」）
      ⚠️ 原来的 `godmult` `godscale` `godreset` 三枚已随上帝模式瘦身整体删除（2026-09-29）；
         `goddate` 随原生日期框一起删除，日期改由 `godyear` / `godmon` / `godday` 三排档位选择、
         `godgo` 才真正跳（2026-09-30）。 */
-  'god', 'godcash', 'godyear', 'godmon', 'godday', 'godgo', 'godoff',
+  'god', 'godcash', 'godyear', 'godmon', 'godday', 'godgo', 'godoff', 'godtab',
   /* U1（ROADMAP §21.4）：`mode2`（2026-10-04 起是操作区顶部「工具」行里的两枚段控
      「杠杆」/「合约」—— `data-mode2="margin"` / `"fut"`，取代旧那枚「金额」行末尾的切换键）。
      ⚠️ 用 `mode2` 而不是 `mode` —— `mode` 已被 K 线左上角那枚**粒度**小字占用（`main.js` 的 `d.mode`）。

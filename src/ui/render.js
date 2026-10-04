@@ -14,7 +14,7 @@
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
-import { canLiquidate, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
+import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
@@ -1002,8 +1002,12 @@ export function update(refs, s, view) {
        ⚠️ 原来写「买入 / 卖出」（合约写「多 / 空」）：`DOGE 买入 100x` ≈ 96px、`BTC 买入 100x` ≈ 88.8px，
           而 375px 屏每格只有 **75.25px** ⇒ 只要 `lev > 1` 必然被 `ellipsis` 截尾。
           压成 `DOGE 100x` = **64.8px**、`BTC 100x` = **57.6px**，两种工具同一副字面，终于放得下。
-       ⚠️ **倍数只在 lev > 1 时写**（用户 2026-10-01）：1x 写个 `1x` 会与带杠杆的混同。 */
-    setText(refs.posSide, `${p.sym}${p.lev > 1 ? ` ${p.lev}x` : ''}`);
+       ⚠️ **倍数只在 lev > 1 时写**（用户 2026-10-01）：1x 写个 `1x` 会与带杠杆的混同。
+       ⚠️ 2026-10-05：这里的倍数改读**实际杠杆** `effLevOf` —— 开仓 1x 但滚仓抽走保证金后，
+          仓位的真实杠杆已上升（抽走保证金 ＝ 开始借钱）。若仍写开仓冻结的倍数，就会与
+          同一行右侧的「保证金率 / 强平价」自相矛盾（用户实测反馈）。 */
+    const curLev = effLevOf(p);
+    setText(refs.posSide, `${p.sym}${curLev > 1 ? ` ${Math.round(curLev * 10) / 10}x` : ''}`);
     setCls(refs.posSide, 'num ' + (p.side === 'long' ? 'side-long' : 'side-short'));
     const pnl = unrealizedOf(s, p.sym);
     const pnlText = moneySlot('pospnl', pnl, { sign: true });   // 只用于判「换值了没」；文本写入交给滚动器
@@ -1018,7 +1022,9 @@ export function update(refs, s, view) {
        强平价已搬到 K 线的开仓线左端标签，这一格终于能完整放下一个数。
        **1x 多头**（无借入）没有维持保证金率这一说 —— 只有币价归零才归零本金（GDD §9.1），填 `--`。
        ⚠️ v9（§15.3 N5）：判据从「是不是杠杆 1x」换成 `canLiquidate` —— 杠杆 > 1 仓照样有强平线。
-       ⚠️ 2026-10-03：判据再收窄成「有没有借入」—— **1x 空头借了全额币，这格要显示保证金率**。 */
+       ⚠️ 2026-10-03：判据再收窄成「有没有借入」—— **1x 空头借了全额币，这格要显示保证金率**。
+       ⚠️ 2026-10-05：**开仓 1x 的多头一旦滚仓抽走保证金**就产生借入 ⇒ 本格改显示保证金率
+          （与 `canLiquidate` 同源，不再恒填 `--`）。 */
     if (!canLiquidate(p)) {
       stopRoll(refs.posRate);     // 从「滚动中的数值」切到 `--`：先停滚动，否则补间会把 `--` 覆盖回去
       setText(refs.posRate, '--');
@@ -1636,11 +1642,13 @@ export function redrawChart(refs, s, rv, view) {
  * ⚠️ **R24（2026-10-04 审计）**：签名里**不再含盈亏** —— 原来带 `unrealizedOf().toFixed(2)`，
  *    价格一动（资产页点「继续」时每帧都在变）就整表重建 DOM。现在签名只描述**行的结构**
  *    （集合 / 方向 / 杠杆 / 性质 / 开仓价），盈亏由 `update()` 里那段 `setText` **就地更新**。
+ * ⚠️ 2026-10-05：结构里再补 `effLevOf(p)` —— 行上显示的倍数是**实际杠杆**，滚仓加减保证金会
+ *    让它变（`p.lev` 不变），必须进签名才会重建那一行的字面。virgin 仓 snap 回 `p.lev`，无变化。
  */
 function posListSignature(s) {
   return heldSyms(s).map(sym => {
     const p = s.positions[sym];
-    return `${sym}:${p.side}:${p.lev}:${isMargin(p) ? 'm' : 'f'}:${p.entry}`;
+    return `${sym}:${p.side}:${p.lev}:${effLevOf(p)}:${isMargin(p) ? 'm' : 'f'}:${p.entry}`;
   }).join('|');
 }
 
@@ -1682,10 +1690,13 @@ function buildPosList(refs, s) {
     for (const sym of syms) {
       const p = s.positions[sym];
       const pnl = unrealizedOf(s, sym);
-      /* 方向字面与交易页持仓条一一对应（v9 · §15.6 N4）：杠杆写「买入 / 卖出」、合约写「多 / 空」。 */
+      /* 方向字面与交易页持仓条一一对应（v9 · §15.6 N4）：杠杆写「买入 / 卖出」、合约写「多 / 空」。
+         ⚠️ 2026-10-05：倍数与持仓条**同一口径**读实际杠杆 `effLevOf`（滚仓减保证金后真实杠杆会上升）。 */
+      const lv = effLevOf(p);
+      const lvText = Math.round(lv * 10) / 10;
       const dirText = isMargin(p)
-        ? `${p.side === 'long' ? '买入' : '卖出'}${p.lev > 1 ? ` ${p.lev}x` : ''}`
-        : `${p.side === 'long' ? '多' : '空'} ${p.lev}x`;
+        ? `${p.side === 'long' ? '买入' : '卖出'}${lv > 1 ? ` ${lvText}x` : ''}`
+        : `${p.side === 'long' ? '多' : '空'} ${lvText}x`;
       /* 杠杆多一行**币量**（用户 2026-10-01「花多少钱买了多少枚币」）——
          合约的 `size` 只是名义的折算，玩家不看这个数，所以不报。
       ⚠️ 本轮 B4 拆掉两处冗余字（2026-10-03）：币量后的「枚」与开仓价前的「开仓」——
@@ -2000,7 +2011,7 @@ export function confirmExchange(s, id) {
 /**
  * **「调整保证金」弹层**（逐仓 · OKX 式 · 2026-10-04 用户拍板）—— 挂 `#overlay`，复用 `.confirm` 骨架。
  *
- * 上半是**当前读数**（保证金 / 保证金率 / 强平价），下半是**两排预设**：加 / 减各给 25% / 50% / 100%
+ * 上半是**当前读数**（保证金 / 实际杠杆 / 保证金率 / 强平价），下半是**两排预设**：加 / 减各给 25% / 50% / 100%
  * 三档，按钮上直接写好**这一下会动多少钱**（只写「25%」玩家看不出量）。
  * ⚠️ 每档的量 = **开仓保证金 × frac**（再夹到可用余额 / 维持线上限内）—— 与交易页 ± **同一口径**
  *    （2026-10-05 用户拍板）。不用「可用上限 × frac」是因为那个基数每动一次就缩水、越点越小。
@@ -2033,6 +2044,10 @@ export function openMarginDlg(s, sym) {
   const rows = el('div', 'confirm-rows');
   rows.append(
     line('保证金', moneySlot('mgm:' + sym, pos.margin)),
+    /* **实际杠杆** = 名义 ÷ 保证金（2026-10-05）：开仓 1x 抽走保证金后这里会写成 2x、5x…
+       —— 让玩家一眼看到「减保证金 ⇒ 杠杆上升」，与下面那行保证金率 / 强平价同源不打架。
+       口径与持仓条 / 资产页一致（`effLevOf`，保留 1 位小数）。 */
+    line('实际杠杆', `${Math.round(effLevOf(pos) * 10) / 10}x`),
     line('保证金率', liquidatable ? fmtRate(marginRateOf(pos, price)) : '--'),
     /* 强平价：不可强平的仓（1x 多头）没有这一说 —— 与交易页持仓条同一口径（填 `--`）。 */
     line('强平价', liquidatable ? fmtLogPrice(liquidationPrice(pos)) : '--'),
@@ -2405,7 +2420,8 @@ const ABOUT = [
     '2013 年 1 月 → 2024 年 12 月，行情就是 BTC / ETH / XRP / DOGE / SOL 的真实历史小时线。'
     + '从 $1,000 起步，赚到多少都算你的 —— 活到 2024-12-31 收盘即通关，爆仓归零即收场。'],
   ['两个工具',
-    '杠杆：借钱买币 / 借币做空，按借入量计日息，维持线按所不同（9–15%）；1x 是最低档，多头不借不计息、不参与强平。'
+    '杠杆：借钱买币 / 借币做空，按借入量计日息，维持线按所不同（9–15%）；1x 是最低档，初开的多头不借不计息、不参与强平 ——'
+    + '但减保证金（滚仓）会把保证金抽走、等于开始借钱，实际杠杆上升，此后照常计息、照常有强平线。'
     + '合约：USDT 本位，每 8 小时一次资金费，维持线 0.5% 起。倍数越高，强平线越近。'],
   ['两条通道',
     '盘口吃冲击与滑点，单子越大越贵；OTC 是私下一口价的大宗通道（单笔 ≥ 当年门槛，$10,000 起逐年抬升），'
@@ -2886,14 +2902,20 @@ export function openYearPick(curYear) {
  *    ⚠️ **点年 / 月 / 日只改「目标」，真正动状态的是「跳到」** —— 否则在 2 月与 3 月之间来回点时，
  *       每一下都会触发一次「回到过去」的状态重置（见 `main.js` 的 `godJump`）。
  *    ⚠️ 选中态由 `sel` 传入（`main.js` 的 `godSel` 暂存），本函数**自己无状态**。
+ * ⚠️ **自 2026-10-05 起分两页 tab**（用户拍板）：第 1 页「资金·时间」= ①填入资金 ＋ ②跳到日期；
+ *    第 2 页「沙盒」= ③沙盒旋钮 / 预设 / 种子。切页走 `data-godtab`（`main.js` 把页码存进 `godPage`
+ *    再重开本层）—— 面板本是**无状态**的静态 DOM，页签同样由 `page` 入参决定高亮。
+ *    页内容用 inline `style.display` 互斥显隐（`.godp .confirm-rows { display: grid }` 特异度高于
+ *    UA 的 `[hidden] { display: none }`，写 `hidden` 不生效）；「关闭」常驻两页之外。
  * ⚠️ **资金框不能挂 `data-*`**：`bind.js` 拦的是 `[data-*]` 的 `pointerdown` 并会 `preventDefault`，
  *    挂上去就打不了字了。所以值由动作处理函数从同一个面板里按类名读（`god-cash`）。
  *    ⚠️ 档排上那些是**按钮**、不是输入框，照旧挂 `data-*`（`godyear` / `godmon` / `godday`）。
  *
  * @param {object} s
  * @param {{y:number,m:number,d:number}|null} sel 日期选择器的**暂存目标**；`null` = 跟随当前游戏日期
+ * @param {number} page 当前页（0 = 资金·时间，1 = 沙盒）
  */
-export function openGod(s, sel = null) {
+export function openGod(s, sel = null, page = 0) {
   closePicker();
   const ov = document.getElementById('overlay');
   if (!ov) return;
@@ -2902,7 +2924,20 @@ export function openGod(s, sel = null) {
   const box = el('div', 'confirm godp');
   box.append(el('h3', null, '上帝模式'));
 
-  const rows = el('div', 'confirm-rows');
+  /* 页签行（2026-10-05）：两列各占一半宽的 `.set-btn`，当前页挂 `.on`。
+     用 `.god-pick` 的两列网格 ＋ 行内列模板 —— 复用现有类，不动 `style.css`。 */
+  const tabs = el('div', 'god-pick');
+  tabs.style.gridTemplateColumns = 'repeat(2, 1fr)';
+  tabs.style.marginTop = '12px';
+  for (const [i, label] of [[0, '资金·时间'], [1, '沙盒']]) {
+    const b = el('button', i === page ? 'set-btn on' : 'set-btn', label);
+    b.dataset.godtab = String(i);
+    tabs.append(b);
+  }
+  box.append(tabs);
+
+  const rowsA = el('div', 'confirm-rows');   // ① 填入资金 ＋ ② 跳到日期
+  const rowsB = el('div', 'confirm-rows');   // ③ 沙盒
 
   /* ① 填入资金 —— 输入框**预填上次填的数**，于是归零之后点一下就补回来，不必再加第二枚按钮 */
   const cRow = el('div', 'set-row');
@@ -2915,7 +2950,7 @@ export function openGod(s, sel = null) {
   const cBtn = el('button', 'set-btn on', '填入');
   cBtn.dataset.godcash = '';
   cRow.append(el('i', null, '资金'), cashIn, cBtn);
-  rows.append(cRow);
+  rowsA.append(cRow);
 
   /* ② 跳到日期 —— 向前 = 时间自然流过（持仓保留）；向后 = 回到过去（保留资金、清空仓位）。
        形状 = 两行读数（当前 / 目标 ＋ 跳到）＋ 年 / 月 / 日 三排按钮。 */
@@ -2931,7 +2966,7 @@ export function openGod(s, sel = null) {
 
   const dRow = el('div', 'set-row');
   dRow.append(el('i', null, '当前'), el('b', 'num', fmtDate(now, false)));
-  rows.append(dRow);
+  rowsA.append(dRow);
 
   const tRow = el('div', 'set-row');
   const tBox = el('div', 'god-target');
@@ -2939,7 +2974,7 @@ export function openGod(s, sel = null) {
   const gBtn = el('button', 'set-btn on', '跳到');
   gBtn.dataset.godgo = '';
   tRow.append(tBox, gBtn);
-  rows.append(tRow);
+  rowsA.append(tRow);
 
   /* ⚠️ 年代开局（M1）起，年份档**从本局开局那一年**起排 —— 再往前没有这一局（`main.js`
      的 `godJump` 也会挡），列出来只是让人点一个跳不过去的年份。 */
@@ -2948,24 +2983,23 @@ export function openGod(s, sel = null) {
   const y1 = new Date(GAME.start + (s.endI - 1) * HOUR_MS).getUTCFullYear();
   const yRow = el('div', 'god-pick god-years');
   for (let y = y0; y <= y1; y++) yRow.append(pickBtn(y === pick.y, 'godyear', y));
-  rows.append(yRow);
+  rowsA.append(yRow);
 
   const mRow = el('div', 'god-pick god-months');
   for (let m = 1; m <= 12; m++) mRow.append(pickBtn(m === pick.m, 'godmon', m));
-  rows.append(mRow);
+  rowsA.append(mRow);
 
   /* 日的枚数跟着选中的年月走 —— `new Date(Date.UTC(y, m, 0))` 就是该月的最后一天 */
   const days = new Date(Date.UTC(pick.y, pick.m, 0)).getUTCDate();
   const ddRow = el('div', 'god-pick god-days');
   for (let dd = 1; dd <= days; dd++) ddRow.append(pickBtn(dd === pick.d, 'godday', dd));
-  rows.append(ddRow);
+  rowsA.append(ddRow);
 
   /* ③ 沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）——
      精选 **5 枚高影响旋钮 ＋ 4 组世界预设 ＋ 全局种子**，只作用在合成层（热度 / NPC / 冲击 / 共振）。
      ⚠️ 种子走**独立输入框**（挂 `.god-seed`，**不挂 `data-*`** —— 同资金框的理由：
         `bind.js` 会 `preventDefault`，挂上去就打不了字）。 */
   const sb = sbOf(s);
-  rows.append(el('div', 'god-sep', '沙盒'));
 
   /* 档位表：倍率类 5 档 `[0.5,1,1.5,2,3]`；`mood` 是偏移量可负 `[-0.3,-0.15,0,0.15,0.3]`。
      ⚠️ 预设里有 1.4 / 1.6 / 2.2 这类**非档位值** ⇒ 预设应用后档位可能**全不高亮**，
@@ -2986,7 +3020,7 @@ export function openGod(s, sel = null) {
       grp.append(b);
     }
     row.append(grp);
-    rows.append(row);
+    rowsB.append(row);
   }
 
   /* 预设 —— 一整套「世界」；选中态按 5 枚旋钮**逐键相等**判定（手动微调后自然全灭）。 */
@@ -3000,7 +3034,7 @@ export function openGod(s, sel = null) {
     pGrp.append(b);
   }
   pRow.append(pGrp);
-  rows.append(pRow);
+  rowsB.append(pRow);
 
   /* 种子 —— 写的是存档本体 `s.seed`（**不是** `s.god.sb`，见 `god.js` 头注）。 */
   const seedRow = el('div', 'set-row');
@@ -3015,9 +3049,12 @@ export function openGod(s, sel = null) {
   const seedRoll = el('button', 'set-btn', '随机');
   seedRoll.dataset.sbroll = '';
   seedRow.append(el('i', null, '种子'), seedIn, seedBtn, seedRoll);
-  rows.append(seedRow);
+  rowsB.append(seedRow);
 
-  box.append(rows);
+  /* 互斥显隐：改 `.confirm-rows`（`display:grid`）的 inline `display` —— 见本函数头注。 */
+  rowsA.style.display = page === 1 ? 'none' : '';
+  rowsB.style.display = page === 1 ? '' : 'none';
+  box.append(rowsA, rowsB);
 
   const off = el('button', 'act flat', '关闭上帝模式');
   off.dataset.godoff = '';

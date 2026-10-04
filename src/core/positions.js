@@ -79,10 +79,13 @@ export function isLiquidatable(pos, price) {
  * 归一化之后「同一个 `safetyOf` 在任何杠杆下含义相同」：0.5 = 垫子用掉一半。
  *
  * ⚠️ 不可强平的仓位（1x 多头，无借入）恒返回 `1`：它没有维持线这一说，也就永远不进入注意 / 危险区。
+ * ⚠️ 2026-10-05：参考值「初始保证金率」改用**实际杠杆** `effLevOf(pos)`（未调整过保证金的仓位
+ *    snap 回 `pos.lev`，逐位不变）。减保证金后杠杆真的变高了，垫子刻度必须跟着走，否则
+ *    「已用掉一半」的判据会与实际强平距离脱节。
  */
 export function safetyOf(pos, price) {
   if (!canLiquidate(pos)) return 1;
-  const open = 1 / pos.lev;
+  const open = 1 / effLevOf(pos);
   const limit = maintRateOf(pos);
   const span = open - limit;
   if (!(span > 0)) return 0;
@@ -257,6 +260,30 @@ export const canLiquidate = pos => !isMargin(pos) || borrowedOf(pos) > 0;
 export const instrumentOf = pos => (borrowedOf(pos) > 0 ? 'margin' : 'perp');
 
 /**
+ * 仓位此刻的**实际杠杆** = `名义 ÷ 保证金`（2026-10-05 用户拍板 · 「只加派生值」口径）。
+ *
+ * **为什么需要**：开仓时 `名义 = 保证金 × 杠杆`，但 `adjustMargin`（加 / 减保证金）与部分强平
+ * （`reducePosition`）会各自改变「保证金」与「名义」⇒ 之后 `pos.lev`（**开仓时冻结的字段**）
+ * 不再等于真实杠杆。玩家 1x 开仓、抽走大半保证金后实际已是 5x，界面却仍写 1x ——
+ * 与同时显示的「保证金率 / 强平价」自相矛盾（用户 2026-10-05 实测：「1x 减少保证金后
+ * 为什么不显示强平价 / 1x 真的能减保证金吗」）。减保证金 ＝ 开始借钱 ＝ 杠杆上升（Bitfinex 借贷
+ * 史实）⇒ 显示与风控都该用本值。
+ *
+ * ⚠️ **只读派生、不改存储**：`pos.lev` 仍是「开仓倍数」这一身份 —— `shockKindOf` 的冲击形态、
+ *    下单面板的杠杆按钮锁定**继续读它**，保证玩法手感与市场模型一个字不变。
+ * ⚠️ **snap 到 `pos.lev`**：`名义 ÷ 保证金` 在 IEEE 下可能与 `pos.lev` 差 1 ULP
+ *    （如 `0.3 ÷ 0.1 = 3.0000000000000004`），而 `binanceMarginMaint` 的档位判据是
+ *    `lev ≤ 3/5/10` —— 1 ULP 就会把 3x 从 `1.18` 档翻到 `1.15` 档。
+ *    故「与开仓杠杆相等（1e-9 相对）时一律返回 `pos.lev`」⇒ **未调整过保证金的仓位逐位不变**。
+ */
+export const effLevOf = pos => {
+  if (!(pos && pos.margin > 0 && pos.notional > 0)) return (pos && pos.lev) || 0;
+  const L = pos.lev || 0;
+  const r = pos.notional / pos.margin;
+  return Math.abs(r - L) <= 1e-9 * Math.max(1, L) ? L : r;
+};
+
+/**
  * 这一笔订单 / 仓位的**冲击形态品种**（§73.6）—— 决定走 `SHOCK_MODE.coin` 还是 `fut` 那一套
  * `perm` / `betaFast`，也决定它参不参与 NPC 级联。
  *
@@ -290,11 +317,24 @@ const MAINT_MAX_SHARE = 0.5;
 /**
  * 该仓位此刻的**维持保证金率**（B18）—— 按「所 × 工具 × 名义档」取。
  * 只依赖仓位自己的字段（`ex` / `notional` / `margin` / `lev`），**不需要外部时刻**。
+ *
+ * ⚠️ 2026-10-05（本轮）：两个入参**故意不同源** ——
+ *    · **档次**读 `pos.lev`（开仓时选定的杠杆档）：真实交易所的维持档是**仓位设定**，加减保证金
+ *      不会换档。若改用 `effLevOf`，会踩到一个坑：借贷利息逐小时从 `pos.margin` 里扣
+ *      （见 `engine.settleFunding` 的 `pos.margin -= fee`）⇒ 实际杠杆会**连续微漂**
+ *      ⇒ Binance 杠杆的 `lev ≤ 3/5/10` 档位会在持有 1 小时后被 1 ULP 级的漂移翻档
+ *      （实测 5x 那格的维持率会从 12% 掉到 8%，强平价无端跳远 8%）。档位必须钉在设定值上。
+ *    · **退化护栏参考值**读 `1/effLevOf(pos)`（实际杠杆下的初始保证金率）：这才是「此刻
+ *      这个保证金水平下会不会一开出来就爆」的正确参考，且退化支恒返回 `0.5/实际杠杆 < 1/实际杠杆`
+ *      ⇒ 结构上仍不可能「开仓即强平」。（virgin 仓两者恒等 ⇒ 现有玩法逐位不变。）
+ *    · 「可承受跌幅 = `1/实际杠杆 − 维持率`」仍随实际杠杆单调收窄 ⇒ 减保证金后强平线更近
+ *      （该效果由 `liquidationPrice` 里的 `pos.margin` 承担，不依赖换档）。
  */
 export function maintRateOf(pos) {
-  const m = maintRateAt(pos.ex, pos.notional, instrumentOf(pos), pos.lev);
-  const open = 1 / pos.lev;                       // 开仓时的保证金率
-  return m < open ? m : open * MAINT_MAX_SHARE;   // 退化格：见 MAINT_MAX_SHARE
+  const lv = Math.max(1, pos.lev || 0);            // 维持档 = 开仓杠杆档（产品设定，不随加减保证金漂移）
+  const m = maintRateAt(pos.ex, pos.notional, instrumentOf(pos), lv);
+  const open = 1 / effLevOf(pos);                  // 退化格参考：**实际杠杆**下的初始保证金率
+  return m < open ? m : open * MAINT_MAX_SHARE;    // 退化格：见 MAINT_MAX_SHARE
 }
 
 /**

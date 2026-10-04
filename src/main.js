@@ -205,6 +205,10 @@ let godTapAt = 0;
    ⚠️ 与 `godTaps` 同一个口径：纯界面状态，**不进 `s`**。 */
 let godSel = null;
 
+/* 上帝面板当前页（2026-10-05 分页）—— `0` = 资金·时间、`1` = 沙盒。
+   ⚠️ 与 `godSel` 同一个口径：纯界面状态，**不进 `s`**；每次重新打开面板归零（L1306/L1320）。 */
+let godPage = 0;
+
 /* 当前页（A6 · 方案 §6.3）—— `'trade'|'assets'|'settings'`。
    ⚠️ **模块级变量，不进 `s`**（§9 B6 拍板）：它和 `godTaps` / `resetArmed` 一样只是**界面位置**，
       与 `view.js` 的「看哪一段」同一口径 —— 进存档只会污染状态位，重开一局还得记得清。 */
@@ -997,10 +1001,12 @@ function dispatch(node) {
      ⚠️ 设置页那枚「订单冲击」开关已于 2026-10-01 随 `s.impactOn` 字段一起删除 —— 冲击永远是开的。 */
   if (d.god !== undefined) return onGodTap();
   if (d.godcash !== undefined || d.godyear !== undefined || d.godmon !== undefined
-    || d.godday !== undefined || d.godgo !== undefined || d.godoff !== undefined) {
+    || d.godday !== undefined || d.godgo !== undefined || d.godoff !== undefined
+    || d.godtab !== undefined) {
     /* 这几枚只可能出现在上帝面板里，而面板只在 `s.god` 非空时打开。这一行是**状态机不靠 DOM 兜底**：
        万一面板被别的路径留下来（比如读到一份 `god: null` 的档），这里不能抛异常。 */
     if (!s.god) return;
+    if (d.godtab !== undefined) return onGodTab(node);
     if (d.godcash !== undefined) return onGodCash(node);
     if (d.godyear !== undefined) return onGodPick('y', Number(d.godyear));
     if (d.godmon !== undefined) return onGodPick('m', Number(d.godmon));
@@ -1304,6 +1310,7 @@ function onGodTap() {
     /* 与下面那条同一个理由：本局已结束 / 正停在救济金遮罩上，时间不再前进，开面板没有意义 */
     if (s.over || s.pending) return;
     godSel = null;                      // 重新打开 ⇒ 选择器回到「当前日期」起手
+    godPage = 0;                        // 页签同样回到第 1 页
     showGod();
     after();
     return;
@@ -1318,12 +1325,23 @@ function onGodTap() {
   if (s.over || s.pending) return;
   enableGod(s);
   godSel = null;                        // 重新打开 ⇒ 选择器回到「当前日期」起手
+  godPage = 0;                          // 页签同样回到第 1 页
   showGod();
   after();
 }
 
-/** 面板的统一出口 —— 每次都把暂存的选择器带上，点年 / 月 / 日之后才不会跳回「当前日期」 */
-const showGod = () => openGod(s, godSel);
+/** 面板的统一出口 —— 每次都把暂存的选择器 ＋ 当前页带上，点年 / 月 / 日或切页之后才不会跳回去 */
+const showGod = () => openGod(s, godSel, godPage);
+
+/**
+ * 上帝面板页签（`data-godtab="0|1"`，2026-10-05 分页）—— 只改界面页码，**不碰 `s`**。
+ * ⚠️ 与 `godSel` 同一处境：面板是静态 DOM、不参与每帧重绘 ⇒ 切页必须重开一次本层。
+ *    `godSel` 原样保留，所以从沙盒页切回日期页时，「目标」仍停在玩家之前点的日子。
+ */
+function onGodTab(node) {
+  godPage = Number(node.dataset.godtab) || 0;
+  showGod();
+}
 
 /**
  * 面板里那枚「填入」：**直接设定当前交易所的余额**（方案 §2.3），不是在原余额上加。
