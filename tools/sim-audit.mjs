@@ -1481,8 +1481,11 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     ['永动机', { open: 200, days: 30, maxLev: 2 }],
     ['高频猎手', { open: 150, days: 1000, maxLev: 5 }],
     ['日内快枪手', { open: 40, days: 20, maxLev: 2 }],
-    /* v32 通道偏好：OTC 成交占开仓 ≥ 60% —— 盘口 vs OTC 是两条路（用户点名）。 */
-    ['场外玩家', { open: 5, otc: 4, margin: 2, fut: 3, maxLev: 3 }],
+    /* v32 通道偏好：OTC 成交占**全部成交**（开仓 ＋ 平仓/减仓）≥ 60% —— 盘口 vs OTC 是两条路（用户点名）。
+       ⚠️ 2026-10-05 审计修：分母从「仅开仓」改为「开仓 ＋ 平仓」后，本画像同步改成**自洽**的一条
+       （5 笔开仓 ＋ 5 笔平仓；其中 8 笔走 OTC ⇒ 80%）。旧画像 `{ open: 5, otc: 4 }` 混用了基座的
+       `win: 5, loss: 5`（10 笔平仓）⇒ 「5 开 10 平」本身不自洽，是新口径下最先暴露的那条。 */
+    ['场外玩家', { open: 5, win: 3, loss: 2, otc: 8, margin: 2, fut: 3, maxLev: 3 }],
     ['单币信徒', { open: 20, syms: ['BTC'], maxLev: 5 }],
     ['全能多面手', { open: 20, syms: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP'], maxLev: 5 }],
     ['合约狂人', { open: 15, fut: 12, margin: 3, maxLev: 10 }],
@@ -2739,6 +2742,156 @@ check('13d 源码锚点：engine 不再写死 `s.chan = \'book\'`（复位玩家
     check('13d 跨通道平仓真的成交、仓位清空',
       r.ok && !s.positions.BTC, r.why || '');
   }
+}
+
+/* ═════ 14 · 交易涌现性：资金费**双向** · 对手方池**偿付上限** · 海报/称号口径锚点（2026-10-05 用户点名） ═════
+   用户四问：① 玩家能不能靠**吃资金费**赚钱？② 一单没开时海报不该显示 1x；③「场外玩家」称号的分母口径；
+   ④ 玩家已实现盈亏能不能让**对手方**承担（架构 → 另有交付说明，不在本节）。
+   本节把 ①②③ 钉在真实函数 / 真引擎上。⚠️ 不做假绿：b/c 两组**冻结 NPC 建仓速度**（同 §9n）后
+   走 `engine.advanceOneHour` 真结算，读的是真实的 `pos.margin` / `m.npcFund` / `s.realized`。 */
+section('14 · 交易涌现性：资金费双向 · 对手方池偿付上限 · 海报/称号口径锚点');
+
+/* ── a · 资金费公式本身是**双向**的（多方付 / 空方收；负费率反之） ＋ 费率有界 ── */
+{
+  const L = P.openPosition('BTC', 'long', 1000, 100, 10, 0.0004, false);
+  const S = P.openPosition('BTC', 'short', 1000, 100, 10, 0.0004, false);
+  const mark = 1000, rate = 0.0003;
+  check('14a 正费率 ⇒ 多头**付出**（fundingOf > 0）—— 方向不被「永远只付」写死',
+    P.fundingOf(L, mark, rate) > 0, f(P.fundingOf(L, mark, rate), 4));
+  check('14a 正费率 ⇒ 空头**收取**（fundingOf < 0）—— 玩家确实存在「吃资金费」的那一侧',
+    P.fundingOf(S, mark, rate) < 0, f(P.fundingOf(S, mark, rate), 4));
+  check('14a 负费率 ⇒ 双向可逆（多头收、空头付）',
+    P.fundingOf(L, mark, -rate) < 0 && P.fundingOf(S, mark, -rate) > 0);
+  check('14a 中性带（share = 0.5）费率恒 = I = 0.01%/8h（现实里 78–92% 的时间落在这一档）',
+    P.fundingRateOf(P.premiumIndexOf(0.5)) === P.FR.interest, `${P.FR.interest}`);
+  let bounded = true, maxAbs = 0;
+  for (let sh = 0; sh <= 1 + 1e-9; sh += 0.01) {
+    const r = P.fundingRateOf(P.premiumIndexOf(sh));
+    if (!Number.isFinite(r) || Math.abs(r) > P.FR.max + 1e-12) bounded = false;
+    maxAbs = Math.max(maxAbs, Math.abs(r));
+  }
+  check('14a 费率遍历 share∈[0,1] 恒有限且 |F| ≤ FR.max（不会给出打穿账户的极端费率）',
+    bounded, `max|F|=${f(maxAbs, 6)} / cap=${P.FR.max}`);
+  /* ⚠️ **涌现性发现**：`FR.max = 0.75%/8h` 是**上界但当前不可达** —— `P` 被 `FR.k = 0.003` 封在
+     ±0.3%，再过 `clamp(±0.05%)` 修正后，实际能到的最极端费率是 **±0.25%/8h**。这条断言把它记下来：
+     将来谁调 `FR.k / FR.clamp`，这里会先报，免得「以为存在 0.75% 的费率档」。 */
+  check('14a（发现）实际费率封顶 = ±0.25%/8h（由 FR.k 决定；FR.max 只是兜底上界）',
+    Math.abs(maxAbs - 0.0025) < 1e-9, `max|F|=${f(maxAbs, 6)}`);
+}
+
+/* ── b/c · 真引擎：玩家能否**吃到**资金费 —— 双向 ＋ 池的偿付上限 ── */
+{
+  const F = P.FUNDING.hours;
+  const speed0 = god.NPC.speed, mm0 = god.NPC.mm.speed;
+  /* 摆好 NPC 账本后**冻结建仓速度**（同 §9n）⇒ `tickMarket` 不再改动账本 ⇒ `npcNet` 与池的
+     进出一一可算。`ledger`：`netLong` = 六档只有第 0 档净多（npcN > 0）；`flat` = 六档多空各 n（npcN = 0）。 */
+  const run = async ({ ledger, poolFrac = 0, frac = 0.06 }) => {
+    const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'fut', cash: 1e6, i: idx(at(2017, 4, 1)) });
+    s.ex = 'bitmex';
+    s.books[s.ex] = { usd: 0, usdt: 1e6 };
+    s.hintOn = false;                                  // 老手：不触发预警遮罩（否则会 return 在结算之前）
+    s.lev = 5;
+    /* 先定相位：`s.i + 1` 落在 8h 整点 ⇒ `settleFunding` 的永续分支才跑。 */
+    s.i = Math.floor(s.i / F) * F + (F - 1);
+    engine.tickMarket(s, 'BTC');
+    const o = engine.openTrade(s, 'short', frac);       // 玩家做空：正费率下**收取**资金费
+    const pos = s.positions.BTC;
+    if (!o.ok || !pos) return { o };
+    const m = s.mkt.BTC;
+    const price = engine.lastPrice(s, 'BTC');
+    const n = pos.size * price;
+    for (const g of m.npc) {
+      g.long = ledger === 'netLong' ? (g === m.npc[0] ? n * 20 : 0) : n;
+      g.longAvg = price;
+      g.short = ledger === 'netLong' ? 0 : n;
+      g.shortAvg = price;
+      g.longStopped = false; g.shortStopped = false; g.longTp = false; g.shortTp = false;
+    }
+    if (m.mm) { m.mm.long = 0; m.mm.short = 0; m.mm.longAvg = 0; m.mm.shortAvg = 0; }
+    m.npcFund = 0;                                     // 先归零 ⇒ 下面的 `rate` 与池余额无关
+    const rate = engine.fundingForecastOf(s, 'BTC').rate;   // 账本已冻结 ⇒ 这就是结算用的费率
+    const mark = engine.exMarkPrice(s, 'BTC', pos.ex);
+    const exp = pos.size * mark * rate;                // 正 ⇒ 空头应收到这么多
+    m.npcFund = poolFrac * exp;
+    const npcN = m.npc.reduce((a, g) => a + (g.long - g.short), 0)
+      + (m.mm ? m.mm.long - m.mm.short : 0);
+    const before = { margin: pos.margin, fund: m.npcFund, realized: s.realized };
+    god.NPC.speed = 0; god.NPC.mm.speed = 0;
+    try { engine.advanceOneHour(s); } finally { god.NPC.speed = speed0; god.NPC.mm.speed = mm0; }
+    return {
+      s, pos, m, rate, npcN, mark, exp, before,
+      dm: pos.margin - before.margin,                  // 保证金变化（永续仓只受资金费影响）
+      df: m.npcFund - before.fund,                     // 对手方池变化
+      dr: s.realized - before.realized,                // 已实现盈亏变化
+    };
+  };
+
+  /* b · 多头拥挤（npcN ≫ 0）：玩家做空 ⇒ **净收**资金费，钱来自市场净额 ＋ 对手方池。 */
+  const b = await run({ ledger: 'netLong' });
+  check('14b 前置：合约空头建仓成功且落在资金费结算点',
+    !!(b.pos && b.dm !== undefined && b.s.i % F === 0), b.pos ? `i=${b.s.i} rate=${f(b.rate, 6)}` : '建仓失败');
+  if (b.dm !== undefined) {
+    check('14b 多头拥挤 + 玩家做空 ⇒ 费率 > 0（空头是收钱的一侧）', b.rate > 0, `rate=${f(b.rate, 6)}`);
+    check('14b 玩家**真的吃到了**资金费：保证金增加 ≈ 应收（±2%）',
+      b.dm > 0 && Math.abs(b.dm - b.exp) <= Math.abs(b.exp) * 0.02 + 1e-9,
+      `Δmargin=${f(b.dm, 4)} vs 应收=${f(b.exp, 4)}`);
+    check('14b 已实现盈亏同步增加（HUD 副行 / 档案口径与保证金一致）',
+      Math.abs(b.dr - b.dm) < 1e-9, `Δrealized=${f(b.dr, 4)}`);
+    check('14b 零和：玩家收的 ＋ 池收的 = 市场净额该付的（`Δmargin + Δpool = rate × npcN`）',
+      Math.abs((b.dm + b.df) - b.rate * b.npcN) < Math.abs(b.rate * b.npcN) * 0.02 + 1e-6,
+      `Δmargin+Δpool=${f(b.dm + b.df, 2)} vs rate×npcN=${f(b.rate * b.npcN, 2)}`);
+    check('14b 对手方池恒 ≥ 0（收钱不会把池子吃成负数）', b.m.npcFund >= 0, `池=${f(b.m.npcFund, 2)}`);
+  }
+
+  /* c · NPC 净额 = 0（池不被补给）：玩家吃资金费**只能吃到池里有的那部分** = 现实里平台的承兑上限。 */
+  const c0 = await run({ ledger: 'flat', poolFrac: 0 });
+  const c1 = await run({ ledger: 'flat', poolFrac: 0.25 });
+  const c2 = await run({ ledger: 'flat', poolFrac: 10 });
+  if (c0.dm !== undefined && c1.dm !== undefined && c2.dm !== undefined) {
+    check('14c 前置：npcN = 0（池不会被市场净额补给）且玩家应收 > 0',
+      c0.npcN === 0 && c0.exp > 0, `npcN=${f(c0.npcN, 2)} 应收=${f(c0.exp, 4)}`);
+    check('14c 池为空（$0）⇒ 玩家**一分也收不到**（保证金零变动，不是凭空造钱）',
+      Math.abs(c0.dm) < 1e-9 && c0.m.npcFund === 0, `Δmargin=${f(c0.dm, 6)} 池=${f(c0.m.npcFund, 6)}`);
+    check('14c 池只有 25% 应收 ⇒ 玩家**只收到池里有的那点**，池被抽干但不为负',
+      Math.abs(c1.dm - c1.before.fund) < Math.abs(c1.exp) * 0.02 + 1e-9
+      && c1.m.npcFund >= 0 && c1.m.npcFund < Math.abs(c1.exp) * 0.02 + 1e-9,
+      `Δmargin=${f(c1.dm, 4)} vs 池初始=${f(c1.before.fund, 4)} 池余=${f(c1.m.npcFund, 6)}`);
+    check('14c 池远超应收 ⇒ 玩家收足全额（上限只在池不够时生效）',
+      Math.abs(c2.dm - c2.exp) <= Math.abs(c2.exp) * 0.02 + 1e-9 && c2.m.npcFund >= 0,
+      `Δmargin=${f(c2.dm, 4)} vs 应收=${f(c2.exp, 4)}`);
+  }
+}
+
+/* ── d · 海报「最高杠杆」空态锚点（用户点名 bug：一单没开不该显示 1x） ── */
+{
+  const src = fs.readFileSync(path.join(ROOT, 'src/ui/shareCard.js'), 'utf8');
+  check('14d 源码锚点：海报「最高杠杆」按 `rec.open > 0` 守卫',
+    /最高杠杆/.test(src) && /rec\.open > 0\s*\?/.test(src));
+  check('14d 源码锚点：旧的**无条件**写法已删除（一单没开不再报 1x）',
+    !/\['最高杠杆',\s*`\$\{rec\.maxLev\}x`\]/.test(src));
+  /* 根因锚点：`s.stat.maxLev` 初值就是 1 —— 空仓局会把它原样带出来，才需要那道守卫。 */
+  const fresh = createState('classic');
+  check('14d 根因锚点：空仓局 `stat.maxLev === 1` 且 `open === 0`（守卫必须存在）',
+    fresh.stat.maxLev === 1 && fresh.stat.open === 0,
+    `maxLev=${fresh.stat.maxLev} open=${fresh.stat.open}`);
+}
+
+/* ── e · 「场外玩家」分母口径（回归：盘口开仓 + OTC 平仓 不得冒充「几乎不碰盘口」） ── */
+{
+  const T = await import('../src/core/titles.js');
+  const base = {
+    scen: 'classic', reason: engine.OVER.SETTLED, days: 1000, cash0: 1000, final: 2000, peak: 2000,
+    realized: 0, liq: 0, move: 0, god: 0, loan: 0, addOn: 0, mgUp: 0, mgDown: 0, mgCut: 0, part: 0,
+    syms: ['BTC', 'ETH'], win: 0, loss: 0, eq: [],
+  };
+  /* 3 笔**全部在盘口开仓**，3 笔**全部在 OTC 平仓** ⇒ 分母含平仓后占比 = 50% < 60% ⇒ 不该拿称号。 */
+  const r1 = { ...base, open: 3, otc: 3, win: 3, loss: 0, margin: 1, fut: 2, maxLev: 3 };
+  check('14e 盘口开 3 单 + OTC 平 3 单 ⇒ **不**判「场外玩家」（分母含平仓，修掉「只在 OTC 平仓」的冒充）',
+    T.styleOf(r1) !== '场外玩家', T.styleOf(r1));
+  /* 对照：OTC 成交占**全部成交**（开仓 ＋ 平仓）≥ 60% ⇒ 仍照常拿称号。 */
+  const r2 = { ...base, open: 3, otc: 4, win: 1, loss: 0, margin: 1, fut: 2, maxLev: 3 };
+  check('14e 对照：OTC 成交占**全部成交** ≥ 60% ⇒ 仍判「场外玩家」',
+    T.styleOf(r2) === '场外玩家', T.styleOf(r2));
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

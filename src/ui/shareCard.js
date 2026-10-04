@@ -226,7 +226,10 @@ export function drawCard(rec) {
   const ledger = [
     ['本金', fmtMoneyShort(rec.cash0)],
     ['峰值', fmtMoneyShort(rec.peak)],
-    ['最高杠杆', `${rec.maxLev}x`],
+    /* ⚠️ 2026-10-05 审计修：**一单没开就别报「1x」** —— `s.stat.maxLev` 初值就是 1（见 `state.js`），
+       空仓局会把它原样带出来，海报上出现一个玩家从没用过的杠杆。与同页「交易币种」的空态写法
+       （`'—'`）保持一致；开过仓（哪怕只开过 1x）才如实显示。 */
+    ['最高杠杆', rec.open > 0 ? `${rec.maxLev}x` : '—'],
   ];
   ledger.forEach(([label, value], k) => {
     const x = P + k * colW;
