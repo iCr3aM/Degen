@@ -2974,7 +2974,11 @@ export function adjustMargin(s, sym, delta) {
   const c = adjustCheck(s, sym, delta);
   if (!c.ok) return { ok: false, why: c.why };
   const { pos, add, amount, mustUsdt } = c;
-  const price = exPrice(s, sym, pos.ex);   // 调保证金不动行情价，前后同一个
+  /* ⚠️ 2026-10-05 审计修（口径分叉续）：改读**标记价** —— 与 `marginCapsOf`（弹层可减上限）、
+     持仓条、强平判据同源。原来读 `exPrice`（最新价）⇒ 弹层按标记价显示「保证金率 X%」，
+     点下去写出的日志却按最新价报另一个数（且 `mgCut` 统计的「浮盈中提取」判据同样偏了一档）。
+     调保证金不动行情价 ⇒ 前后同一个价，读哪一个都自洽，但必须与估值口径一致。 */
+  const price = exMarkPrice(s, sym, pos.ex);
   if (add) {
     const paid = debit(s, amount, mustUsdt);
     if (!paid) return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用余额不足' };

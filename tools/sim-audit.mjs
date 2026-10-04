@@ -37,6 +37,7 @@ const P = await import('../src/core/positions.js');
 const impact = await import('../src/core/impact.js');
 const C = await import('../src/core/config.js');
 const roll = await import('../src/core/roll.js');
+const F = await import('../src/core/format.js');
 
 const H = C.HOUR_MS;
 const at = (y, m, d = 1, hh = 0) => Date.UTC(y, m, d, hh);
@@ -385,6 +386,29 @@ section('1e · 审计修复核（ADL 浮盈率四情形 · marginCapsOf 价格�
     check('1e 分批平仓日志用**实际杠杆**（与全平 / ADL / 部分强平四处同源）',
       r.ok && !!line && line.text.includes(` ${tag} `) && !/ \d+x /.test(line.text.replace(` ${tag} `, ' ')),
       line ? line.text.slice(0, 80) : (r.why || '无平仓日志'));
+  }
+
+  /* e5 · `adjustMargin` 写出的日志保证金率也必须读**标记价**（与 `marginCapsOf` / 持仓条同源）。 */
+  {
+    const s2 = await mk({ scen: 'classic', sym: 'BTC', mode: 'margin', cash: 300000, i: idx(at(2021, 4, 10)) });
+    s2.mode = 'margin'; s2.lev = 3;
+    const o2 = engine.openTrade(s2, 'long', 0.2);
+    const pos2 = s2.positions.BTC;
+    let ok2 = false, detail = (o2.why || '建仓失败');
+    if (o2.ok && pos2) {
+      const idx2 = engine.markPrice(s2, 'BTC');
+      s2.mkb = { BTC: idx2 * 0.05 };                      // last ≠ mark
+      const pLast = engine.exPrice(s2, 'BTC', pos2.ex);
+      const pMark = engine.exMarkPrice(s2, 'BTC', pos2.ex);
+      const step = engine.marginStepOf(s2, 'BTC', 0.25, true);
+      const r2 = step > 0 ? engine.adjustMargin(s2, 'BTC', step) : { ok: false, why: '步进为 0' };
+      const line = [...s2.log].reverse().find(l => l.tag === 'trade' && /^(增加|减少)保证金/.test(l.text));
+      const wantMark = F.fmtRate(P.marginRateOf(pos2, pMark));
+      const wantLast = F.fmtRate(P.marginRateOf(pos2, pLast));
+      ok2 = r2.ok && !!line && line.text.includes(wantMark) && wantMark !== wantLast;
+      detail = `r2.ok=${r2.ok} step=${f(step, 2)} mark=${wantMark} last=${wantLast}｜` + (line ? line.text.slice(0, 60) : (r2.why || '无日志'));
+    }
+    check('1e 调整保证金日志的保证金率 ≡ 标记价口径（≠ 最新价口径，同源的延伸）', ok2, detail);
   }
 }
 
