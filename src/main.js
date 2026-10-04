@@ -11,7 +11,7 @@ import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, cashCurAt, exchangeOf, has
 import { anyHeld, createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf } from './core/engine.js';
+import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
@@ -1232,7 +1232,8 @@ function onSym(sym) {
  * 通道切换（P2-B3 · GDD §15.3）—— 盘口 ⇄ OTC。
  * ⚠️ 解锁判据统一走 `otcUnlocked`（引擎里那份），这里不另算一遍：两处各写一遍迟早会不一致。
  * ⚠️ `otcOpenFor` 也要挡（P2-B 修订）：禁用态的键本来点不出事件，但**状态机不能只靠 DOM 兜底** ——
- *    少了这一行，一旦那个币还没开通 OTC，`s.chan` 会留下一个 `chanOf` 永远不认的 `'otc'`。
+ *    少了这一行，一旦那个币还没开通 OTC，就会在一条「这个币根本没有的通道」里落一笔选择。
+ *    （2026-10-05 起选择存在 `s.chanBy[s.sym]`，不再是全局 `s.chan`。）
  */
 function onChan() {
   if (!otcUnlocked(s) || !otcOpenFor(s)) return;
@@ -1242,9 +1243,9 @@ function onChan() {
      「切回盘口 / 平仓」这条路不再被堵死。 */
   /* 2026-10-05 用户拍板「只记通道 per 币种」：选择写进**逐币**表（懒建 —— 旧档没有这个键，
      塞进 `save.js` 的 `SHAPE` 会让老档被判不合格而丢弃，见 `state.js` 的 `chanBy` 注释）。
-     换币不再互相覆盖：「BTC 选 OTC → 切到 ETH → 切回 BTC」记得 BTC 是 OTC。 */
-  if (!s.chanBy) s.chanBy = {};
-  s.chanBy[s.sym] = chanOf(s) === 'otc' ? 'book' : 'otc';
+     换币不再互相覆盖：「BTC 选 OTC → 切到 ETH → 切回 BTC」记得 BTC 是 OTC。
+     写入走 `engine.setChanChoice`（唯一写入口，Node 审计据此断言这条真实路径）。 */
+  setChanChoice(s, chanOf(s) === 'otc' ? 'book' : 'otc');
   /* 切到 OTC 就把杠杆夹到 `OTC.levMax`（5x）：大宗通道跟随模式，但机构借贷口径封顶 5x ——
      超过封顶的档位在操作区当场置灰（`render` 与这里同源），比事后再拒绝更直白。
      切回盘口**不还原**原来的杠杆 —— 那需要多存一个字段，而封顶值是个安全的默认。 */

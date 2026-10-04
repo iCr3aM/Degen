@@ -2425,10 +2425,13 @@ section('13d · 逐币通道记忆 · 保证金 1x 封顶 · 资金费基数=名
 /* ── d1 · 逐币通道记忆（玩家实测回归：BTC 选 OTC → 换币 → 切回 BTC 仍记得） ── */
 {
   const s = await mk({ sym: 'BTC', mode: 'margin', cash: 2e7, i: idx(at(2021, 5)) });
-  s.chanBy = { BTC: 'otc' };                     // 玩家在 BTC 上选了 OTC
+  delete s.chanBy;                               // 模拟旧档：根本没有 chanBy
   s.chan = 'book';                               // 兜底默认仍是盘口（只记「选过的币」）
-  check('13d 逐币记忆：BTC 选 otc ⇒ 生效 otc',
-    engine.chanChoiceOf(s) === 'otc' && engine.chanOf(s) === 'otc', engine.chanOf(s));
+  check('13d 写入口前置：旧档无 chanBy', !s.chanBy);
+  engine.setChanChoice(s, 'otc');                // **真实生产写入口**（main.onChan 调的就是它）
+  check('13d 写入口：懒建 chanBy 并落库 BTC=otc，生效 otc',
+    !!s.chanBy && s.chanBy.BTC === 'otc' && engine.chanOf(s) === 'otc',
+    `chanBy.BTC=${s.chanBy && s.chanBy.BTC}`);
   s.sym = 'ETH';                                 // 切到没单独选过的 ETH
   check('13d 换到 ETH ⇒ 回落到兜底 book（不会把 BTC 的选择带过来）',
     engine.chanChoiceOf(s) === 'book' && engine.chanOf(s) === 'book');
@@ -2466,7 +2469,7 @@ section('13d · 逐币通道记忆 · 保证金 1x 封顶 · 资金费基数=名
     engine.chanOf(s2) === 'otc', engine.chanOf(s2));
 }
 check('13d 源码锚点：engine 不再写死 `s.chan = \'book\'`（复位玩家选择的旧 bug 根因）',
-  !/s\.chan\s*=\s*'book'/.test(fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8')));
+  !/s(?:\.chan|\[\s*['"]chan['"]\s*\])\s*=\s*['"]book['"]/.test(fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8')));
 
 /* ── d2 · 保证金加到实际杠杆 1x 即封顶（用户拍板「压平 1x 后不能再加」） ── */
 {

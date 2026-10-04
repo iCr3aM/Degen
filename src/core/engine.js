@@ -315,6 +315,21 @@ export const chanChoiceOf = s => {
 export const chanOf = s => (chanChoiceOf(s) === 'otc' && otcUnlocked(s) && otcOpenFor(s) ? 'otc' : 'book');
 
 /**
+ * 记下玩家对**当前币**的通道选择（2026-10-05 逐币记忆）—— 写进 `s.chanBy[s.sym]`，懒建。
+ *
+ * 这是通道选择的**唯一写入口**（`main.onChan` 调它）。放在引擎里而不是 DOM 侧，是为了让
+ * Node 审计（`tools/sim-audit.mjs`）能对这条**真实生产路径**做断言，而不是去测一份复制品。
+ * @param {'book'|'otc'} chan 认不出来的值一律当 `'book'`
+ * @returns {'book'|'otc'} 落库的值
+ */
+export function setChanChoice(s, chan) {
+  if (!s.chanBy) s.chanBy = {};        // 旧档没有这个键 ⇒ 首次选择时才建（不进 SHAPE，不升版本号）
+  const v = chan === 'otc' ? 'otc' : 'book';
+  s.chanBy[s.sym] = v;
+  return v;
+}
+
+/**
  * 某币**此刻**的供应量闸门（枚）—— 「允许锁走的占比 × 当年真实流通量」（§15.1 / §15.4）。
  *
  * ⚠️ 2026-09-30 起流通量取的是**真实序列**（`market.supplyAt`，读 `index.json` 的 `circulating`，
