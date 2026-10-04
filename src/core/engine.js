@@ -109,8 +109,9 @@ const MARK_HALF = ADV.pushHalf;
 /** 一阶低通系数 `α = 1 − 0.5^(1/半衰期)`（与 `stepAdvPush` 同一个式子） */
 const MARK_ALPHA = 1 - Math.pow(0.5, 1 / MARK_HALF);
 
-/** **指数价** —— 原始行情收盘，不含任何位移。取不到（未上线 / 越界）返回 null。 */
-export function indexPrice(s, sym = s.sym) {
+/** **指数价** —— 原始行情收盘，不含任何位移。取不到（未上线 / 越界）返回 null。
+ *  ⚠️ 不导出（2026-10-04 审计 R6）：仅 `markPrice` / `advanceMarkBias` 用；外部一律走 `markPrice`。 */
+function indexPrice(s, sym = s.sym) {
   return rawCloseAt(sym, s.i);
 }
 
@@ -131,8 +132,9 @@ export function lastPrice(s, sym = s.sym) {
  *    当月 vs 次月），本作的行情包只有**一条价序列**，造不出第二只工具 ⇒ **本轮不做**：
  *    先得有数据源，其次才是模型；现在硬写一条「基差」只会是一条读不通的数（GDD 声明为合成）。
  *    本键存在的**唯一**目的是「别让玩家的插针立刻打爆自己」（三价体系，见上面的段落），别无他用。
+ *  ⚠️ 不导出（2026-10-04 审计 R6）：仅 `markPrice` / `advanceMarkBias` 用。
  */
-export function markBiasOf(s, sym) {
+function markBiasOf(s, sym) {
   const b = s.mkb && s.mkb[sym];
   return Number.isFinite(b) ? b : 0;
 }
@@ -291,8 +293,9 @@ export const chanOf = s => (s.chan === 'otc' && otcUnlocked(s) && otcOpenFor(s) 
  *    与 K 线头部显示的流通量是两套口径（详见 `config.SUPPLY_SHARE` 的注释）。
  * ⚠️ 取不到流通量（清单里没这个币 / `manifest` 还没加载）⇒ 返回 `Infinity`（**不设闸门**）：
  *    宁可漏放一条背景约束，也不能因为一个数据缺格把所有买入都拒掉。
+ *  ⚠️ 不导出（2026-10-04 审计 R6）：仅 `openCheck` 用。
  */
-export function supplyCapOf(sym, i) {
+function supplyCapOf(sym, i) {
   const share = SUPPLY_SHARE[sym];
   const circ = supplyAt(sym, i);
   return share != null && circ > 0 ? share * circ : Infinity;
@@ -929,8 +932,9 @@ function pushFlow(s, sym, dir, notional, give = 1, kind = 'fut', player = true) 
    这一层给每个币补一组「NPC 净持仓 ＋ 情绪热度」：热度由**近 24h 的价格收益**与玩家自己的成交
    一起烧起来，反过来驱动 NPC 顺势建仓，跌破强平线时再触发踩踏级联（一条反向下台阶）。 */
 
-/** 热度只读给 UI（缺格时返回中性 `HEAT.base` —— 与 `mktOf` 的初值一致）。 */
-export const heatOf = (s, sym) => (s.mkt && s.mkt[sym] ? s.mkt[sym].heat : HEAT.base);
+/** 热度只读给 UI（缺格时返回中性 `HEAT.base` —— 与 `mktOf` 的初值一致）。
+ *  ⚠️ 不导出（2026-10-04 审计 R6）：仅引擎内 `stepAdvPush` 用；UI 走 `fngOf`（见 render.js）。 */
+const heatOf = (s, sym) => (s.mkt && s.mkt[sym] ? s.mkt[sym].heat : HEAT.base);
 
 /* ── 恐惧贪婪指数（**显示轨** · 2026-10-04 用户拍板「显示轨解耦」）────────────────
    详见 `god.FNG` 的常量注释：`heat` 是逐小时的**玩法引擎**（记忆 ≈ 14h，注定几天内横跳），
@@ -1247,8 +1251,9 @@ export function openInterestOf(s, sym) {
  * ⚠️ **展示侧不再用它**（2026-10-03 拍板）：见 `retailLongShareOf`（散户子集口径）。
  * ⚠️ 两侧之和为 0（没有任何仓位）⇒ 返回 `null`，不是 0.5。
  * ⚠️ 纯读，同 `openInterestOf`（绝不调 `mktOf`）。
+ * ⚠️ 不导出（2026-10-04 审计 R6）：仅 `fundingOf` / `settleFunding` 用。
  */
-export function longShareOf(s, sym) {
+function longShareOf(s, sym) {
   const m = s.mkt && s.mkt[sym];
   let L = 0, S = 0;
   if (m && m.npc) for (const g of m.npc) { L += g.long; S += g.short; }
@@ -1366,6 +1371,10 @@ export function cdriOf(s, sym = s.sym) {
         · 做市盘 —— `NPC.mm.lev`（3x，不参与封顶）；
         · 玩家该币仓位 —— `pos.lev`（开仓时已由 `openCheck` 钳过，含 OTC 的 `OTC.levMax` 封顶）。
       ⚠️ 一律**不读** `s.lev`（那是「下次下单想用的杠杆」，与已持仓的杠杆可能不同）。
+      ⚠️ **R3（2026-10-04 审计）**：这里原来**又**按「当前通道」把 `pos.lev` 钳一次 `OTC.levMax`
+         —— 与注释「开仓已钳」重复，且**中途切通道会改写历史仓位的杠杆口径**（同一张仓在
+         otc / book 两个通道下算出不同的 CDRI）。杠杆在**开仓那一刻锁定**（`openCheck` 已按当时
+         通道钳好并存进 `pos.lev`）⇒ 这里**直接读 `pos.lev`**，不再重估。
       没有任何仓位（Σ名义 = 0）⇒ 中性 50。 */
   {
     let num = 0, den = 0;
@@ -1383,7 +1392,7 @@ export function cdriOf(s, sym = s.sym) {
     const pos = s.positions && s.positions[sym];
     if (pos && pos.size > 0 && pos.lev > 0) {
       const n = positionNotionalOf(s, sym);
-      const lv = chanOf(s) === 'otc' ? Math.max(1, Math.min(pos.lev, OTC.levMax)) : Math.max(1, pos.lev);
+      const lv = Math.max(1, pos.lev);      // 已持仓的杠杆按开仓时锁定的值读（R3），不按当通道重估
       if (n > 0) { num += n; den += n / lv; }
     }
     const raw = den > 0 ? num / den : NaN;
@@ -2720,7 +2729,12 @@ export function closeTrade(s, why = '手动', frac = 1) {
      走上一步的**只有杠杆实物多头** —— 平掉一张合约仓时 `capturedOf` 本来就没变，函数内部会跳过。 */
   refreshOverhang(s, sym, SHOCK.closeGive);
 
-  if (checkRuin(s)) return { ok: false, why: s.over.reason };
+  /* ⚠️ R1（2026-10-04 审计）：**平仓本身已经落账**（上面 `credit` / `pushLog` 全做完了），
+     此处只行使「归零判定」的副作用（`checkRuin` 会写 `s.pending` 或 `s.over`）——
+     返回值必须是 **`ok: true`**。原来把 `checkRuin` 的返回值当成平仓结果，于是「平仓成功
+     ＋ 紧接破产」会被 UI 当成平仓**失败**报一条 `bad`（`main.js` 的 `if (!r.ok ...)`）。
+     破产的收场交给时钟那一步（`advanceOneHour` 会再次 `checkRuin`），与这里不冲突。 */
+  checkRuin(s);
   return { ok: true };
 }
 
@@ -3508,8 +3522,15 @@ function settleFunding(s) {
      正负号本身就是方向，不再写「支出 / 收入」四个字（日志条一行 nowrap，多两个汉字就挤爆）。 */
   /* 借贷利息：逐小时的钱**已经在上面落账**，这里只做 **窗口累计 ＋ 8 小时整点播报**
      （24 小时最多一条，不刷屏）。
-     `grossM` 取**本小时**的借入名义和当代表值 ⇒ `rate = Σ利息 ÷ 借入` 就是**这个窗口的有效费率**
-     （借入不变、满 8 小时时逐位等于改动前的 `日息 × 8/24`；持仓不满一个窗口时也如实反映）。
+     `ied` 是**窗口内 Σ利息**（逐小时累加），`grossM` 取**本小时**的借入名义当**代表值**
+     ⇒ `rate = Σ利息 ÷ 借入` 是**这个窗口的有效费率**（借入不变、满 8 小时时逐位等于改动前的
+     `日息 × 8/24`；持仓不满一个窗口时也如实反映）。
+     ⚠️ **R2（2026-10-04 审计）· 这是近似，不是精确值**：`ied` 按小时累加、`grossM` 却只取
+        最后一小时 ⇒ 若**借入量在窗口内变化**（中途加仓 / 减仓 / 改杠杆），报出的费率会偏向
+        最后那一小时的规模（此时 `收益` 金额仍逐位正确，只有这条「费率」是近似）。
+        之所以**不改成「Σ借入」的严格时间加权**：那会把满窗口时的读数从「8 小时等效费率」
+        变成「小时费率」，**整体缩小 8 倍** —— 那是一次玩家可见的口径变更，需单独拍板，
+        不属于本次只读审计的机械修范围。
      ⚠️ 无持仓的那几小时 `grossM = 0` ⇒ **不动窗口**（把已累计的留着，等边界一起播）。 */
   if (grossM > 0 && ied !== 0) {
     s.intWin.ied += ied;

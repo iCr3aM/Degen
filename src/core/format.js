@@ -83,9 +83,10 @@ export function fmtMoney(n, { sign = false } = {}) {
  *        · 活值（`render.js`）—— 每帧重算，必须走**迟滞**，不能在这里判断。
  *
  * ⚠️ `|n| < 1e5` 时**逐位走 `fmtMoney`**（`$1,000.0` 原样）—— 早期玩家在万级，`k` 反而陌生。
- * ⚠️ 导出档位是为了让 `render.js` 的迟滞与这里**共用同一组下沿**（升档立刻、降档滞后 10%）。
+ * ⚠️ 迟滞版 `moneyTierHeld`（导出）与这里**共用同一组下沿**（升档立刻、降档滞后 10%）—— 不许各写一份。
  */
-export function moneyTier(a) {
+// ⚠️ 不导出（2026-10-04 审计 R23）：迟滞版 `moneyTierHeld` 才是外部入口，纯门槛只在本文件内用。
+function moneyTier(a) {
   return a < 1e5 ? 0 : a < 1e6 ? 1 : a < 1e9 ? 2 : 3;
 }
 
@@ -174,8 +175,12 @@ export function fmtQty(n) {
   const [base, suf, d] = TIER_UNIT[tier];
   const s = (a / base).toFixed(d);
   if (Number(s) >= 1000) {                        // 进位兜底：`999,999` → `1000.0K` ⇒ 抬一档
+    /* ⚠️ R21（2026-10-04 审计）：兜底位的小数位必须与**目标档**的 `TIER_UNIT` 逐位相同，
+       否则同一个数在门槛两侧换写法。原 tier2 用 2 位（印 `1.00B`，而 `TIER_UNIT` 的 B 是 1 位），
+       且缺 tier3 兜底 ⇒ `≥ 1e12` 会印成 `1000.0B`（而 `fmtCap` 在 `≥ 1e12` 印 `$1.00T`）。 */
     if (tier === 1) return (a / 1e6).toFixed(1) + 'M';
-    if (tier === 2) return (a / 1e9).toFixed(2) + 'B';
+    if (tier === 2) return (a / 1e9).toFixed(1) + 'B';
+    if (tier === 3) return (a / 1e12).toFixed(2) + 'T';
   }
   return s + suf;
 }
@@ -203,7 +208,10 @@ export function fmtCap(n) {
 export function fmtPct(x, digits = 1) {
   if (!Number.isFinite(x)) return '--';
   const v = x * 100;
-  return (v >= 0 ? '+' : '') + v.toFixed(digits) + '%';
+  /* ⚠️ R20（2026-10-04 审计）：先舍零再判号 —— 极小小负值（如 `-0.0001`）原来印 `-0.0%`，
+     与 `fmtMoney` 已修的负零同类。舍成零后按「零」显示（`+0.0%`，与真 0 一致），不带负号。 */
+  const r = Number(v.toFixed(digits));
+  return (r >= 0 ? '+' : '') + r.toFixed(digits) + '%';
 }
 
 /**
@@ -221,6 +229,7 @@ const MONTHS = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11'
 
 /** 游戏内日期：`2013-01-01 00:00`（UTC，与数据源同一时区） */
 export function fmtDate(ts, withHour = true) {
+  if (!Number.isFinite(ts)) return '--';      // R22：与其余 fmt* 同口径（否则印 `NaN-NaN-NaN`）
   const d = new Date(ts);
   const y = d.getUTCFullYear();
   const m = MONTHS[d.getUTCMonth()];
@@ -235,6 +244,7 @@ export function fmtDate(ts, withHour = true) {
  * 保留小时是因为日志里可能有「几小时前」的事件（如资金费率每 8 游戏小时一次）。
  */
 export function fmtHour(ts) {
+  if (!Number.isFinite(ts)) return '--';      // R22：同 `fmtDate`
   const d = new Date(ts);
   return String(d.getUTCHours()).padStart(2, '0') + ':00';
 }

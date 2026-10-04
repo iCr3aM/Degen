@@ -34,7 +34,8 @@ export const NEWS_HOURS = 24;
  * ⚠️ 锚点是**日粒度**（`t` 一律 UTC 零点）⇒ 第一条播报时刻默认是**事件当天 01:00 UTC**。
  *    个别事件真实发生在当天傍晚的（2024-01 ETF 获批 = 20:30 UTC），用 `h` 把播报挪到那之后。
  */
-export const NEWS_DELAY = 1;
+// ⚠️ 不导出（2026-10-04 审计 R15）：仅本模块 `newsStartOf` / `congStartOf` 用。
+const NEWS_DELAY = 1;
 
 /**
  * 锚点表。字段：
@@ -165,13 +166,19 @@ function hitAt(a, r, k) {
   const c = candleAt(r.sym, k);
   if (!c) return false;
   if (r.k === 'lvl') return r.dir > 0 ? c.h >= r.v : c.l <= r.v;
-  const pc = closeAt(r.sym, newsBaseOf(a) - 1);
+  /* ⚠️ R10（2026-10-04 审计）：基准必须是**事件日的前一日**收盘 ⇒ 取 `a.at - 1`（`a.at` 是 UTC 零点，
+     前一小时 = 前一日 23:00）。原来用 `newsBaseOf(a) - 1`（含 `h`），`h ≠ 0` 时会取到**事件当天**
+     的某一小时（如 `h = 20` ⇒ `at + 19`）—— 当前无「`mv` ＋ `h`」的组合，属潜伏 bug。 */
+  const pc = closeAt(r.sym, a.at - 1);
   if (!pc) return false;
   return r.dir > 0 ? c.h / pc - 1 >= r.pct : c.l / pc - 1 <= -r.pct;
 }
 
-/** 拥堵型结果的播报时刻：拥堵**爬满**那一刻（`at + ramp 天 + NEWS_DELAY`） */
-const congStartOf = (a, r) => a.at + r.w * 24 + NEWS_DELAY;
+/** 拥堵型结果的播报时刻：拥堵**爬满**那一刻（`at + ramp 天 + NEWS_DELAY`）。
+ *  ⚠️ R11（2026-10-04 审计）：爬坡天数取 `a.congestion.ramp`（**拥堵规格自己的字段**），
+ *     不再用 `r.w` —— 两者当前取值恰好相同，但语义上 `ramp` 才是「拥堵爬满要几天」的真源
+ *     （`r.w` 是结果新闻的**扫描窗口**，与 ramp 是两回事）。`r.k === 'cong'` 的锚点必带 `congestion`。 */
+const congStartOf = a => a.at + a.congestion.ramp * 24 + NEWS_DELAY;
 
 /**
  * 第 `i` 根 K 线是不是某条锚点**第二条 · 结果新闻**的播报时刻。
@@ -190,7 +197,7 @@ export function resultNewsStartAt(i) {
   for (const a of ENTRIES) {
     const r = a.r;
     if (!r || !a.rt) continue;
-    if (r.k === 'cong') { if (i === congStartOf(a, r)) return a; continue; }
+    if (r.k === 'cong') { if (i === congStartOf(a)) return a; continue; }
     const from = newsStartOf(a) + 1;          // ① 至少等第一条播完
     const to = newsStartOf(a) + r.w * 24;
     if (i < from + 1 || i > to + 1) continue; // 播报时刻 = 命中根 + 1
@@ -224,8 +231,9 @@ export const congestionAnchors = () => ENTRIES.filter(a => a.congestion && a.cha
  */
 const WARN_ENTRIES = ENTRIES.filter(a => a.warn);
 
-/** 预警提前量（**小时**）—— 与 `engine.js` 的 `WARN_LEAD`（毫秒）同为 7 天，这里换算成 `s.i` 的刻度 */
-export const WARN_LEAD_HOURS = 7 * 24;
+/** 预警提前量（**小时**）—— 与 `engine.js` 的 `WARN_LEAD`（毫秒）同为 7 天，这里换算成 `s.i` 的刻度
+ *  ⚠️ 不导出（2026-10-04 审计 R15）：仅 `warnAnchorAt` 用。 */
+const WARN_LEAD_HOURS = 7 * 24;
 
 /**
  * 第 `i` 根 K 线是不是某条预警锚点的**预告时刻**（= `at − 7 天`）。

@@ -696,8 +696,9 @@ export const LEV_CAP_STEPS = [
   { from: Date.UTC(2016, 4, 13), cap: 100 },     // BitMEX XBTUSD 永续首创 100x
 ];
 
-/** 某一时刻**全市场可得**的最高杠杆（升序取「最后一个 `from <= t`」；早于首档一律 1） */
-export function levCapAt(t) {
+/** 某一时刻**全市场可得**的最高杠杆（升序取「最后一个 `from <= t`」；早于首档一律 1）
+ *  ⚠️ 不导出（2026-10-04 审计 R5）：仅 `npcLevOf` 用，放出去只会多一套「杠杆上限」口径。 */
+function levCapAt(t) {
   let cap = 1;
   for (const s of LEV_CAP_STEPS) { if (s.from <= t) cap = s.cap; else break; }
   return cap;
@@ -717,8 +718,9 @@ export const npcLevOf = (t, base) => Math.min(base, levCapAt(t));
  * ⚠️ 过冲（先砸过头再修复）**不写在这里** —— 它由 NPC 恐慌盘的真实订单流产生（§73.4）。
  * @param {number} e 经过的游戏小时数
  * @param {{perm:number, betaFast:number}} [p] 该笔成交的形态参数（缺省用 `SHOCK` 的中性值）
+ * ⚠️ 不导出（2026-10-04 审计 R5）：仅 `residualAt` 用，衰减形态不许外部另算一份。
  */
-export function decay(e, p) {
+function decay(e, p) {
   if (!(e > 1)) return 1;          // e ≤ 1（含 0 与负数）一律视为「刚开始」，不衰减
   const perm = p?.perm ?? SHOCK.perm;
   const betaFast = p?.betaFast ?? SHOCK.betaFast;
@@ -734,8 +736,9 @@ export function decay(e, p) {
  *   `residual(j) = Σ v_k × decay(j − at_k)`，这才是 Bouchaud 的叠加式。
  *   单池模型的毛病：分 10 笔买进去，第 2 笔会把第 1 笔的衰减进度**吃掉**
  *   （一笔 1 小时前的单和一笔 100 小时前的单被合并成「刚刚发生的一笔」）。
+ * ⚠️ 不导出（2026-10-04 审计 R5）：仅本模块 `factorFor` 用，外部一律走 `factorFor`。
  */
-export function residualAt(s, sym, j) {
+function residualAt(s, sym, j) {
   const list = s.flow && s.flow[sym];
   if (!list || !list.length) return 0;
   let v = 0;
@@ -960,7 +963,11 @@ export function exDevOf(exId, sym, hour, seed = GAME.seed) {
  * ⚠️ 只有「上次填的资金」这一个字段 —— 价格相关的键（`scale` / `mult`）已随 2026-09-29 的瘦身删除。
  */
 export function enableGod(s) {
-  s.god = { lastFill: s.god?.lastFill ?? 100000 };
+  /* ⚠️ R4（2026-10-04 审计）：**合并写入**，不是整体覆盖 —— 原来那句 `s.god = { lastFill: … }`
+     会把 `s.god` 上除 `lastFill` 之外的键一次性抹掉（当前只有这一个键，暂无实害；
+     但注释既然承诺「只补缺失的键」，实现就该按合并写，日后加键不必回头再踩一次）。 */
+  if (!s.god) s.god = {};
+  if (s.god.lastFill == null) s.god.lastFill = 100000;
   /* 统计（v21 · M1）：这一局**动过上帝模式**（称号「上帝之手」读它）。
      写在解锁那一刻而不是每次开面板：它要回答的是「这局的成绩干不干净」。 */
   s.stat.god = true;

@@ -56,8 +56,9 @@ function anchorShape(elapsedDays, c) {
   return (c.days - elapsedDays) / c.fall;
 }
 
-/** 某一时刻的锚点总加成（分钟级平滑，按小时步进时看不出台阶） */
-export function anchorAddAt(t) {
+/** 某一时刻的锚点总加成（分钟级平滑，按小时步进时看不出台阶）
+ *  ⚠️ 不导出（2026-10-04 审计 R15）：仅本模块 `congestionOf` 用。 */
+function anchorAddAt(t) {
   let sum = 0;
   for (const a of congestionAnchors()) sum += a.congestion.add * anchorShape((t - a.t) / DAY_MS, a.congestion);
   return sum;
@@ -78,8 +79,9 @@ export const PULSE = {
   decayHours: 48,
 };
 
-/** 当前全部脉冲的瞬时值：每条按「48 小时线性衰减」折算（同时只允许一笔在途，但脉冲可叠加） */
-export function pulseOf(s) {
+/** 当前全部脉冲的瞬时值：每条按「48 小时线性衰减」折算（同时只允许一笔在途，但脉冲可叠加）
+ *  ⚠️ 不导出（2026-10-04 审计 R15）：仅本模块 `congestionOf` 用。 */
+function pulseOf(s) {
   const list = s.pulse || [];
   let sum = 0;
   for (const p of list) {
@@ -152,7 +154,8 @@ const WAIT_BANDS = [
   { lo: 81, hi: 100, wLo: 360, wHi: 1200 },
 ];
 
-export function blockWaitMinutes(congestion) {
+// ⚠️ 不导出（2026-10-04 审计 R15）：仅本模块 `chainDelayMinutes` 用。
+function blockWaitMinutes(congestion) {
   const c = clamp(congestion, 0, 100);
   if (c <= 20) return 10;
   for (const b of WAIT_BANDS) {

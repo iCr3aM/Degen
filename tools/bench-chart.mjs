@@ -21,13 +21,16 @@
 
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /* ── 浏览器桩 ───────────────────────────────────────────────────────── */
 globalThis.document = { documentElement: {} };
 globalThis.getComputedStyle = () => ({ getPropertyValue: () => '#3ba55d' });
 globalThis.devicePixelRatio = 2;
 
-const ROOT = process.cwd();
+/* T11（2026-10-04 审计）：原来用 `process.cwd()` —— 从仓库根之外的目录运行（如 `node tools/…`
+   的上级目录）就找不到数据包、报「读不到 data/…」。改成**相对本文件**定位仓库根，与运行目录无关。 */
+const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 /* ⚠️ 运行时的 `DATA_DIR` 是 `data`（Vite 把 `public/` 当站点根）⇒ 磁盘上真实路径要多一层
    `public/`。两处都试，谁存在读谁。 */
 globalThis.fetch = async url => {

@@ -35,8 +35,9 @@ const K_TICK = 0xc2b2ae3dn;
  * 双射的意义：**不同的输入必得不同的输出**，相邻种子不会相关（这正是流式 PRNG 用近邻种子时的经典坑）。
  * @param {bigint} x
  * @returns {bigint} 落在 64 位内
+ * ⚠️ 不导出（2026-10-04 审计 R23）：仅本模块 `rand` 用。
  */
-export function splitmix64(x) {
+function splitmix64(x) {
   x = (x + PHI) & MASK64;
   x = ((x ^ (x >> 30n)) * MIX1) & MASK64;
   x = ((x ^ (x >> 27n)) * MIX2) & MASK64;
@@ -50,8 +51,9 @@ export function splitmix64(x) {
  *    「拿一个 32 位种子 → 换一个随机数」，**不保留任何内部状态**。
  *    要一串数就多调几次 `rand(...)`（每次换 `tick`），而不是推进某个流。
  * @param {number} a 32 位种子
+ * ⚠️ 不导出（2026-10-04 审计 R23）：仅本模块 `rand` 用。
  */
-export function mulberry32(a) {
+function mulberry32(a) {
   a = (a + 0x6d2b79f5) | 0;
   let t = Math.imul(a ^ (a >>> 15), 1 | a);
   t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;

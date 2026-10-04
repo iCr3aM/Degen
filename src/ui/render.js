@@ -96,6 +96,15 @@ function moneySlot(key, n, { sign = false } = {}) {
  *  顶栏这几处虽然每帧重算，但绝大多数帧的值是同一个。读 `textContent` / `className` 不触发布局。 */
 const setText = (n, v) => { if (n.textContent !== v) n.textContent = v; };
 const setCls = (n, v) => { if (n.className !== v) n.className = v; };
+/** `aria-disabled` 的减写版（R27 · 2026-10-04 审计）：只有「`'true'`」与「没有」两态，
+ *  每帧无条件 `set/removeAttribute` 同样是一次 DOM 写 —— 值没变就不动。 */
+const setAria = (n, off) => {
+  if (off) { if (n.getAttribute('aria-disabled') !== 'true') n.setAttribute('aria-disabled', 'true'); }
+  else if (n.hasAttribute('aria-disabled')) n.removeAttribute('aria-disabled');
+};
+/** CSS 变量的减写版（R26 · 2026-10-04 审计）：每帧 `setProperty` 都会触发一次样式失效，
+ *  值没变就不写（与 `.sym.locked` 那条 `--pf` 同一套口径）。 */
+const setVar = (n, k, v) => { if (n.style.getPropertyValue(k) !== v) n.style.setProperty(k, v); };
 
 /** 重挂一个动画类，让那条 CSS 动画重播一遍（沿用总资产闪烁的既有做法，2026-10-03 提成函数）。
  *  `remove` 之后必须**强制一次样式重算**，否则同一帧内 `add` 回去浏览器会认为「没变过」。 */
@@ -249,7 +258,10 @@ export function mount(root) {
      放同一列是因为两者会同时出现（转账途中拖 K 线很常见），并排会打架。 */
   const chartEta = el('div', 'chart-eta');
   chartEta.hidden = true;
-  const chartLock = el('div', 'chart-lock', '双击回最新');
+  /* ⚠️ R31（2026-10-04 审计）：文案与新手引导（`main.js` GUIDE 第 4 步「双击复位」）、
+     `view.js` 的复位注释**统一为「双击复位」** —— 该手势同时做三件事（回最新根 ＋ 恢复默认根数
+     ＋ 价格轴归零），「回最新」只说了其一、还与引导对不上。 */
+  const chartLock = el('div', 'chart-lock', '双击复位');
   chartLock.hidden = true;
   /* 市场热度（§73.5）＋ 派生量两枚（缺口 4 / 19）—— **一行三格**，格间一条细分隔线：
        [热度条] 恐慌 ｜ OI 12.3M ｜ 多空 62/38
@@ -759,7 +771,7 @@ export function update(refs, s, view) {
      「继续 / 暂停」和切页都不该可用 —— 玩家只有一个选择要回答（借，还是收摊）。
      ⚠️ 切页在 `main.js` 的 `onTab` 里也拦了一道（状态机不能只靠 DOM 兜底）。 */
   const lockedUI = !!s.over || !!s.pending;
-  refs.pauseBtn.textContent = s.paused ? '继续' : '暂停';
+  setText(refs.pauseBtn, s.paused ? '继续' : '暂停');   // R28：走减写版
   refs.pauseBtn.classList.toggle('on', s.paused);
   refs.pauseBtn.disabled = lockedUI;
 
@@ -780,26 +792,26 @@ export function update(refs, s, view) {
   refs.colBtn.textContent = view.redUp ? '红涨' : '绿涨';
   refs.colBtn.classList.toggle('on', view.redUp);
 
-  /* 账户三格 */
+  /* 账户三格（R25：改用 `setText`/`setCls` 减写版，不再直写 `textContent`/`className`） */
   const eq = equity(s);
-  refs.eqVal.textContent = moneySlot('eq', eq);
-  refs.eqVal.className = 'num ' + (eq >= s.cash0 ? 'up' : 'down');
+  setText(refs.eqVal, moneySlot('eq', eq));
+  setCls(refs.eqVal, 'num ' + (eq >= s.cash0 ? 'up' : 'down'));
   /* 副行两个数**都带符号**（Batch 4 · B17）：正绿负红，与持仓盈亏同一口径。
      颜色写在这里而不是 CSS 默认值 —— 见 `style.css` 里 `.hud .cell u.up` 那段注释。 */
-  refs.eqSub.textContent = `已实现 ${moneySlot('realized', s.realized, { sign: true })}`;
+  setText(refs.eqSub, `已实现 ${moneySlot('realized', s.realized, { sign: true })}`);
   /* `sign` ＝ 色盲第二通道（B6-c · §7.6）：在 `.up` / `.down` 的颜色之外再挂一枚 ▲/▼ */
-  refs.eqSub.className = 'num sign ' + (s.realized >= 0 ? 'up' : 'down');
+  setCls(refs.eqSub, 'num sign ' + (s.realized >= 0 ? 'up' : 'down'));
 
-  refs.cashVal.textContent = moneySlot('cash', available(s));
+  setText(refs.cashVal, moneySlot('cash', available(s)));
   /* 副行优先级：有持仓时显示未实现盈亏，否则回落到「初始 $1,000」这个死常量。
      （原来「有贷款时优先显示负债」，已随 2026-10-01 的一次性救济金改造整体移除 —— 那笔钱不用还。） */
   if (anyHeld(s)) {
     const u = totalUnrealized(s);
-    refs.cashSub.textContent = `未实现 ${moneySlot('unreal', u, { sign: true })}`;
-    refs.cashSub.className = 'num sign ' + (u >= 0 ? 'up' : 'down');
+    setText(refs.cashSub, `未实现 ${moneySlot('unreal', u, { sign: true })}`);
+    setCls(refs.cashSub, 'num sign ' + (u >= 0 ? 'up' : 'down'));
   } else {
-    refs.cashSub.textContent = `初始 ${fmtMoney(s.cash0)}`;
-    refs.cashSub.className = 'num mut';
+    setText(refs.cashSub, `初始 ${fmtMoney(s.cash0)}`);
+    setCls(refs.cashSub, 'num mut');
   }
 
   setText(refs.exName, exchangeOf(s.ex)?.name ?? '--');
@@ -1051,12 +1063,12 @@ export function update(refs, s, view) {
      · 杠杆模式（v9）：买入 / 卖出 **手上有仓位时也照样可用** —— 反向那一枚就是平仓、
        同向那一枚是**加仓**（v13 · B4，并进同一条仓位；同一个币仍然只许一条）。
 
-     ⚠️ **暂停闸门**（本轮 ④）：暂停时**所有会动钱的操作**都画成禁用（`.act:disabled` 的 .45）——
+     ⚠️ **暂停闸门**（本轮 ④）：暂停时**所有会动钱的操作**都画成禁用（`.act:disabled` 那档）——
        原来暂停只由 `main.js` 的分派层拦下并回一条日志 ⇒ 按钮**看起来仍然是能按的**，
        玩家的第一反应是「点了没反应」，而不是「现在是暂停」。画灰才是诚实的状态。
        ⚠️ 只禁**下单 / 平仓 / 换所 / 切通道**这四类（用户拍板）；杠杆档 / 金额档 / 切模式 /
           切币 / 切页 / 日志浮层 / 设置 / 上帝面板**照常可用**，所以这里一个字都不碰它们。
-       ⚠️ `view.guide` 豁免：新手引导期间 `s.paused` 恒为真，而第 4 步正高亮着「买入」教玩家怎么用 ——
+       ⚠️ `view.guide` 豁免：新手引导期间 `s.paused` 恒为真，而**第 6 步**正高亮着「买入」教玩家怎么用 ——
           把那一枚画成灰与引导自相矛盾（详见 `main.js` 里 `view.guide` 那段注释）。 */
   const frozen = s.paused && !view.guide;
   /* 「行情还在路上」（2026-10-02 审计修 · 用户拍板）—— `s.sym` 已经切过去了，但那个币的数据包
@@ -1113,13 +1125,12 @@ export function update(refs, s, view) {
     }
     b.disabled = off;
   }
-  if (sellOff) refs.sellBtn.setAttribute('aria-disabled', 'true');
-  else refs.sellBtn.removeAttribute('aria-disabled');
+  /* R27：`aria-disabled` 走减写版（`setAria`）—— 每帧无条件 `set/removeAttribute` 同样是 DOM 写。 */
+  setAria(refs.sellBtn, sellOff);
   /* 另外四枚的「行情加载中」也只挂样式、不禁用 —— 与「卖出」同一套（`.off` 本就带 `cursor: default`）。 */
   for (const b of [refs.buyBtn, refs.longBtn, refs.shortBtn, refs.closeBtn]) {
     b.classList.toggle('off', waiting);
-    if (waiting) b.setAttribute('aria-disabled', 'true');
-    else b.removeAttribute('aria-disabled');
+    setAria(b, waiting);
   }
 
   /* 换所键（顶栏那枚双行按钮）**同样吃暂停闸门**（本轮 ④）：换所是一笔要等好几根 K 线的
@@ -1151,12 +1162,12 @@ export function update(refs, s, view) {
     /* ⑤ 账本抬头（方案 §6 · D3）：账是按所分的，所以先把「这两个数属于哪家所」写出来；
         右端接「在途」——它是**此刻唯一不在任何所账上的钱**，玩家在资产页看不见它就会以为钱丢了。 */
     const ex = exchangeOf(s.ex);
-    refs.asExName.textContent = ex ? ex.name : s.ex;
+    setText(refs.asExName, ex ? ex.name : s.ex);
     if (s.transfer) {
       const to = exchangeOf(s.transfer.to);
-      refs.asExNote.textContent = `在途 ${to ? to.name : s.transfer.to} · 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`;
+      setText(refs.asExNote, `在途 ${to ? to.name : s.transfer.to} · 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`);
     } else {
-      refs.asExNote.textContent = '';
+      setText(refs.asExNote, '');
     }
 
     /* ① 两格余额（v13）：副行写**占比**（基数是当前所的余额合计，不是权益 ——
@@ -1164,11 +1175,11 @@ export function update(refs, s, view) {
     const usd = slotOf(s, 'usd');
     const usdt = slotOf(s, 'usdt');
     const book = usd + usdt;
-    refs.asUsd.textContent = moneySlot('usd', usd);
-    refs.asUsdt.textContent = moneySlot('usdt', usdt);
+    setText(refs.asUsd, moneySlot('usd', usd));
+    setText(refs.asUsdt, moneySlot('usdt', usdt));
     const share = v => (book > 0 ? `占 ${Math.round(v / book * 100)}%` : '--');
-    refs.asUsdSub.textContent = share(usd);
-    refs.asUsdtSub.textContent = share(usdt);
+    setText(refs.asUsdSub, share(usd));
+    setText(refs.asUsdtSub, share(usdt));
 
     /* 总资产（B6-c · §7.12 ④⑤）：全屏**唯一的主数值**（18px）＋ 换值闪一下。
        ⚠️ 这里改用 `classList.toggle` 而不是整体重写 `className` —— 整体重写会把下面刚挂上的
@@ -1186,16 +1197,16 @@ export function update(refs, s, view) {
       void refs.asTotal.offsetWidth;
       refs.asTotal.classList.add('flash');
     }
-    refs.asNote.textContent = `已实现 ${moneySlot('realized', s.realized, { sign: true })}`;
+    setText(refs.asNote, `已实现 ${moneySlot('realized', s.realized, { sign: true })}`);
     /* 资产页这一格是 HUD「已实现」的**同款读数**，所以一并走色盲第二通道（§7.6 连带）。 */
-    refs.asNote.className = 'num sign ' + (s.realized >= 0 ? 'up' : 'down');
+    setCls(refs.asNote, 'num sign ' + (s.realized >= 0 ? 'up' : 'down'));
 
     /* 明细拆解（用户 2026-10-01 拍板 · 选项 A）：两行常驻、$0.00 也写，口径见 `engine.equity`。
        ⚠️ 换所要求先全平（§7.2）⇒ 同一时刻钱要么在当前所、要么在途，这两行与上面两格不会重叠计。 */
     let busy = 0;
     for (const sym of heldSyms(s)) busy += s.positions[sym].margin;
-    refs.asBusy.textContent = moneySlot('busy', busy);
-    refs.asOnway.textContent = moneySlot('onway', s.transfer ? s.transfer.amount : 0);
+    setText(refs.asBusy, moneySlot('busy', busy));
+    setText(refs.asOnway, moneySlot('onway', s.transfer ? s.transfer.amount : 0));
 
     /* ② 资金曲线（方案 §4）：与 K 线同一个坑 —— 它是 canvas，容器一隐藏就量成 0，
        所以只在资产页（此刻必然可见）画。基准线恒取**开局资金**（$1,000）：
@@ -1214,7 +1225,7 @@ export function update(refs, s, view) {
     const usdtLive = now >= USDT_LIVE;
     refs.uCard.hidden = !usdtLive;
     if (usdtLive) {
-      refs.uPrice.textContent = `1 USDT = $${usdtPriceAt(now).toFixed(3)}`;
+      setText(refs.uPrice, `1 USDT = $${usdtPriceAt(now).toFixed(3)}`);
       /* 买 U 这一排同样吃**暂停闸门**与**下单一小时锁**（§73.8/§73.9）：换 U 与下单共用 `s.sizeFrac`，
          两者都被拦时这一排留着可点只会让玩家以为「换 U 也能钻空子」。 */
       for (const [k, b] of refs.uFracBtns) {
@@ -1226,10 +1237,20 @@ export function update(refs, s, view) {
       refs.uBuyBtn.disabled = frozen || locked || !(usd > 0);
     }
 
+    /* ⑥ 持仓列表（R24）：**只在结构变化时重建 DOM**（集合 / 方向 / 杠杆 / 性质 / 开仓价），
+       盈亏不再进签名 —— 价格一动就整表重建是白费（`buildPosList` 里那三行文本会全被重写）。
+       盈亏改由下面这段**就地 `setText`**（`refs._posPnl` 是 `buildPosList` 留下的节点表）。 */
     const listSig = posListSignature(s);
     if (listSig !== refs._posListSig) {
       refs._posListSig = listSig;
-      buildPosList(refs.asList, s);
+      buildPosList(refs, s);
+    }
+    for (const sym of heldSyms(s)) {
+      const n = refs._posPnl.get(sym);
+      if (!n) continue;
+      const pnl = unrealizedOf(s, sym);
+      setText(n, moneySlot('plist:' + sym, pnl, { sign: true }));
+      setCls(n, 'num sign ' + (pnl >= 0 ? 'up' : 'down'));
     }
   }
 }
@@ -1345,9 +1366,12 @@ function syncChart(refs, s, view, sym, cur, mark) {
         （`footInset`），文案还没写进去量到的就是一格空底 —— 首帧会把量柱基线压低一行。 */
   const fng = fngOf(s, sym);
   const band = fngBandOf(s, sym);
-  refs.heatBar.style.setProperty('--heat', `${Math.round(fng * 100)}%`);
+  /* R26：`--heat` 与 `data-heat` 都加**值比较守卫**（仿 `.sym.locked` 的 `--pf`）——
+     每帧无条件 `setProperty` / 写 `dataset` 都会触发一次样式失效，而绝大多数帧值没变。 */
+  setVar(refs.heatBar, '--heat', `${Math.round(fng * 100)}%`);
   refs.heatTxt.textContent = FNG_LABEL[band] || '中性';
-  refs.heatChip.dataset.heat = fngColor(band);
+  const heatColor = fngColor(band);
+  if (refs.heatChip.dataset.heat !== heatColor) refs.heatChip.dataset.heat = heatColor;
   /* 派生量两枚（缺口 4 / 19；2026-10-03 改口径）：OI（全市场，含玩家与 1:1 对手方）
      ＋ **散户多空比**（散盘子集，不含玩家 —— 全市场口径按定义恒为 1:1、零信息量，见
      `retailLongShareOf`）。取不到（散户两侧皆空）⇒ `--`，不硬凑一个 50/50。
@@ -1403,9 +1427,11 @@ function reviewChartSync(refs, rv, view) {
      （这一屏本来就画原始 K 线）。 */
   const fng = reviewFngOf(sym, rv.i);
   const band = reviewFngBandOf(sym, rv.i);
-  refs.rvHeatBar.style.setProperty('--heat', `${Math.round(fng * 100)}%`);
+  /* R26：与交易页**同一套**减写守卫（见 `syncChart`）。 */
+  setVar(refs.rvHeatBar, '--heat', `${Math.round(fng * 100)}%`);
   refs.rvHeatTxt.textContent = FNG_LABEL[band] || '中性';
-  refs.rvHeatChip.dataset.heat = fngColor(band);
+  const heatColor = fngColor(band);
+  if (refs.rvHeatChip.dataset.heat !== heatColor) refs.rvHeatChip.dataset.heat = heatColor;
 
   const win = chartOpts({
     /* ⚠️ `own: false`（v20）：回顾那一屏**不并玩家自己的成交额** ——
@@ -1441,12 +1467,15 @@ export function redrawChart(refs, s, rv, view) {
 
 /**
  * 持仓列表的**签名** —— 列表是**重建**的，只在签名变化时重建（与杠杆档同一套写法）。
- * 签名里带上格式化后的盈亏，所以价格一动（在资产页点「继续」时会）数字跟着走。
+ *
+ * ⚠️ **R24（2026-10-04 审计）**：签名里**不再含盈亏** —— 原来带 `unrealizedOf().toFixed(2)`，
+ *    价格一动（资产页点「继续」时每帧都在变）就整表重建 DOM。现在签名只描述**行的结构**
+ *    （集合 / 方向 / 杠杆 / 性质 / 开仓价），盈亏由 `update()` 里那段 `setText` **就地更新**。
  */
 function posListSignature(s) {
   return heldSyms(s).map(sym => {
     const p = s.positions[sym];
-    return `${sym}:${p.side}:${p.lev}:${isMargin(p) ? 'm' : 'f'}:${p.entry}:${unrealizedOf(s, sym).toFixed(2)}`;
+    return `${sym}:${p.side}:${p.lev}:${isMargin(p) ? 'm' : 'f'}:${p.entry}`;
   }).join('|');
 }
 
@@ -1458,8 +1487,11 @@ function posListSignature(s) {
  * ⚠️ **开仓价**本轮加进来（用户拍板）：跨币复盘时「这笔单是贵还是便宜」必须能就地看出来，
  *    否则只有盈亏数字，换个币就不知道成本在哪。格式化走 `fmtLogPrice` —— 与日志串同一口径。
  */
-function buildPosList(box, s) {
+function buildPosList(refs, s) {
+  const box = refs.asList;
   box.textContent = '';
+  /* R24：重建时把每行的**盈亏节点**留下来，供 `update()` 就地更新（见 `posListSignature`）。 */
+  refs._posPnl = new Map();
   const mgn = [];    // 杠杆：借钱 / 借币；有借入的（含 1x 空头）计息、有强平线，1x 多头无
   const fut = [];    // 合约
   for (const sym of heldSyms(s)) {
@@ -1495,10 +1527,12 @@ function buildPosList(box, s) {
          百万级时印成 `+$12,345,678.9`（14 字符 ≈ 101px）。这一格是 `flex: none`，
          多出来的宽度全从中间那格（方向 ＋ 币量 ＋ 开仓价）身上抢 —— 「开仓 13.1」直接被
          `ellipsis` 吃掉。改走 `moneySlot` 后与交易页持仓条同档（`$12.3M`），共用同一套迟滞。 */
+      const pnlNode = el('b', 'num sign ' + (pnl >= 0 ? 'up' : 'down'), moneySlot('plist:' + sym, pnl, { sign: true }));
+      refs._posPnl.set(sym, pnlNode);   // R24：留给 `update()` 就地改盈亏
       row.append(
         el('b', null, sym),
         el('span', 'mut', `${dirText}${qtyText} @ ${fmtLogPrice(p.entry)}`),
-        el('b', 'num sign ' + (pnl >= 0 ? 'up' : 'down'), moneySlot('plist:' + sym, pnl, { sign: true })),
+        pnlNode,
       );
       card.append(row);
     }

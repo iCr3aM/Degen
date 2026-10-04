@@ -44,6 +44,19 @@ async function precacheAssets(cache) {
       .map(m => m[1])
       .filter(u => u.includes('assets/') && !/^(?:[a-z]+:)?\/\//i.test(u))
       .map(u => new URL(u, base).href);
+    /* T10（2026-10-04 审计）：`manifest.json` 里声明的 icon **不在** HTML 的 `src/href` 里
+       ⇒ 保险箱里从来没有图标数据 ⇒ 首访断网后「添加到主屏」拿到的是一个 404 图标。
+       这里把 manifest 的 `icons[].src` 一并解析进来（名字同样不写死，随 manifest 走）。 */
+    try {
+      const mres = await fetch('./manifest.json', { cache: 'no-store' });
+      if (mres && mres.ok) {
+        const man = await mres.json();
+        const mbase = new URL('./manifest.json', self.location.href);
+        for (const ic of (man.icons || [])) {
+          if (ic && ic.src) urls.push(new URL(ic.src, mbase).href);
+        }
+      }
+    } catch { /* manifest 拉不到 / 解析失败：不拖垮安装，退回按需缓存 */ }
     await Promise.all(urls.map(u => cache.add(u).catch(() => {})));
   } catch { /* 拉不到 index.html 就退回按需缓存（fetch 处理器仍会在联网时补上） */ }
 }
@@ -80,7 +93,9 @@ self.addEventListener('fetch', e => {
       const cache = await caches.open(CACHE);
       const hit = await cache.match(req);
       const net = fetch(req)
-        .then(res => { if (res && res.ok) cache.put(req, res.clone()); return res; })
+        /* T9（2026-10-04 审计）：`cache.put` 是异步的，未 `catch` 时一旦写失败（配额满 / 请求被截断）
+           就产生**未处理的 Promise 拒绝**，在部分浏览器会冒到控制台甚至拖垮 SW 实例。补 `.catch(()=>{})`。 */
+        .then(res => { if (res && res.ok) cache.put(req, res.clone()).catch(() => {}); return res; })
         .catch(() => null);
       if (hit) return hit;
       const res = await net;
@@ -95,11 +110,18 @@ self.addEventListener('fetch', e => {
       const res = await fetch(req, { cache: 'no-store' });
       if (res && res.ok) {
         const cache = await caches.open(CACHE);
-        cache.put(req, res.clone());
+        cache.put(req, res.clone()).catch(() => {});   // T9：同上，写缓存失败不该炸出未处理拒绝
       }
       return res;
     } catch {
-      return (await caches.match(req)) || (await caches.match('./index.html')) || Response.error();
+      /* T8（2026-10-04 审计）：断网兜底**不能**把 `./index.html` 当任意同源 GET 的替身 ——
+         JS / CSS / PNG 请求若拿到一份 HTML（Content-Type: text/html）⇒ 浏览器按 MIME 拒执行 ⇒ 白屏。
+         只有**导航请求**（地址栏进入 / 刷新）才回退 HTML；其余资源无缓存就直接 504，
+         让调用方如实看到「离线且没缓存」，而不是把一个 HTML 塞给它。 */
+      const hit = await caches.match(req);
+      if (hit) return hit;
+      if (req.mode === 'navigate') return (await caches.match('./index.html')) || Response.error();
+      return new Response('', { status: 504, statusText: 'Offline' });
     }
   })());
 });

@@ -136,8 +136,34 @@ function png(size, px) {
   ]);
 }
 
+/* T11（2026-10-04 审计）：这个脚本**无条件覆盖** `public/icon-*.png` —— 图案或编码一旦改坏，
+   产物会静默变烂（透明 / 错色 / 尺寸不符），要到真机「添加到主屏」才看得出来。
+   故写盘前先验**产物本身**（不是验输入参数）：
+     ① PNG 签名 / 首个块是 IHDR / IHDR 里的宽高、位深、颜色类型；
+     ② 几何一致性：alpha 必须**全 255**（maskable 不允许透明圆角），且底色 / 涨色 / 跌色三色都出现过。
+   任一不过就抛错、**不覆盖**已有图标。 */
+function assertPng(size, buf, px) {
+  const SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  for (let i = 0; i < 8; i++) if (buf[i] !== SIG[i]) throw new Error(`icon-${size}.png 签名不符`);
+  if (buf.toString('latin1', 12, 16) !== 'IHDR') throw new Error(`icon-${size}.png 首个块不是 IHDR`);
+  const w = buf.readUInt32BE(16), h = buf.readUInt32BE(20);
+  const depth = buf[24], color = buf[25];
+  if (w !== size || h !== size) throw new Error(`icon-${size}.png 尺寸 ${w}×${h} ≠ ${size}`);
+  if (depth !== 8 || color !== 6) throw new Error(`icon-${size}.png 位深/色型 ${depth}/${color} ≠ 8/6(RGBA)`);
+  const seen = new Set();
+  for (let i = 0; i < px.length; i += 4) {
+    if (px[i + 3] !== 255) throw new Error(`icon-${size}.png 第 ${i / 4} 个像素非不透明 —— maskable 不允许`);
+    seen.add(`${px[i]},${px[i + 1]},${px[i + 2]}`);
+  }
+  for (const [rgb, name] of [[BG, '底色'], [UP, '涨色'], [DOWN, '跌色']]) {
+    if (!seen.has(rgb.join(','))) throw new Error(`icon-${size}.png 缺少${name}像素 —— 图案没画上？`);
+  }
+}
+
 for (const size of [192, 512]) {
-  const buf = png(size, raster(size));
+  const px = raster(size);
+  const buf = png(size, px);
+  assertPng(size, buf, px);
   writeFileSync(join(OUT, `icon-${size}.png`), buf);
   console.log(`public/icon-${size}.png  ${buf.length} bytes`);
 }

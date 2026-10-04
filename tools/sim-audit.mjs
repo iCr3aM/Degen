@@ -148,6 +148,12 @@ const noteWhy = (r) => { if (!r.ok) seen.set(r.why, (seen.get(r.why) || 0) + 1);
 
 for (const [why, n] of [...seen.entries()].sort((a, b) => b[1] - a[1])) console.log(`   ×${n}  ${why}`);
 check('拒绝分支 ≥ 8 类可达', seen.size >= 8, `实得 ${seen.size} 类`);
+/* T3（2026-10-04 审计）：只数「≥8 类」太松 —— 改文案 / 漏一条分支都能蒙过。
+   这里**逐条点名**（用子串匹配，容忍 `why` 里的动态数字），漏一条就红。 */
+for (const w of ['本局已结束', '停机维护', '杠杆做空 暂不可用', '还没上线', '合约保证金必须是 USDT',
+  '可用保证金不足', '下单金额太小', 'OTC 单笔最少', '反手请先平仓']) {
+  check(`拒绝分支命中「${w}」`, [...seen.keys()].some(k => k.includes(w)));
+}
 
 /* ── 2b · ⑥ 名义阶梯杠杆封顶（Binance 永续按**结果名义**判档 · 真实 BTCUSDT 表） ── */
 section('2b · ⑥ 名义阶梯杠杆封顶（Binance 永续 · 真实 BTCUSDT 阶梯，与维持保证金率同表）');
@@ -207,6 +213,77 @@ section('2b · ⑥ 名义阶梯杠杆封顶（Binance 永续 · 真实 BTCUSDT �
   s.lev = 50;
   const r2 = noteWhy(engine.openTrade(s, 'long'));
   check('⑥ 主动升杠杆加仓仍被拒绝', !r2.ok && /加仓必须同杠杆/.test(r2.why || ''), r2.why || '（竟然放行了）');
+}
+
+/* ═══════════════════ 2c · 结局状态机（归零 → 待决 / 领救济 / 收摊 / 挑战 / 上帝） ═══════════════════ */
+section('2c · 结局状态机：checkRuin 的几条出口逐条走一遍');
+{
+  /* 逼破产的**公开路径**（`checkRuin` 未导出）：开一张小仓（`closeTrade` 得有仓才走），
+     再把本所那格现金写成巨额负数 ⇒ `equity ≪ MIN_NOTIONAL`，平仓 ⇒ `closeTrade` 末尾的
+     `checkRuin` 判归零。⚠️ 负现金只是**逼破产的手段**，不是真实余额（真实归零是余额 ≈ 0）；
+     因此验「领救济金到账」时看的是**差额**，这个人为偏移不影响结论。 */
+  const ruin = (s, why = '审计-逼破产') => {
+    s.lev = 1;
+    const o = engine.openTrade(s, 'long', 0.2);
+    if (!o.ok) return o;
+    s.books[s.ex] = { usd: -1e9, usdt: 0 };
+    engine.closeTrade(s, why);
+    return { ok: true };
+  };
+  const drown = async (opts = {}) => { const s = await mk({ cash: 1000, ...opts }); await ruin(s); return s; };
+
+  // ① 经典局首次归零 ⇒ 待决（pending='loan'、paused、本局未结束、还没领过）
+  {
+    const s = await drown();
+    check('2c 经典局首次归零进「待决」而非结束',
+      s.pending === 'loan' && s.paused === true && s.over == null,
+      `pending=${s.pending} paused=${s.paused} over=${JSON.stringify(s.over)}`);
+    check('2c 首次归零时尚未记「已领救济金」', s.loaned !== true, `loaned=${s.loaned}`);
+  }
+  // ② 待决态领救济金 ⇒ 时钟解冻、账上按**救济金额**加钱
+  {
+    const s = await drown();
+    const before = engine.equity(s);
+    const r = engine.takeLoan(s);
+    const after = engine.equity(s);
+    check('2c 领救济金成功且清掉待决', r.ok && s.pending == null && s.loaned === true,
+      r.why || `pending=${s.pending} loaned=${s.loaned}`);
+    check('2c 救济金到账金额 = loanAmountAt()（不多不少一次）',
+      Math.abs((after - before) - C.loanAmountAt()) < 1e-6, `Δ=${f(after - before, 4)} 应=${f(C.loanAmountAt(), 4)}`);
+  }
+  // ③ 领过救济金后再归零 ⇒ 直接 LIQUIDATED（不再弹遮罩）
+  {
+    const s = await drown();
+    engine.takeLoan(s);
+    s.books[s.ex] = { usd: 1000, usdt: 0 };   // 把逼破产的人为负现金还原成「可开一笔小仓」
+    await ruin(s, '审计-逼破产-二次');
+    check('2c 二次归零（已领过救济金）⇒ LIQUIDATED',
+      !!s.over && s.over.reason === 'liquidated' && s.pending == null,
+      `over=${JSON.stringify(s.over)} pending=${s.pending}`);
+  }
+  // ④ 待决态「就此收摊」⇒ GAVEUP（不是 LIQUIDATED）
+  {
+    const s = await drown();
+    const r = engine.giveUp(s);
+    check('2c 待决态收摊 ⇒ GAVEUP（不是 LIQUIDATED）',
+      !!s.over && s.over.reason === 'gaveup' && r.why === 'gaveup',
+      `over=${JSON.stringify(s.over)} r.why=${r.why}`);
+  }
+  // ⑤ 挑战局归零 ⇒ 当场 LIQUIDATED（不发救济金、不弹待决）
+  {
+    const s = await drown({ scen: 'degen' });
+    check('2c 挑战局归零即终局 LIQUIDATED（不发救济金）',
+      !!s.over && s.over.reason === 'liquidated' && s.pending == null && C.isChallenge(s.scen),
+      `over=${JSON.stringify(s.over)} pending=${s.pending}`);
+  }
+  // ⑥ 上帝模式归零 ⇒ 不结束本局（写 godRuined、over 仍为空）
+  {
+    const s = await mk({ cash: 1000 });
+    god.enableGod(s);
+    await ruin(s, '审计-逼破产-上帝');
+    check('2c 上帝模式归零不结束本局（godRuined=true、over=null）',
+      s.godRuined === true && s.over == null, `godRuined=${s.godRuined} over=${JSON.stringify(s.over)}`);
+  }
 }
 
 /* ═══════════════════ 3 · 资金守恒（开 → 平 / 开 → 走 N 小时） ═══════════════════ */
@@ -272,7 +349,8 @@ section('4b · 资金费率两段式：F = clamp( P + clamp(I − P, ±0.05%), �
   check('fundingForecastOf.hours ∈ 1..8', !!fc && fc.hours >= 1 && fc.hours <= 8, `hours=${fc && fc.hours}`);
   const s0 = await mk({ i: idx(at(2021, 5, 1, 0)) });
   const fc0 = engine.fundingForecastOf(s0, 'BTC');
-  check('刚结算那一刻 hours = 8（不是 0）', !fc0 || fc0.hours === 8, `hours=${fc0 && fc0.hours}`);
+  /* T4（2026-10-04 审计）：`!fc0 || …` 在 `fc0` 为 null 时**空过** —— 改成必须拿到预测再判值。 */
+  check('刚结算那一刻 hours = 8（不是 0）', !!fc0 && fc0.hours === 8, `hours=${fc0 && fc0.hours}`);
 }
 
 /* ═══════════════════ 5 · 滑点 / 冲击量级 ═══════════════════ */
@@ -294,35 +372,72 @@ for (const t of [at(2013, 8), at(2018, 0), at(2021, 3), at(2024, 6)]) {
 check('σ 量级落在 0.5%–10%/日（现实加密区间）', sigmaOk);
 
 /* ═══════════════════ 6 · 数值健壮性 fuzz ═══════════════════ */
-section('6 · 数值健壮性 fuzz（随机 杠杆 × 资金 × 方向 × 时刻）');
-let fuzzN = 0, fuzzBad = 0;
+section('6 · 数值健壮性 fuzz（固定种子 · 杠杆 × 资金 × 方向 × 时刻）');
+/* T6（2026-10-04 审计）：原来用**未播种**的 `Math.random` —— 同一个用例跑两次结果不同，
+   红了也没法复盘。改用本地播种 PRNG（mulberry32），种子写死 ⇒ 任何机器、任何次数都是同一串。 */
+let fuzzSeed = 0x12345678 | 0;
+const rf = () => {
+  fuzzSeed = (fuzzSeed + 0x6d2b79f5) | 0;
+  let t = Math.imul(fuzzSeed ^ (fuzzSeed >>> 15), 1 | fuzzSeed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
+let fuzzN = 0, fuzzBad = 0, fuzzRej = 0, fuzzNoWhy = 0;
 for (let k = 0; k < 400; k++) {
   const sym = ['BTC', 'ETH', 'XRP', 'DOGE', 'SOL'][k % 5];
-  const s = await mk({ sym, i: Math.floor(Math.random() * 90000), cash: Math.pow(10, 1 + Math.random() * 5) });
-  s.lev = [1, 2, 3, 5, 10, 20, 50, 100, 125][Math.floor(Math.random() * 9)];
-  s.mode = Math.random() < 0.5 ? 'margin' : 'fut';
-  const side = Math.random() < 0.5 ? 'long' : 'short';
-  const r = engine.openTrade(s, side, Math.random());
+  const s = await mk({ sym, i: Math.floor(rf() * 90000), cash: Math.pow(10, 1 + rf() * 5) });
+  s.lev = [1, 2, 3, 5, 10, 20, 50, 100, 125][Math.floor(rf() * 9)];
+  s.mode = rf() < 0.5 ? 'margin' : 'fut';
+  const side = rf() < 0.5 ? 'long' : 'short';
+  const r = engine.openTrade(s, side, rf());
   fuzzN++;
-  if (r.ok) {
-    const pos = s.positions[sym];
-    const eq = engine.equity(s);
-    const ok = pos && Number.isFinite(pos.margin) && Number.isFinite(pos.size) && Number.isFinite(pos.notional)
-      && Number.isFinite(pos.margin) && Number.isFinite(P.liquidationPrice(pos)) && Number.isFinite(eq)
-      && pos.margin > 0 && pos.size > 0 && pos.notional > 0;
-    if (!ok) { fuzzBad++; console.log(`   ✗ fuzz #${k} ${sym} ${side} ${s.lev}x → 非有限/非正字段`, JSON.stringify(pos)); }
+  if (!r.ok) {
+    /* T6：被拒也必须给出**非空 `why`** —— 空理由 ⇒ UI 弹不出任何提示，玩家只看到「没反应」。 */
+    fuzzRej++;
+    if (!r.why || typeof r.why !== 'string' || !r.why.trim()) {
+      fuzzNoWhy++;
+      console.log(`   ✗ fuzz #${k} ${sym} ${side} ${s.lev}x 被拒却没给 why`, JSON.stringify(r));
+    }
+    continue;
+  }
+  const pos = s.positions[sym];
+  const eq = engine.equity(s);
+  const ok = pos && Number.isFinite(pos.margin) && Number.isFinite(pos.size) && Number.isFinite(pos.notional)
+    && Number.isFinite(P.liquidationPrice(pos)) && Number.isFinite(eq)
+    && pos.margin > 0 && pos.size > 0 && pos.notional > 0;
+  if (!ok) { fuzzBad++; console.log(`   ✗ fuzz #${k} ${sym} ${side} ${s.lev}x → 非有限/非正字段`, JSON.stringify(pos)); continue; }
+  /* T6：成交后**同一小时平仓**，做两条守恒断言。
+     ⚠️ 不能要求「权益只减不增」—— `SHOCK.closeGive = 0.35` 是**有意的单向棘轮**（平仓只回吐
+        开仓冲击的 35%），自买自卖会留下残余位移、往返可小幅为正（god.js SHOCK 注释：需持仓
+        超过当日流动性三成才够得到）。所以这里只卡**有界 + 净平**：一趟往返的权益变化不得超过
+        该仓位名义的一半（残余位移被 `riseMax`+20% / `fallMax`−45% 夹住，而双重记账之类的真 bug
+        会远超此），且平完必须不留仓。 */
+  const before = engine.equity(s);
+  const notional = pos.notional;
+  engine.closeTrade(s, '审计-fuzz');
+  const after = engine.equity(s);
+  if (!Number.isFinite(after) || s.positions[sym] || Math.abs(after - before) > 0.5 * notional + 1e-6) {
+    fuzzBad++;
+    console.log(`   ✗ fuzz #${k} ${sym} ${side} ${s.lev}x 同小时开平不守恒/未平净 ${f(before, 4)} → ${f(after, 4)}`
+      + ` 名义 ${f(notional, 2)} 残留仓=${!!s.positions[sym]}`);
   }
 }
-check('fuzz 400 局无 NaN / 非正字段', fuzzBad === 0, `${fuzzN} 次尝试，${fuzzBad} 处异常`);
+check('fuzz 400 局无 NaN / 非正字段', fuzzBad === 0, `${fuzzN} 次尝试（拒 ${fuzzRej}），${fuzzBad} 处异常`);
+check('fuzz 每一笔被拒都带非空 why', fuzzNoWhy === 0, `${fuzzRej} 笔被拒，${fuzzNoWhy} 笔无理由`);
 
 /* ═══════════════════ 7 · 全时间线连跑（50x 无头） ═══════════════════ */
 section('7 · 全时间线连跑：真实数据走满 12 年不崩、曲线有限');
 {
   const s = await mk({ sym: 'BTC', cash: 100000 });
   for (const sy of ['BTC', 'ETH', 'XRP', 'DOGE', 'SOL']) await market.loadCoin(sy);
-  let steps = 0, nan = 0, trades = 0;
+  let steps = 0, nan = 0, trades = 0, frozen = 0;
   const step = 24 * 30;   // 每月推进一次
   while (s.i < s.endI && steps < 400) {
+    /* T1（2026-10-04 审计）：中途归零会进 `'loan'` 待决态（`s.pending`）⇒ `advanceOneHour`
+       在开头直接 return、**时钟冻结**，之后每一轮都空转，`steps` 硬撑到 400 还判「权益有限」——
+       等于根本没走到时间线尽头（T5 的结束态断言也就跟着空过）。本审计只关心「钱会不会算崩」，
+       不关心救济金弹窗 ⇒ 每轮先清掉待决，让时钟继续走。 */
+    if (!s.over) s.pending = null;
     if (!s.over) {
       s.mode = steps % 2 ? 'fut' : 'margin';
       s.lev = steps % 3 === 0 ? 10 : 3;
@@ -331,13 +446,20 @@ section('7 · 全时间线连跑：真实数据走满 12 年不崩、曲线有�
       if (r.ok) trades++;
       if (s.positions[s.sym]) engine.closeTrade(s, '审计');
     }
+    const before = s.i;
     engine.advanceOneHour(s);
     for (let j = 1; j < step; j++) engine.advanceOneHour(s);
     if (!Number.isFinite(engine.equity(s))) { nan++; break; }
+    if (s.i === before) { frozen++; break; }   // 时钟没动（且非终局）⇒ 别在死循环里空转到 steps 上限
     steps++;
   }
   check('连跑 12 年：权益全程有限', nan === 0, `步数 ${steps}，成交 ${trades}，末值 $${f(engine.equity(s), 2)}，over=${s.over ? s.over.reason : '无'}`);
-  check('连跑结束于结算/爆仓/未结束的合法态', !s.over || ['liquidated', 'settled', 'gaveup'].includes(s.over.reason), JSON.stringify(s.over));
+  /* T1：断言时钟**真的走到底**（引擎在终点会把 `s.i` 钉在 `endI-1` 并结算 ⇒ 判 `>= endI-1`）。 */
+  check('时钟真的走到底（推进到本局终点）', s.i >= s.endI - 1, `s.i=${s.i} endI=${s.endI} 步数=${steps} 冻结=${frozen}`);
+  /* T5：原来白名单里含「未结束」⇒ `s.over` 全 null 也能过，等于没验退出条件。改成必须**真实命中**终局。 */
+  check('连跑结束于结算/爆仓/收摊的真实终局',
+    !!s.over && ['liquidated', 'settled', 'gaveup'].includes(s.over.reason),
+    `over=${JSON.stringify(s.over)}`);
 }
 
 /* ═══════════════════ 8 · 真实下单：实际滑点（穿引擎，含阈值 / 深度池 / 持仓折减） ═══════════════════ */
@@ -830,10 +952,25 @@ section('11 · 跨年代边界：边界前后 openTrade 行为可解释 + 全时
   for (const b of bounds) {
     const A = await probe({ ex: b.ex, t: b.t - H });
     const B = await probe({ ex: b.ex, t: b.t + H });
-    /* 硬要求 ①：边界前 1 小时与后 1 小时「要么理由不同、要么两边都放行」—— 行为确实在边界处翻转 */
+    /* 硬要求 ①：边界前 1 小时与后 1 小时，**开仓结果或能力清单必须真的变了一样**。
+       ⚠️ T7（2026-10-04 审计）：原来的 `flipped || (A.ok && B.ok)` 等于「两侧都放行就无条件通过」——
+          探针走的是最低档（1x · margin），很多边界（新增更高杠杆档 / 开融资）在这一档上看不出差别，
+          于是「边界其实没生效」也会绿。改成：要么**开仓结果翻转**，要么**该所的杠杆/融资/停机
+          能力签名翻转**（`capSig`）；两者都没变才是真正的异常。 */
     const flipped = (A.ok !== B.ok) || (A.why || '') !== (B.why || '');
+    /* 能力签名要同时覆盖三类边界：①「有没有这一类杠杆」的闸（`hasLeverageKindAt`，
+       开所日／首档上线日翻）；②可选档位与融资（`leverageOptionsAt` / `hasFinancingAt`，加档日翻）；
+       ③停机窗口（`haltedAt`）。⚠️ 停机窗口只有 1 小时，±1h 的探针会**整段落在窗外**（见下方
+       「停机窗口」那一节），故签名除比较 `t±H` 外还要看**边界那一刻本身** `t`。 */
+    const capSig = t => JSON.stringify([
+      C.hasLeverageKindAt(t, b.ex, 'margin'), C.hasLeverageKindAt(t, b.ex, 'fut'),
+      C.leverageOptionsAt(t, b.ex, 'margin'), C.leverageOptionsAt(t, b.ex, 'fut'),
+      C.hasFinancingAt(t, b.ex), C.haltedAt(t, b.ex),
+    ]);
+    const capFlipped = capSig(b.t - H) !== capSig(b.t) || capSig(b.t) !== capSig(b.t + H);
     check(`11 ${b.kind}边界 ${b.ex} ${new Date(b.t).toISOString().slice(0, 13)}Z（前1h vs 后1h）`,
-      flipped || (A.ok && B.ok), `前 ${tag(A)} ／ 后 ${tag(B)}${flipped ? '' : '（两侧一致）'}`);
+      flipped || capFlipped,
+      `前 ${tag(A)} ／ 后 ${tag(B)}${(flipped || capFlipped) ? '' : '（结果与能力清单都没变）'}`);
     /* 工具上线日若同时改「有没有融资」⇒ 空头侧必须跟着翻（杠杆做空要先借到币） */
     const finA = C.hasFinancingAt(b.t - H, b.ex), finB = C.hasFinancingAt(b.t + H, b.ex);
     if (finA !== finB) {

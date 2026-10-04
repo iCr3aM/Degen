@@ -146,7 +146,7 @@ const END_TS = GAME.end;                 // 排他上界：2025-01-01T00:00Z
  *   - `START_TS` = `GAME.start`：**游戏时间轴**的零点。运行时的 `s.i` 是「自它起算的小时序号」，
  *     数据包里的 `manifest.start` 也必须是它 —— **不许动**。
  *   - `DATA_TS`  = 各币 `unlock` 里**最早的那个**：**数据窗口**的零点。BTC 的回溯段
- *     （2012-09-27 起，见 `config.COINS`）落在这里 ⇒ 数据窗口比游戏窗口早 96 小时。
+ *     （2012-09-27 起，见 `config.COINS`）落在这里 ⇒ 数据窗口比游戏窗口早 **96 天（2304 小时）**。
  *     管线内部一律用 `DATA_TS`（`idxOf` / `tsOf` / `dayUsd` 下标），于是**下标全非负**，
  *     不必给整条管线引负序号；运行时那侧只在 `market.liqOf` 加一个 `preDays` 偏移。
  */
@@ -539,8 +539,20 @@ function fetchKraken(sym, fromMs, toMs, btcAt) {
  * 五个币**全部**走多所聚合（K 线全市场校准，2026-10-01：K1 = BTC → K2 = ETH/XRP
  * → K2b = Bitfinex 投票源 → K3 = DOGE/SOL）。名单之外若还有币，走原来的「按优先级补洞」，
  * 输出逐位不变 —— 这是分批推进时的隔离保证，现在名单已满。
+ *
+ * ⚠️ **R7（2026-10-04 审计）**：名单已含全部 5 币 ⇒ `absorb` / `spanOf` 里
+ *    「`cells` 为 null」的**补洞分支已不可达**（保留它是**为将来增币留的兜底**：
+ *    新币若不具备多所聚合能力，可从这里走原路）。下面的断言防的是「`COINS` 悄悄增币、
+ *    名单忘了同步」——那会让新币**静默退回补洞口径**，与现有 5 币的整烛投票不一致。
+ *    这时必须当场停下、由维护者确认该币走聚合还是补洞，不能默认放过。
  */
 const AGG_COINS = new Set(['BTC', 'ETH', 'XRP', 'DOGE', 'SOL']);
+for (const c of COINS) {
+  if (!AGG_COINS.has(c.sym)) {
+    throw new Error(`新币 ${c.sym} 未列入 AGG_COINS（见文件头「多所聚合」段）：`
+      + `请先确认它是否具备多所聚合能力，再决定把它加进 AGG_COINS（整烛投票）还是保留补洞路。`);
+  }
+}
 
 /**
  * **整烛**对数距离：两来源同一小时 OHLC 四价的对数距离之和。
@@ -990,6 +1002,12 @@ const WASH_FROM_YEAR = 2017;
  */
 function liqAnchorOf(sym, year) {
   const t = LIQ_MKT[sym];
+  // ⚠️ R9（2026-10-04 审计）：缺币时原来会在 `t[y]` 处抛晦涩的 TypeError（或经缺年回落
+  //    静默产出 NaN）。`COINS` 增币必须同步本表，这里给出可执行的报错。
+  if (!t) {
+    throw new Error(`LIQ_MKT 缺少币 ${sym} 的流动性锚：COINS 增币时必须同步补 LIQ_MKT 表`
+      + `（逐年美元/天，见上方口径注）。`);
+  }
   let y = year;
   if (t[y] == null) {
     const ys = Object.keys(t).map(Number);

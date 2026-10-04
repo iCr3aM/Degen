@@ -636,8 +636,9 @@ export function capturedOf(s, sym) {
 /** 是否持有任何仓位 */
 export const anyHeld = s => heldSyms(s).length > 0;
 
-/** 日志上限：只留最近这些条，免得存档无限膨胀 */
-export const LOG_MAX = 60;
+/** 日志上限：只留最近这些条，免得存档无限膨胀
+ *  ⚠️ 不导出（2026-10-04 审计 R23）：仅本模块 `pushLog` 用（render.js 的 30 条是它自己另取的）。 */
+const LOG_MAX = 60;
 
 /**
  * **日志类别**（2026-10-03 新增 `tag` 字段）—— 一枚**短标签 ＋ 一个色相**，解决「一排红字分不清」。

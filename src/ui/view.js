@@ -153,6 +153,11 @@ function dayBar(sym, d, upto, own = true) {
       否则数据到货后会把 null 一直读出来（`isLoaded` 就是这道闸）。 */
 const dayCache = new Map();          // `${sym}|${own?1:0}|${d}` -> bar（可能为 null）
 let dayCacheMarkI = -1;              // 上一次见到的 `i`（变小 = 回退 ⇒ 整表作废）
+/* ⚠️ **R29（2026-10-04 审计）**：缓存**原本无上限** —— 一局跨币来回切、每个币各看一段
+   （最多 ≈ 4383 天/币 × 5 币 × 2 个 `own` 值）能积到数万项，而它只在 `i` 回退时清。
+   这里加一个容量闸：满了就按**插入顺序**（Map 迭代序）丢掉最旧的四分之一 —— 一次丢一批
+   而不是每帧丢一条，避免抖动。丢掉的只是「过去某天的聚合」，需要时重算即可（纯函数、无状态）。 */
+const DAY_CACHE_MAX = 4096;
 
 function dayBarCached(sym, d, upto, own) {
   const dayEnd = d * HOURS_PER_DAY + HOURS_PER_DAY - 1;
@@ -162,6 +167,10 @@ function dayBarCached(sym, d, upto, own) {
   if (!isLoaded(sym)) return dayBar(sym, d, upto, own);
   const key = sym + '|' + (own ? 1 : 0) + '|' + d;
   if (dayCache.has(key)) return dayCache.get(key);
+  if (dayCache.size >= DAY_CACHE_MAX) {
+    let drop = DAY_CACHE_MAX >> 2;
+    for (const k of dayCache.keys()) { dayCache.delete(k); if (--drop <= 0) break; }
+  }
   const bar = dayBar(sym, d, upto, own);
   dayCache.set(key, bar);
   return bar;

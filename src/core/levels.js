@@ -27,8 +27,9 @@ import { rawCloseAt, volumeAt } from './market.js';
 /**
  * 模型常数。**全部是合成取值**（史实检索拿不到「压力位吸收多少」这种表，同 `LIQ.fee` 的待遇）——
  * 只要方向对、量级可读即可，不追求一手出处。
+ * ⚠️ 不导出（2026-10-04 审计 R23）：仅本模块内部用。
  */
-export const LEVELS = {
+const LEVELS = {
   window: 720,      // 回看根数 = 30 天（与 SLIP.window 同尺度）
   minBars: 60,      // 有效样本少于这个数 ⇒ 一条位都不给（开局头两天没有「历史」可言）
   bins: 36,         // 价格直方图的格数（对数刻度）
@@ -54,8 +55,9 @@ export const LEVELS = {
  * @param {number[]} closes 时间升序的收盘价（原始值，不含位移）；缺失 / 未上线用 `0` 或负数占位
  * @param {number[]} vols   与 `closes` 等长的成交量份额（0~1，见 `market.volumeAt`）
  * @returns {{p:number,w:number}[]} 按权重降序的位（`w` 已归一到 0~1，最重那条 = 1）；样本不足 ⇒ `[]`
+ * ⚠️ 不导出（2026-10-04 审计 R23）：仅本模块 `levelCacheFor` 用，外部一律走缓存版。
  */
-export function levelsFrom(closes, vols) {
+function levelsFrom(closes, vols) {
   const n = closes.length;
 
   /* ① 有效样本 ＋ 对数价格范围（对数刻度：$0.5 → $2 与 $5,000 → $20,000 该是同一格宽） */
