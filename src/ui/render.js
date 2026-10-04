@@ -13,14 +13,14 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canCloseAt, canOpenAt, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canAdjustMargin, canCloseAt, canOpenAt, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, marginCapsOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
-import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf } from '../core/state.js';
+import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
 import { OVER_LABEL, badgesOf, multOf, titleOf } from '../core/titles.js';
 import { drawChart, drawEquityCurve } from './chart.js';
 import { windowFor, setYPx } from './view.js';
@@ -802,7 +802,10 @@ export function update(refs, s, view) {
   /* `sign` ＝ 色盲第二通道（B6-c · §7.6）：在 `.up` / `.down` 的颜色之外再挂一枚 ▲/▼ */
   setCls(refs.eqSub, 'num sign ' + (s.realized >= 0 ? 'up' : 'down'));
 
-  setText(refs.cashVal, moneySlot('cash', available(s)));
+  /* 「可用保证金」的口径随**下单模式**走，与 `openCheck` 的 `mustUsdt` **同源**：
+     合约是 USDT 本位（只认 U 那一格），杠杆 / OTC 是两格之和。不分开就会自相矛盾 ——
+     合约模式下把美元也算进来，玩家看着「我有保证金」却开不出合约（本次修复的正题）。 */
+  setText(refs.cashVal, moneySlot('cash', s.mode === 'fut' ? spendableOf(s, true) : available(s)));
   /* 副行优先级：有持仓时显示未实现盈亏，否则回落到「初始 $1,000」这个死常量。
      （原来「有贷款时优先显示负债」，已随 2026-10-01 的一次性救济金改造整体移除 —— 那笔钱不用还。） */
   if (anyHeld(s)) {
@@ -1084,26 +1087,39 @@ export function update(refs, s, view) {
   /* 同向那一枚 = **加仓**（v13 · B4 / 方案 §5）：手上那条仓位与本键同向时不再禁掉 ——
      点下去会并进同一条仓位（改杠杆 / 换性质 / 反手这些冲突由 `engine.openTrade` 给一句明确文案，
      都属于「有、但这次不行」，不是「没有」）。反向那一枚在合约模式仍是禁用（那里有独立的平仓键）。 */
+  /* ── 本动作在当前金额档下**能不能真的执行**（渲染层预判，与分派层同源）──
+     `canOpenAt` / `canCloseAt` 就是 `openTrade` / `closeTrade` 内部那对纯判据 ⇒ 这里说
+     「开不出来」的那一单，分派层必然也会拒，不会再出现「画着能点、点了才挨一句拒绝」。
+     用途：把「有、但这次不行」（保证金不足 / 无融资 / 金额太小 / 同币冲突 / 停机维护 …）
+     画成 `.off`（灰但**可点**，点一下由 main.js 回一句具体 why）—— 这正是
+     「按钮不置灰、点了才报保证金不足」那个 bug 的正解：**先把状态摆对，再让玩家问原因**。
+     ⚠️ 真禁用（`disabled`）只留给锁定 / 暂停 / 结束 / 行情加载这类**连解释都不该给**的态；
+        「这一单开不出来」一律走 `.off` ＋ `aria-disabled`（**保留可点**，与「卖出」原有先例同源）。
+     ⚠️ `tradable` 已保证 `isLoaded(sym)` 且 `mark != null` —— 引擎那两个纯判据在此才可信
+        （数据包没到货时它们恒假，会把整排键闪一下灰，所以必须由 `tradable` 短路掉）。 */
+  const frac = s.sizeFrac;
+  const openLong = tradable && canOpenAt(s, 'long', frac);
+  const openShort = tradable && canOpenAt(s, 'short', frac);
+  const closeOk = tradable && !!cur && canCloseAt(s, frac);
   refs.longBtn.disabled = !waiting && !(tradable && (!cur || dir === 'long'));
   refs.shortBtn.disabled = !waiting && !(tradable && (!cur || dir === 'short'));
   refs.closeBtn.disabled = !waiting && (!cur || lockedUI || frozen || locked);
-  /* 杠杆模式这两枚**四件事共用**：空仓开仓 / 同向加仓 / 反向平仓 —— 所以只要 `tradable` 就能点。
-     「卖出」唯一的例外见下（空仓且该所没有融资 ⇒ 开不出空单）：那时**保留可点**，只画灰 ＋ 给一句解释。 */
+  /* 杠杆两枚**四件事共用**（空仓开仓 / 同向加仓 / 反向平仓）—— 只要 `tradable` 就能点，
+     可不可行由下面那对 `buyOk` / `sellOk` 决定（不可行只画灰、仍可点给原因）。 */
   refs.buyBtn.disabled = !waiting && !tradable;
-  /* 「卖出」＝开杠杆空单（要借币，v10）：该所没有融资时**空仓不许开空**。
-     ⚠️ 判据只看 `dir === null`：手上压着一张空单时「卖出」是**加仓**（B4）、
-        压着一张多单时它是**平多**，两件事都不需要借币 ⇒ 必须能点。
-     ⚠️ 这种「点不动」同样走 `aria-disabled` ＋ `.off`（理由同杠杆行），点一下给一条解释 ——
-        所以它**绝不能**落到 `disabled`（那会连 `pointerdown` 一起吞掉，点了零反馈）。
-        真禁用只留给「锁定 / 暂停」这类连解释都不该给的态（此时 `tradable` 恒假）。
-        ⚠️ P1-16（2026-10-04 审计）：原式 `!(tradable && !(sellOff && !waiting))` 化简后
-        在 `sellOff` 时反而 **`disabled = true`**，与上面那条注释**完全相反** —— 已改正。 */
-  const needLev = !dir && !canLev;
-  const sellOff = needLev || waiting;
-  /* 「保留可点」的两种情形：① 行情加载中；② 通常可交易、只是空仓且无融资（锁定 / 暂停时不给解释）。 */
-  const sellExplain = waiting || (needLev && !lockedUI && !locked && !frozen);
-  refs.sellBtn.disabled = !sellExplain && !tradable;
-  refs.sellBtn.classList.toggle('off', sellOff);
+  refs.sellBtn.disabled = !waiting && !tradable;
+  /* 「按下这颗键会走哪条路」与 `main.js` 的分派**逐字对应**：
+       · 买入：手上是空单 ⇒ 买回（平空）；否则 ⇒ 开 / 加多
+       · 卖出：手上是多单 ⇒ 卖出（平多）；否则 ⇒ 开 / 加空（`openShort` 自带「无融资不许开空」） */
+  const buyOk = dir === 'short' ? closeOk : openLong;
+  const sellOk = dir === 'long' ? closeOk : openShort;
+  /* 灰但可点：**这颗键真会被按下**（没被真禁用）、可交易、而本动作此刻不可行。
+     `waiting`（行情加载中）单独算一档 —— 那几枚也要画灰可点（点一下回「行情加载中」）。 */
+  const offLong = waiting || (!refs.longBtn.disabled && tradable && !openLong);
+  const offShort = waiting || (!refs.shortBtn.disabled && tradable && !openShort);
+  const offClose = waiting || (!refs.closeBtn.disabled && tradable && !closeOk);
+  const offBuy = waiting || (tradable && !buyOk);
+  const offSell = waiting || (tradable && !sellOk);
 
   /* 金额档 —— **一档两用**（2026-10-02 用户拍板）：
        · **空仓 / 加仓**时它是「这一单用掉多少可用保证金」（`openTrade` 的 `frac`）；
@@ -1127,12 +1143,14 @@ export function update(refs, s, view) {
     }
     b.disabled = off;
   }
-  /* R27：`aria-disabled` 走减写版（`setAria`）—— 每帧无条件 `set/removeAttribute` 同样是 DOM 写。 */
-  setAria(refs.sellBtn, sellOff);
-  /* 另外四枚的「行情加载中」也只挂样式、不禁用 —— 与「卖出」同一套（`.off` 本就带 `cursor: default`）。 */
-  for (const b of [refs.buyBtn, refs.longBtn, refs.shortBtn, refs.closeBtn]) {
-    b.classList.toggle('off', waiting);
-    setAria(b, waiting);
+  /* R27：`aria-disabled` 走减写版（`setAria`）—— 每帧无条件 `set/removeAttribute` 同样是 DOM 写。
+     五枚主键统一在这里落灰：真禁用留给锁定 / 暂停 / 加载，「这一单开不出来」走 `.off`（仍可点给原因）。 */
+  for (const [b, off] of [
+    [refs.buyBtn, offBuy], [refs.sellBtn, offSell],
+    [refs.longBtn, offLong], [refs.shortBtn, offShort], [refs.closeBtn, offClose],
+  ]) {
+    b.classList.toggle('off', off);
+    setAria(b, off);
   }
 
   /* 换所键（顶栏那枚双行按钮）**同样吃暂停闸门**（本轮 ④）：换所是一笔要等好几根 K 线的
@@ -1256,6 +1274,14 @@ export function update(refs, s, view) {
       const pnl = unrealizedOf(s, sym);
       setText(n, moneySlot('plist:' + sym, pnl, { sign: true }));
       setCls(n, 'num sign ' + (pnl >= 0 ? 'up' : 'down'));
+      /* 收益率与盈亏同源就地更新（roi = 未实现 ÷ 本仓保证金）—— 分母读**当下**的 `pos.margin`
+         （增减保证金会改它，签名不变时行不重建，所以必须每帧现算）。 */
+      const r = refs._posRoi.get(sym);
+      if (r) {
+        const m = posOf(s, sym)?.margin ?? 0;
+        setText(r, fmtPct(m > 0 ? pnl / m : 0));
+        setCls(r, pnl >= 0 ? 'up' : 'down');
+      }
     }
   }
 }
@@ -1495,8 +1521,10 @@ function posListSignature(s) {
 function buildPosList(refs, s) {
   const box = refs.asList;
   box.textContent = '';
-  /* R24：重建时把每行的**盈亏节点**留下来，供 `update()` 就地更新（见 `posListSignature`）。 */
+  /* R24：重建时把每行的**盈亏节点**留下来，供 `update()` 就地更新（见 `posListSignature`）。
+     `_posRoi` 是同一批行的**收益率**节点（2026-10-04 用户拍板「加、放持仓行」）。 */
   refs._posPnl = new Map();
+  refs._posRoi = new Map();
   const mgn = [];    // 杠杆：借钱 / 借币；有借入的（含 1x 空头）计息、有强平线，1x 多头无
   const fut = [];    // 合约
   for (const sym of heldSyms(s)) {
@@ -1534,10 +1562,21 @@ function buildPosList(refs, s) {
          `ellipsis` 吃掉。改走 `moneySlot` 后与交易页持仓条同档（`$12.3M`），共用同一套迟滞。 */
       const pnlNode = el('b', 'num sign ' + (pnl >= 0 ? 'up' : 'down'), moneySlot('plist:' + sym, pnl, { sign: true }));
       refs._posPnl.set(sym, pnlNode);   // R24：留给 `update()` 就地改盈亏
+      /* **收益率（ROE%）**（2026-10-04 用户拍板「加、放持仓行」）—— 未实现盈亏 ÷ 本仓保证金。
+         ⚠️ 分母是**这条仓位自己的保证金**（逐仓），不是账户权益 —— 与 OKX 逐仓的 ROE 同口径。
+         与 PnL 上下两行同色（`.up` / `.down`），也在 `update()` 里就地更新（`refs._posRoi`）。 */
+      const roiNode = el('u', pnl >= 0 ? 'up' : 'down', fmtPct(p.margin > 0 ? pnl / p.margin : 0));
+      refs._posRoi.set(sym, roiNode);
+      const stat = el('div', 'pstat');
+      stat.append(pnlNode, roiNode);
+      /* 「调整保证金」入口（逐仓 · OKX 式）：一枚小按钮，点开弹层做加 / 减（见 `openMarginDlg`）。 */
+      const adj = el('button', 'adj', '调整');
+      adj.dataset.mg = `open:${sym}`;
       row.append(
         el('b', null, sym),
         el('span', 'mut', `${dirText}${qtyText} @ ${fmtLogPrice(p.entry)}`),
-        pnlNode,
+        stat,
+        adj,
       );
       card.append(row);
     }
@@ -1800,6 +1839,74 @@ export function confirmExchange(s, id) {
   no.dataset.exno = '';
   const btns = el('div', 'confirm-btns');
   btns.append(ok, no);
+  box.append(btns);
+
+  back.addEventListener('pointerdown', closePicker);
+  ov.append(back, box);
+  ov.hidden = false;
+  picker = ov;
+}
+
+/**
+ * **「调整保证金」弹层**（逐仓 · OKX 式 · 2026-10-04 用户拍板）—— 挂 `#overlay`，复用 `.confirm` 骨架。
+ *
+ * 上半是**当前读数**（保证金 / 保证金率 / 强平价），下半是**两排预设**：加（可用余额）与减（不回落到
+ * 维持线）各给 25% / 50% / 100% 三档，按钮上直接写好**这一下会动多少钱**（只写「25%」玩家看不出量）。
+ *
+ * ⚠️ **逐仓专属**：全仓没有「这一条仓位的保证金」这个概念（见 `engine.marginCapsOf` 那段史实）。
+ * ⚠️ 每次调整成功后由 `main.js` **重开一次本层**（余额与上下限都变了，重建比就地改简单且不会飘）。
+ * ⚠️ 上下限走 `marginCapsOf`、可行走 `canAdjustMargin` —— 与分派层 `adjustMargin` **同源**，
+ *    不会出现「画着能点、点了被拒」。
+ */
+export function openMarginDlg(s, sym) {
+  closePicker();
+  const ov = document.getElementById('overlay');
+  if (!ov) return;
+  const caps = marginCapsOf(s, sym);
+  if (!caps) return;                     // 仓位已经没了（平仓 / 强平）：不再弹
+  const { pos, price, add, reduce } = caps;
+  const liquidatable = canLiquidate(pos);
+
+  const back = el('div', 'pick-back');
+  const box = el('div', 'confirm');
+  box.append(el('h3', null, `${sym} 调整保证金`));
+
+  const line = (k, v) => {
+    const d = el('div', 'confirm-row');
+    d.append(el('i', null, k), el('span', 'num', v));
+    return d;
+  };
+  const rows = el('div', 'confirm-rows');
+  rows.append(
+    line('保证金', moneySlot('mgm:' + sym, pos.margin)),
+    line('保证金率', liquidatable ? fmtRate(marginRateOf(pos, price)) : '--'),
+    /* 强平价：不可强平的仓（1x 多头）没有这一说 —— 与交易页持仓条同一口径（填 `--`）。 */
+    line('强平价', liquidatable ? fmtLogPrice(liquidationPrice(pos)) : '--'),
+  );
+  box.append(rows);
+
+  /* 预设键：`frac` 与方向进 `data-mg`，金额由 `main.js` **点的时候现算**（`caps` 会随余额变）。 */
+  const preset = (frac, dir) => {
+    const cap = dir > 0 ? add : reduce;
+    const amt = cap * frac;
+    const b = el('button', 'opt', `${dir > 0 ? '+' : '−'}${fmtMoneyShort(amt)}`);
+    b.dataset.mg = `${dir > 0 ? 'add' : 'sub'}:${sym}:${frac}`;
+    if (!(amt > 1e-9) || !canAdjustMargin(s, sym, dir * amt)) b.disabled = true;
+    return b;
+  };
+  const group = (label, dir) => {
+    box.append(el('i', 'mg-h', label));
+    const r = el('div', 'confirm-btns');
+    r.append(preset(0.25, dir), preset(0.5, dir), preset(1, dir));
+    box.append(r);
+  };
+  group('增加保证金（可用）', 1);
+  group('减少保证金（不低于维持线）', -1);
+
+  const close = el('button', 'act flat', '关闭');
+  close.dataset.mg = 'close';
+  const btns = el('div', 'confirm-btns');
+  btns.append(close);
   box.append(btns);
 
   back.addEventListener('pointerdown', closePicker);

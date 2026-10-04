@@ -867,6 +867,24 @@ canvas.curve {
 /* 中间那格（方向 ＋ 杠杆）吃掉余量，长了就在自己这一格截尾，不挤两边 */
 .prow > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .prow > b:last-child { flex: none; }
+/* 持仓行右侧：**盈亏 / 收益率**上下两行（2026-10-04 用户拍板「收益率放持仓行」）＋ 一枚「调整」入口。
+   `.pstat` 用 `flex: none` 只占自己那份宽 —— 中间那串「方向·币量·开仓价」照旧吃余量、照旧自己截尾。 */
+.pstat { flex: none; display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; }
+.pstat b { font-size: calc(12px * var(--ui)); }
+.pstat u { font-style: normal; text-decoration: none; font-size: calc(11px * var(--ui)); }
+/* 「调整保证金」入口：做小（11px 字、22px 高）—— 别把中间那串读数挤到截断。 */
+.prow > .adj {
+  flex: none;
+  height: calc(22px * var(--ui));
+  padding: 0 6px;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--mut);
+  font: inherit;
+  font-size: calc(11px * var(--ui));
+  cursor: pointer;
+}
+.prow > .adj:active { color: var(--fg); border-color: var(--fg); }
 
 /* ══════════════ 设置页（A6 · 方案 §6.2） ══════════════
    原设置弹层那三件原样搬成页：两个开关（`.set-row` ＋ `.set-btn` 全部复用）+ 重开本局。
@@ -1069,6 +1087,8 @@ canvas.curve {
 }
 .confirm-row i { font-style: normal; color: var(--mut); }
 .confirm-btns { display: flex; gap: 8px; margin-top: 12px; }
+/* 「调整保证金」弹层里两组预设的小标题（`i` 默认斜体 ⇒ 复位，与 `.confirm-row i` 同口径）。 */
+.confirm .mg-h { display: block; margin-top: 10px; font-style: normal; font-size: calc(11px * var(--ui)); color: var(--mut); }
 
 /* ══════════════ 新手分步引导（本轮 ④ · 高亮 ＋ 一句话） ══════════════
    聚光靠**环形阴影**：盒子本身透明，`box-shadow` 半径开到 9999px，

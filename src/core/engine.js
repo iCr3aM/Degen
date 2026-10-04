@@ -2640,6 +2640,94 @@ function closeCheck(s, frac = 1) {
 /** 渲染层用的**纯判据**：这一笔平得出来吗 —— 与 `closeTrade` 同源（金额档的置灰读它）。 */
 export const canCloseAt = (s, frac = 1) => closeCheck(s, frac).ok;
 
+/* ───────────────────────── 逐仓 · 调整保证金（OKX 式 · 2026-10-04 用户拍板） ───────────────────────── */
+
+/**
+ * **调整保证金的上下限**（纯读，不改状态）—— 弹层里的预设金额与置灰判据读它。
+ *
+ * 史实（用户 2026-10-04 拍板「就像 OKX 那样」，已核过一手）：
+ *   - **增加 / 减少保证金是逐仓的标配**，早于 Binance —— BitMEX（2014 成立、逐仓自始）持仓上就有
+ *     `Add Margin`；OKX 逐仓持仓旁可**增加 / 减少**保证金（区间为交易账户余额的一定比例）；
+ *     Binance 逐仓合约亦有 Adjust Margin。**全仓模式没有这个按钮**（用账户总额整体担保）。
+ *   - 本作从 v13 起就是逐仓（每仓独立 `pos.margin`）⇒ 天然兼容，**不需要新状态字段**、不升存档版本。
+ *   - 现实约束：加受**可用余额**限制；减不能把保证金率压到**维持线**以下（否则是自己推向强平）。
+ *
+ * @returns {null | { pos:object, price:number, mustUsdt:boolean, add:number, reduce:number }}
+ *   `add` = 此刻最多能加多少；`reduce` = 此刻最多能减多少（都 ≥ 0）
+ */
+export function marginCapsOf(s, sym) {
+  const pos = posOf(s, sym);
+  if (!pos) return null;
+  const price = exPrice(s, sym, pos.ex);
+  if (!(price > 0)) return null;
+  const mustUsdt = !isMargin(pos);                 // 合约（perp）只认 USDT；杠杆是两格之和
+  const add = Math.max(0, spendableOf(s, mustUsdt));
+  /* 减的下限：减完后**权益**（保证金 ＋ 未实现盈亏）仍要撑在维持线的 `PARTIAL_TARGET` 倍之上
+     —— 与部分强平同一个目标倍数，留一道垫子，不许玩家把仓位减到「下一秒就爆」。
+     权益口径与强平判据同源（`equityOf` / `maintRateOf`）⇒ 浮亏时能抽回的钱自然更少。 */
+  const floorEquity = PARTIAL_TARGET * maintRateOf(pos) * pos.notional;
+  const reduce = Math.max(0, Math.min(pos.margin, equityOf(pos, price) - floorEquity));
+  return { pos, price, mustUsdt, add, reduce };
+}
+
+/**
+ * **调整保证金校验** —— 纯判据，一个字节的状态都不改（与 `openCheck` / `closeCheck` 同纪律）。
+ * @param {number} delta 正 = 增加、负 = 减少（USDT 计价）
+ * @returns {{ok:false, why:string} | {ok:true, pos:object, add:boolean, amount:number, mustUsdt:boolean}}
+ */
+function adjustCheck(s, sym, delta) {
+  if (s.over) return { ok: false, why: '本局已结束' };
+  const c = marginCapsOf(s, sym);
+  if (!c) return { ok: false, why: `${sym} 没有可调整的持仓` };
+  const amount = Math.abs(delta);
+  if (!(amount > 1e-9)) return { ok: false, why: '调整金额为 0' };
+  if (delta > 0) {
+    if (amount > c.add + 1e-9) {
+      return { ok: false, why: c.mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用余额不足' };
+    }
+    return { ok: true, pos: c.pos, add: true, amount, mustUsdt: c.mustUsdt };
+  }
+  if (!(c.reduce > 1e-9)) return { ok: false, why: '保证金率接近维持线 ｜ 不能再减' };
+  if (amount > c.reduce + 1e-9) return { ok: false, why: `最多可减 ${fmtMoneyShort(c.reduce)}` };
+  if (amount > c.pos.margin - 1e-9) return { ok: false, why: '保证金不能减到 0' };
+  return { ok: true, pos: c.pos, add: false, amount, mustUsdt: c.mustUsdt };
+}
+
+/** 渲染层用的**纯判据**：这一笔保证金调得动吗（弹层里的预设键读它置灰）。 */
+export const canAdjustMargin = (s, sym, delta) => adjustCheck(s, sym, delta).ok;
+
+/**
+ * **落账**：增加 / 减少某一条**逐仓**的保证金（OKX 式）。
+ *
+ *   · 增加：`debit` 从可用余额扣一块进 `pos.margin` ⇒ 名义 / 数量**不动**、保证金率上升、强平价推远。
+ *   · 减少：把一块保证金退回可用余额 ⇒ 名义 / 数量不动、保证金率下降、强平价靠近。
+ *   - 两者都**不改 `notional` / `size` / `entry`** —— 调整保证金不是加减仓，只挪垫子。
+ *   - `pos.mix` 同步维护（加：并进扣款的两格构成；减：按 `amount / margin` 的比例退回两格）——
+ *     `closeTrade` / `forceLiquidate` 都靠它「原路退回」，不维护就会把美元的仓位退成 U。
+ *   - **不写 `s.lockI`、不推行情冲击**（纯资金腾挪、无成交）⇒ 与「下单一小时锁」无关。
+ */
+export function adjustMargin(s, sym, delta) {
+  const c = adjustCheck(s, sym, delta);
+  if (!c.ok) return { ok: false, why: c.why };
+  const { pos, add, amount, mustUsdt } = c;
+  if (add) {
+    const paid = debit(s, amount, mustUsdt);
+    if (!paid) return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用余额不足' };
+    pos.margin += amount;
+    pos.mix = { usd: pos.mix.usd + paid.usd, usdt: pos.mix.usdt + paid.usdt };
+  } else {
+    /* 按「减掉的比例」等比例抽一块，原路退回两格 —— 与平仓 `credit` 同一口径。 */
+    const ratio = amount / pos.margin;
+    const back = { usd: pos.mix.usd * ratio, usdt: pos.mix.usdt * ratio };
+    credit(s, pos.ex, amount, back);
+    pos.margin -= amount;
+    pos.mix = { usd: pos.mix.usd - back.usd, usdt: pos.mix.usdt - back.usdt };
+  }
+  const price = exPrice(s, sym, pos.ex);
+  pushLog(s, `${add ? '增加' : '减少'}保证金 ${sym}｜${fmtMoneyShort(amount)}｜保证金率 ${fmtRate(marginRateOf(pos, price))}`, 'info', 'trade');
+  return { ok: true };
+}
+
 /**
  * 平仓 / **减仓** —— 平掉**当前所选币**仓位的 `frac` 比例（2026-10-02 用户拍板：可分批卖出）。
  * 多仓下想平另一个币：先切到那个币的 Tab，再点平仓。

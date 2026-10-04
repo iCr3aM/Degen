@@ -11,7 +11,7 @@ import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, cashCurAt, exchangeOf, has
 import { createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked } from './core/engine.js';
+import { createClock, chanOf, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
@@ -23,7 +23,7 @@ import {
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
   renderReview, openNodeCard, openYearPick, openGuide, renderCareers, openPoster,
   isStandalone, toggleInstallGuide, menuRemoveInstall, closeMenuDlg, openSavePick, openScenPick,
-  openAbout, redrawChart,
+  openAbout, redrawChart, openMarginDlg,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -898,6 +898,11 @@ function dispatch(node) {
     return;
   }
 
+  /* 逐仓「调整保证金」（2026-10-04 用户拍板 · OKX 式）：资产页持仓行那枚「调整」入口 ＋ 弹层预设键。
+     ⚠️ 它**不吃暂停闸门、也不吃下单一小时锁** —— 加 / 减保证金只是账户内的资金腾挪（不改数量、
+        不产生任何市场冲击、不写 `s.lockI`），拦它没有防作弊意义（与「买 U」同一口径）。 */
+  if (d.mg !== undefined) return onMarginAdjust(s, d.mg);
+
   /* 主菜单入口（需求 4 · 方案 §2）：`load` / `start` / `scen` / `review` / `careers` / `install`。 */
   if (d.menu !== undefined) return onMenu(d.menu, node);
   /* 「读取存档」弹窗里那两行（2026-10-01 用户拍板；2026-10-02 由摊开改为弹出）：
@@ -1181,6 +1186,29 @@ function onChan() {
      切回盘口**不还原**原来的杠杆 —— 那需要多存一个字段，而封顶值是个安全的默认。 */
   if (s.chan === 'otc' && s.lev > OTC.levMax) s.lev = OTC.levMax;
   after();
+}
+
+/* ── 逐仓「调整保证金」（2026-10-04 用户拍板 · OKX 式）──────────────────
+   资产页持仓行那枚「调整」入口 ＋ 弹层里的预设键，值走 `<cmd>:<sym>:<frac>`：
+     · `open`  开弹层
+     · `add` / `sub`  加 / 减（`frac` = 可加 / 可减上限的比例）
+     · `close` 关弹层
+   ⚠️ 金额**点的时候现算**（`marginCapsOf`），不信任按钮上那个旧数字 —— 余额与上下限随时在变。
+   ⚠️ 每次调整成功后**重开一次弹层**，让「保证金 / 保证金率 / 强平价」与预设金额都落到最新值
+      （`openMarginDlg` 自己会先 `closePicker` 再建；仓位没了内部会跳过）。 */
+function onMarginAdjust(s, val) {
+  const [cmd, sym, fracStr] = String(val).split(':');
+  if (cmd === 'close') { closePicker(); return; }
+  if (cmd === 'open') { openMarginDlg(s, sym); return; }
+  if (cmd !== 'add' && cmd !== 'sub') return;
+  const caps = marginCapsOf(s, sym);
+  if (!caps) { closePicker(); return; }         // 仓位已经没了：关掉弹层
+  const cap = cmd === 'add' ? caps.add : caps.reduce;
+  const delta = (cmd === 'add' ? 1 : -1) * cap * Number(fracStr);
+  const r = adjustMargin(s, sym, delta);
+  if (!r.ok) pushLog(s, r.why, 'bad');
+  after();                                       // 重画（HUD / 资产页数字）＋ 存盘
+  openMarginDlg(s, sym);
 }
 
 /* ── 上帝模式 ＋ 订单冲击（隐藏入口 · 方案 §2）─────────────────────

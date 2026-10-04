@@ -75,6 +75,11 @@ export const ACTION_KEYS = [
      `slot` ＝ 主菜单「读取存档」**弹窗**里那几行，值是槽位键（`normal` / `challenge`）。
      2026-10-02：`menuback` ＝ 那两枚主菜单弹窗（读取存档 / 挑战模式）底部的「返回」。 */
   'home', 'slot', 'menuback',
+  /* 逐仓「调整保证金」（2026-10-04 用户拍板 · OKX 式）：`mg` ＝ 资产页持仓行那枚「调整」入口
+     与弹层里的预设键 —— 值是子命令
+     （`open:<sym>` 开弹层 / `add:<sym>:<frac>` 加 / `sub:<sym>:<frac>` 减 / `close` 关），
+     分派见 `main.js` 的 `onMarginAdjust`。 */
+  'mg',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');
