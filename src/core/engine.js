@@ -299,13 +299,41 @@ export function supplyCapOf(sym, i) {
 }
 
 /**
- * 账户权益归零即破产（GDD §1.3）。
+ * **实质归零的下限**（2026-10-04 用户拍板）—— 玩家当前所、**杠杆通道**下
+ * 「能开出的最小一单」需要多少保证金：
  *
- * ⚠️ 容差不是可选项：`margin = cash / (1 + lev×feeRate)` 之后再减 `margin + fee`，
- *    浮点残渣会留下 ~1e-13 的「现金」，于是「已经归零」的账户永远过不了 `<= 0` 这一关，
- *    游戏既不结束、也不弹结算遮罩，只是卡在 $0.00 上继续走时间（2026-09-28 实测）。
+ *     阈值 = 该所最小名义 ÷ 该所杠杆最高倍数         （再以 `MIN_NOTIONAL` 兜底）
+ *
+ * ⚠️ **为什么不再用 `1e-9`**：逐步强平（部分强平）的设计是「**保证金不退、留在仓位里当垫子**」
+ *    （见 `positions.reducePosition`）⇒ 它的**总权益逐位守恒**，只在「仓位保证金 ↔ 浮亏」之间
+ *    搬家，于是权益**永远不会自己走到 0**。实测（2021-11-10 顶部开 5x 多单、骑 200 天）：
+ *    跌到权益 $0.24 时，既不满足 `≤ 1e-9` 的归零、保证金率又已被抬回 20.3%（> 15% 维持线）
+ *    ⇒ **再也不会被强平** ⇒ 时钟照走、本局**永不结束**（用户报的「无法出现爆仓结局」）。
+ *    真正的「什么都干不了」的下限是**最小下单名义**，不是浮点 0。
+ * ⚠️ **为什么要除杠杆**：`openCheck` 判的是**名义**（`margin × lev ≥ 最小名义`）⇒ 杠杆越高、
+ *    凑出最小名义所需的保证金越少。除以该所最高杠杆才是「真的一单都开不出」的临界。
+ *    （实测：Bitfinex $5 仍能开出 $16.5 名义 ⇒ 不该判归零；$0.24 则两种模式全拒。）
+ * ⚠️ **只按杠杆通道算，不问合约**：合约那条路还卡**币种**（`spendableOf(mustUsdt)` 只认 USDT），
+ *    且不会有人拿 $0.2 去 100x；把它纳入会把阈值拉到 $0.1 量级、**修不掉**本 bug（已实测）。
+ * ⚠️ **兜底用 `MIN_NOTIONAL`**：该所那时还没开业 / 阶梯查不到时，不要制造一个离谱的阈值。
+ * ⚠️ **必须与强平尘埃闸同尺**（`liquidateAll` 里那条也判定「剩余不足最小名义就整条打掉」）：
+ *    若把尘埃闸从 `MIN_NOTIONAL`($1) 改成 `minNotionalAt`($10)，整条强平的返还额会升到 ~$1.45，
+ *    反而在本阈值之上留下新的僵尸 —— **两处只能一起动，本版选择都停在 `MIN_NOTIONAL` 这一档**。
  */
-const isBankrupt = s => equity(s) <= 1e-9;
+const ruinFloorOf = s => {
+  const t = timeOf(s);
+  const lev = Math.max(1, maxLeverageAt(t, s.ex, 'margin'));
+  return Math.max(MIN_NOTIONAL, minNotionalAt(s.ex, t, 'margin') / lev);
+};
+
+/**
+ * 账户**实质归零**即破产（GDD §1.3）。
+ *
+ * ⚠️ 浮点容差仍然要：`margin = cash / (1 + lev×feeRate)` 之后再减 `margin + fee`，
+ *    浮点残渣会留下 ~1e-13 的「现金」。`ruinFloorOf` 恒 ≥ `MIN_NOTIONAL`($1) ⇒ 那条残渣
+ *    天然被它盖住，无需再单独留一个 `1e-9`（2026-09-28 的旧容差已被本阈值吸收）。
+ */
+const isBankrupt = s => equity(s) < ruinFloorOf(s);
 
 /* ───────────────────────────── 滑点（P2-B1） ───────────────────────────── */
 
@@ -1550,10 +1578,14 @@ function adl(s, sym, m, price, need) {
     if (!(rate > 0)) continue;
     const pnl = it.notional * rate;                 // 该仓的全部浮盈
     const take = Math.min(pnl, need - done);        // 本次从它身上收走的浮盈（＝补上的缺口）
+    /* `actual` = **实际**收走的浮盈。NPC 恒等于 `take`；玩家那一侧会因「残余闸」整条平掉
+       （F2 · 2026-10-04）⇒ 实收可能大于 `take`（多收的是那条仓位剩余部分的浮盈）。
+       两件事都必须用 `actual`，否则基金少进一笔、缺口也补不满。 */
+    let actual = take;
     if (it.player) {
       /* 玩家的那一份走 `adlPlayerReduce`（**按比例退回保证金、浮盈被收走**）；`ppos` 是本函数
          开头取的那一份，队列里至多命中一次 ⇒ 不存在「对象已被换掉」的问题。 */
-      adlPlayerReduce(s, ppos, take, price);
+      actual = adlPlayerReduce(s, ppos, take, price);
     } else {
       const g = m.npc[it.k];
       const cut = take / rate;                      // 要让浮盈收走 `take`，需平掉的名义（≤ it.notional）
@@ -1569,8 +1601,8 @@ function adl(s, sym, m, price, need) {
          玩家看不到、也无法据此做任何决策，播出来只会把日志刷满（用户：「ADL 不该显示别人的」）。
          价格冲击（`pushNpcShock`）照常保留：它才是玩家**能感知**到的那一部分。 */
     }
-    s.fund += take;                                 // 收走的浮盈进池 ⇒ 基金一分不多、一分不少
-    done += take;
+    s.fund += actual;                               // 收走的浮盈进池 ⇒ 基金一分不多、一分不少
+    done += actual;
   }
 }
 
@@ -1596,13 +1628,31 @@ function adl(s, sym, m, price, need) {
  * ⚠️ 价格冲击 / 量柱 / 抛压折价与其它三处平仓**同一套口径**（开仓 / 平仓 / 强平 / 部分强平）：
  *    ADL 是把仓位**砸到市场上**的卖出（或买回），不是账面冲销 —— 所以它写 `s.flow`；
  *    NPC 那一侧才走有界瞬时通道 `pushNpcShock`（它没有真实账户、不该留永久台阶）。
+ *
+ * ⚠️ **残余闸（F2 · 2026-10-04 用户拍板）**：若按 `take` 缩完之后剩下的那块**按现价的名义**
+ *    不足「本所 × 本产品 × 年代」的最小名义（`closeCheck` 的 `f < 1` 闸用的同一条尺子），
+ *    就**整条平掉**（`f = 1`）—— 交易所不会留一条连最小单都分批卖不出去的仓位。
+ *    ⚠️ 整条平掉时**多收的那部分浮盈（`pnl × (1 − f)`）必须也进保险基金**：否则它既不在玩家账上、
+ *       也不在基金里，凭空蒸发。办法是让本函数**返回实际收走的浮盈**，由 `adl()` 用它记账
+ *       （`s.fund += actual` / `done += actual`）—— 这正是「基金一分不多、一分不少」这条纪律的延伸。
+ *
+ * ⚠️ **不写 `s.realized`（2026-10-04 审计再确认）**：ADL 按**开仓价**结算 ⇒ 玩家拿回自己的
+ *    保证金（成本基础），被收走的那一块浮盈**本来就没「实现」过**（它只在 `unrealizedOf` 里）。
+ *    所以 `realized` 变动恒为 0。若在这里写 `s.realized -= take`，会破坏 HUD 依赖的那条不变量
+ *    `已实现 ＋ 未实现 ＝ 权益 − 开局本金`（代数已验证）；此处「什么都不写」才是对的。
  * @param {number} take 要从这笔仓位收走的浮盈（USD，> 0 且 ≤ 该仓全部浮盈）
+ * @returns {number} **实际**收走的浮盈（未触发残余闸时 ＝ `take`；触发时 ＝ 该仓全部浮盈 `pnl`）
  */
 function adlPlayerReduce(s, pos, take, price) {
   const mark = pos.size * price;
   const dir = pos.side === 'long' ? 1 : -1;
   const pnl = pos.size * (price - pos.entry) * dir;    // 该仓全部浮盈（调用侧保证 > 0）
-  const f = pnl > 0 ? Math.max(0, Math.min(1, take / pnl)) : 1;
+  let f = pnl > 0 ? Math.max(0, Math.min(1, take / pnl)) : 1;
+  /* 残余闸（F2）：剩下的那块按现价的名义不足最小名义 ⇒ 整条平掉，不留分批也卖不掉的尘埃仓。 */
+  if (f < 1) {
+    const minClose = Math.max(MIN_NOTIONAL, minNotionalAt(pos.ex, timeOf(s), isMargin(pos) ? 'margin' : 'fut'));
+    if (pos.size * (1 - f) * price < minClose) f = 1;
+  }
   const closedSize = pos.size * f;
   const notional = closedSize * price;                 // 砸到市场上的那笔名义（真实成交口径）
   addPlayerVol(s, pos.sym, notional, pos.ex, isMargin(pos) ? 'margin' : 'fut');
@@ -1623,6 +1673,7 @@ function adlPlayerReduce(s, pos, take, price) {
   }
   refreshOverhang(s, pos.sym, SHOCK.closeGive);
   pushLog(s, `ADL 自动平仓 ${pos.sym} ${pos.lev}x｜平仓 ${fmtMoneyShort(notional)} @ ${fmtLogPrice(price)}`, 'bad', 'liq');
+  return pnl * f;                                      // 实际收走的浮盈（触发残余闸时 ＝ 全部浮盈）
 }
 
 /**
