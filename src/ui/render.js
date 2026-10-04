@@ -131,23 +131,33 @@ const flash = n => replay(n, 'flash');
    才回调** —— 1x 下即约每 1000ms 一次。故 `ROLL_STALE` 必须**大于 1000** 才会真的滚（见 `core/roll.js`；
    旧值 480 < 1000 ⇒ 1x 下每拍都被判成陈旧、永远直接写，这正是「只有闪烁」的根因）。
    目标一变就从**当前显示值**重新起步，于是表现为平滑追赶而不是跳变。
-   ⚠️ 补间帧用 `fmtMoneyShort`（**不带**门槛迟滞）—— 迟滞只服务「落定后的显示」；落定的最后一帧
-      再走 `moneySlot` 归位到带迟滞的规范显示，与不滚动的路径逐位一致。
+   ⚠️ 默认走金额那套格式：补间帧用 `fmtMoneyShort`（**不带**门槛迟滞），落定帧再走 `moneySlot`
+      归位到带迟滞的规范显示，与不滚动的路径逐位一致。非金额读数（保证金率 / 收益率）传 `fmt`
+      开关掉这套 —— 它们本来就没有「门槛迟滞」，补间帧与落定帧都用 `fmt`。
    ⚠️ 数学与「该滚不该滚」的判据都在 `core/roll.js`（纯函数、可在 Node 里跑）—— 审计因此能按**行为**
       断言它，而不是像以前那样只对源码打一条正则（那是假绿）。 */
-const rollers = new Map();   // el -> { from, to, cur, t0, last, key, sign, raf }
+const rollers = new Map();   // el -> { from, to, cur, t0, last, key, sign, fmt, raf }
 
-function rollNumber(el, key, to, { sign = false, speed = 1, fx = 2 } = {}) {
-  if (!Number.isFinite(to)) { setText(el, '--'); return; }
+/** 停掉某格的滚动并摘掉记录。该格改走**非数值文案**（`--`、「初始 $1,000」）或节点被重建时调 ——
+ *  否则还在跑的 rAF 会把刚写进去的文案又覆盖成插值出来的数字。 */
+function stopRoll(n) {
+  const r = rollers.get(n);
+  if (!r) return;
+  if (r.raf) cancelAnimationFrame(r.raf);
+  rollers.delete(n);
+}
+
+function rollNumber(el, key, to, { sign = false, speed = 1, fx = 2, fmt = null } = {}) {
+  if (!Number.isFinite(to)) { stopRoll(el); setText(el, '--'); return; }
   const now = performance.now();
   let r = rollers.get(el);
-  if (!r) { r = { from: to, to, cur: to, t0: 0, last: now, key, sign, raf: 0 }; rollers.set(el, r); }
+  if (!r) { r = { from: to, to, cur: to, t0: 0, last: now, key, sign, fmt, raf: 0 }; rollers.set(el, r); }
   const sinceLast = now - r.last;
-  r.last = now; r.key = key; r.sign = sign;
+  r.last = now; r.key = key; r.sign = sign; r.fmt = fmt;
   if (!shouldRoll({ speed, fx, sameTarget: to === r.cur, sinceLastMs: sinceLast })) {
     if (r.raf) { cancelAnimationFrame(r.raf); r.raf = 0; }
     r.from = r.to = r.cur = to;
-    setText(el, moneySlot(key, to, { sign }));
+    setText(el, fmt ? fmt(to) : moneySlot(key, to, { sign }));
     return;
   }
   if (r.raf) {
@@ -161,11 +171,11 @@ function rollNumber(el, key, to, { sign = false, speed = 1, fx = 2 } = {}) {
     const p = Math.min(1, (ts - r.t0) / ROLL_MS);
     if (p >= 1) {
       r.raf = 0; r.cur = r.to;
-      setText(el, moneySlot(r.key, r.to, { sign: r.sign }));      // 落定：归位到带迟滞的规范显示
+      setText(el, r.fmt ? r.fmt(r.to) : moneySlot(r.key, r.to, { sign: r.sign }));   // 落定：归位到规范显示
       return;
     }
     r.cur = rollSample(r.from, r.to, p);
-    setText(el, fmtMoneyShort(r.cur, { sign: r.sign }));
+    setText(el, r.fmt ? r.fmt(r.cur) : fmtMoneyShort(r.cur, { sign: r.sign }));
     r.raf = requestAnimationFrame(step);
   };
   r.raf = requestAnimationFrame(step);
@@ -271,9 +281,17 @@ export function mount(root) {
   /* ── 账户两格：交易所搬去顶栏后退回两列（2026-09-28），手机上每格从 91px 回到 179px，
         「账户权益 / 可用保证金」不再被 text-overflow 截尾 ── */
   const eqVal = el('b', 'num');
+  /* 副行拆成「标签 ＋ 数值」两段：**数值**那一段交给 `rollNumber` 滚（2026-10-05 用户拍板
+     「HUD 上所有数字都滚」），标签（已实现 / 未实现 / 初始）留在外面不参与插值 ——
+     整串一起滚会把中文标签也喂进补间，滚出一串乱码。 */
   const eqSub = el('u', 'num');
+  const eqSubNum = el('span');
+  eqSub.append(el('span', null, '已实现 '), eqSubNum);
   const cashVal = el('b', 'num');
   const cashSub = el('u', 'num');
+  const cashSubLb = el('span', null, '未实现 ');
+  const cashSubNum = el('span');
+  cashSub.append(cashSubLb, cashSubNum);
   const hud = el('div', 'hud');
   hud.append(
     cell('账户权益', eqVal, eqSub),
@@ -503,6 +521,8 @@ export function mount(root) {
   );
   const asTotal = el('b', 'num');
   const asNote = el('u', 'num');
+  const asNoteNum = el('span');
+  asNote.append(el('span', null, '已实现 '), asNoteNum);
   const asBox = el('div', 'hud one');
   asBox.append(cell('总资产', asTotal, asNote));
   /* 明细拆解（用户 2026-10-01 拍板 · 选项 A）：**不改任何口径**，只把「钱去哪了」摊开 ——
@@ -769,7 +789,7 @@ export function mount(root) {
   return {
     root, dateEl, titleEl, pauseBtn,
     exBtn, exName, exRate,
-    eqVal, eqSub, cashVal, cashSub,
+    eqVal, eqSub, eqSubNum, cashVal, cashSub, cashSubLb, cashSubNum,
     symbols, symBtns,
     canvas, chartWrap, chartHead, chSym, chMcap, chSupp, chChg, modeBtn, chartEta, chartLock,
     heatChip, heatBar, heatTxt, oiTxt, lsTxt,
@@ -777,7 +797,7 @@ export function mount(root) {
     logline, logRows,
     fracBtns, toolRow, toolBtns, levRow, levBtns, spdBtns,
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
-    pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asList,
+    pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asNoteNum, asList,
     asCurve, eqRangeBtns, asBusy, asOnway, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
     volBtns, vibBtns, fxBtns, mktBtn, hintBtn, hintRow, colBtn,
     /* 回顾页（需求 4 · 方案 §3） */
@@ -882,22 +902,26 @@ export function update(refs, s, view) {
   setCls(refs.eqVal, 'num ' + (eq >= s.cash0 ? 'up' : 'down'));
   /* 副行两个数**都带符号**（Batch 4 · B17）：正绿负红，与持仓盈亏同一口径。
      颜色写在这里而不是 CSS 默认值 —— 见 `style.css` 里 `.hud .cell u.up` 那段注释。 */
-  setText(refs.eqSub, `已实现 ${moneySlot('realized', s.realized, { sign: true })}`);
+  rollNumber(refs.eqSubNum, 'realized', s.realized, { sign: true, speed: s.speed, fx: view.fx });
   /* `sign` ＝ 色盲第二通道（B6-c · §7.6）：在 `.up` / `.down` 的颜色之外再挂一枚 ▲/▼ */
   setCls(refs.eqSub, 'num sign ' + (s.realized >= 0 ? 'up' : 'down'));
 
   /* 「可用保证金」的口径随**下单模式**走，与 `openCheck` 的 `mustUsdt` **同源**：
      合约是 USDT 本位（只认 U 那一格），杠杆 / OTC 是两格之和。不分开就会自相矛盾 ——
      合约模式下把美元也算进来，玩家看着「我有保证金」却开不出合约（本次修复的正题）。 */
-  setText(refs.cashVal, moneySlot('cash', s.mode === 'fut' ? spendableOf(s, true) : available(s)));
+  rollNumber(refs.cashVal, 'cash', s.mode === 'fut' ? spendableOf(s, true) : available(s), { speed: s.speed, fx: view.fx });
   /* 副行优先级：有持仓时显示未实现盈亏，否则回落到「初始 $1,000」这个死常量。
      （原来「有贷款时优先显示负债」，已随 2026-10-01 的一次性救济金改造整体移除 —— 那笔钱不用还。） */
   if (anyHeld(s)) {
     const u = totalUnrealized(s);
-    setText(refs.cashSub, `未实现 ${moneySlot('unreal', u, { sign: true })}`);
+    setText(refs.cashSubLb, '未实现 ');
+    rollNumber(refs.cashSubNum, 'unreal', u, { sign: true, speed: s.speed, fx: view.fx });
     setCls(refs.cashSub, 'num sign ' + (u >= 0 ? 'up' : 'down'));
   } else {
-    setText(refs.cashSub, `初始 ${fmtMoney(s.cash0)}`);
+    /* 空仓：这格换成死常量「初始 $1,000」—— 必须先 `stopRoll`，否则还在跑的补间会把常量覆盖回插值数字。 */
+    setText(refs.cashSubLb, '初始 ');
+    stopRoll(refs.cashSubNum);
+    setText(refs.cashSubNum, fmtMoney(s.cash0));
     setCls(refs.cashSub, 'num mut');
   }
 
@@ -982,8 +1006,8 @@ export function update(refs, s, view) {
     setText(refs.posSide, `${p.sym}${p.lev > 1 ? ` ${p.lev}x` : ''}`);
     setCls(refs.posSide, 'num ' + (p.side === 'long' ? 'side-long' : 'side-short'));
     const pnl = unrealizedOf(s, p.sym);
-    const pnlText = moneySlot('pospnl', pnl, { sign: true });
-    setText(refs.posPnl, pnlText);
+    const pnlText = moneySlot('pospnl', pnl, { sign: true });   // 只用于判「换值了没」；文本写入交给滚动器
+    rollNumber(refs.posPnl, 'pospnl', pnl, { sign: true, speed: s.speed, fx: view.fx });
     setCls(refs.posPnl, 'num sign ' + (pnl >= 0 ? 'up' : 'down'));
     /* 未实现盈亏换值闪一下（2026-10-03）：与总资产同一副观感、同一条 `.flash` 重挂机制。
        ⚠️ 只在**显示值真的变了**的帧上闪 —— `moneySlot` 自带门槛迟滞，数字抖动不会一直触发。
@@ -996,12 +1020,14 @@ export function update(refs, s, view) {
        ⚠️ v9（§15.3 N5）：判据从「是不是杠杆 1x」换成 `canLiquidate` —— 杠杆 > 1 仓照样有强平线。
        ⚠️ 2026-10-03：判据再收窄成「有没有借入」—— **1x 空头借了全额币，这格要显示保证金率**。 */
     if (!canLiquidate(p)) {
+      stopRoll(refs.posRate);     // 从「滚动中的数值」切到 `--`：先停滚动，否则补间会把 `--` 覆盖回去
       setText(refs.posRate, '--');
       setCls(refs.posRate, 'num mut');
       refs._rateDanger = false;   // 不可强平 ⇒ 没有「红区」这回事，复位（换仓后重新判）
     } else {
       const rate = posMark == null ? 0 : marginRateOf(p, posMark);
-      setText(refs.posRate, fmtRate(rate));
+      /* 保证金率是**百分比**读数、没有金额那套门槛迟滞 ⇒ 传 `fmt`，补间帧与落定帧同走 `fmtRate`。 */
+      rollNumber(refs.posRate, 'posrate', rate, { speed: s.speed, fx: view.fx, fmt: fmtRate });
       /* **三档颜色**（本轮 ⑥ · 用户拍板「像 OKX 一样」）—— 判据不是 `rate` 的绝对值，
          而是**按本仓自己的杠杆归一化的安全垫** `safetyOf`：
            开仓那一刻 = 1（满垫）、触及维持保证金率 = 0（该强平了）。
@@ -1034,6 +1060,8 @@ export function update(refs, s, view) {
     setAria(refs.mgUp, !canUp);
     setAria(refs.mgDown, !canDown);
   } else {
+    stopRoll(refs.posPnl);      // 空仓：这两格改走 `--`，先停滚动
+    stopRoll(refs.posRate);
     for (const n of [refs.posSide, refs.posPnl, refs.posRate]) {
       setText(n, '--');
       setCls(n, 'num mut');
@@ -1304,8 +1332,8 @@ export function update(refs, s, view) {
     const usd = slotOf(s, 'usd');
     const usdt = slotOf(s, 'usdt');
     const book = usd + usdt;
-    setText(refs.asUsd, moneySlot('usd', usd));
-    setText(refs.asUsdt, moneySlot('usdt', usdt));
+    rollNumber(refs.asUsd, 'usd', usd, { speed: s.speed, fx: view.fx });
+    rollNumber(refs.asUsdt, 'usdt', usdt, { speed: s.speed, fx: view.fx });
     const share = v => (book > 0 ? `占 ${Math.round(v / book * 100)}%` : '--');
     setText(refs.asUsdSub, share(usd));
     setText(refs.asUsdtSub, share(usdt));
@@ -1323,7 +1351,7 @@ export function update(refs, s, view) {
       flash(refs.asTotal);
     }
     rollNumber(refs.asTotal, 'eq', eq, { speed: s.speed, fx: view.fx });
-    setText(refs.asNote, `已实现 ${moneySlot('realized', s.realized, { sign: true })}`);
+    rollNumber(refs.asNoteNum, 'realized', s.realized, { sign: true, speed: s.speed, fx: view.fx });
     /* 资产页这一格是 HUD「已实现」的**同款读数**，所以一并走色盲第二通道（§7.6 连带）。 */
     setCls(refs.asNote, 'num sign ' + (s.realized >= 0 ? 'up' : 'down'));
 
@@ -1331,8 +1359,8 @@ export function update(refs, s, view) {
        ⚠️ 换所要求先全平（§7.2）⇒ 同一时刻钱要么在当前所、要么在途，这两行与上面两格不会重叠计。 */
     let busy = 0;
     for (const sym of heldSyms(s)) busy += s.positions[sym].margin;
-    setText(refs.asBusy, moneySlot('busy', busy));
-    setText(refs.asOnway, moneySlot('onway', s.transfer ? s.transfer.amount : 0));
+    rollNumber(refs.asBusy, 'busy', busy, { speed: s.speed, fx: view.fx });
+    rollNumber(refs.asOnway, 'onway', s.transfer ? s.transfer.amount : 0, { speed: s.speed, fx: view.fx });
 
     /* ② 资金曲线（方案 §4）：与 K 线同一个坑 —— 它是 canvas，容器一隐藏就量成 0，
        所以只在资产页（此刻必然可见）画。基准线恒取**开局资金**（$1,000）：
@@ -1378,14 +1406,14 @@ export function update(refs, s, view) {
       const n = refs._posPnl.get(sym);
       if (!n) continue;
       const pnl = unrealizedOf(s, sym);
-      setText(n, moneySlot('plist:' + sym, pnl, { sign: true }));
+      rollNumber(n, 'plist:' + sym, pnl, { sign: true, speed: s.speed, fx: view.fx });
       setCls(n, 'num sign ' + (pnl >= 0 ? 'up' : 'down'));
       /* 收益率与盈亏同源就地更新（roi = 未实现 ÷ 本仓保证金）—— 分母读**当下**的 `pos.margin`
          （增减保证金会改它，签名不变时行不重建，所以必须每帧现算）。 */
       const r = refs._posRoi.get(sym);
       if (r) {
         const m = posOf(s, sym)?.margin ?? 0;
-        setText(r, fmtPct(m > 0 ? pnl / m : 0));
+        rollNumber(r, 'plist-roi:' + sym, m > 0 ? pnl / m : 0, { speed: s.speed, fx: view.fx, fmt: fmtPct });
         setCls(r, pnl >= 0 ? 'up' : 'down');
       }
     }
@@ -1626,6 +1654,10 @@ function posListSignature(s) {
  */
 function buildPosList(refs, s) {
   const box = refs.asList;
+  /* 先停掉旧行的滚动：`rollers` 以元素为键，旧节点一旦被丢弃，还在跑的 rAF 会永远停在游离节点上
+     （内存不回收 ＋ 每帧空转）。 */
+  if (refs._posPnl) for (const n of refs._posPnl.values()) stopRoll(n);
+  if (refs._posRoi) for (const n of refs._posRoi.values()) stopRoll(n);
   box.textContent = '';
   /* R24：重建时把每行的**盈亏节点**留下来，供 `update()` 就地更新（见 `posListSignature`）。
      `_posRoi` 是同一批行的**收益率**节点（2026-10-04 用户拍板「加、放持仓行」）。 */
