@@ -1394,15 +1394,16 @@ section('9h–9j · 模拟深度：跨所价差压力放大 · 借贷利率利�
   }
   check('9h 单所偏移恒 ≤ 原 cap + stressCap（硬顶守住）', over === 0, `越顶 ${over} 次`);
 
-  /* ⑥ 两所最大价差 ≤ 两所硬顶之和 —— 放大后仍不可能靠「买低卖高」白赚。 */
-  let dMax = 0;
-  for (let k = 0; k < N; k++) {
-    const a = god.exDevOf('bitfinex', 'BTC', H0 + k, SEED, panic);
-    const b = god.exDevOf('binance', 'BTC', H0 + k, SEED, panic);
-    dMax = Math.max(dMax, Math.abs(a - b));
-  }
+  /* ⑥ 两所价差**压力期真的拉大**（这才是 S2 的目的）—— 常态化压在一次往返手续费内（不可套利），
+     压力期放大到目标带；且两所差 ≤ 两所硬顶之和。这是「噪声确按所独立」的锐利回归哨兵：
+     若三家共用同一份抖动（旧 bug），价差只剩恒定的 `basis` 差，压力期根本放不出来。 */
+  const spread = (s0, a, b) => { let mx = 0; for (let k = 0; k < N; k++) mx = Math.max(mx, Math.abs(god.exDevOf(a, 'BTC', H0 + k, SEED, s0) - god.exDevOf(b, 'BTC', H0 + k, SEED, s0))); return mx; };
+  const sN = spread(neutral, 'bitfinex', 'binance');
+  const sP = spread(panic, 'bitfinex', 'binance');
   const dCap = C.exchangeOf('bitfinex').dev.cap + C.exchangeOf('binance').dev.cap + 2 * god.EXDEV.stressCap;
-  check('9h 两所最大价差 ≤ 两所硬顶之和', dMax <= dCap + 1e-12, `实测 ${f(dMax * 100, 2)}% ≤ ${f(dCap * 100, 2)}%`);
+  check('9h 两所价差压力期显著放大（≥ 5%）', sP >= 0.05, `常态 ${f(sN * 100, 3)}% → 压力 ${f(sP * 100, 2)}%`);
+  check('9h 常态两所价差仍压在一次往返手续费内（≤ 1%）', sN <= 0.01, `常态峰值 ${f(sN * 100, 3)}%`);
+  check('9h 两所最大价差 ≤ 两所硬顶之和', sP <= dCap + 1e-12, `实测 ${f(sP * 100, 2)}% ≤ ${f(dCap * 100, 2)}%`);
 
   /* ⑦ npcShock（级联瞬时冲击）单独也能触发同一路放大。 */
   let sMax = 0;

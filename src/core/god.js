@@ -992,7 +992,7 @@ function exStressOf(s, sym, hour) {
  *    压力期叠一层**零均值**的额外幅度 —— 详见 `EXDEV` 的注释。
  *
  * @param {string} exId 交易所 id
- * @param {string} sym  币符号（噪声按币独立，免得五个币同向抖动）
+ * @param {string} sym  币符号（噪声按「所 × 币 × 小时」独立 —— 免得五个币同向抖动，也免得三家所同向抖动）
  * @param {number} hour 绝对小时序号（`s.i`）
  * @param {number} [seed] 本局随机种子（`s.seed`）—— **必须传 `s.seed`，不能写死 `GAME.seed`**
  *   （P1-11 · 2026-10-04 审计）：现在 `s.seed` 恒等于 `GAME.seed`，两者数值相同、看不出差别；
@@ -1009,7 +1009,11 @@ export function exDevOf(exId, sym, hour, seed = GAME.seed, s = null) {
   const sev = s ? exStressOf(s, sym, hour) : 0;
   const amp = d.amp + sev * EXDEV.stressAmp;
   const cap = d.cap + sev * EXDEV.stressCap;
-  const n = (rand(seed, hashStr(sym), hour, 0, EXDEV_CHAN) * 2 - 1) * amp;
+  /* ⚠️ 噪声必须**按所独立**（`exId` 进哈希）—— 否则三家共用同一份抖动，
+     跨所价差只剩恒定的 `basis` 差，压力期也就放大不出「各所读数分叉」。
+     不可套利由**换所机制**保证（`switchExchange` 要求先全平、且转账要数小时），
+     与「噪声是否按所独立」无关 —— 玩家永远无法在同一时刻持两家所的仓吃价差。 */
+  const n = (rand(seed, hashStr(exId + '|' + sym), hour, 0, EXDEV_CHAN) * 2 - 1) * amp;
   const dev = d.basis + n;
   return 1 + Math.max(-cap, Math.min(cap, dev));
 }
