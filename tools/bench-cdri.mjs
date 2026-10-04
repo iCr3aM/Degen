@@ -10,10 +10,10 @@
  *   ② 走**真实数据包**（public/data）＋ 真实引擎（src/core），不 mock。
  *   ③ 24h 清算**独立测量**：引擎没有 24h 清算台账（加了要动存档 `STATE_VERSION`）⇒
  *      这里在**脚本自己的循环**里用可观测的公开量 `s.stat.liqNotional` 的**逐时差分**累计
- *      24 小时滚动强平额（`s.stat.liqNotional` 是 `stampede` 里「跌破强平线」那一笔的累计，
- *      口径与 Coinglass 公告一致：**只含强平、不含自愿止损波**），再除以当时的 OI。
- *      ⚠️ 口径局限：它**只统计 NPC 侧**的强平（玩家自己的强平走另一条路径、不进这个计数）
- *      —— 本脚本按「市场级清算强度」使用它，如实标注。
+ *      24 小时滚动强平额（`s.stat.liqNotional` 是强平名义的**累计**，口径与 Coinglass 公告一致：
+ *      **只含强平、不含自愿止损波**；§17.3（2026-10-04）起**同时含 NPC 侧与玩家自身**的强平），
+ *      再除以当时的 OI。
+ *      ⚠️ 本脚本**不替玩家下单** ⇒ 运行时玩家侧贡献恒为 0，读数即「市场级（NPC）清算强度」。
  *
  * 现实基准（来源：coinglass.com/learn/cdri-zh ／ Amberdata《Leverage & Liquidations》
  *           ／ K33 ／ CoinGlass 2025 半年报）：
@@ -109,7 +109,7 @@ async function run(sym) {
     hours++;
     if (s.over) break;
     const now = s.stat.liqNotional;
-    const d = now - prevLiq; prevLiq = now;         // 本小时的强平名义（只含 NPC 强平）
+    const d = now - prevLiq; prevLiq = now;         // 本小时的强平名义（NPC 侧 ＋ 玩家侧；本脚本玩家侧恒 0）
     if (d > 0) liqHours++;
     ring.push(d); ringSum += d;
     if (ring.length > 24) ringSum -= ring.shift();
@@ -198,7 +198,7 @@ for (const sym of SYMS) {
     q(ratios).map(x => f(x * 100, 3) + '%').join(' / '));
   console.log(`     非零日 ${nz}/${ratios.length} ｜ ≥1% ${ge1} 天 ｜ ≥2% ${ge2} 天 ｜ ≥5%（级联）${ge5} 天`);
   console.log(`     现实：常态 <1% · 偏高 1–2% · 级联 >5%（2025-10-10 = 4.82%）`);
-  console.log(`     ⚠️ 口径局限：s.stat.liqNotional 只统计 **NPC 侧**强平，不含玩家自身强平。`);
+  console.log(`     ⚠️ 本脚本不替玩家下单：liqNotional 的**玩家侧贡献恒为 0**，读数即 NPC 侧市场清算强度。`);
 }
 
 /* ── 总账 ── */

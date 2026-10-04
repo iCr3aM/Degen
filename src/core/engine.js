@@ -1792,6 +1792,8 @@ function adlPlayerReduce(s, pos, take, price) {
  *
  * ⚠️ **v30（第 6 批）在两处强平分支上各挂了一笔账**（自愿止损波**不挂**，见下）：
  *    · **缺口 16**：`liqNotional`（只含强平）→ `s.stat.liqNotional`；达阈值播「爆仓潮」日志。
+ *      ⚠️ §17.3（2026-10-04）：累计字段同时收纳**玩家自身强平**（`forceLiquidate` / `partialLiquidate`），
+ *         但这里的「爆仓潮」阈值仍只用本小时的 **NPC 侧**名义。
  *    · **缺口 5 ①②**：`fundSettle` —— 强平盈余入保险基金 / 穿仓掏池。
  *    两处都**只挂在「跌破强平线」这一支**：自愿止损不是「爆仓」、也没有强平盈余可言。
  *
@@ -2788,6 +2790,10 @@ function forceLiquidate(s, pos, atPrice) {
   if (back > 1e-9) credit(s, pos.ex, back, pos.mix);   // 退回**当初开仓那家所**（原路：按 mix 比例分两格）
   s.realized -= pos.margin - back;                     // 真实现金变动 = 丢掉保证金、收回退款
   s.stat.liq += 1;                                     // 统计（v21）：逐步强平与整条强平都各算一笔
+  /* §17.3（2026-10-04 审计收口）：玩家**自己**被强平的名义也计入 `liqNotional` —— 原来只统计 NPC 侧，
+     于是「24h 清算强度」在玩家爆仓的时刻反而漏掉了他那一笔（口径不完整）。强平潮的**事件阈值**仍只看
+     NPC 侧（`stampede` 里那个局部量），因为「爆仓潮」是市场级事件、不该被玩家单人引爆。 */
+  s.stat.liqNotional += notional;
   delete s.positions[pos.sym];
   refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：爆掉的杠杆实物多头同 `closeGive` 比例释放折价
 }
@@ -3661,6 +3667,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   }
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
   s.stat.liq += 1;                         // 统计（2026-10-02 审计修）：逐步强平同样计入 —— 与 `forceLiquidate` 同口径
+  s.stat.liqNotional += notional;          // §17.3（2026-10-04）：部分强平的成交名义同口径计入（与 `forceLiquidate` 一致）
   s.positions[pos.sym] = r.pos;
   pushLog(s, `部分强平 ${pos.sym} ${pos.lev}x｜平仓 ${fmtRate(frac, 1)}｜保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad', 'liq');
   refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：部分强平也是卖出 ⇒ 折价同比例释放
