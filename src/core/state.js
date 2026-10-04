@@ -103,8 +103,14 @@ import { isMargin } from './positions.js';
    ⚠️ v31（2026-10-03 · 「全程只做杠杆与合约」）：**去掉 Mt.Gox 与「现货」概念**，
    `pos.spot` / `s.mode='spot'` / `stat.spot` / `pvol.kind='spot'` / `fees.spot` 一律改名为 `margin`；
    开局所由 `mtgox` 改为 `bitfinex`；`SHOCK_MODE.spot` → `coin`。
-   形状本身只是**键改名**，但旧档里的 `spot` 键在新代码里读不到 ⇒ 语义上等同弃档，故一并升版本号。 */
-export const STATE_VERSION = 31;
+   形状本身只是**键改名**，但旧档里的 `spot` 键在新代码里读不到 ⇒ 语义上等同弃档，故一并升版本号。
+
+   ⚠️ v32（2026-10-05 · 滚仓玩法称号）：`s.stat` 新增六项行为计数 ——
+   `addOn`（加仓笔数）/ `mgUp`（增加保证金次数）/ `mgDown`（减少保证金次数）/
+   `mgCut`（**浮盈中**减少保证金次数）/ `otc`（OTC 通道成交笔数）/ `part`（分批平仓次数）。
+   「滚仓 = 浮盈里减保证金 ＋ 持续加仓」这套称号此前**没有任何信号**（`adjustMargin` 不写统计）
+   ⇒ 形状变了，旧档读不到这些键，弃档重开。 */
+export const STATE_VERSION = 32;
 
 /**
  * 开一局新的。
@@ -457,6 +463,13 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      *   `move`   成功换所次数 —— 称号「搬家达人」读它
      *   `god`    是否开过上帝模式 —— 称号「上帝之手」读它
      *   `loan`   领过救济金的次数（0 或 1）—— 称号「续命者」读它
+     *   `addOn`（**v32**）对**已有仓位追加**的笔数（新开那条不算）—— 滚仓「持续加仓」那一半
+     *   `mgUp` / `mgDown`（**v32**）增加 / 减少保证金次数 —— `调整保证金` 两个方向各计一次
+     *   `mgCut`（**v32**）**浮盈中**减少保证金的次数 —— 滚仓「提取浮盈」的核心动作
+     *     （⚠️ 亏钱时减保证金只是止损，不算滚仓；这一项是严格口径，见 `engine.adjustMargin`）
+     *   `otc`（**v32**）走 **OTC 通道**成交的笔数（开仓 / 加仓 / 平仓 / 减仓各计一笔）——
+     *     风格称号「场外玩家」读它（盘口与 OTC 是两条路，这里把通道偏好显性化）
+     *   `part`（**v32**）**分批平仓**（`frac < 1` 的减仓）次数 —— 风格称号「分批离场」读它
      *   `liqNotional`（**v30** · 缺口 16）被强平的**名义额累计**（USD）—— 含**强平潮**
      *     （`stampede` 里跌破强平线那一笔）与**玩家自身强平**（整条 / 部分，§17.3 收口），
      *     不含自愿止损波（对齐 Coinglass 公告口径）。
@@ -469,6 +482,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
       open: 0, win: 0, loss: 0, liq: 0,
       margin: 0, fut: 0, maxLev: 1,
       syms: {}, move: 0, god: false, loan: 0,
+      addOn: 0, mgUp: 0, mgDown: 0, mgCut: 0, otc: 0, part: 0,
       liqNotional: 0,
     },
 

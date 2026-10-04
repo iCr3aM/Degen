@@ -1148,15 +1148,19 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     open: 10, win: 5, loss: 5, liq: 0,
     margin: 10, fut: 0, maxLev: 2,
     move: 0, god: false, loan: 0,
+    /* v32 行为信号：加仓 / 加减保证金 / 浮盈减保证金 / OTC 通道 / 分批减仓 —— 缺省全 0。 */
+    addOn: 0, mgUp: 0, mgDown: 0, mgCut: 0, otc: 0, part: 0,
     syms: ['BTC', 'ETH', 'SOL'], eq: [1000, 2000],
     ...o,
   });
 
-  /* ── A · 14 种「玩家画像」→ 风格称号逐条命中 ──────────────────────
+  /* ── A · 26 种「玩家画像」→ 风格称号逐条命中（词表 = 画像表，即无死称号）──────────
      「全量模拟不同玩家的操作」落到**记录层**：每一种操作风格（空仓 / 反复强平 /
      极限杠杆 / 满世界搬家 / 借救济金 / 高频 / 单币 / 多币 / 偏爱合约 / 偏爱杠杆 /
-     低频长持 / 均衡 / **爆仓收场** / **续命失败**）各造一条画像，都能**唯一命中**
-     对应的一枚风格称号。
+     低频长持 / 均衡 / **爆仓收场** / **续命失败** / **滚仓（轻重两档）** /
+     **OTC 通道** / **分批减仓**）各造一条画像，都能**唯一命中**对应的一枚风格称号。
+     ⚠️ v32 新增的四条（滚仓玩家 / 滚仓狂人 / 场外玩家 / 分批离场）覆盖的是**此前无信号**的
+        交易入口 —— `adjustMargin`（增减保证金）、`chanOf`（OTC 通道）、`closeTrade(frac<1)`（减仓）。
      ⚠️ 末尾两条是**同一批行为、不同结局**（2026-10-05 用户实测修）：
         「反复强平」活到结算叫「不死鸟」、账户归零则叫「强平常客」；
         「领过救济金」活到结算叫「向死而生」、破产则叫「续命无果」——
@@ -1167,6 +1171,10 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     ['空仓看客', { open: 0, margin: 0, win: 0, loss: 0, maxLev: 1 }],
     ['不死鸟', { open: 20, liq: 15, maxLev: 5 }],
     ['强平常客', { open: 20, liq: 15, maxLev: 5, reason: OVER.LIQUIDATED }],
+    /* v32 滚仓两档：**浮盈里减保证金**（`mgCut`）＋ **持续加仓**（`addOn`）——
+       狂人是加倍的同一批行为（门槛 c6 > c2），两级在经典局 / 短局都不塌成一档。 */
+    ['滚仓狂人', { open: 12, addOn: 6, mgCut: 6, margin: 2, fut: 2, maxLev: 3 }],
+    ['滚仓玩家', { open: 4, addOn: 2, mgCut: 2, margin: 1, fut: 1, maxLev: 3 }],
     ['梭哈战神', { open: 5, fut: 3, margin: 2, maxLev: 125 }],
     ['孤注一掷', { open: 2, fut: 0, margin: 2, maxLev: 50 }],
     ['逐利游牧', { open: 5, move: 12, maxLev: 5 }],
@@ -1176,10 +1184,14 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     ['永动机', { open: 200, days: 30, maxLev: 2 }],
     ['高频猎手', { open: 150, days: 1000, maxLev: 5 }],
     ['日内快枪手', { open: 40, days: 20, maxLev: 2 }],
+    /* v32 通道偏好：OTC 成交占开仓 ≥ 60% —— 盘口 vs OTC 是两条路（用户点名）。 */
+    ['场外玩家', { open: 5, otc: 4, margin: 2, fut: 3, maxLev: 3 }],
     ['单币信徒', { open: 20, syms: ['BTC'], maxLev: 5 }],
     ['全能多面手', { open: 20, syms: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP'], maxLev: 5 }],
     ['合约狂人', { open: 15, fut: 12, margin: 3, maxLev: 10 }],
     ['杠杆老兵', { open: 15, fut: 0, margin: 15, maxLev: 10 }],
+    /* v32 分批减仓：`closeTrade(frac<1)` ≥ 3 次 —— 把「减仓」这个入口显性化。 */
+    ['分批离场', { open: 10, part: 5, margin: 3, fut: 3, maxLev: 2 }],
     ['佛系囤币', { open: 3, days: 1000, maxLev: 1, margin: 0, fut: 0, syms: ['BTC', 'ETH'] }],
     ['长线猎手', { open: 10, fut: 5, margin: 5, days: 1000, maxLev: 3 }],
     ['铁头娃', { open: 2, days: 100, maxLev: 10, liq: 0, margin: 1, fut: 1, syms: ['BTC', 'ETH', 'SOL'] }],
@@ -1188,9 +1200,13 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     ['稳健交易员', { open: 6, fut: 3, margin: 3, days: 200, maxLev: 3 }],
   ];
   const STYLE_SET = new Set(STYLES.map(([w]) => w));
+  /* 画像表就是「风格称号词表本身」：26 条画像 ⇔ 26 枚风格称号。
+     ⇒ 只要每条画像都能唯一命中自己那枚，就等于证明了**没有死称号**（全部可达）。 */
+  check('12 风格称号恰 26 枚（画像表即词表，无重复名）', STYLES.length === 26 && STYLE_SET.size === 26,
+    `${STYLES.length} 条画像 / ${STYLE_SET.size} 个唯一名`);
   for (const [want, o] of STYLES) {
     const got = T.styleOf(rec(o));
-    check(`14 画像 «${want}» 命中风格称号`, got === want, got === want ? '' : `实得 «${got}»`);
+    check(`画像 «${want}» 命中风格称号`, got === want, got === want ? '' : `实得 «${got}»`);
   }
 
   /* ── A2 · 主称号「结局 × 倍数」穷举矩阵（2026-10-05 用户实测修）──────────────────
@@ -1348,7 +1364,7 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
 
   /* ── B · 徽章池 20 枚全部可达（无死徽章）＋ 输出无未登记名称 ── */
   const ALL_BADGES = [
-    '躺平大师', '躺平', '现货党', '杠杆党',
+    '躺平大师', '躺平', '1 倍党', '杠杆党',
     '百倍玩家', '杠杆赌徒',
     '单一信仰', '五币全通',
     '强平之王', '九死一生', '强平机器',
@@ -1363,7 +1379,7 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
   const BADGE_PROFILES = [
     rec({ open: 0, margin: 0, win: 0, loss: 0, maxLev: 1, days: 1000 }),  // 躺平大师
     rec({ open: 0, margin: 0, win: 0, loss: 0, maxLev: 1, days: 100 }),   // 躺平
-    rec({ open: 5, fut: 0, maxLev: 1, margin: 5 }),                       // 现货党
+    rec({ open: 5, fut: 0, maxLev: 1, margin: 5 }),                       // 1 倍党
     rec({ open: 5, fut: 0, maxLev: 5, margin: 5 }),                       // 杠杆党
     rec({ open: 5, fut: 5, maxLev: 100 }),                                // 百倍玩家
     rec({ open: 5, fut: 5, maxLev: 30 }),                                 // 杠杆赌徒
@@ -1437,6 +1453,8 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
       margin: pick(open + 1), fut: pick(open + 1),
       maxLev: [1, 2, 5, 20, 50, 100, 125][pick(7)],
       move: pick(20), god: rnd() < 0.1, loan: pick(3),
+      /* v32 行为信号也进 fuzz：加仓 / 加减保证金 / 浮盈减保证金 / OTC / 分批 —— 覆盖新分支。 */
+      addOn: pick(12), mgUp: pick(8), mgDown: pick(8), mgCut: pick(8), otc: pick(12), part: pick(8),
       syms: Array.from({ length: symCount }, (_, k) => 'C' + k),
     });
     const st = T.styleOf(r);
@@ -1451,7 +1469,7 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     if (!T.epitaphOf(r)) emptyEp++;
   }
   check('12 fuzz ×4000：风格称号永不为空', emptyStyle === 0, `空 ${emptyStyle} 次`);
-  check('12 fuzz ×4000：风格称号恒在已登记 22 档内', unknownStyle === 0, `越界 ${unknownStyle} 次`);
+  check('12 fuzz ×4000：风格称号恒在已登记 26 档内', unknownStyle === 0, `越界 ${unknownStyle} 次`);
   check('12 fuzz ×4000：主称号永不为空', emptyTitle === 0, `空 ${emptyTitle} 次`);
   check('12 fuzz ×4000：主称号恒在已登记 20 档内', unknownTitle === 0, `越界 ${unknownTitle} 次`);
   check('12 fuzz ×4000：单局徽章无重复', dupBadge === 0, `重复 ${dupBadge} 次`);
@@ -1496,10 +1514,12 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     check('12 结局评语：16 档产出 ≥ 12 种不同句子（覆盖不同玩家）',
       new Set(texts).size >= 12, `${new Set(texts).size} 种`);
 
-    /* 补白句：8 条画像各触发一次，且**比 `short` 版更长**（证明真的加了一句）。 */
+    /* 补白句：9 条画像各触发一次，且**比 `short` 版更长**（证明真的加了一句）。
+       v32 新增最后一条：滚仓（浮盈减保证金 ＋ 持续加仓）。 */
     const TAILS = [
       { god: true }, { open: 0 }, { loan: 1 }, { maxLev: 100 },
       { liq: 12 }, { move: 12 }, { days: 20, open: 3 }, { days: 4000 },
+      { mgCut: 3, addOn: 3 },
     ];
     let noTail = 0, notPrefix = 0;
     for (const o of TAILS.concat([{}])) {
@@ -1511,7 +1531,7 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
       const r = rec({ reason: OVER.SETTLED, cash0: 1000, final: 2000, ...o });
       if (!(T.epitaphOf(r).length > T.epitaphOf(r, { short: true }).length)) noTail++;
     }
-    check('12 结局评语：8 条补白各自可触发（全句比 short 版长）', noTail === 0, `未触发 ${noTail} 条`);
+    check('12 结局评语：9 条补白各自可触发（全句比 short 版长）', noTail === 0, `未触发 ${noTail} 条`);
     check('12 结局评语：short 版恒为全句前缀（海报单行版）', notPrefix === 0, `不符 ${notPrefix} 条`);
   }
 
@@ -1548,6 +1568,89 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
       !!T.styleOf(r) && STYLE_SET.has(T.styleOf(r)), `«${T.styleOf(r)}»`);
     check('12 真引擎跑一局：主称号 ＋ 风格称号合计 ≥ 2 枚',
       !!T.titleOf(r) && !!T.styleOf(r), `${T.titleOf(r)} · ${T.styleOf(r)} · 徽章 ${T.badgesOf(r).length} 枚`);
+  }
+
+  /* ── E · 真引擎端到端 · v32 新信号：滚仓 / OTC / 分批减仓 **必须真的落进 `s.stat`** ──────────
+     ⚠️ 这一节**不与 A 节画像重复**：A 节只证明「给定一条记录，`titles.js` 判得对」；
+        这里证明**引擎真的把行为记了下来** —— 否则词表再全也只是一批永远触发不了/无法触发的死标签。
+        用户硬要求「不做假绿」：每条断言都跑真引擎（`openTrade` / `adjustMargin` / `closeTrade` /
+        `careerOf`），只对**局面做前置**（选一个真实的历史行情段），断言本身读的是引擎写出的数。 */
+  {
+    /* E1 · 滚仓：真开空 → 真加仓 ×2 → 逐小时推进出**真浮盈** → 真减保证金 ×2
+       ⇒ `mgDown` / `mgCut` / `addOn` 真的涨，`careerOf` 摊平，称号命中「滚仓玩家」。 */
+    const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'margin', cash: 200000, i: idx(at(2021, 4, 10)) });
+    s.mode = 'margin'; s.lev = 3;
+    const r0 = engine.openTrade(s, 'short', 0.2);
+    check('12E 滚仓前置：开空成功', r0.ok && !!s.positions.BTC, r0.why || '');
+    check('12E 滚仓前置：首仓不计加仓（open=1 / addOn=0）',
+      s.stat.open === 1 && s.stat.addOn === 0, `open=${s.stat.open} addOn=${s.stat.addOn}`);
+    const a1 = engine.openTrade(s, 'short', 0.1), a2 = engine.openTrade(s, 'short', 0.1);
+    check('12E 滚仓：真加仓 ×2 ⇒ addOn = 2', a1.ok && a2.ok && s.stat.addOn === 2,
+      `addOn=${s.stat.addOn}（${a1.ok ? '' : a1.why}${a2.ok ? '' : '/' + a2.why}）`);
+    /* 逐小时推进（2021-05 暴跌段），直到空仓真的转为浮盈 —— **真行情**，不是改字段。 */
+    let found = -1;
+    for (let k = 0; k < 300 && !s.over; k++) {
+      if (s.pending) s.pending = null;
+      engine.advanceOneHour(s);
+      const p = s.positions.BTC;
+      if (!p) break;
+      if (P.pnlOf(p, engine.exMarkPrice(s, 'BTC', p.ex)) > 0) { found = k + 1; break; }
+    }
+    check('12E 滚仓前置：真行情推进出浮盈（非改字段）', found > 0, `${found} 小时`);
+    let cuts = 0;
+    for (let i = 0; i < 2; i++) {
+      const step = engine.marginStepOf(s, 'BTC', 0.25, false);
+      if (step > 0 && engine.adjustMargin(s, 'BTC', -step).ok) cuts++;
+    }
+    check('12E 滚仓：浮盈里真减保证金 ×2 ⇒ mgDown = 2', cuts === 2 && s.stat.mgDown === 2,
+      `cuts=${cuts} mgDown=${s.stat.mgDown}`);
+    check('12E 滚仓：严格口径 ⇒ mgCut = 2（两次都在浮盈中）', s.stat.mgCut === 2,
+      `mgCut=${s.stat.mgCut} mgDown=${s.stat.mgDown}`);
+    const rr = engine.careerOf(s, OVER.SETTLED);
+    check('12E 滚仓：`careerOf` 摊平 v32 六字段（非 undefined）',
+      typeof rr.addOn === 'number' && typeof rr.mgUp === 'number' && typeof rr.mgDown === 'number'
+      && typeof rr.mgCut === 'number' && typeof rr.otc === 'number' && typeof rr.part === 'number');
+    check('12E 滚仓：风格称号命中「滚仓玩家」', T.styleOf(rr) === '滚仓玩家', `实得 «${T.styleOf(rr)}»`);
+    check('12E 滚仓：结局评语带滚仓补白句', T.epitaphOf(rr).includes('滚大的'), T.epitaphOf(rr));
+  }
+  {
+    /* E2 · OTC 通道：真切到 otc 并成交 ⇒ `s.stat.otc` 真的涨；切回盘口不再涨（**对照**）。 */
+    const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'margin', cash: 2e7, i: idx(at(2021, 5)) });
+    s.mode = 'margin'; s.lev = 2; s.chan = 'otc';
+    check('12E OTC 前置：通道生效 = otc', engine.chanOf(s) === 'otc', engine.chanOf(s));
+    const ro = engine.openTrade(s, 'long', 0.05);
+    check('12E OTC：开仓成功（≥ 单笔门槛）', ro.ok, ro.why || '');
+    check('12E OTC：开仓计入 s.stat.otc = 1', s.stat.otc === 1, `otc=${s.stat.otc}`);
+    check('12E OTC：平仓同样计入 ⇒ s.stat.otc = 2', engine.closeTrade(s, '测试').ok && s.stat.otc === 2,
+      `otc=${s.stat.otc}`);
+    s.chan = 'book';
+    engine.openTrade(s, 'long', 0.05);
+    check('12E OTC：切回盘口后不再计入（对照，证明计的是通道）', s.stat.otc === 2, `otc=${s.stat.otc}`);
+  }
+  {
+    /* E3 · 分批减仓：`closeTrade` 的 `frac < 1` 才计 `part`；全平**不**计。 */
+    const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'margin', cash: 500000, i: idx(at(2021, 5)) });
+    s.mode = 'margin'; s.lev = 3;
+    check('12E 分批前置：开仓成功', engine.openTrade(s, 'long', 0.5).ok);
+    const c1 = engine.closeTrade(s, '测试', 0.25);
+    check('12E 分批：0.25 减仓成功 ⇒ part = 1', c1.ok && s.stat.part === 1, `${c1.why || ''} part=${s.stat.part}`);
+    engine.closeTrade(s, '测试', 0.5);
+    check('12E 分批：再减 0.5 ⇒ part = 2', s.stat.part === 2, `part=${s.stat.part}`);
+    engine.closeTrade(s, '测试', 1);
+    check('12E 分批：全平（frac=1）**不**计入 part', s.stat.part === 2, `part=${s.stat.part}`);
+    check('12E 分批：全平后仓位清空', !s.positions.BTC);
+  }
+  {
+    /* E4 · 反例护栏（涌现性）：没有新行为就拿不到新称号；宽松口径不许冒充严格口径。 */
+    const NEW4 = ['滚仓玩家', '滚仓狂人', '场外玩家', '分批离场'];
+    const plain = rec({ open: 20, margin: 10, fut: 10, maxLev: 5 });
+    check('12E 反例：无新增行为 ⇒ 拿不到任何 v32 新称号', !NEW4.includes(T.styleOf(plain)), T.styleOf(plain));
+    const addOnly = rec({ open: 6, addOn: 5, mgCut: 0, margin: 3, fut: 3, maxLev: 3 });
+    check('12E 反例：只加仓、没有浮盈减保证金 ⇒ 不算滚仓（严格口径）',
+      !['滚仓玩家', '滚仓狂人'].includes(T.styleOf(addOnly)), T.styleOf(addOnly));
+    const mid = rec({ open: 6, addOn: 3, mgCut: 3, margin: 3, fut: 3, maxLev: 3 });
+    check('12E 分档：加仓 / 减保证金各 3 次 ⇒「滚仓玩家」而非「滚仓狂人」',
+      T.styleOf(mid) === '滚仓玩家', T.styleOf(mid));
   }
 }
 

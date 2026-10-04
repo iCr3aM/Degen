@@ -2713,6 +2713,8 @@ export function openTrade(s, side, frac = 1) {
   /* 交易统计（v21）—— 只喂 M2 的「交易档案」与 M3 的「称号」，不参与任何判定。
      ⚠️ 记在**成功落账之后**：被闸门拦下 / 资金不足 / 低于最小名义的那些单不算一笔。 */
   s.stat.open += 1;
+  if (prev) s.stat.addOn += 1;            // v32：对**已有仓位追加**那一笔（滚仓「持续加仓」那一半）
+  if (otc) s.stat.otc += 1;               // v32：走 OTC 通道成交（盘口 / OTC 是两条路）—— 称号「场外玩家」
   if (marginMode) s.stat.margin += 1; else s.stat.fut += 1;
   if (lev > s.stat.maxLev) s.stat.maxLev = lev;
   s.stat.syms[s.sym] = true;
@@ -2872,20 +2874,25 @@ export function adjustMargin(s, sym, delta) {
   const c = adjustCheck(s, sym, delta);
   if (!c.ok) return { ok: false, why: c.why };
   const { pos, add, amount, mustUsdt } = c;
+  const price = exPrice(s, sym, pos.ex);   // 调保证金不动行情价，前后同一个
   if (add) {
     const paid = debit(s, amount, mustUsdt);
     if (!paid) return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用余额不足' };
     pos.margin += amount;
     pos.mix = { usd: pos.mix.usd + paid.usd, usdt: pos.mix.usdt + paid.usdt };
+    s.stat.mgUp += 1;                                    // 统计（v32）：增加保证金次数
   } else {
+    /* 滚仓（v32 严格口径）：只有**浮盈中**减保证金才算「提取浮盈」——亏钱时减只是止损，不计。
+       `pnlOf` 与保证金无关（只看成交价 / 均价 / 数量），所以放在改动之前判定即可。 */
+    if (price > 0 && pnlOf(pos, price) > 0) s.stat.mgCut += 1;
     /* 按「减掉的比例」等比例抽一块，原路退回两格 —— 与平仓 `credit` 同一口径。 */
     const ratio = amount / pos.margin;
     const back = { usd: pos.mix.usd * ratio, usdt: pos.mix.usdt * ratio };
     credit(s, pos.ex, amount, back);
     pos.margin -= amount;
     pos.mix = { usd: pos.mix.usd - back.usd, usdt: pos.mix.usdt - back.usdt };
+    s.stat.mgDown += 1;                                  // 统计（v32）：减少保证金次数
   }
-  const price = exPrice(s, sym, pos.ex);
   pushLog(s, `${add ? '增加' : '减少'}保证金 ${sym}｜${fmtMoneyShort(amount)}｜保证金率 ${fmtRate(marginRateOf(pos, price))}`, 'info', 'trade');
   return { ok: true };
 }
@@ -2925,6 +2932,8 @@ export function closeTrade(s, why = '手动', frac = 1) {
      ⚠️ 开仓费也要**按同一比例分摊**（全平时 `f = 1`，与旧口径逐位相同）。 */
   const openFee = (pos.openFee ?? 0) * f;
   if (pnl - openFee - fee > 0) s.stat.win += 1; else s.stat.loss += 1;
+  if (otc) s.stat.otc += 1;               // v32：OTC 通道平仓 / 减仓同样计一笔 —— 称号「场外玩家」
+  if (f < 1) s.stat.part += 1;            // v32：**分批**平仓（`frac < 1`）—— 称号「分批离场」
   const fills = otc ? 1 : bookFills(notional / hourLiqOf(s, sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
   /* 玩家自己的成交量（v17 · 2026-10-01）：平仓同样是成交 ⇒ 记进当根 K 线的量柱。
      OTC 不落公开盘口（与「不写冲击池」同一先例）⇒ 不计。 */
@@ -3077,6 +3086,9 @@ export function careerOf(s, reason) {
     open: s.stat.open, win: s.stat.win, loss: s.stat.loss, liq: s.stat.liq,
     margin: s.stat.margin, fut: s.stat.fut, maxLev: s.stat.maxLev,
     move: s.stat.move, god: s.stat.god, loan: s.stat.loan,
+    /* v32：滚仓 / 通道 / 分批三组行为信号（`titles.js` 的「滚仓玩家 / 滚仓狂人 / 场外玩家 / 分批离场」读它）。 */
+    addOn: s.stat.addOn, mgUp: s.stat.mgUp, mgDown: s.stat.mgDown, mgCut: s.stat.mgCut,
+    otc: s.stat.otc, part: s.stat.part,
     syms: Object.keys(s.stat.syms),
     /* M4：抽稀后的资金曲线（首尾必留）—— 分享卡拿它画那条线。 */
     eq: thinEq(s.eq),
@@ -3641,7 +3653,7 @@ export function rewindTo(s, to) {
   s.realized = 0;
   /* 交易统计（v21）也属于「进度」⇒ 一并清空。唯独 `god`（是否开过上帝模式）留着 ——
      它是「这一局不干净」的**永久标记**，回退一百次也不该被洗白。 */
-  s.stat = { open: 0, win: 0, loss: 0, liq: 0, margin: 0, fut: 0, maxLev: 1, syms: {}, move: 0, god: s.stat.god, loan: 0, liqNotional: 0 };
+  s.stat = { open: 0, win: 0, loss: 0, liq: 0, margin: 0, fut: 0, maxLev: 1, syms: {}, move: 0, god: s.stat.god, loan: 0, addOn: 0, mgUp: 0, mgDown: 0, mgCut: 0, otc: 0, part: 0, liqNotional: 0 };
   s.eq = [];
   s.loaned = false;
   s.pending = null;
