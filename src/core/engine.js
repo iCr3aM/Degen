@@ -2847,22 +2847,24 @@ export function closeTrade(s, why = '手动', frac = 1) {
  *
  * **结算口径（B20 · 2026-09-30 拍板「甲案」）**：不再是「保证金全部损失」，而是
  *   残余权益 = `维持保证金率 × 名义`（＝触发那一刻账上还剩的那一点）
- *   清算费   = `名义 × LIQ.fee`（0.5%，**合成值**，无一手出处 ⇒ GDD 声明）
+ *   清算费   = `名义 × feeRate`（**按工具分档**，2026-10-05：永续 0.5% / 杠杆 1.25% ⇒ 见 `config.LIQ`）
  *   **返还** = `max(0, 残余权益 − 清算费)`，按 `pos.mix` 比例打回该所账本
- * ⇒ 默认档（0.5% 维持线）下两者相等、返还为 0，**与 v13 逐位相同**；
- *   只有 B18 的高名义档（1% / 2.5%）与 margin 的 15% 档才会真的退还一点。
+ * ⇒ 永续默认档（0.5% 维持线）下两者相等、返还为 0，**与 v13 逐位相同**；
+ *   永续的高名义档（1% / 2.5%）与杠杆的 15% 档才会真的退还一点。
  * 账户其余部分原样保留 —— 多仓下它**不再直接等于破产**，是否收摊由调用方看总权益决定。
  * ⚠️ 返还**不产生负债**：清算费最多把残余权益吃到 0，绝不会向玩家追缴。
  * @param {number} atPrice 成交价（S3 起 ＝ **第一次穿越强平价那一 tick 的价**，不再是强平价本身）
  */
 function forceLiquidate(s, pos, atPrice) {
   const remain = maintRateOf(pos) * pos.notional;     // 触发时的残余权益（＝维持保证金那一格）
-  const back = Math.max(0, remain - pos.notional * LIQ.fee);
+  /* 清算费按工具分档（2026-10-05 深度审计）：杠杆（有借入）1.25% / 永续 0.5% —— 见 config.LIQ。 */
+  const feeRate = borrowedOf(pos) > 0 ? LIQ.feeMargin : LIQ.fee;
+  const back = Math.max(0, remain - pos.notional * feeRate);
   /* 保险基金（v30 · 缺口 5 · 三级瀑布 ①）：这笔强平的**盈余**进池。
      口径：`盈余 = 残余权益 − 清算费`（若还没吃完）—— 即清算费中扣掉返还的那一份。
-     ⚠️ `remain − back` = `min(remain, notional × LIQ.fee)`：默认档（0.5% 维持线）下
+     ⚠️ `remain − back` = `min(remain, notional × feeRate)`：永续默认档（0.5% 维持线）下
         `remain = notional × 0.5%` 恰好等于清算费 ⇒ 全额进池、返还为 0（与变动前逐位相同）；
-        高名义档（1% / 2.5%）才有返还，那部分不进池。 */
+        永续高名义档（1% / 2.5%）与杠杆（15% 维持线）才有返还，那部分不进池。 */
   seedFund(s, pos.sym);
   s.fund += remain - back;
   const notional = pos.size * atPrice;                // 实际成交名义（强平价上的那笔量）

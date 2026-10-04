@@ -1474,6 +1474,20 @@ section('9h–9j · 模拟深度：跨所价差压力放大 · 借贷利率利�
     `最深净额 ${f(worst, 2)} = 下限 ${f(floorDelta, 2)}（−gap×保证金 ${f(G * margin, 2)}）`);
 }
 
+/* ── 9k · 清算费按工具分档（2026-10-05 深度审计：永续 0.5% / 杠杆 1.25%） ── */
+{
+  check('9k 清算费分档常量：永续 0.5% < 杠杆 1.25%',
+    C.LIQ.fee === 0.005 && C.LIQ.feeMargin === 0.0125,
+    `perp ${f(C.LIQ.fee * 100, 2)}% / margin ${f(C.LIQ.feeMargin * 100, 2)}%`);
+  /* 分档判据与维持线同源：`borrowedOf > 0`（1x 多头借入为 0 走永续档，任何空头/带杠杆走杠杆档）。 */
+  const perp = P.openPosition('BTC', 'long', 30000, 300, 10, 0.0004, false);   // 合约：无借入
+  const marg = P.openPosition('BTC', 'long', 30000, 300, 10, 0.0004, true);    // 杠杆：有借入
+  const mShort = P.openPosition('BTC', 'short', 30000, 300, 1, 0.0004, true);  // 1x 空头：借全额
+  const feeOf = p => (P.borrowedOf(p) > 0 ? C.LIQ.feeMargin : C.LIQ.fee);
+  check('9k 合约仓位走永续档（0.5%）', feeOf(perp) === C.LIQ.fee);
+  check('9k 杠杆多头 / 1x 空头都走杠杆档（1.25%）', feeOf(marg) === C.LIQ.feeMargin && feeOf(mShort) === C.LIQ.feeMargin);
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);
