@@ -834,14 +834,25 @@ export const heatOf = (s, sym) => (s.mkt && s.mkt[sym] ? s.mkt[sym].heat : HEAT.
    本条是**每日 1 次**的慢速**只读**读数 —— 两条轨互不影响，`heat` 一个字不改。
    ⚠️ 它是 `(sym, day)` 的纯函数（只吃行情 ＋ `liqOf`）；实盘轨另叠一层日频低通状态。 */
 
-/** 迟滞分档：`prev` 上一档（旧档缺省按 `'mid'`），`v` 是 0–100 的指数值。 */
+/** 五档（由低到高）—— 与 `god.FNG.bands` 的边界一一对应。 */
+const FNG_BANDS = ['xfear', 'fear', 'mid', 'greed', 'xgreed'];
+
+/** 档名 → 下标。**兼容旧三档存档**（`'panic'` / `'greedy'` 是 2026-10-04 改五档前写的），
+ *  未知值一律当中性 —— 与 `mktOf` 补默认键同一条口径，**不升 `STATE_VERSION`**。 */
+function fngBandIdx(band) {
+  const i = FNG_BANDS.indexOf(band);
+  if (i >= 0) return i;
+  return band === 'panic' ? 0 : band === 'greedy' ? 4 : 2;
+}
+
+/** 迟滞分档：`prev` 上一档（五档名或旧三档名），`v` 是 0–100 的指数值。
+ *  越界进档走边界本身、退回要跌破「边界 − exit」—— 一次跨多档也逐档判定。 */
 function fngBandStep(prev, v) {
-  const b = FNG.bands;
-  if (prev === 'greedy') return v < b.greedExit ? 'mid' : 'greedy';
-  if (prev === 'panic') return v > b.panicExit ? 'mid' : 'panic';
-  if (v >= b.greed) return 'greedy';
-  if (v <= b.panic) return 'panic';
-  return 'mid';
+  const B = FNG.bands.b, EXIT = FNG.bands.exit;
+  let i = fngBandIdx(prev);
+  while (i < 4 && v >= B[i]) i++;
+  while (i > 0 && v <= B[i - 1] - EXIT) i--;
+  return FNG_BANDS[i];
 }
 
 /**
@@ -888,7 +899,7 @@ export const fngOf = (s, sym) => {
   return m && Number.isFinite(m.fng) ? m.fng / 100 : 0.5;
 };
 
-/** 实盘轨的**迟滞档**（`'panic' | 'mid' | 'greedy'`）—— 供 UI 文字与着色。 */
+/** 实盘轨的**迟滞档**（五档：`'xfear' | 'fear' | 'mid' | 'greed' | 'xgreed'`）—— 供 UI 文字与着色。 */
 export const fngBandOf = (s, sym) => (s.mkt && s.mkt[sym] && s.mkt[sym].fngBand) || 'mid';
 
 /**

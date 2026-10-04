@@ -114,6 +114,13 @@ const flash = n => replay(n, 'flash');
  */
 const LOG_ROWS = 2;
 
+/** F&G **五档** → 文字 ＋ 三色桶（2026-10-04 用户拍板改 5 档，对齐 Coinglass 展示口径）。
+ *  ⚠️ 档名出自 `engine` 的 `FNG_BANDS`（xfear / fear / mid / greed / xgreed）；
+ *     着色仍只有三桶（`.chart-heat[data-heat]` 的 greedy / panic / 缺省）—— 极端两档与普通档同色，
+ *     差别只体现在文字上（LESS IS MORE：不为两个极端再添两套配色）。 */
+const FNG_LABEL = { xfear: '极度恐惧', fear: '恐惧', mid: '中性', greed: '贪婪', xgreed: '极度贪婪' };
+const fngColor = b => (b === 'greed' || b === 'xgreed' ? 'greedy' : b === 'fear' || b === 'xfear' ? 'panic' : 'mid');
+
 /**
  * 一条日志该用哪枚类别芯片。
  *
@@ -1331,8 +1338,8 @@ function syncChart(refs, s, view, sym, cur, mark) {
   const fng = fngOf(s, sym);
   const band = fngBandOf(s, sym);
   refs.heatBar.style.setProperty('--heat', `${Math.round(fng * 100)}%`);
-  refs.heatTxt.textContent = band === 'greedy' ? '贪婪' : band === 'panic' ? '恐慌' : '中性';
-  refs.heatChip.dataset.heat = band;
+  refs.heatTxt.textContent = FNG_LABEL[band] || '中性';
+  refs.heatChip.dataset.heat = fngColor(band);
   /* 派生量两枚（缺口 4 / 19；2026-10-03 改口径）：OI（全市场，含玩家与 1:1 对手方）
      ＋ **散户多空比**（散盘子集，不含玩家 —— 全市场口径按定义恒为 1:1、零信息量，见
      `retailLongShareOf`）。取不到（散户两侧皆空）⇒ `--`，不硬凑一个 50/50。
@@ -1389,8 +1396,8 @@ function reviewChartSync(refs, rv, view) {
   const fng = reviewFngOf(sym, rv.i);
   const band = reviewFngBandOf(sym, rv.i);
   refs.rvHeatBar.style.setProperty('--heat', `${Math.round(fng * 100)}%`);
-  refs.rvHeatTxt.textContent = band === 'greedy' ? '贪婪' : band === 'panic' ? '恐慌' : '中性';
-  refs.rvHeatChip.dataset.heat = band;
+  refs.rvHeatTxt.textContent = FNG_LABEL[band] || '中性';
+  refs.rvHeatChip.dataset.heat = fngColor(band);
 
   const win = chartOpts({
     /* ⚠️ `own: false`（v20）：回顾那一屏**不并玩家自己的成交额** ——
