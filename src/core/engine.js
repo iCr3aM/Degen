@@ -1692,6 +1692,33 @@ function fundSettle(s, notional, avg, lev, dir, price) {
 }
 
 /**
+ * **ADL 收割的「浮盈率」** —— 一个仓位的未实现盈亏 ÷ **队列里记的那个名义基数**。
+ *
+ * ⚠️ ADL 队列里两种档位的名义基数**不是同一个东西**（2026-10-05 审计修 · 基数不配套）：
+ *   - **NPC 档**（`g.long` / `g.short`）是**成本名义**（建仓时的 `均价 × 数量`，从不按价重估）
+ *     ⇒ 浮盈 ＝ 成本名义 × `rate`；
+ *   - **玩家档**（`ppos.size * price`）是**现价名义**（`数量 × 现价`）
+ *     ⇒ 浮盈 ＝ 现价名义 × `rate`。
+ * 两种基数下 `rate` 的表达式**互为倒数关系**，用同一个式子会有一半情形被低估 `ratio` 倍：
+ *
+ *   | 基数     | 多头        | 空头          |
+ *   |----------|-------------|---------------|
+ *   | 成本名义 | `ratio − 1` | `1 − 1/ratio` |
+ *   | 现价名义 | `1 − 1/ratio` | `ratio − 1` |
+ *
+ * （`ratio` 的取法两侧一致：多头 `现价 ÷ 均价`、空头 `均价 ÷ 现价`，`ratio > 1` 即浮盈。）
+ * @param {number} ratio 浮盈倍数（> 1 才有效，否则返回 0）
+ * @param {boolean} long 是否多头
+ * @param {boolean} costBasis true = 名义基数是**成本名义**（NPC 档）；false = **现价名义**（玩家档）
+ * @returns {number} 浮盈率（≥ 0）
+ */
+export function adlProfitRate(ratio, long, costBasis) {
+  if (!(ratio > 1)) return 0;
+  if (costBasis) return long ? ratio - 1 : 1 - 1 / ratio;
+  return long ? 1 - 1 / ratio : ratio - 1;
+}
+
+/**
  * **ADL 自动减仓**（v30 · 第 6 批 · 缺口 5 ③）—— 级联烈度达标（爆仓潮）时，按 ADL 队列
  * 强减**盈利的仓位**（**NPC 六档 ＋ 玩家自己**），直到补齐缺口。
  *
@@ -1710,10 +1737,13 @@ function fundSettle(s, notional, avg, lev, dir, price) {
  *    （与止损波同一先例，避免同一波下跌被计两次热度跳变）。
  * ⚠️ **收割的是「浮盈」而不是「名义」**（2026-10-03 ADL 审计 · R3）—— 现实 ADL 把赢家的仓位
  *    按**破产价**强平，「赢家拿不到从破产价到市价的那一段浮盈」，那一段被拿去填洞。
- *    本作落成一句可算的话：某仓浮盈率 `rate = 1 − 1/ratio`、浮盈 `pnl = 名义 × rate`，
- *    本次从它身上收走 `take = min(pnl, 剩余缺口)` ⇒ 需平掉的名义 `cut = take ÷ rate`，
- *    平仓按**开仓价**结算（那一段浮盈归零）⇒ `s.fund += take`。
+ *    本作落成一句可算的话：某仓浮盈率 `rate`（＝ `adlProfitRate(ratio, long, 基数)`，**按基数分两套**）、
+ *    浮盈 `pnl = 名义 × rate`，本次从它身上收走 `take = min(pnl, 剩余缺口)`
+ *    ⇒ 需平掉的名义 `cut = take ÷ rate`，平仓按**开仓价**结算（那一段浮盈归零）⇒ `s.fund += take`。
  *    于是「缺口补多少」＝「收走多少浮盈」，**基金一分不多、一分不少**。
+ *    ⚠️ 2026-10-05 审计修：旧实现一律用 `rate = 1 − 1/ratio` —— 只对「玩家多头 / NPC 空头」正确，
+ *       对「玩家空头 / NPC 多头」会把浮盈**低估 `ratio` 倍**（两档的基数一个是现价名义、一个是
+ *       成本名义，表达式本该互为倒数）。现由 `adlProfitRate` 在入队时按基数算好存进 `it.rate`。
  * ⚠️ 旧实现把 `cut` 的名义额直接当缺口填（`s.fund` 根本不动，浮盈全额还给玩家）——
  *    基金永远填不满，只能靠 `s.fund = 0` 硬清零 ⇒ 一小时后必然再触发（间隔中位 1 小时）。
  *
@@ -1730,10 +1760,13 @@ function adl(s, sym, m, price, need) {
     /* 缺口 17：ADL 排序用的杠杆也走年代封顶 —— 与 `stampede` 的强平线同源 */
     const lev = npcLevOf(timeOf(s), NPC.ladder[k].lev);
     if (g.long > 0 && g.longAvg > 0 && price > g.longAvg) {
-      q.push({ k, long: true, ratio: price / g.longAvg, lev, notional: g.long });
+      const ratio = price / g.longAvg;
+      /* NPC 档的 `notional` 是**成本名义** ⇒ `rate` 走 costBasis = true（见 `adlProfitRate`） */
+      q.push({ k, long: true, ratio, lev, notional: g.long, rate: adlProfitRate(ratio, true, true) });
     }
     if (g.short > 0 && g.shortAvg > 0 && price < g.shortAvg) {
-      q.push({ k, long: false, ratio: g.shortAvg / price, lev, notional: g.short });
+      const ratio = g.shortAvg / price;
+      q.push({ k, long: false, ratio, lev, notional: g.short, rate: adlProfitRate(ratio, false, true) });
     }
   }
   /* **玩家自己也在队列里**（2026-10-03 拍板）：ADL 砍的正是**赢家**，而按 `ratio × lev` 排序时
@@ -1745,14 +1778,20 @@ function adl(s, sym, m, price, need) {
     const lng = ppos.side === 'long';
     const ratio = lng ? price / ppos.entry : ppos.entry / price;
     if (ratio > 1) {
-      q.push({ player: true, long: lng, ratio, lev: ppos.lev, notional: ppos.size * price });
+      /* 玩家档的 `notional` 是**现价名义**（`数量 × 现价`）⇒ `rate` 走 costBasis = false；
+         ⚠️ 排序杠杆用**实际杠杆** `effLevOf`（滚仓减保证金后 `pos.lev` 已不是真实倍数），
+         与 NPC 档「用年代封顶后的真实杠杆」同一纪律。 */
+      q.push({
+        player: true, long: lng, ratio, lev: effLevOf(ppos), notional: ppos.size * price,
+        rate: adlProfitRate(ratio, lng, false),
+      });
     }
   }
   q.sort((a, b) => (b.ratio * b.lev) - (a.ratio * a.lev));      // ADL index 降序
   let done = 0;
   for (const it of q) {
     if (done >= need) break;
-    const rate = 1 - 1 / it.ratio;                  // 该仓的浮盈率（ratio > 1 ⇒ rate > 0）
+    const rate = it.rate;                           // 入队时按基数算好（成本 / 现价两套，见 `adlProfitRate`）
     if (!(rate > 0)) continue;
     const pnl = it.notional * rate;                 // 该仓的全部浮盈
     const take = Math.min(pnl, need - done);        // 本次从它身上收走的浮盈（＝补上的缺口）
@@ -2774,6 +2813,9 @@ export function openTrade(s, side, frac = 1) {
  *      closeSize:number, notional:number, cost:number, fill:number}}
  */
 function closeCheck(s, frac = 1) {
+  /* 2026-10-05 审计修：与 `openCheck` / `adjustCheck` 对称地补上「本局已结束」守卫 ——
+     原先只有这一处漏了，`s.over` 后玩家仍能点出一个 `ok:true` 的平仓判据（金额档不会置灰）。 */
+  if (s.over) return { ok: false, why: '本局已结束' };
   const sym = s.sym;
   const pos = posOf(s, sym);
   if (!pos) return { ok: false, why: `${sym} 没有持仓` };
@@ -2834,7 +2876,12 @@ export const canCloseAt = (s, frac = 1) => closeCheck(s, frac).ok;
 export function marginCapsOf(s, sym) {
   const pos = posOf(s, sym);
   if (!pos) return null;
-  const price = exPrice(s, sym, pos.ex);
+  /* ⚠️ 2026-10-05 审计修（口径分叉）：这里原来读 `exPrice`（**最新价**，含玩家自己刚砸出的位移），
+     而下方注释与全作其余估值口径都要求「与强平判据同源」—— 强平 / 持仓条 / 未实现盈亏 /
+     资金费一律读**标记价**（`exMarkPrice`）。两价不同 ⇒ 同一个仓位在**弹层**与**持仓条**会显示
+     不同的保证金率，且「可减保证金」上限按 last 算 ⇒ 玩家能把自己减到比预期更贴强平线的位置。
+     改读标记价后三处同源（`render` 的持仓条 / 弹层 / `liquidateAll`）。 */
+  const price = exMarkPrice(s, sym, pos.ex);
   if (!(price > 0)) return null;
   const mustUsdt = !isMargin(pos);                 // 合约（perp）只认 USDT；杠杆是两格之和
   /* **到 1 倍杠杆还剩多少垫子**（2026-10-05 用户拍板）—— 实际杠杆 = `notional ÷ margin`，
@@ -3009,8 +3056,11 @@ export function closeTrade(s, why = '手动', frac = 1) {
     delete s.positions[sym];
   } else {
     /* 分批平仓那一条把**平仓的比例**写在脸上（`25%` / `50%`）—— 否则玩家分不清
-       「刚才是卖了一半」还是「整条没了」。 */
-    pushLog(s, `平仓 ${sym} ${pos.lev}x ${Math.round(f * 100)}%｜${verdict}`, netRound >= 0 ? 'ok' : 'bad', 'trade');
+       「刚才是卖了一半」还是「整条没了」。
+       ⚠️ 2026-10-05 审计修：杠杆标记改走 `lvTagOf(pos)`（＝**实际杠杆** `effLevOf`），与全平分支
+          （上面一行）、ADL（`adlPlayerReduce`）、部分强平（`liquidateAll`）四处同源 —— 原来这里读
+          开仓冻结的 `pos.lev`，滚仓减保证金后同一条仓位在「分批」与「全平」会报出两个不同的倍数。 */
+    pushLog(s, `平仓 ${sym} ${lvTagOf(pos)} ${Math.round(f * 100)}%｜${verdict}`, netRound >= 0 ? 'ok' : 'bad', 'trade');
     pos.size -= closeSize;
     pos.margin -= backMargin;
     pos.notional *= (1 - f);

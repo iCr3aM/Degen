@@ -302,6 +302,92 @@ section('1d · 强平价连续性 / 强平退款口径（资金费抽干保证�
   }
 }
 
+/* ═════ 1e · 2026-10-05 审计修复核：口径分叉 / ADL 浮盈率基数 / 结局守卫 / 平仓日志杠杆 ═════
+   本轮修了四处（`marginCapsOf` 价格口径、ADL 浮盈率基数、`closeTrade` 分批日志杠杆、
+   `closeCheck` 结局守卫）。本节点死四件事，全部读**真实函数 / 真引擎**，并对旧口径显式判别
+   （断言旧式在若干情形**确实错**，否则这条修复就是无意义的假绿）。 */
+section('1e · 审计修复核（ADL 浮盈率四情形 · marginCapsOf 价格口径 · closeCheck 结局守卫 · 平仓日志杠杆）');
+{
+  /* e1 · ADL 浮盈率：四种（NPC/玩家 × 多/空）逐一与**真实盈亏定义**对齐。
+     ⚠️ ADL 队列里两种档位的 `notional` 基数不同（NPC = 成本名义、玩家 = 现价名义），
+        故「名义 × rate」必须等于按价格现算的盈亏；旧式 `1 − 1/ratio` 只对其中一半正确。 */
+  {
+    const avg = 100, size = 1000, G = avg * size;               // 成本名义 10 万
+    const up = 130, ratio = up / avg;                            // 1.3x 浮盈倍数
+    const down = avg / ratio;                                    // 空头盈利时的现价（< avg）
+    const rows = [
+      /* [名字, ratio, long, costBasis, notional, 真实盈亏] */
+      ['NPC 多头（成本名义）', ratio, true, true, G, size * (up - avg)],
+      ['NPC 空头（成本名义）', ratio, false, true, G, size * (avg - down)],
+      ['玩家多头（现价名义）', ratio, true, false, size * up, size * (up - avg)],
+      ['玩家空头（现价名义）', ratio, false, false, size * down, size * (avg - down)],
+    ];
+    let okN = 0, oldN = 0;
+    for (const [name, r, long, cb, notional, truth] of rows) {
+      const pnl = notional * engine.adlProfitRate(r, long, cb);
+      if (Math.abs(pnl - truth) <= 1e-9 * Math.max(1, truth)) okN++;
+      /* 旧口径（一律 `1 − 1/ratio`）在新口径下的正确数：应当恰好一半（NPC 空头 / 玩家多头）。 */
+      if (Math.abs(notional * (1 - 1 / r) - truth) <= 1e-9 * Math.max(1, truth)) oldN++;
+    }
+    check('1e ADL 浮盈率四种情形（NPC/玩家 × 多/空）「名义 × rate」≡ 真实盈亏',
+      okN === rows.length, `${okN}/${rows.length}`);
+    check('1e 旧式 `1 − 1/ratio` 只在 2 种情形成立（证明另 2 种被低估 ⇒ 本修非无谓）',
+      oldN === 2, `旧式命中 ${oldN}/4`);
+    check('1e ADL 浮盈率退化护栏：ratio ≤ 1 ⇒ 恒 0（ADL 从不砍输家）',
+      engine.adlProfitRate(1, true, true) === 0 && engine.adlProfitRate(0.9, false, false) === 0
+        && engine.adlProfitRate(1.3, true, true) > 0, '');
+  }
+
+  /* e2 · `marginCapsOf` 的估值价必须 = **标记价**（与持仓条 / 强平判据同源），不是最新价。 */
+  const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'margin', cash: 200000, i: idx(at(2021, 4, 10)) });
+  s.mode = 'margin'; s.lev = 3;
+  const ro = engine.openTrade(s, 'long', 0.3);
+  check('1e 前置：多仓开出来了（口径节点的载体）', ro.ok && !!s.positions.BTC, ro.why || '');
+  if (s.positions.BTC) {
+    const pos = s.positions.BTC;
+    const idxPx = engine.markPrice(s, 'BTC');
+    s.mkb = { BTC: idxPx * 0.05 };                       // 强制一笔非零基差 ⇒ last ≠ mark
+    const pxLast = engine.exPrice(s, 'BTC', pos.ex);
+    const pxMark = engine.exMarkPrice(s, 'BTC', pos.ex);
+    const caps = engine.marginCapsOf(s, 'BTC');
+    check('1e 前置：last ≠ mark（本节点具判别力的前提）',
+      Math.abs(pxLast - pxMark) > 1e-9, `last=${f(pxLast, 4)} mark=${f(pxMark, 4)}`);
+    check('1e marginCapsOf 的 price ≡ 标记价（弹层 / 持仓条 / 强平判据三处同源）',
+      !!caps && Math.abs(caps.price - pxMark) < 1e-12 * Math.max(1, pxMark),
+      caps ? `caps=${f(caps.price, 6)} mark=${f(pxMark, 6)}` : 'caps=null');
+    check('1e 旧缺陷可判别：caps.price **不等于**最新价（退回 exPrice 即失败）',
+      !!caps && Math.abs(caps.price - pxLast) > 1e-9,
+      caps ? `|caps − last| = ${Math.abs(caps.price - pxLast).toExponential(3)}` : '');
+  }
+
+  /* e3 · `closeCheck` 的结局守卫 —— 与 `openCheck` / `adjustCheck` 对称。 */
+  check('1e 前置：局中可平（canCloseAt true）', engine.canCloseAt(s, 1) === true, '');
+  {
+    const keep = s.over;
+    s.over = { reason: 'audit', at: s.i };
+    check('1e s.over ⇒ canCloseAt 恒 false（金额档会置灰）', engine.canCloseAt(s, 1) === false, '');
+    const r = engine.closeTrade(s, '审计', 1);
+    check('1e s.over ⇒ closeTrade 被拒（why = 本局已结束）',
+      !r.ok && r.why === '本局已结束', r.why || '');
+    s.over = keep;
+  }
+
+  /* e4 · 分批平仓日志的倍数标签 —— 滚仓（减保证金）后必须报**实际杠杆**，与全平同源。 */
+  if (s.positions.BTC) {
+    const pos = s.positions.BTC;
+    pos.margin = pos.margin / 2;                          // 抽走一半保证金 ⇒ 实际杠杆 ≈ 2×开仓
+    const eff = P.effLevOf(pos);
+    check('1e 前置：滚仓后实际杠杆 ≠ 开仓杠杆（日志分叉的判据）',
+      Math.abs(eff - pos.lev) > 1e-6, `eff=${f(eff, 4)} lev=${pos.lev}`);
+    const r = engine.closeTrade(s, '审计', 0.5);
+    const line = [...s.log].reverse().find(l => l.tag === 'trade' && l.text.startsWith('平仓'));
+    const tag = `${Math.round(eff * 10) / 10}x`;
+    check('1e 分批平仓日志用**实际杠杆**（与全平 / ADL / 部分强平四处同源）',
+      r.ok && !!line && line.text.includes(` ${tag} `) && !/ \d+x /.test(line.text.replace(` ${tag} `, ' ')),
+      line ? line.text.slice(0, 80) : (r.why || '无平仓日志'));
+  }
+}
+
 /* ═══════════════════ 2 · openCheck 全分支可达性 ═══════════════════ */
 section('2 · 下单拒绝分支穷举（每一条 `why` 是否可达 / 是否合理）');
 const seen = new Map();
