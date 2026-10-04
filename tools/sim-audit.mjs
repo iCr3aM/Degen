@@ -2336,6 +2336,7 @@ section('13c · 保证金步进口径与 HUD 数字滚动（真实行为）');
   const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1000000, i: idx(at(2022, 0)) });
   s.ex = 'bitmex';
   s.books[s.ex] = { usd: 0, usdt: 1000000 };   // 合约只认 USDT（2022 年该局默认货币还不是 U，显式给）
+  s.lev = 5;                                  // ⚠️ 2026-10-05 起 1x 仓不许再加保证金 ⇒ 必须开杠杆仓才能测「+」
   const o = engine.openTrade(s, 'long', 0.2);
   const pos = s.positions.BTC;
   check('13c 建仓成功（后续断言的载体）', o.ok && !!pos, o.why || '');
@@ -2381,6 +2382,7 @@ section('13c · 保证金步进口径与 HUD 数字滚动（真实行为）');
   const s = await mk({ sym: 'BTC', mode: 'fut', cash: 100000, i: idx(at(2022, 0)) });
   s.ex = 'bitmex';
   s.books[s.ex] = { usd: 0, usdt: 100000 };
+  s.lev = 5;                                    // 同样要杠杆仓：1x 仓的 add 上限是 0，测不出「可用余额夹住」
   const o = engine.openTrade(s, 'long', 0.9);   // 用掉九成可用 ⇒ 余额只剩一成，小于 25% 基数
   if (o.ok) {
     const caps = engine.marginCapsOf(s, 'BTC');
@@ -2413,6 +2415,144 @@ check('13c 目标没变直接写',
   check('13c 补间单调递增（不会来回跳）',
     roll.rollSample(0, 100, 0.25) < roll.rollSample(0, 100, 0.5)
     && roll.rollSample(0, 100, 0.5) < roll.rollSample(0, 100, 0.75));
+}
+
+/* ═════ 13d · 2026-10-05 玩家质疑：通道记忆 / 保证金 1x 封顶 / 资金费基数 / OTC 口径 ═════
+   四条都走**真实函数**：`chanChoiceOf` / `chanOf` / `advanceOneHour`（闩锁）/ `marginCapsOf` /
+   `adjustMargin` / `fundingOf` / `borrowedOf` / `canCloseAt` / `closeTrade`。 */
+section('13d · 逐币通道记忆 · 保证金 1x 封顶 · 资金费基数=名义 · OTC 跨通道平仓');
+
+/* ── d1 · 逐币通道记忆（玩家实测回归：BTC 选 OTC → 换币 → 切回 BTC 仍记得） ── */
+{
+  const s = await mk({ sym: 'BTC', mode: 'margin', cash: 2e7, i: idx(at(2021, 5)) });
+  s.chanBy = { BTC: 'otc' };                     // 玩家在 BTC 上选了 OTC
+  s.chan = 'book';                               // 兜底默认仍是盘口（只记「选过的币」）
+  check('13d 逐币记忆：BTC 选 otc ⇒ 生效 otc',
+    engine.chanChoiceOf(s) === 'otc' && engine.chanOf(s) === 'otc', engine.chanOf(s));
+  s.sym = 'ETH';                                 // 切到没单独选过的 ETH
+  check('13d 换到 ETH ⇒ 回落到兜底 book（不会把 BTC 的选择带过来）',
+    engine.chanChoiceOf(s) === 'book' && engine.chanOf(s) === 'book');
+  s.sym = 'BTC';                                 // 切回 BTC —— 玩家反馈的核心回归点
+  check('13d 切回 BTC ⇒ **仍记得 otc**（逐币记忆生效）',
+    engine.chanOf(s) === 'otc', engine.chanOf(s));
+
+  /* 权益跌破门槛：生效回退盘口，但**选择**必须保住，权益恢复后自动回来。 */
+  s.books[s.ex] = { usd: 0, usdt: 1000 };
+  check('13d 权益跌破门槛 ⇒ 生效回退 book，但选择仍是 otc',
+    engine.chanOf(s) === 'book' && engine.chanChoiceOf(s) === 'otc');
+  s.pending = null; engine.advanceOneHour(s);
+  check('13d 回退闩锁不抹掉玩家选择（s.chanBy.BTC 仍为 otc）',
+    s.chanBy && s.chanBy.BTC === 'otc', `chanBy.BTC=${s.chanBy && s.chanBy.BTC}`);
+  s.books[s.ex] = { usd: 0, usdt: 2e7 };
+  check('13d 权益恢复 ⇒ 记忆的选择自动恢复生效 otc',
+    engine.chanOf(s) === 'otc', engine.chanOf(s));
+  s.pending = null; engine.advanceOneHour(s);
+  check('13d 恢复后闩锁解除（下次真跌落还能再报一次）', !s.otcOff);
+}
+{
+  /* d1b · 旧档（没有 `chanBy`，只有全局 `s.chan`）—— 证明**破坏性复位**已彻底移除：
+     旧实现在这里写 `s.chan = 'book'`，会把玩家的 OTC 选择永久抹掉（权益恢复也回不来）。 */
+  const s2 = await mk({ sym: 'BTC', mode: 'margin', cash: 2e7, i: idx(at(2021, 5)) });
+  delete s2.chanBy;
+  s2.chan = 'otc';
+  check('13d 旧档兜底：无 chanBy 时 chanChoiceOf 读 s.chan = otc',
+    engine.chanChoiceOf(s2) === 'otc' && engine.chanOf(s2) === 'otc');
+  s2.books[s2.ex] = { usd: 0, usdt: 1000 };
+  s2.pending = null; engine.advanceOneHour(s2);
+  check('13d 旧档跌破门槛后 **s.chan 未被写死成 book**（选择保住）',
+    s2.chan === 'otc', `s.chan=${s2.chan}`);
+  s2.books[s2.ex] = { usd: 0, usdt: 2e7 };
+  check('13d 旧档权益恢复 ⇒ 自动恢复 otc（若被复位则永久失效）',
+    engine.chanOf(s2) === 'otc', engine.chanOf(s2));
+}
+check('13d 源码锚点：engine 不再写死 `s.chan = \'book\'`（复位玩家选择的旧 bug 根因）',
+  !/s\.chan\s*=\s*'book'/.test(fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8')));
+
+/* ── d2 · 保证金加到实际杠杆 1x 即封顶（用户拍板「压平 1x 后不能再加」） ── */
+{
+  const s = await mk({ sym: 'BTC', mode: 'margin', cash: 2e7, i: idx(at(2021, 5)) });
+  s.lev = 3;
+  const o = engine.openTrade(s, 'long', 0.02);
+  const pos = s.positions.BTC;
+  check('13d 1x 封顶前置：3x 建仓成功', o.ok && !!pos, o.why || '');
+  if (pos) {
+    check('13d 建仓时实际杠杆 = 3x', Math.abs(P.effLevOf(pos) - 3) < 1e-6, `effLev=${f(P.effLevOf(pos), 4)}`);
+    check('13d 建仓时确有利息成本（借入 > 0）',
+      P.borrowedOf(pos) > 0 && P.paysInterest(pos), `borrowed=${f(P.borrowedOf(pos), 2)}`);
+    /* 连点「+」加到加不动为止 —— 每次都走真实 `marginStepOf` / `adjustMargin`。 */
+    let guard = 0;
+    while (guard++ < 200) {
+      const a = engine.marginStepOf(s, 'BTC', 0.25, true);
+      if (!(a > 1e-9)) break;
+      if (!engine.adjustMargin(s, 'BTC', a).ok) break;
+    }
+    const caps = engine.marginCapsOf(s, 'BTC');
+    check('13d 加到顶后实际杠杆 = 1x（不会跌破 1x）',
+      P.effLevOf(pos) >= 1 - 1e-9, `effLev=${f(P.effLevOf(pos), 6)}`);
+    check('13d 加到顶后保证金 ≈ 名义（headroom → 0）',
+      pos.margin <= pos.notional + 1e-6 && caps.headroom <= 1e-6,
+      `margin=${f(pos.margin, 2)} notional=${f(pos.notional, 2)} headroom=${f(caps.headroom, 6)}`);
+    check('13d 到顶后 add 上限 = 0（弹层预设键 / 交易页 ± 键据它置灰）',
+      caps.add <= 1e-9, `add=${f(caps.add, 6)}`);
+    const r = engine.adjustMargin(s, 'BTC', 1);
+    check('13d 到顶后再加保证金被拒，且给出「1x」准话',
+      !r.ok && /1x/.test(r.why || ''), r.why || '(未被拒)');
+    check('13d 压到 1x 后借入归零 ⇒ 停息（用户拍板口径）',
+      P.borrowedOf(pos) === 0 && !P.paysInterest(pos),
+      `borrowed=${f(P.borrowedOf(pos), 6)} interest=${P.paysInterest(pos)}`);
+    check('13d 压到 1x 后不可强平（维持线远在下方）', !P.canLiquidate(pos));
+  }
+}
+
+/* ── d3 · 资金费基数 = 名义（合约仓：按 8h 资金费轨；与保证金增减无关） ── */
+{
+  const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e6, i: idx(at(2022, 0)) });
+  s.ex = 'bitmex';
+  s.books[s.ex] = { usd: 0, usdt: 1e6 };
+  s.lev = 5;                                    // 留出 headroom：1x 仓的 add 上限是 0，测不了「加保证金后资金费不变」
+  const o = engine.openTrade(s, 'long', 0.2);
+  const pos = s.positions.BTC;
+  check('13d 资金费前置：合约建仓成功', o.ok && !!pos, o.why || '');
+  if (pos) {
+    const mark = engine.exMarkPrice(s, 'BTC', pos.ex);
+    const rate = 0.0001;                          // 0.01% / 8h
+    const dir = pos.side === 'long' ? 1 : -1;
+    const expect = pos.size * mark * rate * dir;
+    check('13d 资金费基数 = 数量 × 标记价（名义），公式锚定',
+      Math.abs(P.fundingOf(pos, mark, rate) - expect) < 1e-6,
+      `f=${f(P.fundingOf(pos, mark, rate), 4)} vs ${f(expect, 4)}`);
+    check('13d 合约仓 paysFunding = true（走 8h 资金费轨，非逐时利息）', P.paysFunding(pos));
+    const before = P.fundingOf(pos, mark, rate);
+    const step = engine.marginStepOf(s, 'BTC', 0.25, true);
+    const r = step > 1e-9 ? engine.adjustMargin(s, 'BTC', step) : { ok: false, why: '步进为 0' };
+    const after = P.fundingOf(pos, mark, rate);
+    check('13d 加保证金后资金费**分毫不变**（与保证金无关 —— 权威口径已核）',
+      r.ok && Math.abs(after - before) < 1e-9,
+      `${f(before, 4)} → ${f(after, 4)}｜margin ${f(pos.margin, 2)}｜${r.why || ''}`);
+  }
+}
+
+/* ── d4 · OTC 是执行通道、与持仓同质：OTC 建仓后**任一通道都能平**（仅加仓需同通道） ── */
+{
+  const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'margin', cash: 2e7, i: idx(at(2021, 5)) });
+  s.mode = 'margin'; s.lev = 2;
+  s.chanBy = { BTC: 'otc' };
+  check('13d OTC 平仓前置：通道生效 otc', engine.chanOf(s) === 'otc', engine.chanOf(s));
+  const o = engine.openTrade(s, 'long', 0.05);
+  check('13d OTC：建仓成功', o.ok && !!s.positions.BTC, o.why || '');
+  if (s.positions.BTC) {
+    check('13d OTC：仓位带 otc 标记', s.positions.BTC.otc === true, `otc=${s.positions.BTC.otc}`);
+    s.chanBy.BTC = 'book';                        // 玩家持仓期间切回盘口（F4 已放开）
+    check('13d 切回盘口后生效通道 = book', engine.chanOf(s) === 'book', engine.chanOf(s));
+    const add = engine.openTrade(s, 'long', 0.05);
+    check('13d 跨通道**加仓**被拦（需先切回同一通道）',
+      !add.ok && /通道/.test(add.why || ''), add.why || '(未拦)');
+    check('13d OTC 仓位可**跨通道平仓**（与持仓同质 —— 权威口径已核）',
+      engine.canCloseAt(s, 1), '');
+    const r = engine.closeTrade(s, '测试');
+    check('13d 跨通道平仓真的成交、仓位清空',
+      r.ok && !s.positions.BTC, r.why || '');
+  }
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

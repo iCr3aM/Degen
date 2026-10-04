@@ -289,15 +289,30 @@ export const otcOpenFor = (s, sym = s.sym) => {
 };
 
 /**
+ * 玩家对**当前币**选择的通道（2026-10-05 · 逐币记忆）—— `'book'` / `'otc'`。
+ *
+ * 查表顺序：`s.chanBy[s.sym]`（逐币偏好，玩家的选择）→ `s.chan`（兜底默认：新局初值，
+ * 兼旧存档的迁移值）→ `'book'`。**任何一步都不改状态** —— 这是一个纯读函数，
+ * 渲染每帧都会调它。
+ */
+export const chanChoiceOf = s => {
+  const v = s.chanBy ? s.chanBy[s.sym] : undefined;
+  if (v === 'otc' || v === 'book') return v;
+  return s.chan === 'otc' ? 'otc' : 'book';
+};
+
+/**
  * 当前**生效**的通道：`'book'`（盘口）或 `'otc'`（场外大宗）。
  *
  * ⚠️ OTC 只在「玩家选了它」**且「仍然解锁」**时成立 —— 权益掉回门槛下就自动退回盘口。
  *    否则会出现最别扭的一种状态：切换键已经藏起来了（不满足解锁条件），
- *    而 `s.chan` 还留着 `'otc'`，玩家接着下的每一单都在走一条看不见的通道。
+ *    而玩家选着的还是 `'otc'`，接着下的每一单都在走一条看不见的通道。
  * ⚠️ 同理还有**第二个**回退条件（P2-B 修订）：当前币还没开通 OTC ⇒ 也退回盘口。
  *    换币时若还留着 `'otc'`，玩家会在一个「这个币根本没有的通道」里下单。
+ * ⚠️ 2026-10-05：判断依据从 `s.chan` 改为 `chanChoiceOf(s)`（逐币偏好）。回退**只影响生效值**，
+ *    不动玩家存下来的选择 —— 门槛恢复 / 换回有 OTC 的币时自动恢复该通道（见 `advance` 的闩锁那段）。
  */
-export const chanOf = s => (s.chan === 'otc' && otcUnlocked(s) && otcOpenFor(s) ? 'otc' : 'book');
+export const chanOf = s => (chanChoiceOf(s) === 'otc' && otcUnlocked(s) && otcOpenFor(s) ? 'otc' : 'book');
 
 /**
  * 某币**此刻**的供应量闸门（枚）—— 「允许锁走的占比 × 当年真实流通量」（§15.1 / §15.4）。
@@ -2797,8 +2812,9 @@ export const canCloseAt = (s, frac = 1) => closeCheck(s, frac).ok;
  *   - 本作从 v13 起就是逐仓（每仓独立 `pos.margin`）⇒ 天然兼容，**不需要新状态字段**、不升存档版本。
  *   - 现实约束：加受**可用余额**限制；减不能把保证金率压到**维持线**以下（否则是自己推向强平）。
  *
- * @returns {null | { pos:object, price:number, mustUsdt:boolean, add:number, reduce:number }}
- *   `add` = 此刻最多能加多少；`reduce` = 此刻最多能减多少（都 ≥ 0）
+ * @returns {null | { pos:object, price:number, mustUsdt:boolean, add:number, headroom:number, reduce:number }}
+ *   `add` = 此刻最多能加多少（已含 1x 封顶）；`headroom` = 名义 − 保证金（到 1x 还剩多少）；
+ *   `reduce` = 此刻最多能减多少（都 ≥ 0）
  */
 export function marginCapsOf(s, sym) {
   const pos = posOf(s, sym);
@@ -2806,13 +2822,20 @@ export function marginCapsOf(s, sym) {
   const price = exPrice(s, sym, pos.ex);
   if (!(price > 0)) return null;
   const mustUsdt = !isMargin(pos);                 // 合约（perp）只认 USDT；杠杆是两格之和
-  const add = Math.max(0, spendableOf(s, mustUsdt));
+  /* **到 1 倍杠杆还剩多少垫子**（2026-10-05 用户拍板）—— 实际杠杆 = `notional ÷ margin`，
+     加保证金只会把它往 1x 压。压到 1x（`margin === notional`）后**不能再加**：现实中交易所的
+     杠杆档位**下限就是 1x**（Binance 客服口径「leverage starts at 1x，想更低只能手动减仓」，
+     已核一手）—— 再往里塞钱等于开一个「负杠杆」，既无现实对应、也会让保证金率虚高。
+     ⚠️ 因此 `add` 取「可用余额」与「headroom」的**较小者**，封顶顺带把弹层预设键与交易页 ± 键
+        一起置灰（`render` / `openMarginDlg` 都读 `caps.add`，同源）。 */
+  const headroom = Math.max(0, pos.notional - pos.margin);
+  const add = Math.max(0, Math.min(spendableOf(s, mustUsdt), headroom));
   /* 减的下限：减完后**权益**（保证金 ＋ 未实现盈亏）仍要撑在维持线的 `PARTIAL_TARGET` 倍之上
      —— 与部分强平同一个目标倍数，留一道垫子，不许玩家把仓位减到「下一秒就爆」。
      权益口径与强平判据同源（`equityOf` / `maintRateOf`）⇒ 浮亏时能抽回的钱自然更少。 */
   const floorEquity = PARTIAL_TARGET * maintRateOf(pos) * pos.notional;
   const reduce = Math.max(0, Math.min(pos.margin, equityOf(pos, price) - floorEquity));
-  return { pos, price, mustUsdt, add, reduce };
+  return { pos, price, mustUsdt, add, headroom, reduce };
 }
 
 /**
@@ -2856,7 +2879,12 @@ function adjustCheck(s, sym, delta) {
   const amount = Math.abs(delta);
   if (!(amount > 1e-9)) return { ok: false, why: '调整金额为 0' };
   if (delta > 0) {
+    /* 先判 1x 封顶（2026-10-05）：`margin` 已经追平 `notional`（实际杠杆 1x）⇒ 一点也加不动。
+       放在余额判断之前 —— 撞的是名义天花板时，说「余额不足」会误导玩家去充值。 */
+    if (!(c.headroom > 1e-9)) return { ok: false, why: '实际杠杆已到 1x ｜ 保证金不能再加' };
     if (amount > c.add + 1e-9) {
+      /* `add` = `min(可用余额, headroom)`，所以「超了」有两种成因，分别给准话。 */
+      if (amount > c.headroom + 1e-9) return { ok: false, why: '实际杠杆已到 1x ｜ 保证金不能再加' };
       return { ok: false, why: c.mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用余额不足' };
     }
     return { ok: true, pos: c.pos, add: true, amount, mustUsdt: c.mustUsdt };
@@ -3536,13 +3564,15 @@ export function advanceOneHour(s) {
      ⚠️ 为什么不是「日志里已经有这句话」那种闩锁：那句话会被 60 条新日志顶出 `s.log`，
         条件仍成立时会再报一次 —— 正是用户要求消除的那种重复。
      ⚠️ 回到「OTC 可用」或「玩家自己切回盘口」时**解除闩锁**，这样下一次真的跌落还能再报一次。 */
-  if (s.chan === 'otc' && chanOf(s) === 'book') {
+  if (chanChoiceOf(s) === 'otc' && chanOf(s) === 'book') {
     if (!s.otcOff) { s.otcOff = true; pushLog(s, OTC_OFF, 'bad', 'mkt'); }
-    /* ⚠️ 2026-10-04（F4）：把 `s.chan` 一并切回 `'book'` —— 旧实现只播日志、不改 `s.chan`
-       ⇒ 留下「`s.chan='otc'` 而 `chanOf='book'`」的**残留状态**，正是玩家「有仓位时切不回盘口」
-       那个死结的一半成因（另一半是按钮/守卫锁死，已在 render.js / main.js 放开）。
-       一次性对齐后，本闩锁自然不再触发（不会重复播报）。 */
-    s.chan = 'book';
+    /* ⚠️ 2026-10-05（逐币记忆）：这里**不再**把玩家的选择复位成 `'book'`。
+       旧实现（2026-10-04 F4）会把全局 `s.chan` 复位成盘口，本意是清掉「选了 OTC 却生效盘口」的残留态；
+       但它复位的是一份**全局**状态 ⇒ 「BTC 选 OTC → 切到还没开通 OTC 的币 → 切回 BTC」时
+       玩家的选择被那次复位抹掉，回到 BTC 也不再记得 OTC（玩家实测反馈的正是这条）。
+       现在「选择」按币存在 `chanBy` 里（`chanChoiceOf` 读它），回退**只影响此刻生效值**：
+       换到开通了 OTC 的币、或权益涨回门槛之上，`chanOf` 自动恢复 OTC；玩家自己切回盘口则由
+       `onChan` 改写偏好。闩锁仍只负责「一次跌落报一条」，与选择互不干扰。 */
   } else if (s.otcOff) {
     s.otcOff = false;
   }

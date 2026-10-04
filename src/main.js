@@ -1240,11 +1240,15 @@ function onChan() {
      `posOf` 守卫把持仓期间的切换整条挡掉，遇到「OTC 仓位 ＋ 权益跌破解锁线」时形成死结。
      现在放开 —— 跨通道**加仓**仍由 `posGate` 拦（提示先切回同一通道），
      「切回盘口 / 平仓」这条路不再被堵死。 */
-  s.chan = chanOf(s) === 'otc' ? 'book' : 'otc';
+  /* 2026-10-05 用户拍板「只记通道 per 币种」：选择写进**逐币**表（懒建 —— 旧档没有这个键，
+     塞进 `save.js` 的 `SHAPE` 会让老档被判不合格而丢弃，见 `state.js` 的 `chanBy` 注释）。
+     换币不再互相覆盖：「BTC 选 OTC → 切到 ETH → 切回 BTC」记得 BTC 是 OTC。 */
+  if (!s.chanBy) s.chanBy = {};
+  s.chanBy[s.sym] = chanOf(s) === 'otc' ? 'book' : 'otc';
   /* 切到 OTC 就把杠杆夹到 `OTC.levMax`（5x）：大宗通道跟随模式，但机构借贷口径封顶 5x ——
      超过封顶的档位在操作区当场置灰（`render` 与这里同源），比事后再拒绝更直白。
      切回盘口**不还原**原来的杠杆 —— 那需要多存一个字段，而封顶值是个安全的默认。 */
-  if (s.chan === 'otc' && s.lev > OTC.levMax) s.lev = OTC.levMax;
+  if (s.chanBy[s.sym] === 'otc' && s.lev > OTC.levMax) s.lev = OTC.levMax;
   after();
 }
 
@@ -1275,8 +1279,12 @@ function onMarginAdjust(s, val) {
   if (!caps) { if (!cur) closePicker(); return; }  // 仓位已经没了：关掉弹层
   const cap = add ? caps.add : caps.reduce;
   if (!(cap > 1e-9)) {                             // 零上限：给一句准话
+    /* 加保证金撞上 1x 封顶（2026-10-05）要单独说 —— 这时既不是余额不够、也不是币种不对，
+       说「可用余额不足」会让玩家以为充钱就能继续加（其实充了也加不了）。 */
     pushLog(s, add
-      ? (caps.mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用余额不足')
+      ? (!(caps.headroom > 1e-9)
+        ? '实际杠杆已到 1x ｜ 保证金不能再加'
+        : (caps.mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用余额不足'))
       : '保证金率接近维持线 ｜ 不能再减', 'bad');
     after();
     return;
