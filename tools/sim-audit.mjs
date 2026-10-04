@@ -1166,6 +1166,60 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     check('12 破产局风格称号不说「活下来了」', lied === 0, `出现 ${lied} 次`);
   }
 
+  /* ── A3 · 按本局时长归一（2026-10-05 用户拍板）───────────────────────────────
+     挑战局只有 2–4 个月，照「经典全程 12 年」定的档位会**全部塌到最低档**。
+     这里对 **6 局逐一穷举**：经典局必须仍是 6 档全可达（未退化），
+     每个挑战局至少命中 3 档（证明短局也能打出差别），且同一倍数在短局的档位不低于经典局。 */
+  const SCEN_LIST = C.SCENARIOS.map(sc => sc.id);
+  {
+    const kc = T.durKOf({ scen: 'classic' });
+    check('12 归一标量：经典局 k = 1（阈值与改动前逐位相同）', kc === 1, `k=${kc}`);
+    const ks = SCEN_LIST.filter(id => id !== 'classic').map(id => [id, T.durKOf({ scen: id })]);
+    check('12 归一标量：5 个挑战局 k ∈ [0.15, 1)',
+      ks.every(([, k]) => k >= 0.15 && k < 1),
+      ks.map(([id, k]) => `${id}=${k.toFixed(3)}`).join(' '));
+    check('12 归一标量：未知 / 缺失年代回落到经典（k = 1）',
+      T.durKOf({ scen: 'nope' }) === 1 && T.durKOf({}) === 1);
+    console.log('  局          k     10x档     100x档    （经典 = 1 ⇒ 10x / 100x）');
+    for (const id of SCEN_LIST) {
+      const k = T.durKOf({ scen: id });
+      console.log(`  ${id.padEnd(9)} ${k.toFixed(3)}  ${Math.pow(10, k).toFixed(2)}x    ${Math.pow(100, k).toFixed(2)}x`);
+    }
+  }
+  {
+    /* ① 结算档：逐局扫倍数，数命中几档。 */
+    const LIVE = LIVE_TITLES;
+    for (const id of SCEN_LIST) {
+      const hit = new Set();
+      for (let m = 0.1; m <= 400; m *= 1.15) {
+        hit.add(T.titleOf(rec({ scen: id, reason: OVER.SETTLED, cash0: 1000, final: m * 1000 })));
+      }
+      const need = id === 'classic' ? 6 : 3;
+      check(`12 时长归一 · ${id} 鲜活局命中 ≥ ${need} 档主称号`,
+        hit.size >= need, `命中 ${hit.size} 档：${[...hit].join('/')}`);
+    }
+    /* ② 单调性：同一倍数，短局的档位**不低于**经典局（阈值下移的直接推论）。 */
+    const rankOf = (t) => LIVE.indexOf(t);
+    let mono = 0;
+    for (const m of [1.2, 1.5, 2, 3, 10, 50]) {
+      const base = rankOf(T.titleOf(rec({ scen: 'classic', reason: OVER.SETTLED, cash0: 1000, final: m * 1000 })));
+      for (const id of SCEN_LIST) {
+        if (id === 'classic') continue;
+        if (rankOf(T.titleOf(rec({ scen: id, reason: OVER.SETTLED, cash0: 1000, final: m * 1000 }))) < base) mono++;
+      }
+    }
+    check('12 时长归一：同一倍数在短局的档位不低于经典局（阈值单调下移）', mono === 0, `违反 ${mono} 次`);
+    /* ③ 破产档同样归一：峰顶 2x 在经典局是「归零者」，在 5 个挑战局里都必须升档。 */
+    const cRank = BUST_TITLES.indexOf(T.titleOf(rec({ scen: 'classic', reason: OVER.LIQUIDATED, cash0: 1000, peak: 2000, final: -1 })));
+    let notUp = 0;
+    for (const id of SCEN_LIST) {
+      if (id === 'classic') continue;
+      const r = BUST_TITLES.indexOf(T.titleOf(rec({ scen: id, reason: OVER.LIQUIDATED, cash0: 1000, peak: 2000, final: -1 })));
+      if (r >= cRank) notUp++;
+    }
+    check('12 时长归一：峰顶 2x 的破产局在 5 个挑战局里档位都高于经典局', notUp === 0, `未升档 ${notUp} 局`);
+  }
+
   /* ── B · 徽章池 20 枚全部可达（无死徽章）＋ 输出无未登记名称 ── */
   const ALL_BADGES = [
     '躺平', '现货党', '杠杆党', '百倍玩家', '杠杆赌徒',

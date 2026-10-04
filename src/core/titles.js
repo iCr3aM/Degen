@@ -28,10 +28,12 @@
  */
 
 import { OVER } from './engine.js';
+/* 只取 `SCENARIOS` 算「本局名义时长」—— `config.js` 是**零依赖叶子模块**，不会成环。 */
+import { SCENARIOS } from './config.js';
 
 /* ── 312 那根针的绝对时刻（2020-03-12T00:00:00Z）──
- * `rec.start` / `rec.end` 都是**绝对 ms**，可直接比；此处写 UTC 时刻而非 import `GAME`，
- * 免去「为一个日期把 config 也拉进来」的耦合。 */
+ * `rec.start` / `rec.end` 都是**绝对 ms**，可直接比；此处直接写 UTC 时刻字面量，
+ * 不从 `GAME` 取 —— 这枚常量是**史实日期**，与游戏时间轴配置无关。 */
 const CRASH_312 = Date.UTC(2020, 2, 12);
 
 /** 「某个值 ÷ 本金」的同一把尺子（`multOf` / 峰顶倍数共用）—— 本金 ≤ 0 时返回 0。 */
@@ -39,6 +41,42 @@ const multAt = (v, cash0) => (cash0 > 0 ? v / cash0 : 0);
 
 /** 倍数（`final / cash0`）—— 档案页与主称号共用同一口径 */
 export const multOf = rec => multAt(rec.final, rec.cash0);
+
+/* ══════════════ 按本局时长归一（2026-10-05 用户拍板） ══════════════
+ *
+ * **为什么需要**：挑战局（年代开局）只有 **2–4 个月**（`SCENARIOS`），而称号的档位是照
+ * 「经典全程 12 年」定的 —— 4 个月里根本跑不出「终值 100 倍」，于是所有挑战局**全部塌到最低档**
+ * （结算一律「陪跑的」、破产一律「归零者」），六种玩法在称号上一模一样，看不出差别。
+ *
+ * **口径**：一套阈值，按本局**名义时长**缩放 —— 不新增词表（LESS IS MORE：档案页 / 海报
+ * 共用的仍是那 9 枚主称号 ＋ 14 枚风格称号）。`rec.scen` 查 `SCENARIOS` 的 `end − at`。
+ * ⚠️ 用**本局名义时长**而不是 `rec.days`（实际存活天数）：后者会让「开局 3 天就爆仓」的局
+ *    把标尺压到最短，凭空抬高称号 —— 爆仓早晚不该改写「这一局是什么玩法」。
+ * ⚠️ 查不到的年月（老档案 / 将来新增局）一律回落到基准局 ⇒ **与改动前逐位相同**。
+ *
+ * **标量 `k = clamp(√(本局天数 ÷ 基准局天数), 0.15, 1)`**：
+ *   · 经典全程 4383 天 ⇒ k = 1 ⇒ 所有阈值**一字不动**（向后兼容的锚）；
+ *   · 取**平方根**而非线性：对数收益的**离散度 ∝ √t**（随机游走），4 个月能跑出的「数量级」
+ *     按 √t 缩 —— 线性缩会把 2 个月的档位全压到 1.0x 附近，反而又失去分辨力；
+ *   · 下限 0.15：最短的「312 前夜」只有 71 天（√ ≈ 0.127），抬到 0.15 免得档位过于贴身。
+ */
+const SCEN_DAYS = new Map(SCENARIOS.map(sc => [sc.id, (sc.end - sc.at) / 86400000]));
+const BENCH_DAYS = SCEN_DAYS.get(SCENARIOS[0].id);
+
+/** 本局时长的归一标量 `k ∈ [0.15, 1]`（导出供离线审计复算）。 */
+export function durKOf(rec) {
+  const total = SCEN_DAYS.get(rec && rec.scen) || BENCH_DAYS;
+  return Math.min(1, Math.max(0.15, Math.sqrt(total / BENCH_DAYS)));
+}
+
+/** **倍数**档的归一：在**对数轴**上按 k 缩（`thr^k`）—— 经典局 k = 1 ⇒ 原值。 */
+const mThr = (thr, k) => (k >= 1 ? thr : Math.pow(thr, k));
+
+/**
+ * **次数 / 天数**档的归一：线性缩（次数随时间线性累积）—— 但保留一个**短局可辨识的地板**
+ * `floor`，否则「2 个月里换所 0 次」也会因为 10 × 0.15 = 1.5 而误判成「逐利游牧」。
+ */
+const cThr = (thr, k, floor) => (k >= 1 ? thr : Math.max(floor, Math.round(thr * k)));
 
 /**
  * 这一局是不是**破产收场** —— 「结局轴」的第一分叉。
@@ -76,20 +114,24 @@ export const OVER_LABEL = {
  *
  * ⚠️ 破产档**不看 `reason` 分「被打穿 / 主动认输」**：两种结局的账户都是清零的，
  *    差别（爆仓 ⇄ 收摊）由 `OVER_LABEL` 在档案页 / 海报上单列。称号说的是**财务事实**。
+ *
+ * ⚠️ 档位阈值**按本局时长归一**（`durKOf` / `mThr`，见上）：经典局 k = 1 ⇒ 与改动前逐位相同；
+ *    2–4 个月的挑战局按 `thr^k` 下移（如 k ≈ 0.16 时 100x → 2.1x、10x → 1.5x）。
  */
 export function titleOf(rec) {
+  const k = durKOf(rec);
   if (bustOf(rec)) {
     const mPeak = multAt(rec.peak, rec.cash0);
-    if (mPeak >= 100) return '黄粱一梦';
-    if (mPeak >= 10) return '高台跳水';
+    if (mPeak >= mThr(100, k)) return '黄粱一梦';
+    if (mPeak >= mThr(10, k)) return '高台跳水';
     return '归零者';
   }
   const m = multOf(rec);
   if (m < 1) return '陪跑的';
-  if (m < 2) return '活下来的';
-  if (m < 5) return '翻倍的人';
-  if (m < 20) return '钻石手';
-  if (m < 100) return '币圈锦鲤';
+  if (m < mThr(2, k)) return '活下来的';
+  if (m < mThr(5, k)) return '翻倍的人';
+  if (m < mThr(20, k)) return '钻石手';
+  if (m < mThr(100, k)) return '币圈锦鲤';
   return '百倍战神';
 }
 
@@ -118,6 +160,12 @@ export function titleOf(rec) {
  * | 长线猎手 | 走过 ≥ 180 天且**日均开仓 ≤ 0.02** | 低频、拿得久 |
  * | 稳健交易员（兜底） | 其余 | 工具 / 频率都均衡 |
  *
+ * ⚠️ 上表的**次数 / 天数**档按本局时长归一（`cThr`）：`liq ≥ 10` → `≥ cThr(10,k,3)`、
+ *    `move ≥ 10` → `≥ cThr(10,k,3)`、`open ≥ 100` → `≥ cThr(100,k,30)`、
+ *    开仓 ≥ 3（合约狂人 / 杠杆老兵）→ `≥ cThr(3,k,2)`、`days ≥ 180` → `≥ cThr(180,k,30)`。
+ *    ⚠️ **不归一**的几档：`open === 0`（绝对）、`maxLev ≥ 100`（单笔杠杆与时长无关）、
+ *    `syms`（能开几个币取决于该年代**解锁了哪些**，不是时长）、`loan ≥ 1`（救济金一局一次）。
+ *
  * ⚠️ 与徽章的边界：徽章是「细节标签」（可 0 枚、可多枚），风格称号是「一句话人设」（恒 1 枚）——
  *    两者判据可以相邻但**用词不同**，避免同一页出现两个一模一样的词。
  */
@@ -129,20 +177,21 @@ export function styleOf(rec) {
   const days = Math.max(1, rec.days || 0);
   const syms = Array.isArray(rec.syms) ? rec.syms.length : 0;
   const bust = bustOf(rec);
+  const k = durKOf(rec);            // 本局时长归一标量（经典局 = 1 ⇒ 阈值全等于下表原值）
 
   if (open === 0) return '空仓看客';
   /* ⚠️ 破产结局：**不许说任何「活下来了」的话** —— `liq ≥ 10` 不再是「不死鸟」、
      `loan ≥ 1` 不再是「向死而生」（两枚说的都是「挺过来了」，而这一局没挺过来）。 */
-  if (liq >= 10) return bust ? '爆仓常客' : '不死鸟';
-  if ((rec.maxLev || 0) >= 100) return '梭哈战神';
-  if ((rec.move || 0) >= 10) return '逐利游牧';
+  if (liq >= cThr(10, k, 3)) return bust ? '爆仓常客' : '不死鸟';
+  if ((rec.maxLev || 0) >= 100) return '梭哈战神';        // 单笔杠杆：与时长无关，不归一
+  if ((rec.move || 0) >= cThr(10, k, 3)) return '逐利游牧';
   if ((rec.loan || 0) >= 1) return bust ? '续命无果' : '向死而生';
-  if (open >= 100) return '高频猎手';
+  if (open >= cThr(100, k, 30)) return '高频猎手';
   if (syms === 1) return '单币信徒';
   if (syms >= 5) return '全能多面手';
-  if (fut >= 3 && fut * 10 >= open * 6) return '合约狂人';
-  if (margin >= 3 && margin * 10 >= open * 6) return '杠杆老兵';
-  if (days >= 180 && open / days <= 0.02) return '长线猎手';
+  if (fut >= cThr(3, k, 2) && fut * 10 >= open * 6) return '合约狂人';
+  if (margin >= cThr(3, k, 2) && margin * 10 >= open * 6) return '杠杆老兵';
+  if (days >= cThr(180, k, 30) && open / days <= 0.02) return '长线猎手';
   return '稳健交易员';
 }
 
