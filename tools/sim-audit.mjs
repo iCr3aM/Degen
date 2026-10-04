@@ -618,11 +618,19 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
   const r = engine.openTrade(s, 'long', 0.5);
   check('9b 前置：杠杆多仓开出来了', r.ok && s.positions.BTC, r.why || '');
   const m0 = s.positions.BTC.margin;
+  /* ⚠️ 2026-10-05：借入必须在**结算前**快照 —— `borrowedOf` 多头口径改成 `名义 − 保证金` 之后，
+     利息落账（`margin -= fee`）本身会抬高借入 ⇒ 结算后再读 `borrowedOf` 会拿到 `借入₀ + 本次利息`，
+     期望值随之偏大（旧的「借入一生不变」口径下两者相同，所以这条断言以前不需要快照）。 */
+  const borrowed0 = P.borrowedOf(s.positions.BTC);
   engine.advanceOneHour(s);                       // 只走 1 小时，且落在**非** 8h 整点上
   const d1 = m0 - s.positions.BTC.margin;
-  /* S3：利率现在是「基准日息 × 利用率乘数」⇒ 期望值必须乘上 `marginRateMulOf`（同一状态、同一小时）。 */
-  const exp = P.borrowedOf(s.positions.BTC) * C.marginDailyRateAt(engine.timeOf(s), 'quote')
-    * engine.marginRateMulOf(s, 'BTC') / 24;
+  /* S3：利率现在是「基准日息 × 利用率乘数」⇒ 期望值必须乘上 `marginRateMulOf`（同一状态、同一小时）。
+     ⚠️ 乘数里的「利用率」读的是**当前借入**；结算刚把 margin 扣掉（⇒ 借入被抬高 $d1）——
+     所以用**结算前的 margin** 克隆一份只读状态去算乘数，才与 `settleFunding` 那一刻逐位一致
+     （不写回任何状态，纯读）。旧的「借入恒定」口径下两者相同，无需这层。 */
+  const snap = { ...s, positions: { ...s.positions, BTC: { ...s.positions.BTC, margin: m0 } } };
+  const exp = borrowed0 * C.marginDailyRateAt(engine.timeOf(s), 'quote')
+    * engine.marginRateMulOf(snap, 'BTC') / 24;
   check('9b 持有一小时就扣息（改动前此处为 0）', d1 > 0, `1h 扣 $${f(d1, 8)}`);
   check('9b 每小时利息 = 借入 × 日息 ÷ 24', Math.abs(d1 - exp) < 1e-9, `实得 ${f(d1, 8)} 期望 ${f(exp, 8)}`);
   /* 再跑 23 小时：借贷利息日志必须是 8h 一条（不是 24 条） */
@@ -1652,6 +1660,106 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     check('12E 分档：加仓 / 减保证金各 3 次 ⇒「滚仓玩家」而非「滚仓狂人」',
       T.styleOf(mid) === '滚仓玩家', T.styleOf(mid));
   }
+}
+
+/* ═════════ 12F · 回归：滚仓抽干保证金后不得留「负权益僵尸仓」（2026-10-05 用户实测 bug） ═════════
+   用户玩法：浮盈中**减保证金 ＋ 持续加仓**（滚仓）⇒ 曾出现「账户权益与保证金率为负，本局却不结束」。
+   根因：`borrowedOf` 多头旧式 `名义 × (1 − 1/杠杆)` **完全不看 `margin`**，而 `adjustMargin` 只改
+   `margin`、不改 `名义/杠杆` ⇒ 抽干保证金后借入被**低估**（1x 多头恒为 0）⇒ `canLiquidate` 恒假
+   （永不强平）、`paysInterest` 恒假（永不计息）、`instrumentOf` 错档成 `'perp'`（维持线 15% → 0.5%）
+   =「僵尸仓」。修：① `borrowedOf` 多头改 `max(0, 名义 − 保证金)`；② `liquidateAll` 末尾无条件
+   `checkRuin`。本节把这两条钉死在真实行为上（不做假绿：F2/F3 全部走真引擎 + 真历史行情）。 */
+section('12F · 回归：滚仓抽干保证金 ⇒ 借入随保证金变 · 僵尸仓必须可强平 / 本局必须结束');
+
+/* ── F1 · 单元口径：借入随保证金变、处女 1x 多头与旧口径数值一致 ── */
+{
+  const virgin = P.openPosition('BTC', 'long', 100, 100, 1, 0, true);   // 1x、名义 100、保证金 100
+  check('12F 处女 1x 多头借入为 0（与旧口径数值一致 ⇒ 正常玩法零影响）',
+    P.borrowedOf(virgin) === 0, `borrowed=${f(P.borrowedOf(virgin), 6)}`);
+  const lev3 = P.openPosition('BTC', 'long', 100, 100, 3, 0, true);     // 3x、名义 300、保证金 100
+  /* ⚠️ 措辞用「数值一致」而非「逐位一致」：`300 × (1 − 1/3)` 是 200.00000000000003，新式给 200
+     —— 差 1 ULP，对玩法零影响（阈值 1e-9）。 */
+  check('12F 3x 多头借入 = 名义 − 保证金（旧口径数值一致，≈ 200）',
+    Math.abs(P.borrowedOf(lev3) - 200) < 1e-9, `borrowed=${f(P.borrowedOf(lev3), 6)}`);
+  const drained = { ...virgin, margin: virgin.margin - 40 };            // 抽走 40 保证金
+  check('12F 抽走保证金 ⇒ 借入同步上升（旧口径此处恒 0 ⇒ 僵尸仓的根因）',
+    Math.abs(P.borrowedOf(drained) - 40) < 1e-9, `borrowed=${f(P.borrowedOf(drained), 6)}`);
+  check('12F 抽干后 1x 多头恢复「可强平 / 计息 / 杠杆档」三判据',
+    P.canLiquidate(drained) && P.paysInterest(drained) && P.instrumentOf(drained) === 'margin',
+    `canLiq=${P.canLiquidate(drained)} interest=${P.paysInterest(drained)} instr=${P.instrumentOf(drained)}`);
+}
+
+/* ── F2 · 真引擎行为：滚仓减保证金 ⇒ 仓位从「不可强平」变「可强平」 ── */
+{
+  const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'margin', cash: 200000, i: idx(at(2021, 4, 10)) });
+  s.mode = 'margin'; s.lev = 1;
+  const ro = engine.openTrade(s, 'long', 1);
+  check('12F 前置：1x 多仓开出来了', ro.ok && !!s.positions.BTC, ro.why || '');
+  check('12F 前置：未抽保证金时 1x 多头不可强平（GDD §9.1 不受影响）',
+    !P.canLiquidate(s.positions.BTC), `borrowed=${f(P.borrowedOf(s.positions.BTC), 6)}`);
+  let cuts = 0;
+  for (let k = 0; k < 12; k++) {
+    const step = engine.marginStepOf(s, 'BTC', 0.25, false);
+    if (!(step > 0) || !engine.adjustMargin(s, 'BTC', -step).ok) break;
+    cuts++;
+  }
+  const pos = s.positions.BTC;
+  check('12F 真减保证金成功（滚仓基本动作）', cuts > 0, `cuts=${cuts}`);
+  check('12F 减保证金后借入 > 0（旧口径此处恒 0 ⇒ 僵尸仓的根因）',
+    P.borrowedOf(pos) > 0, `borrowed=${f(P.borrowedOf(pos), 6)}`);
+  check('12F 减保证金后恢复可强平 / 计息 / 杠杆档',
+    P.canLiquidate(pos) && P.paysInterest(pos) && P.instrumentOf(pos) === 'margin',
+    `canLiq=${P.canLiquidate(pos)} interest=${P.paysInterest(pos)} instr=${P.instrumentOf(pos)}`);
+  check('12F 借入逐位等于「名义 − 保证金」',
+    Math.abs(P.borrowedOf(pos) - Math.max(0, pos.notional - pos.margin)) < 1e-9);
+}
+
+/* ── F3 · 端到端：真滚仓（浮盈减保证金 ＋ 加仓）后行情反转 ⇒ 不得出现僵尸小时 ── */
+{
+  const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'margin', cash: 2e6, i: idx(at(2021, 4, 10)) });
+  s.mode = 'margin'; s.lev = 1;
+  /* ⚠️ 关掉「破产预警遮罩」（`hintOn`）—— 否则行情推到某个历史事件时会弹 `pending='warn'` 把时钟冻住，
+     本节第二段就永远到不了本局的**自然收场**，断言会退化成只覆盖 warn 之前那一段（假绿）。 */
+  s.hintOn = false;
+  const ro = engine.openTrade(s, 'long', 1);
+  check('12F F3 前置：滚仓底仓开出来了', ro.ok && !!s.positions.BTC, ro.why || '');
+  const TOP = idx(at(2021, 10, 10));
+  for (let i = s.i; i < TOP && !s.over && !s.pending; i++) {
+    engine.advanceOneHour(s);
+    const pos = s.positions.BTC;
+    if (!pos) break;
+    const px = engine.exMarkPrice(s, 'BTC', pos.ex);
+    if (!(P.pnlOf(pos, px) > 0)) continue;             // 只在**浮盈**里滚（与玩家玩法一致）
+    for (let k = 0; k < 4; k++) {
+      const step = engine.marginStepOf(s, 'BTC', 0.25, false);
+      if (!(step > 0) || !engine.adjustMargin(s, 'BTC', -step).ok) break;
+    }
+    engine.openTrade(s, 'long', 0.5);                  // 加仓
+  }
+  /* 顶部之后一路推到本局结束（允许领一次救济金继续），统计「负权益 / 破位却未被处理」的小时。 */
+  let bad = 0, tookLoan = false;
+  for (let i = s.i; i < s.endI; i++) {
+    if (s.pending === 'loan' && !tookLoan) { engine.takeLoan(s); tookLoan = true; s.paused = false; }
+    engine.advanceOneHour(s);
+    if (s.over) break;
+    if (s.pending) continue;                            // 待决（领救济金 / 预警）时钟已停，不算僵尸
+    const pos = s.positions.BTC;
+    const eq = engine.equity(s);
+    const px = pos ? engine.exMarkPrice(s, 'BTC', pos.ex) : 0;
+    const rate = pos ? P.marginRateOf(pos, px) : 1;
+    const maint = pos ? P.maintRateOf(pos) : 0;
+    if (eq < 1 || (pos && rate < maint)) bad++;
+  }
+  check('12F F3 滚仓后行情反转：全程无「负权益 / 破位却不处理」的僵尸小时（旧版实测会挂住）',
+    bad === 0, `僵尸小时 = ${bad}`);
+  check('12F F3 滚仓后行情反转 ⇒ 本局必须自然收场（不再无限挂起）',
+    !!s.over, `over=${JSON.stringify(s.over)} pending=${s.pending} i=${s.i}/${s.endI}`);
+  const pos = s.positions.BTC;
+  const px = pos ? engine.exMarkPrice(s, 'BTC', pos.ex) : 0;
+  check('12F F3 结束时不存在「不可强平的负权益仓位」',
+    !pos || P.equityOf(pos, px) >= 0 || P.canLiquidate(pos),
+    pos ? `eqOf=${f(P.equityOf(pos, px))} canLiq=${P.canLiquidate(pos)}` : '无仓位');
+  console.log(`   12F F3 收场=${s.over ? s.over.reason : (s.pending || '仍在本局')} · 僵尸小时 ${bad} · 领救济=${tookLoan}`);
 }
 
 /* ═══════════════════ 9h–9j · 模拟深度三项（S2 跨所价差 / S3 借贷利率 / S4 保险基金） ═══════════════════ */

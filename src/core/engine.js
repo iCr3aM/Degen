@@ -3139,6 +3139,10 @@ function endGame(s, reason) {
  * @returns {boolean} 本局是否就此结束
  */
 function checkRuin(s) {
+  /* ⚠️ 幂等闸（2026-10-05 审计修）：同一个小时里可能被**多次**调用（`settleFunding` 末尾、
+     强平循环里、`liquidateAll` 末尾兜底）—— 本局一旦进了待决态（`pending`，时钟已停）或已收场，
+     就直接返回，不再重复播报 / 重复结算（否则会出现两条一模一样的「可领救济金」日志）。 */
+  if (s.pending || s.over) return false;
   if (!isBankrupt(s)) return false;
 
   /* 上帝模式：归零**不结束本局**（方案 §2.5）—— 时钟照走，玩家自己在面板里「填入资金」。
@@ -3573,12 +3577,17 @@ export function advanceOneHour(s) {
      杠杆保证金则**逐小时**扣借贷利息（持仓不足 8 小时也照付，堵掉「短炒免息」那个漏洞）。
      1x 多头无借入 ⇒ 两样都不扣。 */
   if (settleFunding(s)) return;
+  /* ⚠️ 2026-10-05 审计修：结算可能已把本局推入**待决态**（`pending='loan'`，时钟已停）——
+     此时 `settleFunding` 返回的是 `false`（`checkRuin` 对「进待决」的返回就是 false），
+     所以必须单独看 `s.pending` 再停一次手，否则会继续往下写基差与资金曲线（P1-4 的完整版）。 */
+  if (s.pending) return;
 
   /* ⚠️ P1-4（2026-10-04 审计）：接住返回值 —— 强平把玩家打到破产（`checkRuin`）时本局已结束
      （或进了「待领救济金」的待决态），必须**立刻停手**。
      病根：这里原来忽略返回值，破产/待决后仍往下跑 `advanceMarkBias` 与 `sampleEquity`
      ⇒ 会往一个已经结束 / 停在遮罩上的状态里继续写基差台阶与资金曲线采样（脏写）。 */
   if (liquidateAll(s)) return;
+  if (s.pending) return;
 
   /* 标记价基差推进（三价体系 · 2026-10-03）：排在 `liquidateAll` **之后** ——
      这一小时的基差要等本小时的强平都判完才入账 ⇒ mark 在**当根**完全不含玩家自己刚砸出来的
@@ -3969,7 +3978,12 @@ function liquidateAll(s) {
       if (from > last) break;              // 路径已走完，这一小时内不会再被打
     }
   }
-  return false;
+  /* ⚠️ 2026-10-05 审计修（僵尸仓出口 · 结构性漏洞）：末尾**无条件**判一次破产。
+     旧实现只有走到 `forceLiquidate` 那一支才 `checkRuin` ⇒ 若所有仓位都 `!canLiquidate`
+     （或压根没有持仓）就**永远不会**在这里做归零判定，留下「权益为负、本局不结束」的口子
+     （用户 2026-10-05 实测：滚仓抽干 1x 多头的保证金后，`borrowedOf` 低估借入 ⇒ 仓位不可强平）。
+     ⚠️ `checkRuin` 自身已幂等（`pending` / `over` 直接返回）⇒ 与循环内那次不冲突、不重复播报。 */
+  return checkRuin(s);
 }
 
 /**
