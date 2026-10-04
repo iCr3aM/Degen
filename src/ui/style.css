@@ -71,9 +71,10 @@
      零观感收益的 diff）。`--mut-2` 的定值以 §7.3 对比度脚本的结果为准。 */
   --mut-2: #6b7480;       /* 三等信息（时间戳）：比 --mut 再暗一档 */
   --fs-xs: 12px;          /* 次级文字字号 = 现有 12px，只是给它一个名字 */
-  --dur-fast: .1s;        /* 选中态 / 按下 */
-  --dur: .18s;            /* 淡入 */
+  --dur-fast: .1s;        /* 选中态 / 按下 / 换值闪一下 */
+  --dur: .18s;            /* 淡入 / 弹层入场 / 切页交叉淡化 */
   --ease: cubic-bezier(.4, 0, .2, 1);
+  --ease-spring: cubic-bezier(.34, 1.4, .64, 1);   /* 弹入（尾段轻微过冲）—— 居中弹层用，见 B6-c 落点 4b */
   /* ── 桌面端「适度放大」的总旋钮（本轮 · 桌面端优化）─────────────
      全站的字号 / 行高 / 控件高度都写成 `calc(Npx * var(--ui))`，手机端 `--ui: 1`
      ⇒ `calc(48px * 1)` 逐位等于 `48px`，**手机端一个像素都不动**（回归红线）。
@@ -1684,34 +1685,50 @@ button { user-select: none; -webkit-user-select: none; }
               filter var(--dur-fast) var(--ease);
 }
 
-/* 落点 3：切页只**淡入**（不位移 —— 位移会让 K 线区在动画期间尺寸不稳）。
-   用 `animation` 而不是 `transition`：`.page` 是靠 `display:none ⇄ flex` 切的，
-   display 不参与过渡，只有插入式动画能在「刚显示出来」那一帧跑起来。 */
-.page.on { animation: pageIn .12s var(--ease); }
+/* 落点 3（m5 · 2026-10-05 升级）：切页 —— 首选用 **View Transition 交叉淡化**。
+   `main.js` 在动效档 = 全、且系统未开「减弱动态效果」时调 `document.startViewTransition`；
+   这里给活动页一个 `view-transition-name: page`，让「旧页 → 新页」两帧按同一名字对上、**只淡不位移**
+   （位移会让 K 线区在动画期间尺寸不稳）。
+   ⚠️ 退化路径：`.page` 是靠 `display:none ⇄ flex` 切的，display 不参与过渡，所以不支持 View Transition
+      时仍退回**插入式动画**（`pageIn`）。
+   ⚠️ `<html>.vt` 是 JS 在过渡期间挂的开关：那期间必须把 `pageIn` 关掉 —— 否则「新帧」会在动画起点
+      （opacity 0）被采样成一张空页。 */
+.page.on { view-transition-name: page; animation: pageIn var(--dur-fast) var(--ease); }
+:root.vt .page.on { animation: none; }
 @keyframes pageIn { from { opacity: 0; } }
+/* 交叉淡化时长走同一套令牌（默认 0.25s 偏慢，压到 --dur 更干脆）。 */
+::view-transition-old(root), ::view-transition-new(root),
+::view-transition-old(page), ::view-transition-new(page) {
+  animation-duration: var(--dur);
+  animation-timing-function: var(--ease);
+}
 
-/* 落点 4：弹层的暗底与面板一起淡入。
-   ⚠️ 这些节点都是**每次打开新建、关闭即 `remove()`**（见 `render.js` 的 pickExchange /
-      confirmExchange / openLog / renderOver / openMenu），所以「插入时播一次」正好等于
-      「每次打开都淡入」，不存在纪律 ② 的每帧重建问题。
-   ⚠️ 不挂 `#overlay` 本身 —— 它是 `index.html` 里常驻的空容器，只在开机那一帧插进去，
-      挂它等于永不播放。 */
-.pick-back, .over, .menu-back { animation: fadeIn var(--dur) var(--ease); }
-@keyframes fadeIn { from { opacity: 0; } }
+/* 落点 4（m5 · 2026-10-05 升级）：弹层的暗底淡入改走 `@starting-style` ＋ transition
+   —— 这三块都是**每次打开新建、关闭即 `remove()`**，`@starting-style` 正是为「插入那一刻」
+   准备的现代写法（与 View Transition 同代），比 `fadeIn` 关键帧多一份可组合性（将来加出场动画
+   只需补一段 `display` 的离散过渡）。浏览器不支持时退化为「直接出现」，不影响可用性。 */
+.pick-back, .over, .menu-back { transition: opacity var(--dur) var(--ease); }
+@starting-style {
+  .pick-back, .over, .menu-back { opacity: 0; }
+}
 
-/* 落点 4b（2026-10-04 用户拍板 · A5）：居中面板（`.logs` / `.confirm` / `.poster`）在淡入的
-   同时**轻微上移 6px** —— 多这一下就有了「浮起来」的方向感，不再只是凭空出现。
-   ⚠️ 只给这三块**真正浮在中间的面板**；暗底（`.pick-back` / `.menu-back`）与整屏遮罩（`.over`）
-      保持纯淡入 —— 给整屏加位移等于把整页挪一下，没有「浮起」的意思，反而像抖动。
-   ⚠️ 这三块自身都用 `transform: translateY(-50%)` 垂直居中 ⇒ `from` 必须写成
-      `calc(-50% + 6px)`，否则动画起点会丢掉居中量、面板从屏幕外突然跳进来（`to` 不写 = 元素自身的 −50%）。 */
-.logs, .confirm, .poster { animation: riseIn var(--dur) var(--ease); }
-@keyframes riseIn { from { opacity: 0; transform: translateY(calc(-50% + 6px)); } }
+/* 落点 4b（2026-10-04 用户拍板 · A5；m5 改弹簧缓动）：居中面板（`.logs` / `.confirm` / `.poster`）
+   在淡入的同时**轻微上移 6px** —— 多这一下就有了「浮起来」的方向感。缓动走 `--ease-spring`，
+   尾段一点点过冲，读起来是「弹」出来而不是「浮」出来。
+   ⚠️ 只给这三块**真正浮在中间的面板**；暗底与整屏遮罩保持纯淡入 —— 给整屏加位移等于把整页挪一下。
+   ⚠️ 这三块自身都用 `transform: translateY(-50%)` 垂直居中 ⇒ 起点必须写成 `calc(-50% + 6px)`，
+      否则动画起点会丢掉居中量、面板从屏幕外突然跳进来。 */
+.logs, .confirm, .poster {
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease-spring);
+}
+@starting-style {
+  .logs, .confirm, .poster { opacity: 0; transform: translateY(calc(-50% + 6px)); }
+}
 
 /* 落点 5：资产页「总资产」换值 —— **只这一格**（§7.12 ⑤）。
    主色淡底一闪即退；由 render.js 在检测到数值变化的那些帧上重挂 `.flash` 触发。
    用主色而不是涨/跌色：它表达的是「数变了」，不是「涨了」（涨跌已由文字颜色表达）。 */
-.hud.one .cell b.flash { animation: totalFlash .15s var(--ease); }
+.hud.one .cell b.flash { animation: totalFlash var(--dur-fast) var(--ease); }
 @keyframes totalFlash { from { background: var(--accent-soft); } }
 
 /* 落点 6（2026-10-03）：**按下即缩** —— 手指落下去那一刻就有回应（纯 `transform`，零布局成本）。
@@ -1721,12 +1738,12 @@ button { user-select: none; -webkit-user-select: none; }
 
 /* 落点 6b（2026-10-03）：持仓条那两格换值时闪一下（沿用总资产那条 `.flash` 的机制）。
    保证金率**跨进红区**那一刻也用同一条 —— render.js 带变化签名，只在真变的那一帧重挂。 */
-.posbar b.flash { animation: totalFlash .15s var(--ease); }
+.posbar b.flash { animation: totalFlash var(--dur-fast) var(--ease); }
 
 /* 落点 6c（2026-10-03）：交易页日志条来了**新的一条** —— 从下方滑入（opacity ＋ translateY）。
    ⚠️ 那两行是**常驻节点**（不是每条新建），所以由 render.js 在正文变化那一帧重挂 `.in` 触发；
       `translateY` 不占布局，不会推挤下面任何东西。 */
-.lg-row.in { animation: logIn .16s var(--ease); }
+.lg-row.in { animation: logIn var(--dur) var(--ease); }
 @keyframes logIn { from { opacity: 0; transform: translateY(4px); } }
 
 /* 落点 7（2026-10-04 用户拍板「边界震动 ＋ 视觉回弹」）：K 线拖到数据尽头 /
@@ -1737,8 +1754,8 @@ button { user-select: none; -webkit-user-select: none; }
    `--bump-x` 由 JS 按方向写（拖到「新」＝向右顶、拖到「旧」＝向左顶）。
    `.fx-low` **保留**它（撞边界是「我碰到了」的状态回应，不是分心闪烁）；
    `.fx-off` 里 `animation-duration: 0.01ms` 会自然把它归零。 */
-.chart-wrap > canvas.bump-x { animation: chBumpX .18s var(--ease); }
-.chart-wrap > canvas.bump-z { animation: chBumpZ .18s var(--ease); }
+.chart-wrap > canvas.bump-x { animation: chBumpX var(--dur) var(--ease); }
+.chart-wrap > canvas.bump-z { animation: chBumpZ var(--dur) var(--ease); }
 @keyframes chBumpX { from { transform: translateX(var(--bump-x, 0)); } to { transform: none; } }
 @keyframes chBumpZ { from { transform: scale(1.012); } to { transform: none; } }
 
@@ -1764,9 +1781,12 @@ button { user-select: none; -webkit-user-select: none; }
 :root.fx-low .hud.one .cell b.flash,
 :root.fx-low .posbar b.flash,
 :root.fx-low .lg-row.in,
-:root.fx-low .page.on,
-:root.fx-low .pick-back, :root.fx-low .logs, :root.fx-low .confirm,
-:root.fx-low .over, :root.fx-low .menu-back { animation: none; }
+:root.fx-low .page.on { animation: none; }
+/* 弹层入场已由 `animation` 改为 `transition`（落点 4 / 4b）—— `.fx-low` 同样要压掉它们。
+   ⚠️ 补齐 `.poster`：它之前只挂在 `riseIn` 那一批，漏在了这份名单之外（海报弹出时在「减弱」档下
+      仍会浮一下），本次一并归入。 */
+:root.fx-low .pick-back, :root.fx-low .over, :root.fx-low .menu-back,
+:root.fx-low .logs, :root.fx-low .confirm, :root.fx-low .poster { transition: none; }
 
 /* ══════════════ 桌面端三档（T-1 · 2026-10-01） ══════════════
    断点以下**一条规则都不写** —— 手机端（<620px）逐位不变，这是本批唯一的回归红线。

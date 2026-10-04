@@ -2335,12 +2335,45 @@ function onLogClose() {
 function onTab(name) {
   if (s.over || s.pending) return;
   if (name === tab) return;
-  if (tab === 'settings') cancelReset();
-  tab = name;
-  s.paused = name !== 'trade';   // 切回交易页 ⇒ 自动续跑
-  s.speed = 1;                   // ⚠️ 写进主状态（会落盘）：切一次页就丢掉 50x 的选择，这是拍板语义
-  closePicker();
-  after();
+  runTabSwitch(name);
+}
+
+/* ── Tab 切页的 View Transition（m5 · 2026-10-05）────────────────────────
+   把「旧页 → 新页」交给 **View Transition API** 做交叉淡化（`style.css` 给 `.page.on` 挂了
+   `view-transition-name: page`，只淡这一块、不位移 —— 位移会让 K 线区尺寸不稳）。
+   三条纪律：
+     ① **只在动效档 = 全（`fx === 2`）且系统未开「减弱动态效果」时启用** —— 关档时连 API 都不调，
+        退化路径就是原来的 `pageIn` 淡入（`.page.on` 的基类动画）；
+     ② **同一时刻只跑一个过渡**（`vtBusy`）：连点 Tab 时后来者直接走同步分支，不做排队；
+     ③ 状态写入（`tab` / `paused` / `speed` / `after()`）**整体搬进回调** —— View Transition 会先
+        拍下「旧帧」、再执行回调，这正好满足 `draw()` 那条硬顺序：**先切页、再量尺寸**
+        （隐藏页量出来是 0×0，顺序反了会画出一张空图）。
+   ⚠️ `<html>.vt` 在过渡期间挂上，让 CSS 把 `pageIn` 关掉 —— 否则新页会在动画起点（opacity 0）
+      被采样成空帧。`finished` 在「被跳过 / 被中止」时也会 settle，`finally` 里统一收尾，不会漏摘类。 */
+let vtBusy = false;
+
+function vtEnabled() {
+  if (fx !== 2 || vtBusy) return false;
+  if (typeof document.startViewTransition !== 'function') return false;
+  try { if (matchMedia('(prefers-reduced-motion: reduce)').matches) return false; } catch { /* 拿不到媒体查询：当作未开启 */ }
+  return true;
+}
+
+function runTabSwitch(name) {
+  const go = () => {
+    if (tab === 'settings') cancelReset();
+    tab = name;
+    s.paused = name !== 'trade';   // 切回交易页 ⇒ 自动续跑
+    s.speed = 1;                   // ⚠️ 写进主状态（会落盘）：切一次页就丢掉 50x 的选择，这是拍板语义
+    closePicker();
+    after();
+  };
+  if (!vtEnabled()) { go(); return; }
+  const root = document.documentElement;
+  root.classList.add('vt');
+  vtBusy = true;
+  const t = document.startViewTransition(go);
+  t.finished.finally(() => { vtBusy = false; root.classList.remove('vt'); });
 }
 
 /**
