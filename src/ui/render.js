@@ -293,11 +293,28 @@ export function mount(root) {
   const posSide = el('b', 'num');
   const posPnl = el('b', 'num');
   const posRate = el('b', 'num');
+  /* 「保证金率」格内嵌一对**步进键**（2026-10-05 用户拍板「改为在保证金率那个框调整」）：
+     `−` 减 / `+` 加，每次动**可调上限的 25%**，作用在**当前所选币**上。
+     为什么写 `addcur` / `subcur` 而不是 `add:<sym>`：这一格是**常驻 DOM**（挂载时还不知道
+     玩家会切到哪个币），sym 由 `main.js` 当场取 `s.sym` —— 免得每帧往 `data-*` 写一遍。
+     ⚠️ 为什么搬到这一格：原来唯一的入口在**资产页**弹层（`openMarginDlg`），而「在哪看就在哪调」
+       才是对的 —— 想在交易页看保证金率的变化就得切回交易页，而**切回交易页会 `onTab` 自动续跑**，
+       于是调整看着像「继续之后才生效」。这一格与那一格本来就是同一个读数。
+     ⚠️ 无持仓时这一对**不出现**（与「没有的选项不显示」同一条）；不可加 / 不可减时各自置灰
+        —— 走 `.off`（灰 ＋ 点线）而**不是** `disabled`：点一下要能由 `main.js` 回一句为什么。 */
+  const mgDown = el('button', 'mgbtn', '−');
+  mgDown.dataset.mg = 'subcur:0.25';
+  const mgUp = el('button', 'mgbtn', '+');
+  mgUp.dataset.mg = 'addcur:0.25';
+  const rateStep = el('span', 'rate-step');
+  rateStep.append(mgDown, posRate, mgUp);
+  const posRateCell = el('div');
+  posRateCell.append(el('i', null, '保证金率'), rateStep);
   const posbar = el('div', 'posbar');
   posbar.append(
     mini('持仓', posSide),
     mini('未实现盈亏', posPnl),
-    mini('保证金率', posRate),
+    posRateCell,
   );
 
   /* ── 日志条（**两行** · 2026-10-03 用户拍板）──
@@ -702,7 +719,7 @@ export function mount(root) {
     symbols, symBtns,
     canvas, chartWrap, chartHead, chSym, chMcap, chSupp, chChg, modeBtn, chartEta, chartLock,
     heatChip, heatBar, heatTxt, oiTxt, lsTxt,
-    posbar, posSide, posPnl, posRate,
+    posbar, posSide, posPnl, posRate, rateStep, mgDown, mgUp,
     logline, logRows,
     fracBtns, toolRow, toolBtns, levRow, levBtns, spdBtns,
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
@@ -948,11 +965,28 @@ export function update(refs, s, view) {
         if (danger) flash(refs.posRate);
       }
     }
+    /* 「保证金率」格内那对步进键（2026-10-05）：判据与弹层的置灰**同源**（`marginCapsOf`）——
+       不会「画着能点、点了被拒」。`add` / `reduce` 都是**此刻**的上下限（随余额与浮亏变），
+       所以每帧现算；只有上限为 0 的那一枚才置灰。
+       ⚠️ 走 `.off` ＋ `aria-disabled`，**不是** `disabled`：点一下要能到 `main.js` 回一句原因
+          （用户既定口径）。`aria-disabled` 走减写版 `setAria`，不每帧硬写属性。 */
+    if (refs.mgUp.hidden) refs.mgUp.hidden = refs.mgDown.hidden = false;
+    const caps = marginCapsOf(s, s.sym);
+    const canUp = !!caps && caps.add > 1e-9;
+    const canDown = !!caps && caps.reduce > 1e-9;
+    setCls(refs.mgUp, canUp ? 'mgbtn' : 'mgbtn off');
+    setCls(refs.mgDown, canDown ? 'mgbtn' : 'mgbtn off');
+    setAria(refs.mgUp, !canUp);
+    setAria(refs.mgDown, !canDown);
   } else {
     for (const n of [refs.posSide, refs.posPnl, refs.posRate]) {
       setText(n, '--');
       setCls(n, 'num mut');
     }
+    /* 无持仓：这一对**不出现**（`.rate-step` 有 `min-height`，所以持仓条高度不因此变矮——
+       否则 K 线区会在开 / 平仓时来回跳，与「持仓条常驻」同一条纪律）。 */
+    refs.mgDown.hidden = true;
+    refs.mgUp.hidden = true;
     refs._rateDanger = false;   // 空仓：红区状态复位，下一张仓重新判「进没进红区」
   }
 
@@ -1885,6 +1919,8 @@ export function confirmExchange(s, id) {
  * ⚠️ 每次调整成功后由 `main.js` **重开一次本层**（余额与上下限都变了，重建比就地改简单且不会飘）。
  * ⚠️ 上下限走 `marginCapsOf`、可行走 `canAdjustMargin` —— 与分派层 `adjustMargin` **同源**，
  *    不会出现「画着能点、点了被拒」。
+ * ⚠️ 2026-10-05 起**交易页「保证金率」格内另有一对 − / ＋ 步进**（`addcur` / `subcur`，就地即时刷新、
+ *    不弹层）—— 本层留给「想精确调、想先看清上下限」的场合，两处同一套校验，不分家。
  */
 export function openMarginDlg(s, sym) {
   closePicker();

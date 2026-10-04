@@ -578,6 +578,29 @@ b, strong { font-weight: 600; }
    比四格时的 75px 宽松，`-$99,999.9` 这类长数字不再有被 `ellipsis` 截尾的风险。 */
 .posbar .side-long { color: var(--up); }
 .posbar .side-short { color: var(--down); }
+/* 「保证金率」格内的加 / 减步进（2026-10-05 用户拍板「改为在保证金率那个框调整」）——
+   一格搞定「看 ＋ 调」，且**原地即时刷新**（不必回资产页、不必切页续跑）。
+   ⚠️ `.rate-step` 的 `min-height` 是**为了保高度恒定**：那对键在无持仓时 `hidden`，
+      不钉死高度持仓条就会在开 / 平仓时矮一截，K 线区跟着来回跳（沿用「持仓条常驻」那条纪律）。
+      18px 与 `.hud .cell b` 的行高同档，比正文 16.8px 只高 1.2px，观感上看不出。 */
+.posbar .rate-step { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: calc(18px * var(--ui)); }
+.posbar .rate-step b { flex: 1 1 auto; min-width: 0; text-align: center; }
+.posbar .mgbtn {
+  flex: none;
+  width: calc(18px * var(--ui));
+  height: calc(18px * var(--ui));
+  padding: 0;
+  font: inherit;
+  font-size: calc(14px * var(--ui));
+  line-height: 1;
+  color: var(--accent);
+  background: none;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+}
+/* 不可加 / 不可减：置灰且与可按态**区别要明显**（用户既定口径）—— 换回中性色 ＋ 点线边框 ＋ 低透明。
+   ⚠️ 是 `.off` 而**不是** `disabled`：点一下要能到 `main.js` 回一句为什么（如「可用余额不足」）。 */
+.posbar .mgbtn.off { color: var(--mut); border-color: var(--line); border-style: dotted; opacity: .45; }
 
 /* ══════════════ 日志条（**两行** · 2026-10-03） ══════════════
    由「一行只放最新一条」改成**恒定两行**（24 → 48px）。起因：级联那一小时里

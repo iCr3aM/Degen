@@ -1195,26 +1195,40 @@ function onChan() {
 }
 
 /* ── 逐仓「调整保证金」（2026-10-04 用户拍板 · OKX 式）──────────────────
-   资产页持仓行那枚「调整」入口 ＋ 弹层里的预设键，值走 `<cmd>:<sym>:<frac>`：
-     · `open`  开弹层
-     · `add` / `sub`  加 / 减（`frac` = 可加 / 可减上限的比例）
-     · `close` 关弹层
+   两个入口共用这一处分派，值走 `<cmd>:<sym 或 frac>:<frac>`：
+     · `open`  开弹层（资产页持仓行那枚「调整」）
+     · `add:<sym>:<frac>` / `sub:<sym>:<frac>`  弹层里的预设键（加 / 减）
+     · `addcur:<frac>` / `subcur:<frac>`  **交易页「保证金率」格内的 − / + 步进**
+       —— 不写 `<sym>`：那一格是常驻 DOM（挂载时还不知道玩家会切到哪个币），
+          币种当场取 `s.sym`（`render.js` 那两枚键的 `data-mg` 就这么写的）。
    ⚠️ 金额**点的时候现算**（`marginCapsOf`），不信任按钮上那个旧数字 —— 余额与上下限随时在变。
-   ⚠️ 每次调整成功后**重开一次弹层**，让「保证金 / 保证金率 / 强平价」与预设金额都落到最新值
-      （`openMarginDlg` 自己会先 `closePicker` 再建；仓位没了内部会跳过）。 */
+   ⚠️ 弹层的键（`add` / `sub`）每次动完**重开一次弹层**，让「保证金 / 保证金率 / 强平价」
+      与预设金额落到最新值；框内步进（`cur`）**不弹层** —— 它要的就是「原地即时看数」。
+   ⚠️ 上限为 0 时**先说人话**（别让 `adjustCheck` 回一句「调整金额为 0」，那会让人以为键坏了）。 */
 function onMarginAdjust(s, val) {
-  const [cmd, sym, fracStr] = String(val).split(':');
+  const [cmd, a, b] = String(val).split(':');
   if (cmd === 'close') { closePicker(); return; }
-  if (cmd === 'open') { openMarginDlg(s, sym); return; }
-  if (cmd !== 'add' && cmd !== 'sub') return;
+  if (cmd === 'open') { openMarginDlg(s, a); return; }
+  const cur = cmd === 'addcur' || cmd === 'subcur';
+  if (cmd !== 'add' && cmd !== 'sub' && !cur) return;
+  const add = cmd === 'add' || cmd === 'addcur';
+  const sym = cur ? s.sym : a;
+  const frac = Number(cur ? a : b);
   const caps = marginCapsOf(s, sym);
-  if (!caps) { closePicker(); return; }         // 仓位已经没了：关掉弹层
-  const cap = cmd === 'add' ? caps.add : caps.reduce;
-  const delta = (cmd === 'add' ? 1 : -1) * cap * Number(fracStr);
+  if (!caps) { if (!cur) closePicker(); return; }  // 仓位已经没了：关掉弹层
+  const cap = add ? caps.add : caps.reduce;
+  if (!(cap > 1e-9)) {                             // 零上限：给一句准话
+    pushLog(s, add
+      ? (caps.mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用余额不足')
+      : '保证金率接近维持线 ｜ 不能再减', 'bad');
+    after();
+    return;
+  }
+  const delta = (add ? 1 : -1) * cap * frac;
   const r = adjustMargin(s, sym, delta);
   if (!r.ok) pushLog(s, r.why, 'bad');
-  after();                                       // 重画（HUD / 资产页数字）＋ 存盘
-  openMarginDlg(s, sym);
+  after();                                         // 重画（HUD / 持仓条 / 资产页）＋ 存盘
+  if (!cur) openMarginDlg(s, sym);                 // 弹层里的键：动完重开一次
 }
 
 /* ── 上帝模式 ＋ 订单冲击（隐藏入口 · 方案 §2）─────────────────────
