@@ -118,6 +118,51 @@ function replay(n, cls) {
 /** 换值闪一下（`.flash`）：持仓条 / 总资产那一套。 */
 const flash = n => replay(n, 'flash');
 
+/* ── HUD 数字滚动（2026-10-05 用户拍板「只在慢速滚，快倍速直接写」）──────────────
+   `rollNumber` 让一个数字格从**上一帧显示的值**平滑追到本帧真值（easeOutCubic，`ROLL_MS`）。
+   三条闸同时满足才滚：
+     · `speed <= 1`（1x）—— ≥5x 时每帧都在变，插值只会永远滞后、把权益读成一个**错数**；
+     · `fx >= 1` —— 这是动画，与 `.fx-*` / `prefers-reduced-motion` 同一道闸（关档不滚）；
+     · 该格**最近 `ROLL_STALE` 内被连续更新过** —— 否则说明它刚随页面从隐藏回到可见（值已陈旧），
+       直接写、不从旧值滚，免得切回资产页时看着它从很远的地方爬过来。
+   首次出现（没有历史）也走直接写 —— 开局不该看到数字从 0 滚上来。
+   补间走 rAF（≈60fps），`update()` 仍按 ~12fps 喂新目标；目标一变就从**当前显示值**重新起步，
+   于是表现为平滑追赶而不是跳变。
+   ⚠️ 补间帧用 `fmtMoneyShort`（**不带**门槛迟滞）—— 迟滞只服务「落定后的显示」；落定的最后一帧
+      再走 `moneySlot` 归位到带迟滞的规范显示，与不滚动的路径逐位一致。 */
+const ROLL_MS = 220;
+const ROLL_STALE = 480;
+const rollers = new Map();   // el -> { from, to, cur, t0, last, key, sign, raf }
+
+function rollNumber(el, key, to, { sign = false, speed = 1, fx = 2 } = {}) {
+  if (!Number.isFinite(to)) { setText(el, '--'); return; }
+  const now = performance.now();
+  let r = rollers.get(el);
+  if (!r) { r = { from: to, to, cur: to, t0: 0, last: now, key, sign, raf: 0 }; rollers.set(el, r); }
+  const fresh = now - r.last > ROLL_STALE;
+  r.last = now; r.key = key; r.sign = sign;
+  if (fresh || speed > 1 || fx < 1 || to === r.cur) {
+    if (r.raf) { cancelAnimationFrame(r.raf); r.raf = 0; }
+    r.from = r.to = r.cur = to;
+    setText(el, moneySlot(key, to, { sign }));
+    return;
+  }
+  if (r.raf) { r.from = r.cur; r.to = to; r.t0 = now; return; }   // 补间在跑：只换目标与起点
+  r.from = r.cur; r.to = to; r.t0 = now;
+  const step = (ts) => {
+    const p = Math.min(1, (ts - r.t0) / ROLL_MS);
+    if (p >= 1) {
+      r.raf = 0; r.cur = r.to;
+      setText(el, moneySlot(r.key, r.to, { sign: r.sign }));      // 落定：归位到带迟滞的规范显示
+      return;
+    }
+    r.cur = r.from + (r.to - r.from) * (1 - Math.pow(1 - p, 3));
+    setText(el, fmtMoneyShort(r.cur, { sign: r.sign }));
+    r.raf = requestAnimationFrame(step);
+  };
+  r.raf = requestAnimationFrame(step);
+}
+
 /**
  * 日志条显示几行（2026-10-03 用户拍板 **2**）—— 见 `logline` 的构建处。
  * ⚠️ 恒定行数（不是「有内容才长高」）：变高会带着 K 线区／下方内容一起跳。
@@ -824,7 +869,8 @@ export function update(refs, s, view) {
 
   /* 账户三格（R25：改用 `setText`/`setCls` 减写版，不再直写 `textContent`/`className`） */
   const eq = equity(s);
-  setText(refs.eqVal, moneySlot('eq', eq));
+  /* 账户权益：慢速（1x）下走 RAF 滚动（`rollNumber`），快倍速 / 关机动画档直接写 —— 见其注释。 */
+  rollNumber(refs.eqVal, 'eq', eq, { speed: s.speed, fx: view.fx });
   setCls(refs.eqVal, 'num ' + (eq >= s.cash0 ? 'up' : 'down'));
   /* 副行两个数**都带符号**（Batch 4 · B17）：正绿负红，与持仓盈亏同一口径。
      颜色写在这里而不是 CSS 默认值 —— 见 `style.css` 里 `.hud .cell u.up` 那段注释。 */
@@ -1257,21 +1303,18 @@ export function update(refs, s, view) {
     setText(refs.asUsdtSub, share(usdt));
 
     /* 总资产（B6-c · §7.12 ④⑤）：全屏**唯一的主数值**（18px）＋ 换值闪一下。
-       ⚠️ 这里改用 `classList.toggle` 而不是整体重写 `className` —— 整体重写会把下面刚挂上的
-          `.flash` 一起擦掉（每帧擦一次 ⇒ 150ms 的动画只能播一帧）。 */
+       ⚠️ 颜色用 `classList.toggle` 而不是整体重写 `className` —— 整体重写会把下面刚挂上的
+          `.flash` 一起擦掉（每帧擦一次 ⇒ 动画只能播一帧）。
+       ⚠️ 数字**本体**改由 `rollNumber` 驱动（慢速滚动 / 快倍速直写）：这里的 `_totalText` 只用来判
+          「目标值变没变」——变了就闪一下，文本写入交给滚动器（否则会和补间帧互相打架）。 */
     refs.asTotal.classList.toggle('up', eq >= s.cash0);
     refs.asTotal.classList.toggle('down', eq < s.cash0);
     const totalText = moneySlot('eq', eq);
     if (totalText !== refs._totalText) {
       refs._totalText = totalText;
-      refs.asTotal.textContent = totalText;
-      /* 重挂 `.flash` 才会重播动画：`remove` 之后必须**强制一次样式重算**，否则同一帧内
-         `add` 回去浏览器会认为「没变过」。这一下同步 reflow 只发生在**显示值真的变了**的帧上
-         （`moneySlot` 自带门槛迟滞，数字抖动不会一直触发）。 */
-      refs.asTotal.classList.remove('flash');
-      void refs.asTotal.offsetWidth;
-      refs.asTotal.classList.add('flash');
+      flash(refs.asTotal);
     }
+    rollNumber(refs.asTotal, 'eq', eq, { speed: s.speed, fx: view.fx });
     setText(refs.asNote, `已实现 ${moneySlot('realized', s.realized, { sign: true })}`);
     /* 资产页这一格是 HUD「已实现」的**同款读数**，所以一并走色盲第二通道（§7.6 连带）。 */
     setCls(refs.asNote, 'num sign ' + (s.realized >= 0 ? 'up' : 'down'));

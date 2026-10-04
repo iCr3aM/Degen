@@ -1759,6 +1759,14 @@ button { user-select: none; -webkit-user-select: none; }
 @keyframes chBumpX { from { transform: translateX(var(--bump-x, 0)); } to { transform: none; } }
 @keyframes chBumpZ { from { transform: scale(1.012); } to { transform: none; } }
 
+/* 落点 8（2026-10-05 用户拍板「仅首次进页」）：K 线首帧画入 —— 首次进交易页时画布挂 `.chart-in`，
+   `clip-path` 从左往右把 K 线**擦出来**（一次性）。`main.js` 只在整个会话的首次进页挂一次，
+   且只在动效档 = 全时挂；`.fx-off` 的 `animation-duration: 0.01ms` 也会兜住。
+   ⚠️ 与 `.bump-*` 同一块画布：两者不会同时命中（首帧 vs 玩家拖动），源码顺序不影响。
+   ⚠️ `clip-path` 只裁画布本身，左上/左下的浮字（遮罩 / 热度和 OI）照常立即出现 —— 这正是想要的层感。 */
+.chart-wrap > canvas.chart-in { animation: chartIn calc(var(--dur) * 3) var(--ease); }
+@keyframes chartIn { from { clip-path: inset(0 100% 0 0); } }
+
 /* 色盲第二通道（B6-c · §7.6）：给**有符号语义**的盈亏数字挂一枚 ▲/▼ ——
    颜色之外多一条**形状**线索，红绿色盲同样读得出来。
    形式 = `::before` ＋ `.85em`（不占额外节点、跟着文字颜色走，颜色由 `.up` / `.down` 给）。

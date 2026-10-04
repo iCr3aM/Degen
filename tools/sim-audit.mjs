@@ -1947,6 +1947,12 @@ section('13 · 回归护栏：PWA 预缓存覆盖 · 断网兜底 · 预热与�
     /function prefetchAllCoins\(\)[\s\S]{0,200}requestIdleCallback\(/.test(mainSrc));
   check('13 maskReload 先铺遮罩、再 rAF→reload',
     /function maskReload\(\)[\s\S]{0,240}requestAnimationFrame\(\(\) => setTimeout\(\(\) => location\.reload\(\)/.test(mainSrc));
+
+  /* ⑤ m5 / m7 新拍板的两条口径 —— 都是「只在某种档位下才动」的闸，改实现不该把闸拆了 */
+  const render = readSrc('src/ui/render.js');
+  check('13 切页 View Transition 只在动效档=全启用（fx !== 2 直接退化）', /fx !== 2 \|\| vtBusy/.test(mainSrc));
+  check('13 HUD 数字滚动只在慢速启用（speed > 1 直接写）', /speed > 1/.test(render));
+  check('13 K 线首帧画入只尝试一次（chartIntroDone）', /chartIntroDone/.test(mainSrc));
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

@@ -529,6 +529,17 @@ function edgeFeedback(canvas, edge) {
   bumpChart(canvas, edge);
 }
 
+/* K 线首帧画入（2026-10-05 用户拍板「仅首次进页」）：整个会话只播一次 —— 首次进交易页时给画布
+   挂 `.chart-in`，CSS 用 `clip-path` 从左往右把 K 线擦出来（一次性，与 `.bump-*` 同族：不挂基类
+   `transition`，动画自己弹回）。`chartIntroDone` 在**首次尝试时就置真**（不论档位），所以它绝不会
+   在之后的切页 / 旋屏里重播；`fx < 2` 时连类都不挂（`.fx-off` 的 0.01ms 规则也会兜住）。 */
+let chartIntroDone = false;
+function playChartIntro(canvas) {
+  if (!canvas) return;
+  canvas.classList.add('chart-in');
+  canvas.addEventListener('animationend', () => canvas.classList.remove('chart-in'), { once: true });
+}
+
 /**
  * 渲染节流到 ~12fps。K 线一秒钟最多走 50 根（50x），12fps 足够把每一根都画出来，
  * 又不会让手机一直满负荷重绘（GDD §19.2 省电）。
@@ -775,6 +786,11 @@ function draw(force = false, chartOnly = false) {
      量出来是 0×0；顺序反了的话第一帧拿到的是上一页的尺寸（切回交易页就会画成一张空图，
      而且暂停态下**不会再有任何一帧**把它救回来）。 */
   showPage(refs, rv ? 'review' : arch ? 'careers' : tab);
+  /* K 线首帧画入：整个会话只尝试一次（见 `playChartIntro`）。 */
+  if (!rv && !arch && tab === 'trade' && !chartIntroDone) {
+    chartIntroDone = true;
+    if (fx === 2) playChartIntro(refs.canvas);
+  }
   /* 档案页是**纯只读**的一屏（没有 K 线、不量尺寸）⇒ 铺完列表就地返回。
      ⚠️ 铺列表放在 `showPage` 之后：`.careers-list` 所在的那页此刻才刚被点亮。
      ⚠️ **进来先 `clearOver`**（2026-10-02 修）：与下面 `rv` 分支同一条 —— 本局已结束时也能
