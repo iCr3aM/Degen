@@ -36,6 +36,7 @@ const god = await import('../src/core/god.js');
 const P = await import('../src/core/positions.js');
 const impact = await import('../src/core/impact.js');
 const C = await import('../src/core/config.js');
+const roll = await import('../src/core/roll.js');
 
 const H = C.HOUR_MS;
 const at = (y, m, d = 1, hh = 0) => Date.UTC(y, m, d, hh);
@@ -1973,10 +1974,106 @@ section('13 · 回归护栏：PWA 预缓存覆盖 · 断网兜底 · 预热与�
     /function maskReload\(\)[\s\S]{0,240}requestAnimationFrame\(\(\) => setTimeout\(\(\) => location\.reload\(\)/.test(mainSrc));
 
   /* ⑤ m5 / m7 新拍板的两条口径 —— 都是「只在某种档位下才动」的闸，改实现不该把闸拆了 */
-  const render = readSrc('src/ui/render.js');
   check('13 切页 View Transition 只在动效档=全启用（fx !== 2 直接退化）', /fx !== 2 \|\| vtBusy/.test(mainSrc));
-  check('13 HUD 数字滚动只在慢速启用（speed > 1 直接写）', /speed > 1/.test(render));
   check('13 K 线首帧画入只尝试一次（chartIntroDone）', /chartIntroDone/.test(mainSrc));
+
+  /* ⑥ 2026-10-05 修「切页闪一下」的**结构不变量**（CSS / DOM 接线在无头环境里跑不起来，只能查结构，
+     不冒充行为测试）：`.vt` 收尾只清 `vtBusy`、**不摘类**（摘了 ⇒ `pageIn` 重播 = 两段式闪）；
+     抑制只作用于三个 Tab 页（回顾 / 档案两条整屏页保留自己的淡入）。
+     ⚠️ 滚动与保证金那两条**能真跑**的，放在 13c 用真实函数断言，不再对源码打正则。 */
+  check('13 切页 VT 收尾只清 vtBusy、不再摘 .vt', /\.finally\(\(\) => \{ vtBusy = false; \}\)/.test(mainSrc)
+    && !/finally\(\(\) => \{ vtBusy = false; root\.classList\.remove\('vt'\); \}\)/.test(mainSrc));
+  check('13 切页 VT 抑制只作用于 Tab 页（#app:not(.rv) > .page.on）',
+    /:root\.vt #app:not\(\.rv\) > \.page\.on \{ animation: none; \}/.test(readSrc('src/ui/style.css')));
+}
+
+/* ═════ 13c · 保证金步进口径 ＋ HUD 数字滚动（真实行为；2026-10-05） ═════
+   ⚠️ 这一节**跑真实函数**：数字滚动的补间/决策来自 `src/core/roll.js`（纯函数，Node 可跑），
+      保证金步进走真实 `engine.marginStepOf` / `adjustMargin`。不再用「源码里有没有这句话」冒充通过。 */
+section('13c · 保证金步进口径与 HUD 数字滚动（真实行为）');
+
+/* ── c1 · 保证金步进 = 开仓保证金 × frac，且**连点不缩水** ── */
+{
+  const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1000000, i: idx(at(2022, 0)) });
+  s.ex = 'bitmex';
+  s.books[s.ex] = { usd: 0, usdt: 1000000 };   // 合约只认 USDT（2022 年该局默认货币还不是 U，显式给）
+  const o = engine.openTrade(s, 'long', 0.2);
+  const pos = s.positions.BTC;
+  check('13c 建仓成功（后续断言的载体）', o.ok && !!pos, o.why || '');
+  if (pos) {
+    const base = engine.marginBaseOf(s, 'BTC');
+    check('13c 基数量 = 名义 ÷ 杠杆（= 开仓保证金）',
+      Math.abs(base - pos.notional / pos.lev) < 1e-6 && base > 1e-9, `base=${f(base, 2)}`);
+    check('13c 一次 25% 步进 = 基数 × 0.25',
+      Math.abs(engine.marginStepOf(s, 'BTC', 0.25, true) - base * 0.25) < 1e-6);
+
+    /* 核心回归：连点 + 三次，每次金额必须**相等**（旧口径取「剩余可用 × 25%」会逐次缩水）。 */
+    const adds = [];
+    for (let k = 0; k < 3; k++) {
+      const a = engine.marginStepOf(s, 'BTC', 0.25, true);
+      adds.push(a);
+      if (!(a > 1e-9) || !engine.adjustMargin(s, 'BTC', a).ok) break;
+    }
+    const driftA = Math.max(...adds) - Math.min(...adds);
+    check('13c 连点「+」每次金额恒定（旧口径逐次缩水 → 越点越小）',
+      adds.length === 3 && driftA < 1e-6, `steps=${adds.map(v => f(v, 2)).join(' / ')}`);
+
+    /* 减少侧同理（先加厚保证金，再连点 −）。 */
+    const subs = [];
+    for (let k = 0; k < 2; k++) {
+      const a = engine.marginStepOf(s, 'BTC', 0.25, false);
+      subs.push(a);
+      if (!(a > 1e-9) || !engine.adjustMargin(s, 'BTC', -a).ok) break;
+    }
+    const driftS = subs.length ? Math.max(...subs) - Math.min(...subs) : 0;
+    check('13c 连点「−」每次金额恒定（旧口径同样缩水）',
+      subs.length >= 2 && driftS < 1e-6, `steps=${subs.map(v => f(v, 2)).join(' / ')}`);
+
+    /* 夹取不变量：任一 frac 的步进都不得超过该方向上限。 */
+    const c1 = engine.marginCapsOf(s, 'BTC');
+    check('13c 步进恒 ≤ 该方向上限（可用余额 / 维持线夹取生效）',
+      [0.25, 0.5, 1].every(fr => engine.marginStepOf(s, 'BTC', fr, true) <= c1.add + 1e-9
+        && engine.marginStepOf(s, 'BTC', fr, false) <= c1.reduce + 1e-9));
+  }
+}
+
+/* ── c2 · 可用余额不够时，步进被夹到上限（不会算出超过余额的金额） ── */
+{
+  const s = await mk({ sym: 'BTC', mode: 'fut', cash: 100000, i: idx(at(2022, 0)) });
+  s.ex = 'bitmex';
+  s.books[s.ex] = { usd: 0, usdt: 100000 };
+  const o = engine.openTrade(s, 'long', 0.9);   // 用掉九成可用 ⇒ 余额只剩一成，小于 25% 基数
+  if (o.ok) {
+    const caps = engine.marginCapsOf(s, 'BTC');
+    const step = engine.marginStepOf(s, 'BTC', 0.25, true);
+    const base = engine.marginBaseOf(s, 'BTC');
+    check('13c 「+」步进被可用余额夹住（0.25×基数 > 可用时取可用）',
+      step <= caps.add + 1e-9 && step < base * 0.25 - 1e-9,
+      `step=${f(step, 2)} ≤ add=${f(caps.add, 2)} ＜0.25×base=${f(base * 0.25, 2)}`);
+  }
+}
+
+/* ── c3 · HUD 数字滚动：按**行为**断言（旧审计只对源码打 `/speed > 1/` 正则 = 假绿） ── */
+check('13c 滚动阈值 > 1x 的喂数间隔（约 1000ms）—— 否则 1x 永远不滚',
+  roll.ROLL_STALE > 1000, `ROLL_STALE=${roll.ROLL_STALE}ms`);
+check('13c 1x 且间隔 1000ms 时必须滚（用户「1 倍速只有闪烁」的回归断言）',
+  roll.shouldRoll({ speed: 1, fx: 2, sameTarget: false, sinceLastMs: 1000 }) === true);
+check('13c 快进人群（speed>1）直接写',
+  roll.shouldRoll({ speed: 2, fx: 2, sinceLastMs: 100 }) === false);
+check('13c 动效关档（fx=0）直接写',
+  roll.shouldRoll({ speed: 1, fx: 0, sinceLastMs: 100 }) === false);
+check('13c 值陈旧（> ROLL_STALE）直接写（切页回来不从远处爬）',
+  roll.shouldRoll({ speed: 1, fx: 2, sinceLastMs: roll.ROLL_STALE + 1 }) === false);
+check('13c 目标没变直接写',
+  roll.shouldRoll({ speed: 1, fx: 2, sameTarget: true, sinceLastMs: 100 }) === false);
+{
+  const q0 = roll.rollSample(0, 100, 0), qH = roll.rollSample(0, 100, 0.5), q1 = roll.rollSample(0, 100, 1);
+  check('13c 补间端点正确（p=0→from、p=1→to）', q0 === 0 && q1 === 100, `${q0} / ${q1}`);
+  check('13c 补间 p=0.5 得**严格中间值**（确有中间帧，不是起止两帧的闪烁）',
+    qH > 0 && qH < 100 && qH > 50, `sample(0→100, .5)=${f(qH, 2)}（easeOut 应 > 50）`);
+  check('13c 补间单调递增（不会来回跳）',
+    roll.rollSample(0, 100, 0.25) < roll.rollSample(0, 100, 0.5)
+    && roll.rollSample(0, 100, 0.5) < roll.rollSample(0, 100, 0.75));
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

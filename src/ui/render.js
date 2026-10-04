@@ -13,8 +13,9 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, marginCapsOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
+import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
@@ -126,12 +127,14 @@ const flash = n => replay(n, 'flash');
      · 该格**最近 `ROLL_STALE` 内被连续更新过** —— 否则说明它刚随页面从隐藏回到可见（值已陈旧），
        直接写、不从旧值滚，免得切回资产页时看着它从很远的地方爬过来。
    首次出现（没有历史）也走直接写 —— 开局不该看到数字从 0 滚上来。
-   补间走 rAF（≈60fps），`update()` 仍按 ~12fps 喂新目标；目标一变就从**当前显示值**重新起步，
-   于是表现为平滑追赶而不是跳变。
+   补间走 rAF（≈60fps）。⚠️ 喂新目标的只有 `engine.createClock` 的 `onFrame`，它**只在推进过一小时时
+   才回调** —— 1x 下即约每 1000ms 一次。故 `ROLL_STALE` 必须**大于 1000** 才会真的滚（见 `core/roll.js`；
+   旧值 480 < 1000 ⇒ 1x 下每拍都被判成陈旧、永远直接写，这正是「只有闪烁」的根因）。
+   目标一变就从**当前显示值**重新起步，于是表现为平滑追赶而不是跳变。
    ⚠️ 补间帧用 `fmtMoneyShort`（**不带**门槛迟滞）—— 迟滞只服务「落定后的显示」；落定的最后一帧
-      再走 `moneySlot` 归位到带迟滞的规范显示，与不滚动的路径逐位一致。 */
-const ROLL_MS = 220;
-const ROLL_STALE = 480;
+      再走 `moneySlot` 归位到带迟滞的规范显示，与不滚动的路径逐位一致。
+   ⚠️ 数学与「该滚不该滚」的判据都在 `core/roll.js`（纯函数、可在 Node 里跑）—— 审计因此能按**行为**
+      断言它，而不是像以前那样只对源码打一条正则（那是假绿）。 */
 const rollers = new Map();   // el -> { from, to, cur, t0, last, key, sign, raf }
 
 function rollNumber(el, key, to, { sign = false, speed = 1, fx = 2 } = {}) {
@@ -139,15 +142,20 @@ function rollNumber(el, key, to, { sign = false, speed = 1, fx = 2 } = {}) {
   const now = performance.now();
   let r = rollers.get(el);
   if (!r) { r = { from: to, to, cur: to, t0: 0, last: now, key, sign, raf: 0 }; rollers.set(el, r); }
-  const fresh = now - r.last > ROLL_STALE;
+  const sinceLast = now - r.last;
   r.last = now; r.key = key; r.sign = sign;
-  if (fresh || speed > 1 || fx < 1 || to === r.cur) {
+  if (!shouldRoll({ speed, fx, sameTarget: to === r.cur, sinceLastMs: sinceLast })) {
     if (r.raf) { cancelAnimationFrame(r.raf); r.raf = 0; }
     r.from = r.to = r.cur = to;
     setText(el, moneySlot(key, to, { sign }));
     return;
   }
-  if (r.raf) { r.from = r.cur; r.to = to; r.t0 = now; return; }   // 补间在跑：只换目标与起点
+  if (r.raf) {
+    /* 补间在跑：只在**目标真的换了**时才从当前值重新起步；目标没变就让这趟走完。
+       旧代码无条件重置 `t0`，等于每拍都「重头再来」，动画永远到不了落定帧。 */
+    if (to !== r.to) { r.from = r.cur; r.to = to; r.t0 = now; }
+    return;
+  }
   r.from = r.cur; r.to = to; r.t0 = now;
   const step = (ts) => {
     const p = Math.min(1, (ts - r.t0) / ROLL_MS);
@@ -156,7 +164,7 @@ function rollNumber(el, key, to, { sign = false, speed = 1, fx = 2 } = {}) {
       setText(el, moneySlot(r.key, r.to, { sign: r.sign }));      // 落定：归位到带迟滞的规范显示
       return;
     }
-    r.cur = r.from + (r.to - r.from) * (1 - Math.pow(1 - p, 3));
+    r.cur = rollSample(r.from, r.to, p);
     setText(el, fmtMoneyShort(r.cur, { sign: r.sign }));
     r.raf = requestAnimationFrame(step);
   };
@@ -1960,8 +1968,10 @@ export function confirmExchange(s, id) {
 /**
  * **「调整保证金」弹层**（逐仓 · OKX 式 · 2026-10-04 用户拍板）—— 挂 `#overlay`，复用 `.confirm` 骨架。
  *
- * 上半是**当前读数**（保证金 / 保证金率 / 强平价），下半是**两排预设**：加（可用余额）与减（不回落到
- * 维持线）各给 25% / 50% / 100% 三档，按钮上直接写好**这一下会动多少钱**（只写「25%」玩家看不出量）。
+ * 上半是**当前读数**（保证金 / 保证金率 / 强平价），下半是**两排预设**：加 / 减各给 25% / 50% / 100%
+ * 三档，按钮上直接写好**这一下会动多少钱**（只写「25%」玩家看不出量）。
+ * ⚠️ 每档的量 = **开仓保证金 × frac**（再夹到可用余额 / 维持线上限内）—— 与交易页 ± **同一口径**
+ *    （2026-10-05 用户拍板）。不用「可用上限 × frac」是因为那个基数每动一次就缩水、越点越小。
  *
  * ⚠️ **逐仓专属**：全仓没有「这一条仓位的保证金」这个概念（见 `engine.marginCapsOf` 那段史实）。
  * ⚠️ 每次调整成功后由 `main.js` **重开一次本层**（余额与上下限都变了，重建比就地改简单且不会飘）。
@@ -1976,7 +1986,7 @@ export function openMarginDlg(s, sym) {
   if (!ov) return;
   const caps = marginCapsOf(s, sym);
   if (!caps) return;                     // 仓位已经没了（平仓 / 强平）：不再弹
-  const { pos, price, add, reduce } = caps;
+  const { pos, price } = caps;
   const liquidatable = canLiquidate(pos);
 
   const back = el('div', 'pick-back');
@@ -1997,10 +2007,10 @@ export function openMarginDlg(s, sym) {
   );
   box.append(rows);
 
-  /* 预设键：`frac` 与方向进 `data-mg`，金额由 `main.js` **点的时候现算**（`caps` 会随余额变）。 */
+  /* 预设键：`frac` 与方向进 `data-mg`，金额由 `main.js` **点的时候现算**（`marginStepOf`，余额 / 上下限随时在变）。 */
   const preset = (frac, dir) => {
-    const cap = dir > 0 ? add : reduce;
-    const amt = cap * frac;
+    /* 口径与交易页 ± 同源：开仓保证金 × frac，再夹到该方向的上限内（`engine.marginStepOf`）。 */
+    const amt = marginStepOf(s, sym, frac, dir > 0);
     const b = el('button', 'opt', `${dir > 0 ? '+' : '−'}${fmtMoneyShort(amt)}`);
     b.dataset.mg = `${dir > 0 ? 'add' : 'sub'}:${sym}:${frac}`;
     if (!(amt > 1e-9) || !canAdjustMargin(s, sym, dir * amt)) b.disabled = true;

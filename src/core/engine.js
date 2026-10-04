@@ -21,7 +21,7 @@ import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, addFlow, exDevOf, npcL
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
-  equityOf, isLiquidatable, isMargin, liquidationPrice, maintRateOf, openPosition, pnlOf,
+  equityOf, isLiquidatable, isMargin, liquidationPrice, maintRateOf, marginRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
   FUNDING, FR, INSURE, fundingOf, premiumIndexOf, fundingRateOf, canLiquidate, paysFunding, paysInterest, borrowedOf, borrowCurOf, shockKindOf,
   bankruptcyFillPrice,
@@ -2801,6 +2801,35 @@ export function marginCapsOf(s, sym) {
   const floorEquity = PARTIAL_TARGET * maintRateOf(pos) * pos.notional;
   const reduce = Math.max(0, Math.min(pos.margin, equityOf(pos, price) - floorEquity));
   return { pos, price, mustUsdt, add, reduce };
+}
+
+/**
+ * **「调整保证金」的步进基数** = 本仓**开仓保证金**（= 名义价值 ÷ 杠杆）。
+ *
+ * 2026-10-05 用户拍板：交易页 ± 与弹层预设都以此为基数（每次 25% / 50% / 100%）。
+ * ⚠️ 为什么**不**用「可用余额 / 可减上限」当基数：那个数**每点一次就缩水**（加完余额变少、减完权益变少），
+ *    于是步长越点越小、永远到不了上限 —— 用户原话「只能一点一点加（分子太小）」。
+ *    开仓保证金在仓位存续期内**恒定**（`adjustMargin` 明确不动 `notional` / `lev`），步长因此恒定，
+ *    且与仓位规模成比例：任何杠杆下每次 ≈ 变动 `0.25 / 杠杆` 的保证金率（10x ⇒ 约 +2.5 个百分点）。
+ * ⚠️ 部分强平会**等比例**削掉 `notional` ⇒ 基数随之缩小，仍与「剩下的仓位」成比例，符合预期。
+ * @returns {number} 基数量（USDT）；无仓位 / 数据异常返回 0
+ */
+export function marginBaseOf(s, sym) {
+  const pos = posOf(s, sym);
+  if (!pos || !(pos.lev > 0)) return 0;
+  return pos.notional / pos.lev;
+}
+
+/**
+ * 一次调整要动的**金额** = 开仓保证金 × `frac`，并夹在 `[0, cap]` 之内（`cap` 是该方向的可调上限）。
+ * 交易页 ± 传 `frac = 0.25`；弹层预设传 `0.25 / 0.5 / 1`。**两个入口共用这一处口径**，不分家。
+ * @param {boolean} add true = 增加（用 `caps.add`）、false = 减少（用 `caps.reduce`）
+ */
+export function marginStepOf(s, sym, frac, add) {
+  const c = marginCapsOf(s, sym);
+  if (!c) return 0;
+  const cap = add ? c.add : c.reduce;
+  return Math.max(0, Math.min(marginBaseOf(s, sym) * frac, cap));
 }
 
 /**

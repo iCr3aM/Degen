@@ -11,7 +11,7 @@ import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, cashCurAt, exchangeOf, has
 import { anyHeld, createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf } from './core/engine.js';
+import { createClock, chanOf, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
@@ -1249,7 +1249,10 @@ function onChan() {
      · `addcur:<frac>` / `subcur:<frac>`  **交易页「保证金率」格内的 − / + 步进**
        —— 不写 `<sym>`：那一格是常驻 DOM（挂载时还不知道玩家会切到哪个币），
           币种当场取 `s.sym`（`render.js` 那两枚键的 `data-mg` 就这么写的）。
-   ⚠️ 金额**点的时候现算**（`marginCapsOf`），不信任按钮上那个旧数字 —— 余额与上下限随时在变。
+   ⚠️ 金额**点的时候现算**（`marginStepOf` / `marginCapsOf`），不信任按钮上那个旧数字 —— 余额与上下限随时在变。
+   ⚠️ 每次动的量 = **开仓保证金（名义 ÷ 杠杆）× frac**（`engine.marginStepOf`，2026-10-05 用户拍板）。
+      旧口径「可用上限 × frac」每点一次基数就缩水 ⇒ 越点越小、永远到不了顶（用户反馈「只能一点一点加」）；
+      换成恒定的开仓保证金后，同样点 4 次 25% 就恰好动掉一个开仓保证金的量，且与杠杆无关地一致。
    ⚠️ 弹层的键（`add` / `sub`）每次动完**重开一次弹层**，让「保证金 / 保证金率 / 强平价」
       与预设金额落到最新值；框内步进（`cur`）**不弹层** —— 它要的就是「原地即时看数」。
    ⚠️ 上限为 0 时**先说人话**（别让 `adjustCheck` 回一句「调整金额为 0」，那会让人以为键坏了）。 */
@@ -1272,7 +1275,7 @@ function onMarginAdjust(s, val) {
     after();
     return;
   }
-  const delta = (add ? 1 : -1) * cap * frac;
+  const delta = (add ? 1 : -1) * marginStepOf(s, sym, frac, add);
   const r = adjustMargin(s, sym, delta);
   if (!r.ok) pushLog(s, r.why, 'bad');
   after();                                         // 重画（HUD / 持仓条 / 资产页）＋ 存盘
@@ -2361,15 +2364,17 @@ function onTab(name) {
 /* ── Tab 切页的 View Transition（m5 · 2026-10-05）────────────────────────
    把「旧页 → 新页」交给 **View Transition API** 做交叉淡化（`style.css` 给 `.page.on` 挂了
    `view-transition-name: page`，只淡这一块、不位移 —— 位移会让 K 线区尺寸不稳）。
-   三条纪律：
+   四条纪律：
      ① **只在动效档 = 全（`fx === 2`）且系统未开「减弱动态效果」时启用** —— 关档时连 API 都不调，
         退化路径就是原来的 `pageIn` 淡入（`.page.on` 的基类动画）；
      ② **同一时刻只跑一个过渡**（`vtBusy`）：连点 Tab 时后来者直接走同步分支，不做排队；
      ③ 状态写入（`tab` / `paused` / `speed` / `after()`）**整体搬进回调** —— View Transition 会先
         拍下「旧帧」、再执行回调，这正好满足 `draw()` 那条硬顺序：**先切页、再量尺寸**
-        （隐藏页量出来是 0×0，顺序反了会画出一张空图）。
-   ⚠️ `<html>.vt` 在过渡期间挂上，让 CSS 把 `pageIn` 关掉 —— 否则新页会在动画起点（opacity 0）
-      被采样成空帧。`finished` 在「被跳过 / 被中止」时也会 settle，`finally` 里统一收尾，不会漏摘类。 */
+        （隐藏页量出来是 0×0，顺序反了会画出一张空图）；
+     ④ **`.vt` 一旦挂上就常驻、不摘**（修「切页闪一下」）—— 见 `runTabSwitch` 里那段说明；
+        只有走到退化分支（动效档调低）时才摘掉它。
+   ⚠️ `<html>.vt` 让 CSS 把 `pageIn` 关掉 —— 否则新页会在动画起点（opacity 0）被采样成空帧。
+      `finished` 在「被跳过 / 被中止」时也会 settle，`finally` 里只清 `vtBusy`。 */
 let vtBusy = false;
 
 function vtEnabled() {
@@ -2380,6 +2385,7 @@ function vtEnabled() {
 }
 
 function runTabSwitch(name) {
+  const root = document.documentElement;
   const go = () => {
     if (tab === 'settings') cancelReset();
     tab = name;
@@ -2388,12 +2394,17 @@ function runTabSwitch(name) {
     closePicker();
     after();
   };
-  if (!vtEnabled()) { go(); return; }
-  const root = document.documentElement;
+  /* 退化分支：先把上一轮 VT 留下的 `.vt` 摘掉（仅当没有过渡在跑），让 pageIn 淡入照常播。 */
+  if (!vtEnabled()) { if (!vtBusy) root.classList.remove('vt'); go(); return; }
   root.classList.add('vt');
   vtBusy = true;
   const t = document.startViewTransition(go);
-  t.finished.finally(() => { vtBusy = false; root.classList.remove('vt'); });
+  /* ⚠️ 收尾**只**清 `vtBusy`，**不摘 `.vt`** —— 这是修「切页闪一下」的关键。
+     摘掉 `.vt` 会让新页 `.page.on` 的 `animation-name` 由 `none` 变回 `pageIn`，浏览器据此把它当成
+     **动画重新开始**（从 opacity:0 再淡入一次），与刚结束的交叉淡化叠成两段式闪一下（用户反馈的现象）。
+     让 `.vt` 常驻：之后每次切页都走 VT，pageIn 本就不该参与；等动效档被调低、走上面那条退化分支时再摘。
+     `style.css` 把抑制写成 `#app:not(.rv) > .page.on`，所以回顾 / 档案两条整屏页仍保留自己的淡入。 */
+  t.finished.finally(() => { vtBusy = false; });
 }
 
 /**

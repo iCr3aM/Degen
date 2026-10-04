@@ -1691,10 +1691,14 @@ button { user-select: none; -webkit-user-select: none; }
    （位移会让 K 线区在动画期间尺寸不稳）。
    ⚠️ 退化路径：`.page` 是靠 `display:none ⇄ flex` 切的，display 不参与过渡，所以不支持 View Transition
       时仍退回**插入式动画**（`pageIn`）。
-   ⚠️ `<html>.vt` 是 JS 在过渡期间挂的开关：那期间必须把 `pageIn` 关掉 —— 否则「新帧」会在动画起点
-      （opacity 0）被采样成一张空页。 */
+   ⚠️ `<html>.vt` 由 JS 在**首次** VT 时挂上、**之后常驻不摘**：`pageIn` 在过渡期间必须被关掉 —— 否则
+      「新帧」会在动画起点（opacity 0）被采样成一张空页。**常驻**的另一半理由：若过渡一结束就摘掉，
+      `animation-name` 会由 `none` 变回 `pageIn`，浏览器把这当成动画**重新开始** ⇒ 交叉淡化之后又被压回
+      透明再淡入一次 = 两段式闪一下（用户 2026-10-05 反馈的现象）。
+   ⚠️ 抑制**只作用于三个 Tab 页**（`#app:not(.rv)`）：回顾 / 交易档案是整屏页，进它们时 `#app` 带 `.rv`，
+      不该被这条常驻的 `.vt` 压掉自己的淡入。 */
 .page.on { view-transition-name: page; animation: pageIn var(--dur-fast) var(--ease); }
-:root.vt .page.on { animation: none; }
+:root.vt #app:not(.rv) > .page.on { animation: none; }
 @keyframes pageIn { from { opacity: 0; } }
 /* 交叉淡化时长走同一套令牌（默认 0.25s 偏慢，压到 --dur 更干脆）。 */
 ::view-transition-old(root), ::view-transition-new(root),
