@@ -493,6 +493,66 @@ section('7b · K 线连续性：全 5 币「本根 open == 上一根 close」（
   check('7b OHLC 不变量：h ≥ max(o,c) 且 l ≤ min(o,c)（全 5 币）', inv === 0, `违反 ${inv} 根`);
 }
 
+/* ═══════════════════ 7c · 无玩家 12 年全程自洽（G2–G4 落地后的回归） ═══════════════════ */
+section('7c · 无玩家全程自洽：情绪有界不单极 · 跨币共振不发散 · 池/冲击有限 · 无玩家则无盈亏漂移');
+{
+  const SYMS = ['BTC', 'ETH', 'XRP', 'DOGE', 'SOL'];
+  for (const sy of SYMS) await market.loadCoin(sy);
+  const s = await mk({ sym: 'BTC', cash: 100000 });     // **不建任何仓** ⇒ 纯无玩家世界
+  /* ⚠️ 基准取「mk 之后的实际权益」，**不是** `s.cash0` —— `mk` 改的是 `books`，而 `s.cash0`
+     仍是剧本常量（经典开局 $1,000），两者本就不等。
+     ⚠️ 唯一允许被动到账户的历史事件是 **Bitfinex 2016-08-02 被盗普损（−36.067%）** ——
+     它是「玩家把钱停在那家所」的**史实风险**，不是模拟深度凭空造出来的盈亏 ⇒ 命中的那一根
+     把基准**重新对齐**（不计漂移），其余每一根都必须逐位等于基准。 */
+  const hackH = Math.round((Date.UTC(2016, 7, 2) - C.GAME.start) / H);
+  let base = engine.equity(s);
+  const step = 24 * 30;                                 // 每月推进一次
+  let steps = 0, badHeat = 0, badFund = 0, badShock = 0, drift = 0;
+  let heatMin = 1, heatMax = 0, coldN = 0, hotN = 0, samples = 0;
+  while (s.i < s.endI - 1 && steps < 400) {
+    if (!s.over) s.pending = null;                      // 无玩家不该进待决态；保险起见清掉
+    /* ⚠️ 每月轮换 tick 的币：`crossHeat` 只对**当前币**跑，钉死 BTC 就测不到跨币耦合。 */
+    s.sym = SYMS[steps % SYMS.length];
+    const before = s.i;
+    engine.advanceOneHour(s);
+    for (let j = 1; j < step; j++) engine.advanceOneHour(s);
+    if (s.i === before) break;
+    steps++;
+    for (const sy of SYMS) {
+      const m = s.mkt[sy];
+      if (!m) continue;
+      const h = m.heat;
+      if (!(Number.isFinite(h) && h >= 0 && h <= 1)) badHeat++;
+      if (h < heatMin) heatMin = h;
+      if (h > heatMax) heatMax = h;
+      if (h < 0.35) coldN++;                            // 明显偏冷（恐慌侧真的出现过）
+      if (h > 0.65) hotN++;                             // 明显偏热
+      samples++;
+      const f0 = m.npcFund;
+      if (f0 != null && (!Number.isFinite(f0) || f0 < 0)) badFund++;
+      if (m.npcShock && Array.isArray(m.npcShock.v)) {
+        for (const v of m.npcShock.v) if (!Number.isFinite(v)) badShock++;
+      }
+    }
+    /* 无玩家 ⇒ 没有任何现金流 ⇒ 权益必须**逐位**等于基准（这条能抓出「凭空盈亏」类回归）。
+       ⚠️ 这一段一次跳 30 根，所以用**区间包含**判断被盗日是否落在本轮里，而不是 `s.i === hackH`。 */
+    const eq = engine.equity(s);
+    if (hackH > before && hackH <= s.i) base = eq;      // 史实普损：重新对齐基准，不算漂移
+    else if (Math.abs(eq - base) > 1e-6) drift++;
+  }
+  check('7c 全币 heat 恒在 [0,1]（跨币耦合不发散、不 NaN）', badHeat === 0,
+    `样本 ${samples}，坏值 ${badHeat}，heat ∈ [${f(heatMin, 3)}, ${f(heatMax, 3)}]`);
+  /* 情绪是活的：12 年里必须**两侧都越出中性带**（只有牛市或只有崩盘都是不真实的单极化）。 */
+  check('7c 情绪不单极化（冷热两侧都出现过，非常年贴极值）',
+    heatMin <= 0.35 && heatMax >= 0.65 && heatMin >= 0 && heatMax <= 1
+    && coldN > 0 && hotN > 0,
+    `冷样本 ${coldN} / 热样本 ${hotN} / 共 ${samples}，heatMin/Max ${f(heatMin, 3)}/${f(heatMax, 3)}`);
+  check('7c 对手方池全程有限且 ≥ 0', badFund === 0, `坏值 ${badFund}`);
+  check('7c npcShock 全程无 NaN / Inf', badShock === 0, `坏值 ${badShock}`);
+  check('7c 无玩家 ⇒ 权益逐位等于本金（无凭空盈亏漂移）', drift === 0,
+    `漂移次数 ${drift}，末值 $${f(engine.equity(s), 2)} ｜ 基准 $${f(base, 2)}，步数 ${steps}`);
+}
+
 /* ═══════════════════ 8 · 真实下单：实际滑点（穿引擎，含阈值 / 深度池 / 持仓折减） ═══════════════════ */
 section('8 · 真实下单滑点：名义 vs 实际成交代价（1x 多头，穿 openTrade）');
 console.log('  年月       名义        实际滑点%   备注');
