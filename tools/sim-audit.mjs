@@ -462,6 +462,30 @@ section('7 · 全时间线连跑：真实数据走满 12 年不崩、曲线有�
     `over=${JSON.stringify(s.over)}`);
 }
 
+/* ═══════════════════ 7b · K 线连续性（零跳空缺口 · 2026-10-05） ═══════════════════ */
+section('7b · K 线连续性：全 5 币「本根 open == 上一根 close」（24/7 市场不允许跳空）');
+{
+  /* 起因：聚合口径下 medoid 逐小时在多所间切换 ⇒ 大量根 open ≠ 上一根 close，图上就是缺口。
+     已在 `tools/fetch-data.mjs` 第 ⑨ 步缝合（open 取上一根 close、h/l 外扩）。这条把它钉死。 */
+  const SYMS = ['BTC', 'ETH', 'XRP', 'DOGE', 'SOL'];
+  for (const sy of SYMS) await market.loadCoin(sy);
+  let inv = 0;
+  for (const sy of SYMS) {
+    const [a, b] = market.rangeOf(sy);
+    let gaps = 0, maxR = 0, worstAt = 0;
+    for (let i = a + 1; i < b; i++) {
+      const cur = market.rawCandleAt(sy, i);
+      const prev = market.rawCandleAt(sy, i - 1);
+      const r = Math.abs(cur.o - prev.c) / prev.c;
+      if (r > 1e-9) { gaps++; if (r > maxR) { maxR = r; worstAt = i; } }
+      if (cur.h < Math.max(cur.o, cur.c) - 1e-9 || cur.l > Math.min(cur.o, cur.c) + 1e-9) inv++;
+    }
+    check(`7b ${sy}：${b - a - 1} 根零跳空缺口`, gaps === 0,
+      gaps ? `缺口 ${gaps} 根，最大 ${(maxR * 100).toFixed(2)}% @ ${new Date(C.GAME.start + worstAt * H).toISOString().slice(0, 16)}` : '');
+  }
+  check('7b OHLC 不变量：h ≥ max(o,c) 且 l ≤ min(o,c)（全 5 币）', inv === 0, `违反 ${inv} 根`);
+}
+
 /* ═══════════════════ 8 · 真实下单：实际滑点（穿引擎，含阈值 / 深度池 / 持仓折减） ═══════════════════ */
 section('8 · 真实下单滑点：名义 vs 实际成交代价（1x 多头，穿 openTrade）');
 console.log('  年月       名义        实际滑点%   备注');

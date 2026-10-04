@@ -39,6 +39,9 @@
  *   - 过滤：CDD 的**零成交补值行不投价格票**（早期 Poloniex 大量 `tradeCount=0` 的造假行）；
  *     聚合后再过一道**坏针守卫**（滚动中位 ±72h、低 0.25× / 高 4.0×，见 `buildCoin` 第 ⑧ 步）。
  *   - 兜底：不变量修正 `H ≥ max(O,C)`、`L ≤ min(O,C)`。
+ *   - 缝合（2026-10-05）：聚合后本根 `O` 恒取**上一根 `C`**（`H/L` 只外扩）⇒ 图上**零跳空缺口**
+ *     （见 `buildCoin` 第 ⑨ 步）。24/7 市场**不存在**「收盘后重新开盘」，缺口纯是 medoid 逐小时
+ *     切所 + 空档/坏针「沿用上一根收盘」的产物。实测缝合前 80.8–96.0% 的根 open ≠ 上一根 close。
  *   - 成交量（2026-10-04 用户拍板）：**跨交易所求和**，同一交易所只算一次（Poloniex 的
  *     DOGE/XRP 各有 USDT+BTC 两档，去重取 USD 档）。会同时动 `liq.bin` 的年内形状、
  *     滑点分母与拥堵脉冲阈值 —— 已随本轮一并重建。
@@ -608,11 +611,12 @@ function aggregateHour(list) {
  * 每根存 **5 列**：`[o, h, l, c, usd]` —— `usd` 是那一小时的真实美元成交额
  * （第 5 列只用于聚合日流动性，不进 K 线包）。
  *
- * 收尾三步（这一版的重点）：
+ * 收尾四步（这一版的重点）：
  *  ① **裁掉开头的空档** —— `config.unlock` 只是「最早可能」，真正的起点是实测的第一根真 K 线；
  *  ② **中间的空档**逐段记进 `stats.gapRanges` 并打印（价格沿用上一根收盘 = 该小时无成交，
- *     成交额记 0）；
- *  ③ 一根数据都没有 → 直接报错，绝不产出全 0 的假序列。
+ *     成交额记 0）；③ **坏针守卫**（滚动中位 ±72h，见第 ⑧ 步）；
+ *  ④ **K 线缝合**（第 ⑨ 步，2026-10-05）：本根 `o` 恒取上一根 `c` ⇒ 图上**零跳空缺口**；
+ *     再兜底：一根数据都没有 → 直接报错，绝不产出全 0 的假序列。
  * @returns {{ startI, count, held, dayUsd, stats }}
  */
 async function buildCoin(coin) {
@@ -838,6 +842,31 @@ async function buildCoin(coin) {
     if (killed) log(`    坏针守卫：作废 ${killed} 根（滚动中位 ±${GW}h，低 ${G_LOW}× / 高 ${G_HIGH}×）`);
   }
   stats.killed = killed;
+
+  /* ── ⑨ K 线缝合（2026-10-05）：本根 open 恒等于上一根 close ⇒ 图上不出现跳空缺口 ──
+   * 为什么必须有：24/7 全市场**不存在**「收盘后重新开盘」，缺口纯是**聚合口径**的产物 ——
+   *   ① `medoidCandle` 逐小时在多家所之间切换，所间价差（正常 0.05–0.5%）被记成跳空；
+   *      实测：BTC 80.8% / SOL 83.3% / ETH 87.2% / XRP 92.9% / DOGE 96.0% 的根 open ≠ 上一根 close；
+   *   ② 空档（⑦）与坏针（⑧）都「沿用上一根收盘」，下一根真值回来时留一道缝；
+   *   ③ CDD 早期造假平铺行当唯一票时，close 短暂脱离真实价位。
+   * 口径：只改 `o`（= 上一根 `c`），再把 `h/l` 撑到能容纳 `o` 与 `c`
+   *   （`h = max(h,o,c)`、`l = min(l,o,c)`）。**绝不动 `c`** ——
+   *   收盘价仍是各源真值 ⇒ 价格轴、σ、滑点、强平口径全不受影响；成交量份额也不动。
+   * 首根（`lead`）保留自己的 `o`（没有上一根可接）。
+   * ⚠️ 只服务聚合币（与 `cells` 同生存期）；补洞币逐位不变。 */
+  if (cells) {
+    let stitched = 0;
+    for (let k = lead + 1; k < count; k++) {
+      const o = held[(k - 1) * 5 + 3];
+      const c = held[k * 5 + 3];
+      if (held[k * 5] !== o) stitched++;
+      held[k * 5] = o;
+      held[k * 5 + 1] = Math.max(held[k * 5 + 1], o, c);
+      held[k * 5 + 2] = Math.min(held[k * 5 + 2], o, c);
+    }
+    if (stitched) log(`    K 线缝合：${stitched} 根 open 对齐上一根 close（消除跳空）`);
+    stats.stitched = stitched;
+  }
 
   const outI = startI + lead;
   const outCount = count - lead;
@@ -1363,6 +1392,7 @@ async function main() {
         gapHours: stats.gapHours,
         gapRanges: stats.gapRanges.map(([a, b]) => [new Date(a).toISOString(), new Date(b).toISOString()]),
         killed: stats.killed || 0,     // 坏针守卫作废的根数（见 buildCoin 第 ⑧ 步）
+        stitched: stats.stitched || 0, // K 线缝合：open 被对齐到上一根 close 的根数（第 ⑨ 步）
         detail: Object.fromEntries(stats.bySource),
       },
     };

@@ -17,12 +17,13 @@
       "first": 12.2,
       "last": 93576,
       "bytes": 1827432,
-      "zipped": 1086416,
+      "zipped": 1094370,
       "sources": {
         "hourly": 107496,
         "gapHours": 0,
         "gapRanges": [],
         "killed": 0,
+        "stitched": 87322,
         "detail": {
           "bitstamp btcusd": 107496,
           "bitfinex tBTCUSD": 102693,
@@ -42,12 +43,13 @@
       "first": 0.00188943,
       "last": 0.316,
       "bytes": 1630810,
-      "zipped": 845900,
+      "zipped": 965949,
       "sources": {
         "hourly": 95930,
         "gapHours": 0,
         "gapRanges": [],
         "killed": 1,
+        "stitched": 92267,
         "detail": {
           "binance DOGEUSDT": 48112,
           "kraken XDGUSD+XDGXBT": 66607,
@@ -68,12 +70,13 @@
       "first": 0.0053754,
       "last": 2.0836,
       "bytes": 1547493,
-      "zipped": 898074,
+      "zipped": 938032,
       "sources": {
         "hourly": 91029,
         "gapHours": 0,
         "gapRanges": [],
         "killed": 13,
+        "stitched": 84779,
         "detail": {
           "bitstamp xrpusd": 70499,
           "binance XRPUSDT": 58320,
@@ -95,12 +98,13 @@
       "first": 3,
       "last": 3337.78,
       "bytes": 1400970,
-      "zipped": 870174,
+      "zipped": 889258,
       "sources": {
         "hourly": 82410,
         "gapHours": 0,
         "gapRanges": [],
         "killed": 1,
+        "stitched": 73068,
         "detail": {
           "bitstamp ethusd": 64664,
           "binance ETHUSDT": 64524,
@@ -121,12 +125,13 @@
       "first": 2.9515,
       "last": 189.31,
       "bytes": 654330,
-      "zipped": 394183,
+      "zipped": 403505,
       "sources": {
         "hourly": 38490,
         "gapHours": 0,
         "gapRanges": [],
         "killed": 0,
+        "stitched": 32071,
         "detail": {
           "binance SOLUSDT": 38470,
           "binanceus SOLUSD": 24670,
