@@ -229,6 +229,79 @@ section('1c · 实际杠杆口径（effLevOf）：未调整仓不变 · 减保�
   }
 }
 
+/* ═════ 1d · 强平价连续性 / 强平退款口径（2026-10-05 用户实测：资金费抽干保证金） ═════
+   用户问：「开多但资金费一直在付 ⇒ 保证金被抽干 ⇒ 强平价会往上移，甚至超过开仓价 ——
+   这时候 HUD 上所有面板还显示得对吗？」本节点死三件事（全部读真实函数 / 真引擎，不做假绿）：
+     ① `maintRateOf` 在 `margin ≤ 0` 时归零 ⇒ `liquidationPrice` 在 0 处**连续收敛到开仓价**
+        （旧代码在 0 处从 ≈entry 突跳 +0.4% ⇒ 断崖式的不连续）；
+     ② `forceLiquidate` 的残余权益取**真实权益**（夹 ≥0）⇒ 穿仓时不再凭空退回「维持那一格」；
+     ③ 恒等式 `equity(pos, 强平价) ≡ 维持率 × 名义` 在正常档仍逐位成立（回归护栏）。 */
+section('1d · 强平价连续性 / 强平退款口径（资金费抽干保证金 ⇒ 强平价上移）');
+{
+  const entry = 100, notional = 1000, lev = 10;
+  const base = P.openPosition('BTC', 'long', entry, notional / lev, lev, 0.0004, true);
+  base.ex = 'bitfinex';
+  /* 保证金逐档下沉、跨过 0：1 → … → 1e-6 → **0** → 负值。 */
+  const rungs = [1, 0.1, 0.01, 1e-3, 1e-6, 0, -1e-6, -1e-3, -0.01, -0.1];
+  const ps = rungs.map(m => ({ ...base, margin: m }));
+  const liq = ps.map(p => P.liquidationPrice(p));
+  const mains = ps.map(p => P.maintRateOf(p));
+
+  check('1d margin ≤ 0 ⇒ 维持率归零（没有维持线 ⇒ 立刻强平）',
+    mains[5] === 0 && mains[6] === 0 && mains[9] === 0,
+    `m(0)=${f(mains[5], 8)} m(−0.1)=${f(mains[9], 8)}`);
+  check('1d margin = 0 ⇒ 强平价 ≡ 开仓价（多头强平线收敛到开仓价）',
+    Math.abs(liq[5] - entry) < 1e-9 * entry, `lp=${f(liq[5], 9)} entry=${entry}`);
+  check('1d 强平价在 margin = 0 处**连续**（旧代码此处突跳 0.4% ⇒ 可判别）',
+    Math.abs(liq[4] - liq[5]) < 1e-6, `|lp(1e-6) − lp(0)| = ${Math.abs(liq[4] - liq[5]).toExponential(3)}`);
+  let mono = true;
+  for (let k = 1; k < liq.length; k++) if (liq[k] < liq[k - 1] - 1e-9) mono = false;
+  check('1d 保证金越少 ⇒ 多头强平价越高（单调递增，无断崖 / 无回折）', mono,
+    liq.map(v => f(v, 6)).join(' → '));
+  let guard = 0;
+  for (const p of ps) if (P.maintRateOf(p) < 1 / P.effLevOf(p)) guard++;
+  check('1d 全档维持率严格 < 1/实际杠杆（含 margin ≤ 0 的退化档 ⇒ 不变量守恒）',
+    guard === ps.length, `${guard}/${ps.length}`);
+
+  /* d2 · 穿仓（真实权益 ≤ 0）⇒ 残余权益 0；而旧式「维持率 × 名义」仍为正 —— 那正是凭空退款之源。 */
+  const gap = { ...base, margin: 100 };
+  const atPrice = 50;                                   // 现价远低于开仓价 ⇒ uPnL = −500 ⇒ 权益 < 0
+  const realRemain = Math.max(0, P.equityOf(gap, atPrice));
+  const oldRemain = P.maintRateOf(gap) * gap.notional;
+  check('1d 穿仓 ⇒ 残余权益 0，而旧式「维持那一格」为正（凭空退款 / 保险基金幻影钱之源）',
+    realRemain === 0 && oldRemain > 0,
+    `真实权益 ${f(P.equityOf(gap, atPrice), 2)} → 残余 ${f(realRemain, 2)} ｜ 旧式 ${f(oldRemain, 2)}`);
+
+  /* d3 · 恒等回归：正常档下 `equity(pos, 强平价) ≡ 维持率 × 名义`（B20 口径的锚）。 */
+  const normal = P.openPosition('BTC', 'long', 30000, NOTIONAL / 5, 5, 0.0004, true);
+  normal.ex = 'binance';
+  const nlp = P.liquidationPrice(normal);
+  check('1d 恒等回归：正常档 equity(pos, 强平价) ≡ 维持率 × 名义（逐位）',
+    Math.abs(P.equityOf(normal, nlp) - P.maintRateOf(normal) * normal.notional) < 1e-9 * normal.notional,
+    `eq=${f(P.equityOf(normal, nlp), 6)} maint×N=${f(P.maintRateOf(normal) * normal.notional, 6)}`);
+
+  /* d4 · 真引擎端到端：**一条**仓位的保证金被抽成负值 ⇒ 本小时内必须整条强平，且强平日志
+     **不出现「退回」**（走公开的 `advanceOneHour`，不直呼未导出的 `forceLiquidate`）。
+     ⚠️ 仓位要**小**（`frac=0.1`）：账户留足其余现金 ⇒ 只有这一条仓位穿仓，本局不因账户级
+        破产而停在「待领救济金」遮罩上（`settleFunding` 里的 `checkRuin` 会先冻住时钟）。 */
+  const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'margin', cash: 200000, i: idx(at(2021, 4, 10)) });
+  s.mode = 'margin'; s.lev = 1; s.hintOn = false;      // 关掉预警遮罩，免得时钟被冻住
+  const ro = engine.openTrade(s, 'long', 0.1);
+  check('1d 前置：多仓开出来了（端到端载体）', ro.ok && !!s.positions.BTC, ro.why || '');
+  if (s.positions.BTC) {
+    const pos = s.positions.BTC;
+    pos.margin = -2 * pos.notional;                    // 模拟「资金费抽干 ⇒ 保证金为负」⇒ liq 落到 3×entry
+    check('1d 前置：保证金为负 ⇒ 强平价被推到开仓价**上方**（多头，正是用户描述的情形）',
+      P.liquidationPrice(pos) > pos.entry, `lp=${f(P.liquidationPrice(pos), 2)} entry=${f(pos.entry, 2)}`);
+    engine.advanceOneHour(s);
+    check('1d 端到端：保证金为负的仓位在本小时内被整条强平（不留僵尸仓）',
+      !s.positions.BTC, s.positions.BTC ? `残留 margin=${f(s.positions.BTC.margin, 2)}` : '');
+    const log = s.log.filter(l => l.tag === 'liq').map(l => l.text).join('\n');
+    check('1d 端到端：强平日志为「全部损失」且**不含**「退回」（旧代码会凭空退 ≈13.75% 名义）',
+      /强平 BTC/.test(log) && /全部损失/.test(log) && !/退回/.test(log), '');
+  }
+}
+
 /* ═══════════════════ 2 · openCheck 全分支可达性 ═══════════════════ */
 section('2 · 下单拒绝分支穷举（每一条 `why` 是否可达 / 是否合理）');
 const seen = new Map();

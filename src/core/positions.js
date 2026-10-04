@@ -311,6 +311,8 @@ export const shockKindOf = (isMargin, lev) => (isMargin && lev <= 1 ? 'coin' : '
  *
  * ⚠️ `0.5` 是**设计取值**（未找到文献出处）—— 出处就是上面那两个退化格，取「留一半垫子」
  *    这个整数比例是为了好解释、好记；它只在退化格里兜底，不参与任何正常格的定价。
+ * ⚠️ 2026-10-05：保证金被资金费 / 利息抽到 `≤ 0` 时本护栏**取 0**（见 `maintRateOf` 的第一条
+ *    护栏）—— 那是同一套「垫子随保证金缩水」的连续延拓，不是新的定价档。
  */
 const MAINT_MAX_SHARE = 0.5;
 
@@ -333,6 +335,15 @@ const MAINT_MAX_SHARE = 0.5;
 export function maintRateOf(pos) {
   const lv = Math.max(1, pos.lev || 0);            // 维持档 = 开仓杠杆档（产品设定，不随加减保证金漂移）
   const m = maintRateAt(pos.ex, pos.notional, instrumentOf(pos), lv);
+  /* ⚠️ 2026-10-05 修（保证金被抽干 ⇒ 强平价突跳）：`settleFunding` 逐小时 `pos.margin -= fee`
+     没有下限 ⇒ 保证金可落到 `0` 或**负**。而 `effLevOf` 在 `margin ≤ 0` 时会 snap 回 `pos.lev`
+     ⇒ 上一行算出的 `open = 1/实际杠杆` **突然变大** ⇒ 退化护栏失效、维持率跳回正常档
+     ⇒ `liquidationPrice` 在 `margin = 0` 处**不连续**（多头从 `≈entry` 突跳到 `entry + 0.4%`）。
+     修法：保证金一被抽干就视为**没有维持线**（立刻强平）——
+       · `margin→0+` 一侧本来就有 `0.5÷实际杠杆 → 0` ⇒ 两侧在 0 处**连续收敛到 0**；
+       · `margin = 0` 时强平价 ≡ 开仓价；`margin < 0` 时 = `entry + dir×(−margin)/size`（单调、立即强平）。
+     ⚠️ 正常仓（`margin > 0`）逐位不变；不变量 `maint < 1/实际杠杆` 仍成立（`0 < 1/lev`）。 */
+  if (!(pos.margin > 0)) return 0;
   const open = 1 / effLevOf(pos);                  // 退化格参考：**实际杠杆**下的初始保证金率
   return m < open ? m : open * MAINT_MAX_SHARE;    // 退化格：见 MAINT_MAX_SHARE
 }

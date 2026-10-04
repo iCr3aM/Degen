@@ -447,19 +447,24 @@ export function drawChart(canvas, o) {
     // 为什么搬到这里：原来它和保证金率挤在持仓条第三格里，两个数一起被 `text-overflow` 截断。
     // 图上这条开仓线本来就横跨整个画布，**左端是空的** —— 放这儿既不占布局、又天然离 K 线最近。
     // 用 `--down` 红标（在与不在，强平价都是风险信号），与右端金色的开仓价一眼分得开。
-    // 它挂的是**开仓线的 y**：强平价在中长仓里通常远在可视区间之外，单独画线只会永远贴在画布边缘。
     //
-    // ⚠️ **与开仓价签同一 y**（2026-10-04 修对齐）：原先它为躲左下角 `.chart-side` 的浮字写死了一条
-    //    `SIDE_RESERVE` 上移，而开仓价签没有 ⇒ 两签错开 22px。现在底部浮字那一行由 `bottomInset`
-    //    整行让开（见上），两个签都落在价格区之内，不再需要任何避让 —— `ly` 就等于 `ty`。
+    // ⚠️ **与开仓价签同一个 y 是兜底、不是常态**（2026-10-05 修准确性）：强平价落在**本帧价格区
+    //    可视范围内**时，标签必须挂在**它自己的 y** 上（否则读数写 99.9 却贴在开仓价那条线上，
+    //    与右侧价格刻度对不上）；只有它越出可视区（中长仓的常态）才回落到开仓线的 y ——
+    //    这时单画一条线只会永远贴在画布边缘，借开仓线的位置报数反而更有信息量。
+    //    `ty` 那枚签的 y 已经夹进了价格区（见上），所以兜底位置天然安全。
     if (Number.isFinite(liq)) {
+      const liqY = yOf(liq);
+      const ly = liqY >= top && liqY <= bot
+        ? Math.round(clamp(liqY, top + 8, bot - 8)) + .5
+        : ty;
       const ltag = '强 ' + axisLabel(liq);
       const lw = ctx.measureText(ltag).width + 6;
       ctx.fillStyle = T.DOWN;
-      ctx.fillRect(0, ty - 8, lw, 16);
+      ctx.fillRect(0, ly - 8, lw, 16);
       ctx.fillStyle = '#1a0508';
       ctx.textAlign = 'left';
-      ctx.fillText(ltag, 3, ty);
+      ctx.fillText(ltag, 3, ly);
     }
   }
 
