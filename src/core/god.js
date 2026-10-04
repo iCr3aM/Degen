@@ -918,6 +918,56 @@ function shockFactorOf(r) {
 const EXDEV_CHAN = hashStr('exdev');
 
 /**
+ * **跨所价差的压力放大**（S2 · 2026-10-05 用户拍板「只做模拟深度」）。
+ *
+ * 病根：改动前 `exDevOf` 的噪声幅度是**恒定的**（三家 `amp` 压在一次往返手续费内），
+ * 于是「常态不可套利」这条守住了，但**压力期价差该拉大**这条史实没建模
+ * （原文 self-note 写着「不建模压力放大，那属于缺口 1 的深度撤退」—— 那是把两件事混为一谈：
+ * 深度撤退影响的是**你这一家所**的成交代价，跨所价差影响的是**各所之间读数分叉**，两码事）。
+ *
+ * 史实锚（2026-10-05 联网复核）：
+ *   - **2020-03-12/13**：做市商集体退出 ⇒ 各所短时大额价差 —— Coinbase 与 Binance 最大差价
+ *     **$1000–1200**（BTC 在 $3800–5000 ⇒ 约 **20–24%**）；BitMEX 与 Coinbase 一度差 **$400**（约 9%）。
+ *   - 常态头部所毛差 3–35bp（2024 实测 Binance–Coinbase 均差 3.1bp）。
+ * ⇒ 取**压力期 6–12%** 作为本层的目标带（对 312 那种极端日是**保守下取**，
+ *   与 `HEAT.kSpread` 对 2025-10-10 的取法同源：不把最极端的一天当成常态）。
+ *
+ * ⚠️ **零均值是硬纪律**：放大的是**噪声幅度**（白噪声均值为 0），**不是基准偏置** ——
+ *    否则「某一家所长期贵 X%」会变成无风险套利（`basis` 本身恒定、往返净零，所以照旧安全）。
+ *    噪声逐小时独立 ⇒ 峰谷虽大，但玩家无法预判下一小时往哪偏，也吃不到（换所需数小时、
+ *    噪声早换了），套利口子关着。
+ * ⚠️ **触发源用已有的恐慌状态**（不新增状态字段）：`heat` 离中性 0.5 的**绝对**偏离
+ *    （崩盘压向 0、逼空顶向 1，两类极端都放大价差 —— 与 `HEAT.kSpread` 两端都触发同源）
+ *    ＋ NPC 级联瞬时冲击 `npcShock`（`abs` 归一）。两者相加夹到 1。
+ * ⚠️ **不升 `STATE_VERSION`** —— 纯函数读已有的 `s.mkt`，不新增字段。
+ */
+export const EXDEV = {
+  /** 压力期**额外**的噪声幅度（叠加在各所原有的 `amp` 上）—— 满压力 ⇒ 单所偏移 ±6%（两所差可达 12%） */
+  stressAmp: 0.06,
+  /** 压力期单所偏移的**硬顶**（叠加在各所原有的 `cap` 上）—— 防止极端叠加把价差顶穿 */
+  stressCap: 0.12,
+  /**
+   * `npcShock` 归一到 `[0,1]` 的**参考幅度** —— 达到它即认为级联烈度满档。
+   * 依据：`pushNpcShock` 的取值 = `synthGive × permImpactOf(...)`，一次大崩盘的强平潮
+   * 折到显示价上通常在 **2–4%** 量级（见 `NPC` 的位移上界注释）⇒ 取 3% 当满档。
+   */
+  shockRef: 0.03,
+};
+
+/**
+ * **某个币在某一小时的价差压力**（0 = 中性、1 = 满压力）—— `exDevOf` 的放大器。
+ * = `|heat − 0.5| / 0.5`（情绪两端的绝对偏离）＋ `|npcShock| / EXDEV.shockRef`（级联瞬时烈度），
+ * 相加后夹到 1。缺 `s.mkt`（未 tick 过 / 旧档）⇒ 0，回落到改动前的恒定幅度。
+ */
+function exStressOf(s, sym, hour) {
+  const m = s.mkt && s.mkt[sym];
+  const heat = m ? m.heat : HEAT.base;
+  const hs = Math.min(1, Math.abs(heat - HEAT.base) / HEAT.base);
+  const cs = Math.min(1, Math.abs(npcShockAt(s, sym, hour)) / EXDEV.shockRef);
+  return Math.min(1, hs + cs);
+}
+
+/**
  * 某家所在某个币、某一小时的**本所价系数**（缺口 10「跨所价格同源」）。
  *
  * 口径（用户 2026-10-03 拍板）：**长期基差 ＋ 小噪声**
@@ -935,9 +985,11 @@ const EXDEV_CHAN = hashStr('exdev');
  *   · **噪声**是逐小时独立的**白噪声** ⇒「低买高卖」能拿到的上限是峰谷差 `2×amp`；三家的 `amp`
  *     都压在**一次往返手续费**之内（Bitfinex 0.2% ⇒ ±13bp；
  *     BitMEX 0.075% ⇒ ±5bp；Binance 0.04% ⇒ ±3bp）⇒ 拿噪声套利赚不回手续费。
- * ⚠️ 幅度依据（联网核实 · 2026-10-03）：头部所常态毛差 3–35bp（2024 实测 Binance–Coinbase 均差
- *    3.1bp、Binance 比 Kraken 最多高 50bp）。压力期（312 / 519）各所可相差 6–12% —— 本层**不建模压力放大**，
- *    那属于缺口 1 的深度撤退，别重复计价。
+ * ⚠️ 幅度依据（联网核实 · 2026-10-03 · S2 复核对齐 2026-10-05）：头部所常态毛差 3–35bp（2024 实测
+ *    Binance–Coinbase 均差 3.1bp、Binance 比 Kraken 最多高 50bp）；压力期（312 / 519）各所可相差
+ *    6–12%（312 当日 Coinbase–Binance 一度差 $1000–1200 ⇒ 20–24%，本层取保守下沿）。
+ *    ⚠️ S2 起压力期**会**放大（`EXDEV` + `exStressOf`）：常态 `amp` / `cap` 不变（不可套利那条守死），
+ *    压力期叠一层**零均值**的额外幅度 —— 详见 `EXDEV` 的注释。
  *
  * @param {string} exId 交易所 id
  * @param {string} sym  币符号（噪声按币独立，免得五个币同向抖动）
@@ -946,14 +998,20 @@ const EXDEV_CHAN = hashStr('exdev');
  *   （P1-11 · 2026-10-04 审计）：现在 `s.seed` 恒等于 `GAME.seed`，两者数值相同、看不出差别；
  *   但 S4 肉鸽化会让 `s.seed` 由玩家输入 / 日期派生 ⇒ 若这里仍读模块常量 `GAME.seed`，
  *   本所价噪声就会**与存档脱钩**（读档后同 `(所, 币, 小时)` 对不上同一根噪声）⇒ 现先接线。
- * @returns {number} 乘数（≈ 0.97 ~ 1.03）；未知交易所 / 未配置 `dev` 恒返回 1
+ * @param {object} [s] 本局状态（S2）—— 给了才按 `heat` / `npcShock` 放大压力期价差；
+ *   不给（旧调用点 / 单测）⇒ 行为与改动前**逐位相同**（`severity = 0`）。
+ * @returns {number} 乘数（常态 ≈ 0.97 ~ 1.03；压力期可达 ≈ 0.88 ~ 1.12）；未知交易所 / 未配置 `dev` 恒返回 1
  */
-export function exDevOf(exId, sym, hour, seed = GAME.seed) {
+export function exDevOf(exId, sym, hour, seed = GAME.seed, s = null) {
   const d = exchangeOf(exId)?.dev;
   if (!d) return 1;
-  const n = (rand(seed, hashStr(sym), hour, 0, EXDEV_CHAN) * 2 - 1) * d.amp;
+  /* S2：压力期把**噪声幅度**（不是基差）放大 —— 见 `EXDEV`。`severity = 0` 时与改动前逐位相同。 */
+  const sev = s ? exStressOf(s, sym, hour) : 0;
+  const amp = d.amp + sev * EXDEV.stressAmp;
+  const cap = d.cap + sev * EXDEV.stressCap;
+  const n = (rand(seed, hashStr(sym), hour, 0, EXDEV_CHAN) * 2 - 1) * amp;
   const dev = d.basis + n;
-  return 1 + Math.max(-d.cap, Math.min(d.cap, dev));
+  return 1 + Math.max(-cap, Math.min(cap, dev));
 }
 
 /* ───────────────────────── 上帝面板用的小工具 ───────────────────────── */

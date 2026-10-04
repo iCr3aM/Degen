@@ -24,6 +24,7 @@ import {
   equityOf, isLiquidatable, isMargin, liquidationPrice, maintRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
   FUNDING, FR, INSURE, fundingOf, premiumIndexOf, fundingRateOf, canLiquidate, paysFunding, paysInterest, borrowedOf, borrowCurOf, shockKindOf,
+  bankruptcyFillPrice,
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
 import { pathOf } from './simulate.js';
@@ -181,7 +182,7 @@ function advanceMarkBias(s, sym) {
  */
 export function exPrice(s, sym, exId = s.ex) {
   const p = lastPrice(s, sym);
-  return p == null ? null : p * exDevOf(exId, sym, s.i, s.seed);
+  return p == null ? null : p * exDevOf(exId, sym, s.i, s.seed, s);
 }
 
 /**
@@ -190,7 +191,7 @@ export function exPrice(s, sym, exId = s.ex) {
  */
 export function exMarkPrice(s, sym, exId = s.ex) {
   const p = markPrice(s, sym);
-  return p == null ? null : p * exDevOf(exId, sym, s.i, s.seed);
+  return p == null ? null : p * exDevOf(exId, sym, s.i, s.seed, s);
 }
 
 /** 某个币的持仓的未实现盈亏（按**本仓所在所**的**标记价** —— 三价体系 · 2026-10-03） */
@@ -1594,11 +1595,21 @@ function seedFund(s, sym) {
  * 在**强平线**处 `price = avg×(1 − drop)`、`drop = 1/lev − maint` ⇒ 代入得
  * `surplus = notional × maint`（＝现实里强平盈余恰为维持保证金那一档）；
  * 价格**越过破产价**（`price < avg×(1 − 1/lev)` 的多头）时 `surplus < 0` ⇒ 穿仓，由池吸收（②）。
+ *
+ * ⚠️ **S4（2026-10-05）· 成交价夹到「破产价 ± `INSURE.gap`」**：`stampede` 传进来的是**本小时
+ *    收盘价**，而价格常在一根小时内直接跳过破产价 ⇒ 那一段跳空被全额记成穿仓（100x 档破产价
+ *    离强平线仅 0.5%，一根 −20% 阴线 = 19× 保证金的假穿仓）。真实强平在破产价附近成交，
+ *    故这里把记账用的成交价收口到破产价再让 `gap` 的滑价（详见 `positions.INSURE`）。
+ *    ⇒ 每一笔穿仓被限死在 `gap × 保证金`，基金不再结构性失血。
+ *    ⚠️ 只改**记账价**：调用方的价格冲击（`pushNpcShock`）仍用真实市价，不受影响。
  * @param {number} dir +1 = 多头档、−1 = 空头档
  */
 function fundSettle(s, notional, avg, lev, dir, price) {
   if (!(notional > 0) || !(avg > 0) || !(lev > 0)) return;
-  const loss = notional * dir * (1 - price / avg);
+  /* S4：记账用的成交价夹到「破产价 ± `gap`」（`positions.bankruptcyFillPrice`）——
+     多头不许记到它以下、空头不许记到它以上，于是穿仓被收口到 `gap × 保证金`，
+     不再是无界的小时跳空。 */
+  const loss = notional * dir * (1 - bankruptcyFillPrice(avg, lev, dir, price) / avg);
   s.fund += notional / lev - loss;                  // 正 = 盈余入池；负 = 穿仓掏池
 }
 
@@ -3524,6 +3535,34 @@ export function invalidateSigma() {
 }
 
 /**
+ * **借贷利率的利用率乘数**（S3 · 2026-10-05）—— 基准日息（`config.MARGIN.daily`）之上那一层浮动。
+ *
+ * 现实里 Bitfinex 的借贷利率是用户间 P2P 撮合的 FRR：池子越满越贵，崩盘时出借方抽贷会飙到
+ * 年化 50%+（见 `config.MARGIN.util` 的注释）。本函数复刻这条形态，**不改基准曲线本身**：
+ *
+ *   压力   = |heat − 0.5| / 0.5                     （情绪两端都抽贷）
+ *   供给   = 1 − supplyPull × 压力                  （恐慌中可借池缩水，下限 0.2）
+ *   利用率 = clamp((base + 玩家借入 ÷ 额度) ÷ 供给, 0, 1)
+ *   乘数   = 1 + kRate × (利用率 − base) ÷ (1 − base)，夹在 [1, 1 + kRate]
+ *
+ * ⇒ 常态（压力 0、玩家不借）乘数**恰为 1** ⇒ 与改动前逐位相同（老档读档后的利息也不变）。
+ * ⚠️ **只读、纯函数**：不写状态、不新增字段 ⇒ 不升 `STATE_VERSION`。
+ * @param {object} s   本局状态
+ * @param {string} sym 币符号（借入与该币的当日流动性都按币取）
+ * @returns {number} ≥ 1 的乘数
+ */
+export function marginRateMulOf(s, sym) {
+  const U = MARGIN.util;
+  const poolCap = (liqOf(sym, dayIndexOf(s.i)) ?? 0) * MARGIN.quota;
+  const use = poolCap > 0 ? borrowedOf(s.positions && s.positions[sym]) / poolCap : 0;
+  const stress = Math.min(1, Math.abs(heatOf(s, sym) - HEAT.base) / HEAT.base);
+  const supply = Math.max(0.2, 1 - U.supplyPull * stress);
+  const util = Math.max(0, Math.min(1, (U.base + use) / supply));
+  const dev = Math.max(0, (util - U.base) / (1 - U.base));
+  return 1 + U.kRate * dev;
+}
+
+/**
  * 每 8 游戏小时一次的**持仓成本结算**（GDD §9.5）—— B26 起分成**两条互斥的路**：
  *
  *   - **永续（perp）**：资金费率 —— **拥挤成本**（§73.6）：应付的名义价值 × 费率从保证金里扣
@@ -3573,7 +3612,8 @@ function settleFunding(s) {
        利率按**借的币种**取（多头走 quote、空头走 coin —— 两条独立 funding book，见 `borrowCurOf`）。 */
     if (paysInterest(pos)) {
       const borrowed = borrowedOf(pos);
-      const fee = borrowed * marginDailyRateAt(t, borrowCurOf(pos)) / 24;
+      /* S3：利率 = 基准日息 × 利用率乘数（池子越满 / 越恐慌越贵，见 `marginRateMulOf`）。 */
+      const fee = borrowed * marginDailyRateAt(t, borrowCurOf(pos)) * marginRateMulOf(s, sym) / 24;
       pos.margin -= fee;
       s.realized -= fee;
       ied += fee;
@@ -3681,7 +3721,7 @@ function liquidateAll(s) {
     const raw = rawCandleAt(sym, s.i);
     if (!raw) continue;
     const bias = markBiasOf(s, sym);
-    const dv = exDevOf(pos0.ex, sym, s.i, s.seed);
+    const dv = exDevOf(pos0.ex, sym, s.i, s.seed, s);
     const c = {
       o: (raw.o + bias) * dv,
       h: (raw.h + bias) * dv,

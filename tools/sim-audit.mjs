@@ -460,6 +460,13 @@ section('7 · 全时间线连跑：真实数据走满 12 年不崩、曲线有�
   check('连跑结束于结算/爆仓/收摊的真实终局',
     !!s.over && ['liquidated', 'settled', 'gaveup'].includes(s.over.reason),
     `over=${JSON.stringify(s.over)}`);
+  /* S4：保险基金健康度 —— 穿仓被夹到「破产价 ± gap」后，单笔净流出有界，基金不该被流失掏空。
+     断言做成「有限 + 不比初始播种水位低太多」的相对口径（播种额随当日流动性浮动，不写死绝对值）。 */
+  const seed = market.liqOf('BTC', market.dayIndexOf(s.day0 * 24)) * P.INSURE.seed;
+  console.log(`  保险基金末值 $${f(s.fund, 2)}（BTC 开局播种 ≈ $${f(seed, 2)}）`);
+  check('7 保险基金全程有限（无 NaN/Inf）', Number.isFinite(s.fund), `末值 $${f(s.fund, 2)}`);
+  check('7 保险基金不结构性失血（末值 ≥ −10× 初始播种）',
+    s.fund >= -10 * Math.max(seed, 1), `末值 $${f(s.fund, 2)} ｜ 播种 ≈ $${f(seed, 2)}`);
 }
 
 /* ═══════════════════ 7b · K 线连续性（零跳空缺口 · 2026-10-05） ═══════════════════ */
@@ -552,7 +559,9 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
   const m0 = s.positions.BTC.margin;
   engine.advanceOneHour(s);                       // 只走 1 小时，且落在**非** 8h 整点上
   const d1 = m0 - s.positions.BTC.margin;
-  const exp = P.borrowedOf(s.positions.BTC) * C.marginDailyRateAt(engine.timeOf(s), 'quote') / 24;
+  /* S3：利率现在是「基准日息 × 利用率乘数」⇒ 期望值必须乘上 `marginRateMulOf`（同一状态、同一小时）。 */
+  const exp = P.borrowedOf(s.positions.BTC) * C.marginDailyRateAt(engine.timeOf(s), 'quote')
+    * engine.marginRateMulOf(s, 'BTC') / 24;
   check('9b 持有一小时就扣息（改动前此处为 0）', d1 > 0, `1h 扣 $${f(d1, 8)}`);
   check('9b 每小时利息 = 借入 × 日息 ÷ 24', Math.abs(d1 - exp) < 1e-9, `实得 ${f(d1, 8)} 期望 ${f(exp, 8)}`);
   /* 再跑 23 小时：借贷利息日志必须是 8h 一条（不是 24 条） */
@@ -1336,6 +1345,132 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     check('12 真引擎跑一局：主称号 ＋ 风格称号合计 ≥ 2 枚',
       !!T.titleOf(r) && !!T.styleOf(r), `${T.titleOf(r)} · ${T.styleOf(r)} · 徽章 ${T.badgesOf(r).length} 枚`);
   }
+}
+
+/* ═══════════════════ 9h–9j · 模拟深度三项（S2 跨所价差 / S3 借贷利率 / S4 保险基金） ═══════════════════ */
+section('9h–9j · 模拟深度：跨所价差压力放大 · 借贷利率利用率浮动 · 强平成交价收口');
+
+/* ── 9h · S2：跨所价差随恐慌放大（零均值 · 单所硬顶 · 中性逐位不变） ── */
+{
+  const EX = ['bitfinex', 'bitmex', 'binance'];
+  const H0 = idx(at(2021, 5));
+  const SEED = 20211005;
+  const N = 3000;
+  const st = (heat, shocks = []) => ({ mkt: { BTC: { heat, npcShock: { at: shocks.map(x => x.at), v: shocks.map(x => x.v) } } } });
+  const neutral = st(god.HEAT.base);
+  const panic = st(0);                               // |0 − 0.5| / 0.5 = 1 ⇒ 满压力
+
+  /* ① s=null（旧调用点 / 单测）与中性档逐位相同 —— 保证老档行为不被 S2 改到。 */
+  let same = true;
+  for (const ex of EX) for (let k = 0; k < 500; k++) {
+    if (god.exDevOf(ex, 'BTC', H0 + k, SEED, null) !== god.exDevOf(ex, 'BTC', H0 + k, SEED, neutral)) same = false;
+  }
+  check('9h 中性档与旧行为（s=null）逐位相同', same);
+
+  /* ② 确定性：同输入两次调用逐位复现。 */
+  check('9h 确定性：同 (所,币,小时,种子,状态) 逐位复现',
+    god.exDevOf('binance', 'BTC', H0 + 7, SEED, panic) === god.exDevOf('binance', 'BTC', H0 + 7, SEED, panic));
+
+  /* ③ 压力期偏移明显大于常态，并落在「目标带 6–12%」内（相对关系 + 带宽，不写死绝对值）。 */
+  const span = (ex, s0) => { let mx = 0; for (let k = 0; k < N; k++) mx = Math.max(mx, Math.abs(god.exDevOf(ex, 'BTC', H0 + k, SEED, s0) - 1)); return mx; };
+  let pMax = 0, nMax = 0;
+  for (const ex of EX) { pMax = Math.max(pMax, span(ex, panic)); nMax = Math.max(nMax, span(ex, neutral)); }
+  check('9h 压力期偏移明显大于常态（≥ 5×）', pMax > nMax * 5, `压力 ${f(pMax * 100, 2)}% vs 常态 ${f(nMax * 100, 3)}%`);
+  check('9h 压力期单所偏移达目标带（≥ 5% 且 ≤ 13%）', pMax >= 0.05 && pMax <= 0.13, `峰值 ${f(pMax * 100, 2)}%`);
+
+  /* ④ 零均值：放大的是**噪声幅度**不是基差，否则「某所长期贵 X%」会变成无风险套利。 */
+  for (const ex of EX) {
+    const basis = C.exchangeOf(ex).dev.basis;
+    let sum = 0;
+    for (let k = 0; k < N; k++) sum += god.exDevOf(ex, 'BTC', H0 + k, SEED, panic) - 1 - basis;
+    check(`9h ${ex} 压力期噪声零均值（|均值| < 0.2%）`, Math.abs(sum / N) < 0.002, `均值 ${f(sum / N * 100, 4)}%`);
+  }
+
+  /* ⑤ 单所逐点硬顶：|dev| 恒不超过「原 cap + stressCap」。 */
+  let over = 0;
+  for (const ex of EX) {
+    const capS = C.exchangeOf(ex).dev.cap + god.EXDEV.stressCap;
+    for (let k = 0; k < N; k++) if (Math.abs(god.exDevOf(ex, 'BTC', H0 + k, SEED, panic) - 1) > capS + 1e-12) over++;
+  }
+  check('9h 单所偏移恒 ≤ 原 cap + stressCap（硬顶守住）', over === 0, `越顶 ${over} 次`);
+
+  /* ⑥ 两所最大价差 ≤ 两所硬顶之和 —— 放大后仍不可能靠「买低卖高」白赚。 */
+  let dMax = 0;
+  for (let k = 0; k < N; k++) {
+    const a = god.exDevOf('bitfinex', 'BTC', H0 + k, SEED, panic);
+    const b = god.exDevOf('binance', 'BTC', H0 + k, SEED, panic);
+    dMax = Math.max(dMax, Math.abs(a - b));
+  }
+  const dCap = C.exchangeOf('bitfinex').dev.cap + C.exchangeOf('binance').dev.cap + 2 * god.EXDEV.stressCap;
+  check('9h 两所最大价差 ≤ 两所硬顶之和', dMax <= dCap + 1e-12, `实测 ${f(dMax * 100, 2)}% ≤ ${f(dCap * 100, 2)}%`);
+
+  /* ⑦ npcShock（级联瞬时冲击）单独也能触发同一路放大。 */
+  let sMax = 0;
+  for (let k = 90; k < 130; k++) {
+    const sh = st(god.HEAT.base, [{ at: H0 + k, v: god.EXDEV.shockRef }]);
+    sMax = Math.max(sMax, Math.abs(god.exDevOf('binance', 'BTC', H0 + k, SEED, sh) - 1));
+  }
+  check('9h npcShock（级联）独立触发价差放大', sMax > 0.04, `峰值 ${f(sMax * 100, 2)}%`);
+}
+
+/* ── 9i · S3：借贷利率随可借池利用率浮动（中性逐位不变 · 恐慌变贵 · 有上限） ── */
+{
+  const U = C.MARGIN.util;
+  const T = idx(at(2013, 8));                        // 早期流动性小 ⇒ 额度小、借入占比看得清
+  const s = await mk({ sym: 'BTC', i: T, cash: 100000 });
+  const mulAt = h => { s.mkt.BTC.heat = h; return engine.marginRateMulOf(s, 'BTC'); };
+
+  /* ① 中性 + 无借入 ⇒ 乘数**逐位**为 1（常态行为与改动前逐位相同）。 */
+  delete s.positions.BTC;
+  check('9i 中性（heat=0.5、无借入）⇒ 乘数逐位为 1', mulAt(god.HEAT.base) === 1, `实得 ${mulAt(god.HEAT.base)}`);
+
+  /* ② 恐慌越深越贵（单调不减），恒在 [1, 1+kRate]。 */
+  const hs = [0.5, 0.45, 0.4, 0.3, 0.25, 0.1, 0];
+  const muls = hs.map(mulAt);
+  let mono = true;
+  for (let k = 1; k < muls.length; k++) if (muls[k] + 1e-12 < muls[k - 1]) mono = false;
+  check('9i 恐慌越深利率越高（单调不减）', mono, muls.map(v => f(v, 3)).join(' → '));
+  check('9i 乘数恒在 [1, 1+kRate] 内', muls.every(v => v >= 1 - 1e-12 && v <= 1 + U.kRate + 1e-12),
+    `峰值 ${f(Math.max(...muls), 4)} ≤ ${f(1 + U.kRate, 0)}`);
+  check('9i 满压力（heat=0、无借入）⇒ 恰好到上界 1+kRate',
+    Math.abs(mulAt(0) - (1 + U.kRate)) < 1e-12, `实得 ${f(mulAt(0), 4)}`);
+
+  /* ③ 借得越满越贵：借入 = 0.5×额度 时乘数 > 不借时。 */
+  const poolCap = market.liqOf('BTC', market.dayIndexOf(T)) * C.MARGIN.quota;
+  const notional = poolCap * 0.75;                   // 3x 多头：借入 = 名义×2/3 = 0.5×额度
+  s.positions.BTC = P.openPosition('BTC', 'long', 30000, notional / 3, 3, 0.0004, true);
+  const mBorrow = mulAt(god.HEAT.base);
+  delete s.positions.BTC;
+  const mFlat = mulAt(god.HEAT.base);
+  check('9i 借得越满利率越高（借 0.5×额度 > 不借）', mBorrow > mFlat, `借满 ${f(mBorrow, 4)} vs 不借 ${f(mFlat, 4)}`);
+}
+
+/* ── 9j · S4：强平成交价夹到「破产价 ± gap」（穿仓被收口到 gap×保证金） ── */
+{
+  const G = P.INSURE.gap;
+  const avg = 30000, lev = 10, margin = avg * 0.1;   // 多头 10x
+  const edgeL = avg * (1 - (1 + G) / lev);
+  check('9j 多头：市价跌破破产价 ⇒ 夹到破产价−gap', P.bankruptcyFillPrice(avg, lev, 1, avg * 0.5) === edgeL,
+    `夹到 ${f(edgeL, 2)}（原价 ${f(avg * 0.5, 2)}）`);
+  check('9j 多头：市价高于破产价 ⇒ 原样返回', P.bankruptcyFillPrice(avg, lev, 1, avg * 0.9) === avg * 0.9);
+  const edgeS = avg * (1 + (1 + G) / lev);
+  check('9j 空头：市价涨破破产价 ⇒ 夹到破产价+gap ｜ 低于 ⇒ 原样',
+    P.bankruptcyFillPrice(avg, lev, -1, avg * 1.5) === edgeS
+    && P.bankruptcyFillPrice(avg, lev, -1, avg * 0.9) === avg * 0.9);
+
+  /* 收口：无论市价跌到多深，基金净流出（= 名义/杠杆 − 亏损）恒 ≥ −gap×保证金。
+     ⇒ 单笔穿仓不可能超过 `INSURE.gap` 倍保证金，这就是「结构性失血」被堵死的量化口径。 */
+  const notional = margin * lev;
+  const floorDelta = -notional * G / lev;
+  let worst = Infinity, breach = 0;
+  for (const p of [avg, avg * 0.9, avg * 0.5, avg * 0.1, avg * 0.01, 0, -1000]) {
+    const fill = P.bankruptcyFillPrice(avg, lev, 1, p);
+    const delta = notional / lev - notional * (1 - fill / avg);   // = 保证金 − 亏损（含夹取），与 fundSettle 同式
+    if (delta < worst) worst = delta;
+    if (delta < floorDelta - 1e-9) breach++;
+  }
+  check('9j 单笔穿仓被收口（基金净流出 ≤ gap×保证金）', breach === 0 && Math.abs(worst - floorDelta) < 1e-9,
+    `最深净额 ${f(worst, 2)} = 下限 ${f(floorDelta, 2)}（−gap×保证金 ${f(G * margin, 2)}）`);
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */
