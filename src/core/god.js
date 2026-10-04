@@ -532,9 +532,11 @@ export const CONTAGION = {
 /**
  * **跨币危机共振的设计依据**（G2 · 2026-10-05）。
  *
- * 现实里加密资产高度同涨同跌：IMF Working Paper WP/23/163（Sockin & Xiong 系谱的共同因子研究）
- * 指出**单一加密因子即可解释约 80% 的个币收益率方差**，且**熊市里币间相关系数 > 0.9** ——
- * 一个币的恐慌（交易所暴雷、龙头币崩盘）会通过共同因子与连锁去杠杆外溢到全市场。
+ * 现实里加密资产高度同涨同跌：IMF WP/23/163（Che, Copestake, Furceri & Terracciano, 2023,
+ * "The Crypto Cycle and US Monetary Policy"）用动态因子模型识别出**单一「加密因子」即可解释
+ * 约 80% 的币价变动**；危机期币间相关更会冲到 0.9 以上（2020-03 宏观崩盘 altcoin–BTC ≈ 0.94、
+ * 2021-05 清算踩踏 BTC–ETH ≈ 0.98）—— 一个币的恐慌（交易所暴雷、龙头币崩盘）会通过共同因子
+ * 与连锁去杠杆外溢到全市场。
  *
  * ⚠️ **本作的特殊约束**：`tickMarket` 每小时**只跑当前币**（`s.sym`），其余币的 `m.heat`
  *    默认**冻结** ⇒ 若不显式传导，玩家「砸崩 BTC 再切到 ETH」会发现 ETH 什么都没发生 ——
@@ -650,11 +652,14 @@ export const NPC = {
    *
    * 依据：① **聚合强平中长期占 62%–85%**（Coinglass / Glassnode 多期口径）——
    *      下跌由「被迫平仓」主导、上涨由「自愿追高」主导，前者的成交量/价格弹性更大；
-   *      ② 熊市羊群效应显著强于牛市（Gemayel & Preda, 2024, *JRFM*, "Herding behaviour in
-   *      cryptocurrency markets: bull vs bear"）。
+   *      ② 熊市羊群效应显著强于牛市（Gemayel & Preda, 2024, "Herding in the cryptocurrency
+   *      market: A transaction-level analysis", *Journal of International Financial Markets,
+   *      Institutions and Money*, vol. 91 —— 原文 "Herding is higher during bearish periods"）。
    * 口径：`pushNpcShock` 的**向下**（`dir < 0`）幅度 × 本值；向上不变。
-   * 取 **`1.3`**：与「多空强平占比 ≈ 85 : 65」的比值（1.31）同数量级，只放大**级联**这一条
-   * 通道（`npcShock`），不动玩家自己的成交代价与位移（红线 A · 不双重计价）。
+   * 取 **`1.3`**：与**日常**区间的多头强平占比同数量级、但刻意取小 —— Coinglass 2026 H1 多头
+   *    强平占 62.2%（多 : 空 ≈ 62 : 38 ≈ 1.65），极端事件（2025-10-10）才到 85–90%（≈ 6）。
+   *    本值只给**常态**一个下行偏置、不追极端；且只放大**级联**这一条通道（`npcShock`），
+   *    不动玩家自己的成交代价与位移（红线 A · 不双重计价）。
    */
   downAsym: 1.3,
   /**
