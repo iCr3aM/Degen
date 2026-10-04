@@ -2517,3 +2517,82 @@ P2 ×20 / 测试盲区 ×8；经用户拍板（AskUserQuestion）**修复范围 
 - 未改动数据包格式 / 未加后端 / `STATE_VERSION` 保持 **31**（本轮无新增存档结构）。
 
 ---
+
+## 十九、P2 清单（2026-10-04 · **只读复核重新产出**）
+
+> ⚠️ **说明**：§十八 里那批 P2×20 的**原文未落盘**（只留下数量），用户 2026-10-04 拍板「只读复核、重新产出」。
+> 本节是**新复核的结果**，不是原清单的副本 —— 条目会与原 20 条有重叠也有出入。
+> 处置：**全部只报不改**（本轮不碰代码），供后续圈定。方法：5 路 `general-purpose` 只读审计（按 `src/core`／
+> 行情数据／状态常量／`src/ui`／`tools+sw` 分域），关键条目已由本人回读源码复核。**未发现新的 P0/P1 级问题。**
+
+### 19.1 引擎 / 玩法（`engine.js` · `god.js` · `positions.js`）
+
+| 编号 | 位置 | 问题 | 建议 |
+|---|---|---|---|
+| R1 | `engine.js:2723` | `closeTrade` 平仓**已成**，若随后触发破产就返回 `{ok:false}` ⇒ UI 可能把成功的平仓报成「失败」 | 照常返回 `ok:true`，破产交给时钟那一步 |
+| R2 | `engine.js:3516` | `s.intWin.grossM` 每小时**被覆盖**为「本小时借入名义」，而 `ied` 是窗口**累加** ⇒ 借入量跨小时变化时公告费率偏差 | 改存窗口累计，或改注释说明这是近似 |
+| R3 | `engine.js:1386` | `cdriOf` 在 OTC 通道对**已持仓** `pos.lev` 再钳一次 `OTC.levMax`，与「开仓已钳」注释重复；中途切通道会改写历史仓位的杠杆口径 | **待确认口径**：是刻意按当通道重估，还是应直接读 `pos.lev` |
+| R4 | `god.js:963` | `enableGod` 整体覆盖 `s.god`，与注释「幂等：只补缺失的键」不符（当前仅 `lastFill`，暂无实害） | 改合并写入，或修正注释 |
+| R5 | `god.js:700/721/738` | `levCapAt` / `decay` / `residualAt` **零外部引用**（仅模块内用）却 `export` | 去掉 `export` |
+| R6 | `engine.js:113/135/295/933/1251` | `indexPrice` / `markBiasOf` / `supplyCapOf` / `heatOf` / `longShareOf` 零外部引用（仅引擎内用） | 去掉 `export` |
+
+### 19.2 行情 / 数据 / 历史（`market.js` · `anchors.js` · `impact.js` · `review.js` · `fetch-data.mjs`）
+
+| 编号 | 位置 | 问题 | 建议 |
+|---|---|---|---|
+| R7 | `fetch-data.mjs:592-663` | `AGG_COINS` 已含全部 5 币 ⇒ `absorb`/`spanOf` 的**非聚合「补洞」分支永不可达** = 死代码 | 删除，或加断言并注明为将来增币保留 |
+| R8 | `fetch-data.mjs:149` | 注释「数据窗比游戏窗早 **96 小时**」，实为 **96 天（2304 小时）**（`config.js` 同样写错） | 改「96 天（2304 小时）」 |
+| R9 | `fetch-data.mjs:991-998` | `liqAnchorOf` 直接取 `LIQ_MKT[sym]`，若 `COINS` 增币而该表未同步会 `TypeError`（缺币无兜底） | 加缺币判空并抛出明确错误 |
+| R10 | `anchors.js:168` | `mv` 的基准收盘取 `newsBaseOf(a)-1`（**含 `h`**），注释却称「事件日**前一日**」⇒ `h≠0` 时会取到事件**当天**（当前无 `mv`＋`h` 组合，属潜伏） | 改用 `a.at - 1` |
+| R11 | `anchors.js:174` | `congStartOf` 注释写「`at + ramp` 天」，代码用的是 `r.w`；`r.w` 与 `congestion.ramp` 是两字段、当前靠取值相同 | 改用 `a.congestion.ramp`，或加相等断言 |
+| R12 | `impact.js:25` | 注释门槛「2018 起 $220M/$1,081M/$865M」与 `LIQ_MKT × 0.3` 推出的 10% 门槛（≈$180M/$1.44B/$771M）对不上 | 复核后同步实测值 |
+| R13 | `review.js:8/93` | 注释「本轮新增 / 第二批 **17 条**」，`EXTRA` 实为 **25 条**（5＋20） | 更正计数 |
+| R14 | `review.js:275-279` | `speedAt` 硬编码 `100/10/1`，未复用 `RV_SPEEDS` ⇒ 与常表易漂移 | 改引用 `RV_SPEEDS` |
+| R15 | `congestion.js:60/82/155` · `anchors.js:37/228` | `anchorAddAt` / `pulseOf` / `blockWaitMinutes` / `NEWS_DELAY` / `WARN_LEAD_HOURS` 零外部引用却 `export` | 去掉 `export`，或注明为测试保留 |
+
+### 19.3 状态 / 存档 / 常量 / 格式化（`state.js` · `save.js` · `config.js` · `format.js` 等）
+
+| 编号 | 位置 | 问题 | 建议 |
+|---|---|---|---|
+| R16 | `save.js:60` | `SHAPE` 头注释只列 **8 键**，实际 **12 键**（多 `adv`/`mkt`/`pvol`/`stat`）；且漏 `mkb`（同为对象、旧档仅靠 `s.mkb &&` 兜底） | 补注释，或把 `mkb` 并入白名单 |
+| R17 | `config.js:842` | omni 首档 `from: Date.UTC(2014,10,20)` 与 `USDT_LIVE` 同值却**各写一份** | 改用 `USDT_LIVE` |
+| R18 | `config.js:1015` | `SUPPLY_SHARE` 注释称「OTC 买入**不**计入」，与 `capturedOf`（F3 起**已**含 OTC 多头）矛盾 | 删该句 / 改注「F3 起含 OTC 多头」 |
+| R19 | `config.js:33/35` | `GAME.cash` / `GAME.ex` 运行时**零读取**（开局资金 / 所已由 `SCENARIOS[].cash/ex` 提供） | 删除或标注弃用 |
+| R20 | `format.js:206` | `fmtPct` 遇极小负值（如 `-0.0001`）印 **`-0.0%`**（`fmtMoney` 已修同类负零） | 舍零后去负号 |
+| R21 | `format.js:178` | `fmtQty` 进位兜底 `tier2` 用 2 位（印 `1.00B`），与 `TIER_UNIT` 的 B（1 位）/`fmtMoneyShort` 不一致；且缺 `tier3` 兜底，`≥1e12` 印 `1000.0B` | 与 `shortBody` 对齐 |
+| R22 | `format.js:223` | `fmtDate` / `fmtHour` **无非有限守卫** ⇒ `new Date(NaN)` 印 `NaN-NaN-NaN`（其余 `fmt*` 均返回 `--`） | 加 `Number.isFinite` 守卫 |
+| R23 | `rng.js:39/54` · `state.js:640` · `format.js:88` · `careers.js:32` · `levels.js:31/58` | 零外部引用导出：`splitmix64`/`mulberry32`/`LOG_MAX`/`moneyTier`/`EQ_PTS`/`LEVELS`/`levelsFrom` | 去掉 `export` |
+
+### 19.4 界面（`render.js` · `view.js` · `main.js` · `style.css`）
+
+| 编号 | 位置 | 问题 | 建议 |
+|---|---|---|---|
+| R24 | `render.js:1229/1446` | 持仓列表签名含 `unrealizedOf(...).toFixed(2)` ⇒ 价格一动就**整表重建 DOM** | 只在集合 / 方向 / 杠杆变化时重建，盈亏就地 `setText` |
+| R25 | `render.js:785-802/1154-1198` | HUD 三格与资产页多处**直写** `textContent`/`className`，绕过文件头声明的 `setText`/`setCls` 减写守卫 | 改用 `setText`/`setCls` |
+| R26 | `render.js:1348/1350/1406/1408` | `heatBar.style.setProperty('--heat')` 与 `heatChip.dataset.heat` **每帧无条件写**（同文件 `--pf` 有守卫） | 仿 `--pf` 加值比较 |
+| R27 | `render.js:1116-1123` | 每帧对 5 枚动作键 `set/removeAttribute('aria-disabled')`，**无值比较** | 加「不同才写」守卫 |
+| R28 | `render.js:762` | `pauseBtn.textContent` 每帧无条件写 | 改用 `setText` |
+| R29 | `view.js:154-168` | `dayCache` **无容量上限**，长局跨币可积数万项、且仅 `i` 回退时清 | 按币或容量设上限 / LRU |
+| R30 | `style.css:705/711` · `754/765` | `.opt.off` 与 `.opt:disabled` **都是 dashed**、透明度仅差 .04；`.act.off`(.28 去色) 比真禁用 `.act:disabled`(.55) **更暗** ⇒ 禁用态反而更亮 | 拉开对比 / 换形状 |
+| R31 | `render.js:245 vs 252` · `main.js:857` · `render.js:1059` | 文案/注释不一致：引导「双击复位」vs 浮字「双击回最新」；注释称引导「第 4 步」高亮买入，实为**第 6 步** | 统一措辞与步号 |
+
+### 19.5 测试盲区（8 条）＋ PWA / 工具
+
+| 编号 | 位置 | 问题 | 建议 |
+|---|---|---|---|
+| T1 | `sim-audit.mjs:325` | §7 主循环**不清 `s.pending`** ⇒ 中途归零进 `'loan'` 待决后 `advanceOneHour` 立即 return，后续全空转、`steps` 硬撑到 400 仍判「权益有限」通过 | 每轮先 `s.pending=null`，并断言 `s.i` **真推进**到 `endI` |
+| T2 | `sim-audit.mjs:126` | **结局状态机整块未覆盖**：`'loan'` 待决（首次归零⇒pending+paused+不结束；`takeLoan` 后二次归零⇒LIQUIDATED）、`giveUp`⇒GAVEUP、挑战局归零即终局、`s.god` 归零不结束 | 新增一节，各断言一条 |
+| T3 | `sim-audit.mjs:150` | 只断言「拒绝分支 ≥8 类」，**不校验具体 `why`** ⇒ 改文案或漏分支都能蒙过 | 断言 8 条具体 `why` 逐一命中 |
+| T4 | `sim-audit.mjs:275` | `!fc0 \|\| fc0.hours===8` ⇒ `fc0` 为 null 时**空过** | 改 `fc0 && fc0.hours===8` |
+| T5 | `sim-audit.mjs:339` | 结束态断言白名单含「未结束」⇒ `s.over` 全 null 也通过，等于没验退出条件 | 至少强制三种终局之一真实触发 |
+| T6 | `sim-audit.mjs:299` | fuzz 用**未播种** `Math.random`（不可复现），且只验成功分支有限性，未查被拒原因与平仓守恒 | 固定种子，补平仓后资金守恒断言 |
+| T7 | `sim-audit.mjs:835` | `flipped \|\| (A.ok && B.ok)` ⇒ 两侧都放行时无条件通过，未真正验证边界翻转 | 要求 `flipped` 为真 |
+| T8 | `sw.js:102` | 断网回退把 `./index.html` 当**任意**同源 GET 的兜底 ⇒ JS/CSS 请求也拿到 HTML（MIME 不符⇒白屏） | 仅 `req.mode==='navigate'` 回退 index.html，其余返回 504 |
+| T9 | `sw.js:84/98` | 两处 `cache.put(...)` **未 await/catch** ⇒ 失败产生未处理 Promise 拒绝 | 补 `.catch(()=>{})` |
+| T10 | `sw.js:27` | 预缓存只解析 `index.html` 的 `assets/*`，**manifest 声明的 icon** 不在任何清单 ⇒ 首访断网后「添加到主屏」无图标 | 把 manifest 的 icons 一并解析预缓存 |
+| T11 | `bench-chart.mjs:30` · `make-icons.mjs:139` | 前者 `ROOT=process.cwd()`（非仓库根运行即读不到数据）；后者无条件覆盖 `public/icon-*.png` 且无几何一致性校验 | 前者改用 `import.meta.url`；后者加尺寸/产物断言 |
+
+> 合计：**引擎 6 · 行情数据 9 · 状态常量 8 · 界面 8 · 测试/PWA 11 = 42 条**（含 8 条测试盲区）。
+> 复核结论：**未发现新的 P0/P1 级问题**；R1 / R3 两条建议落地前先与用户对齐口径（涉及「成功/失败语义」与「历史仓位杠杆口径」）。
+
+---
