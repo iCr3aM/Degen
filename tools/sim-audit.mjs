@@ -1165,15 +1165,23 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     ['不死鸟', { open: 20, liq: 15, maxLev: 5 }],
     ['爆仓常客', { open: 20, liq: 15, maxLev: 5, reason: OVER.LIQUIDATED }],
     ['梭哈战神', { open: 5, fut: 3, margin: 2, maxLev: 125 }],
+    ['孤注一掷', { open: 2, fut: 0, margin: 2, maxLev: 50 }],
     ['逐利游牧', { open: 5, move: 12, maxLev: 5 }],
     ['向死而生', { open: 5, loan: 1, maxLev: 5 }],
     ['续命无果', { open: 5, loan: 1, maxLev: 5, reason: OVER.GAVEUP }],
+    ['认栽跑路', { open: 3, liq: 0, margin: 0, fut: 0, maxLev: 2, loan: 0, reason: OVER.GAVEUP }],
+    ['永动机', { open: 200, days: 30, maxLev: 2 }],
     ['高频猎手', { open: 150, days: 1000, maxLev: 5 }],
+    ['日内快枪手', { open: 40, days: 20, maxLev: 2 }],
     ['单币信徒', { open: 20, syms: ['BTC'], maxLev: 5 }],
     ['全能多面手', { open: 20, syms: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP'], maxLev: 5 }],
     ['合约狂人', { open: 15, fut: 12, margin: 3, maxLev: 10 }],
     ['杠杆老兵', { open: 15, fut: 0, margin: 15, maxLev: 10 }],
+    ['佛系囤币', { open: 3, days: 1000, maxLev: 1, margin: 0, fut: 0, syms: ['BTC', 'ETH'] }],
     ['长线猎手', { open: 10, fut: 5, margin: 5, days: 1000, maxLev: 3 }],
+    ['铁头娃', { open: 2, days: 100, maxLev: 10, liq: 0, margin: 1, fut: 1, syms: ['BTC', 'ETH', 'SOL'] }],
+    ['割肉客', { open: 12, win: 2, loss: 12, days: 100, maxLev: 2, margin: 0, fut: 0, syms: ['BTC', 'ETH', 'SOL'] }],
+    ['常胜将军', { open: 20, win: 18, loss: 2, days: 100, maxLev: 2, margin: 0, fut: 0, syms: ['BTC', 'ETH', 'SOL'] }],
     ['稳健交易员', { open: 6, fut: 3, margin: 3, days: 200, maxLev: 3 }],
   ];
   const STYLE_SET = new Set(STYLES.map(([w]) => w));
@@ -1185,40 +1193,59 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
   /* ── A2 · 主称号「结局 × 倍数」穷举矩阵（2026-10-05 用户实测修）──────────────────
      上一版只对四档结局写死（爆仓 / 收摊各一枚），**破产档完全没按「曾经多高」分** ⇒
      峰顶 7.1m、终值 −265k 的局被叫「收摊的人」，与事实不符（用户原话）。
-     现在：破产档按**峰顶倍数**分三档，结算档按终值倍数分六档。这里把两条轴都穷举一遍。 */
-  const BUST_TITLES = ['黄粱一梦', '高台跳水', '归零者'];
-  const LIVE_TITLES = ['陪跑的', '活下来的', '翻倍的人', '钻石手', '币圈锦鲤', '百倍战神'];
-  const TITLE_SET = new Set([...BUST_TITLES, ...LIVE_TITLES]);
-  check('12 主称号档位恰 9 枚（破产 3 ＋ 结算 6）',
-    TITLE_SET.size === 9, `${TITLE_SET.size}`);
-  /* 破产档：`reason` 两种都算破产，逐条按峰顶倍数验。 */
+     现在（2026-10-05 再扩）：破产档按**峰顶倍数**分 5 档 ＋ 欠钱 1 档，结算档按终值倍数分 11 档。
+     这里把两条轴都穷举一遍，并单列「欠钱压过峰顶」这条优先级。 */
+  /* ⚠️ 破产档拆成**两条正交的轴**：
+     · `DEBT_TITLE`（欠钱）不是「冲到多高」的一档，是**比归零更糟**的独立结局（`final < 0`）；
+     · `BUST_TITLES` 是**峰顶阶梯**，**下标越大 ＝ 曾经冲得越高**（`归零者` → `登月坠落`），
+       下面的时长归一单调性断言靠这个方向。 */
+  const DEBT_TITLE = '负债累累';
+  const BUST_TITLES = ['归零者', '纸上富贵', '高台跳水', '黄粱一梦', '登月坠落'];
+  const BUST_ALL = [DEBT_TITLE, ...BUST_TITLES];
+  const LIVE_TITLES = ['陪跑的', '活下来的', '保本的', '小赚一笔', '翻倍的人', '小富即安',
+    '钻石手', '滚雪球', '币圈锦鲤', '百倍战神', '千倍传奇'];
+  const TITLE_SET = new Set([...BUST_ALL, ...LIVE_TITLES]);
+  check('12 主称号档位恰 17 枚（破产 6 ＝ 峰顶 5 ＋ 欠钱 1，结算 11）',
+    TITLE_SET.size === 17, `${TITLE_SET.size}`);
+  /* 破产档：`reason` 两种都算破产，逐条按峰顶倍数验（`final = 0` ⇒ 清零但**不欠钱**）。 */
   for (const reason of [OVER.LIQUIDATED, OVER.GAVEUP]) {
-    const cases = [[0, '归零者'], [9.99, '归零者'], [10, '高台跳水'], [99.9, '高台跳水'],
-      [100, '黄粱一梦'], [1000, '黄粱一梦']];
+    const cases = [[0, '归零者'], [1.99, '归零者'], [2, '纸上富贵'], [4.99, '纸上富贵'],
+      [5, '高台跳水'], [19.99, '高台跳水'], [20, '黄粱一梦'], [99.99, '黄粱一梦'],
+      [100, '登月坠落'], [1000, '登月坠落']];
     for (const [peakMult, want] of cases) {
-      const got = T.titleOf(rec({ reason, cash0: 1000, peak: peakMult * 1000, final: -265000 }));
+      const got = T.titleOf(rec({ reason, cash0: 1000, peak: peakMult * 1000, final: 0 }));
       check(`12 破产档（${reason}）峰顶 ${peakMult}x ⇒ «${want}»`, got === want,
         got === want ? '' : `实得 «${got}»`);
     }
   }
+  /* 欠钱档：`final < 0`（穿仓 / 借爆倒欠）优先于峰顶倍数 —— 那是比归零更糟的结局。 */
+  for (const reason of [OVER.LIQUIDATED, OVER.GAVEUP]) {
+    const got = T.titleOf(rec({ reason, cash0: 1000, peak: 5e6, final: -265000 }));
+    check(`12 欠钱档（${reason}）峰顶 5000x 也只看欠款 ⇒ «负债累累»`, got === '负债累累',
+      got === '负债累累' ? '' : `实得 «${got}»`);
+  }
   /* 结算档：按终值倍数验，含末档 `else` 兜底。 */
-  for (const [m, want] of [[0.5, '陪跑的'], [1, '活下来的'], [4.9, '翻倍的人'],
-    [19.9, '钻石手'], [99.9, '币圈锦鲤'], [100, '百倍战神'], [1e6, '百倍战神']]) {
+  for (const [m, want] of [[0.5, '陪跑的'], [1, '活下来的'], [1.4, '活下来的'], [1.9, '保本的'],
+    [2.5, '小赚一笔'], [4.9, '翻倍的人'], [7, '小富即安'], [19.9, '钻石手'],
+    [30, '滚雪球'], [99.9, '币圈锦鲤'], [100, '百倍战神'], [999, '百倍战神'],
+    [1000, '千倍传奇'], [1e6, '千倍传奇']]) {
     const got = T.titleOf(rec({ reason: OVER.SETTLED, cash0: 1000, final: m * 1000 }));
     check(`12 结算档终值 ${m}x ⇒ «${want}»`, got === want, got === want ? '' : `实得 «${got}»`);
   }
-  /* 硬规矩：**破产局的称号一定落在破产三档里**（不许混进结算六档），反之亦然。 */
+  /* 硬规矩：**破产局的称号一定落在破产 6 档里**（不许混进结算 11 档），反之亦然。 */
   {
     let crossed = 0;
     for (const reason of [OVER.LIQUIDATED, OVER.GAVEUP]) {
       for (const pk of [0, 1, 5, 20, 100, 500]) {
-        if (!BUST_TITLES.includes(T.titleOf(rec({ reason, cash0: 1000, peak: pk * 1000, final: -1 })))) crossed++;
+        if (!BUST_ALL.includes(T.titleOf(rec({ reason, cash0: 1000, peak: pk * 1000, final: 0 })))) crossed++;
       }
+      /* 欠钱档也必须在破产一侧（`final < 0` 不许混进结算的那 11 档）。 */
+      if (!BUST_ALL.includes(T.titleOf(rec({ reason, cash0: 1000, peak: 3000, final: -1 })))) crossed++;
     }
     for (const f of [0.1, 0.5, 1, 2, 10, 50, 200, 1e5]) {
       if (!LIVE_TITLES.includes(T.titleOf(rec({ reason: OVER.SETTLED, cash0: 1000, final: f * 1000 })))) crossed++;
     }
-    check('12 结局轴互不串档（破产 3 档 ⇄ 结算 6 档）', crossed === 0, `串档 ${crossed} 次`);
+    check('12 结局轴互不串档（破产 6 档 ⇄ 结算 11 档）', crossed === 0, `串档 ${crossed} 次`);
   }
   /* 硬规矩：**破产局不许拿到任何「暗示活下来」的风格称号**。 */
   {
@@ -1237,8 +1264,8 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
 
   /* ── A3 · 按本局时长归一（2026-10-05 用户拍板）───────────────────────────────
      挑战局只有 2–4 个月，照「经典全程 12 年」定的档位会**全部塌到最低档**。
-     这里对 **6 局逐一穷举**：经典局必须仍是 6 档全可达（未退化），
-     每个挑战局至少命中 3 档（证明短局也能打出差别），且同一倍数在短局的档位不低于经典局。 */
+     这里对 **6 局逐一穷举**：经典局必须 11 档全可达（未退化），
+     每个挑战局至少命中 4 档（证明短局也能打出差别），且同一倍数在短局的档位不低于经典局。 */
   const SCEN_LIST = C.SCENARIOS.map(sc => sc.id);
   {
     const kc = T.durKOf({ scen: 'classic' });
@@ -1260,10 +1287,11 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     const LIVE = LIVE_TITLES;
     for (const id of SCEN_LIST) {
       const hit = new Set();
-      for (let m = 0.1; m <= 400; m *= 1.15) {
+      /* ⚠️ 上界要盖过「千倍传奇」的门槛（经典局 1000x），否则末档永远扫不到、误判成缺档。 */
+      for (let m = 0.1; m <= 4000; m *= 1.15) {
         hit.add(T.titleOf(rec({ scen: id, reason: OVER.SETTLED, cash0: 1000, final: m * 1000 })));
       }
-      const need = id === 'classic' ? 6 : 3;
+      const need = id === 'classic' ? 11 : 4;
       check(`12 时长归一 · ${id} 鲜活局命中 ≥ ${need} 档主称号`,
         hit.size >= need, `命中 ${hit.size} 档：${[...hit].join('/')}`);
     }
@@ -1278,54 +1306,86 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
       }
     }
     check('12 时长归一：同一倍数在短局的档位不低于经典局（阈值单调下移）', mono === 0, `违反 ${mono} 次`);
-    /* ③ 破产档同样归一：峰顶 2x 在经典局是「归零者」，在 5 个挑战局里都必须升档。 */
-    const cRank = BUST_TITLES.indexOf(T.titleOf(rec({ scen: 'classic', reason: OVER.LIQUIDATED, cash0: 1000, peak: 2000, final: -1 })));
+    /* ③ 破产档同样归一：峰顶 2x 在经典局（k=1）是「纸上富贵」，在 5 个挑战局里都必须升档。
+       ⚠️ `BUST_TITLES` 下标**越大 = 峰顶越高**，所以「升档」是 `r > cRank`；
+          `final = 0` 是为了避开「欠钱」那条正交轴（`final < 0` 会一律返回 `负债累累`）。 */
+    const cRank = BUST_TITLES.indexOf(T.titleOf(rec({ scen: 'classic', reason: OVER.LIQUIDATED, cash0: 1000, peak: 2000, final: 0 })));
     let notUp = 0;
     for (const id of SCEN_LIST) {
       if (id === 'classic') continue;
-      const r = BUST_TITLES.indexOf(T.titleOf(rec({ scen: id, reason: OVER.LIQUIDATED, cash0: 1000, peak: 2000, final: -1 })));
-      if (r >= cRank) notUp++;
+      const r = BUST_TITLES.indexOf(T.titleOf(rec({ scen: id, reason: OVER.LIQUIDATED, cash0: 1000, peak: 2000, final: 0 })));
+      if (r <= cRank) notUp++;
     }
     check('12 时长归一：峰顶 2x 的破产局在 5 个挑战局里档位都高于经典局', notUp === 0, `未升档 ${notUp} 局`);
   }
 
   /* ── B · 徽章池 20 枚全部可达（无死徽章）＋ 输出无未登记名称 ── */
   const ALL_BADGES = [
-    '躺平', '现货党', '杠杆党', '百倍玩家', '杠杆赌徒',
-    '单一信仰', '五币全通', '九死一生', '爆仓机器',
-    '搬家达人', '续命者', '上帝之手', '交易狂魔', '闪电战', '长跑选手',
-    '过山车', '落袋为安', '给交易所打工', '神枪手', '危机幸存者',
+    '躺平大师', '躺平', '现货党', '杠杆党',
+    '百倍玩家', '杠杆赌徒',
+    '单一信仰', '五币全通',
+    '爆仓之王', '九死一生', '爆仓机器',
+    '长跑选手', '三年老将', '一年老兵',
+    '千次开仓', '交易狂魔',
+    '闪电爆仓', '闪电战',
+    '过山车', '深度回撤', '教科书曲线',
+    '负债离场', '给交易所打工', '落袋为安',
+    '搬家达人', '续命者', '上帝之手',
+    '神枪手', '危机幸存者',
   ];
   const BADGE_PROFILES = [
-    rec({ open: 0, margin: 0, win: 0, loss: 0, maxLev: 1 }),        // 躺平
-    rec({ open: 5, fut: 0, maxLev: 1 }),                            // 现货党
-    rec({ open: 5, fut: 0, maxLev: 5 }),                            // 杠杆党
-    rec({ open: 5, fut: 5, maxLev: 100 }),                          // 百倍玩家
-    rec({ open: 5, fut: 5, maxLev: 30 }),                           // 杠杆赌徒
-    rec({ syms: ['BTC'] }),                                         // 单一信仰
-    rec({ syms: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP'] }),            // 五币全通
-    rec({ liq: 60 }),                                               // 九死一生
-    rec({ liq: 25 }),                                               // 爆仓机器
-    rec({ move: 10 }),                                              // 搬家达人
-    rec({ loan: 1 }),                                               // 续命者
-    rec({ god: true }),                                             // 上帝之手
-    rec({ open: 200 }),                                             // 交易狂魔
-    rec({ open: 3, days: 20 }),                                     // 闪电战
-    rec({ days: 3650 }),                                            // 长跑选手
-    rec({ peak: 10000, final: 1500 }),                              // 过山车
-    rec({ realized: 500 }),                                         // 落袋为安
-    rec({ open: 60, final: 500 }),                                  // 给交易所打工
-    rec({ win: 12, loss: 3 }),                                      // 神枪手
-    rec({ start: Date.UTC(2019, 0), end: Date.UTC(2021, 0) }),      // 危机幸存者
+    rec({ open: 0, margin: 0, win: 0, loss: 0, maxLev: 1, days: 1000 }),  // 躺平大师
+    rec({ open: 0, margin: 0, win: 0, loss: 0, maxLev: 1, days: 100 }),   // 躺平
+    rec({ open: 5, fut: 0, maxLev: 1, margin: 5 }),                       // 现货党
+    rec({ open: 5, fut: 0, maxLev: 5, margin: 5 }),                       // 杠杆党
+    rec({ open: 5, fut: 5, maxLev: 100 }),                                // 百倍玩家
+    rec({ open: 5, fut: 5, maxLev: 30 }),                                 // 杠杆赌徒
+    rec({ syms: ['BTC'] }),                                               // 单一信仰
+    rec({ syms: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP'] }),                  // 五币全通
+    rec({ liq: 120 }),                                                    // 爆仓之王
+    rec({ liq: 60 }),                                                     // 九死一生
+    rec({ liq: 25 }),                                                     // 爆仓机器
+    rec({ days: 3650 }),                                                  // 长跑选手
+    rec({ days: 1200 }),                                                  // 三年老将
+    rec({ days: 400 }),                                                   // 一年老兵
+    rec({ open: 1200 }),                                                  // 千次开仓
+    rec({ open: 250 }),                                                   // 交易狂魔
+    rec({ open: 3, days: 20, reason: OVER.LIQUIDATED, final: 0, peak: 1000 }), // 闪电爆仓
+    rec({ open: 3, days: 20 }),                                           // 闪电战
+    rec({ peak: 10000, final: 1500 }),                                    // 过山车
+    /* 深度回撤：净值 2000 → 300（回撤 85%），但峰顶 2x < 5x ⇒ 不吃「过山车」那一档。 */
+    rec({ eq: [1000, 2000, 1700, 1300, 900, 700, 500, 300] }),            // 深度回撤
+    /* 教科书曲线：一路缓慢抬升、最深处回撤 ≈ 0.5%，且走过 400 天。 */
+    rec({ days: 400, eq: [1000, 1010, 1020, 1015, 1030, 1040, 1035, 1050] }), // 教科书曲线
+    rec({ reason: OVER.LIQUIDATED, peak: 1000, final: -500 }),            // 负债离场
+    rec({ open: 60, final: 500, realized: 0 }),                           // 给交易所打工
+    rec({ realized: 500, open: 10, final: 2000 }),                        // 落袋为安
+    rec({ move: 10 }),                                                    // 搬家达人
+    rec({ loan: 1 }),                                                     // 续命者
+    rec({ god: true }),                                                   // 上帝之手
+    rec({ win: 12, loss: 3 }),                                            // 神枪手
+    rec({ start: Date.UTC(2019, 0), end: Date.UTC(2021, 0) }),            // 危机幸存者
   ];
   const seen = new Set();
   for (const p of BADGE_PROFILES) for (const b of T.badgesOf(p)) seen.add(b);
   const missBadge = ALL_BADGES.filter(b => !seen.has(b));
   const unknownBadge = [...seen].filter(b => !ALL_BADGES.includes(b));
-  check('12 徽章池恰 20 枚', ALL_BADGES.length === 20, `${ALL_BADGES.length}`);
-  check('12 徽章 20 枚全部可达（无死徽章）', missBadge.length === 0,
-    missBadge.length ? `缺 ${missBadge.join(' / ')}` : `覆盖 ${seen.size} / 20`);
+  check('12 徽章池恰 29 枚', ALL_BADGES.length === 29, `${ALL_BADGES.length}`);
+  check('12 徽章 29 枚全部可达（无死徽章）', missBadge.length === 0,
+    missBadge.length ? `缺 ${missBadge.join(' / ')}` : `覆盖 ${seen.size} / 29`);
   check('12 徽章输出无未登记名称', unknownBadge.length === 0, unknownBadge.join(' / ') || '');
+
+  /* ── B2 · 最大回撤：`eq` 样本够才算，样本太稀一律 `null`（不给假极端值） ── */
+  {
+    const mddOf = eqs => T.maxDdOf(rec({ eq: eqs }));
+    check('12 最大回撤：样本 < 8 点 ⇒ null（不下判断）',
+      T.maxDdOf(rec({ eq: [1000, 500] })) === null && T.maxDdOf(rec({})) === null);
+    check('12 最大回撤：一路抬升 ⇒ 0', mddOf([1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700]) === 0);
+    const dd = mddOf([1000, 2000, 1500, 1000, 500, 600, 700, 800]);
+    check('12 最大回撤：2000 → 500 ⇒ 恰好 0.75', Math.abs(dd - 0.75) < 1e-9, `实得 ${f(dd, 4)}`);
+    check('12 最大回撤：含 NaN / Inf 不炸（跳过坏点）',
+      Math.abs(mddOf([1000, 2000, NaN, 500, 1500, 1200, 1100, Infinity]) - 0.75) < 1e-9);
+  }
 
   /* ── C · fuzz：在**行为空间**上随机撒 4000 个点，验证三轴永不返回空 ──────────────────────
      ⚠️ 固定种子（LCG）⇒ 每次跑出的数完全一样，不引入偶发红灯。 */
@@ -1363,12 +1423,13 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     else if (!TITLE_SET.has(ti)) unknownTitle++;
   }
   check('12 fuzz ×4000：风格称号永不为空', emptyStyle === 0, `空 ${emptyStyle} 次`);
-  check('12 fuzz ×4000：风格称号恒在已登记 14 档内', unknownStyle === 0, `越界 ${unknownStyle} 次`);
+  check('12 fuzz ×4000：风格称号恒在已登记 22 档内', unknownStyle === 0, `越界 ${unknownStyle} 次`);
   check('12 fuzz ×4000：主称号永不为空', emptyTitle === 0, `空 ${emptyTitle} 次`);
-  check('12 fuzz ×4000：主称号恒在已登记 9 档内', unknownTitle === 0, `越界 ${unknownTitle} 次`);
+  check('12 fuzz ×4000：主称号恒在已登记 17 档内', unknownTitle === 0, `越界 ${unknownTitle} 次`);
   check('12 fuzz ×4000：单局徽章无重复', dupBadge === 0, `重复 ${dupBadge} 次`);
-  /* 理论上界 14：工具 1 ＋ 杠杆烈度 1 ＋ 分散度 1 ＋ 爆仓 1 ＋ 行为 5（闪电战 / 长跑选手互斥）
-     ＋ 曲线 3 ＋ 神枪手 1 ＋ 危机幸存者 1 —— 海报两行放得下的上限。 */
+  /* 理论上界 14：工具 1 ＋ 杠杆烈度 1 ＋ 分散度 1 ＋ 爆仓 1 ＋ 时长 1 ＋ 交易量 1 ＋ 节奏 1
+     ＋ 曲线 1 ＋ 现金流 1 ＋ 行为 3 ＋ 神枪手 1 ＋ 危机幸存者 1 —— 海报两行放得下的上限。
+     ⚠️ 每组内部互斥；**新增徽章必须并入某个互斥组**，不许再挂独立 `if` 把上限顶破。 */
   check('12 fuzz：单局徽章数 ≤ 14（海报两行放得下）', maxBadges <= 14, `实测最多 ${maxBadges} 枚`);
 
   /* ── D · 真引擎端到端：真打一局 ⇒ 真实 `s.stat` 摊成记录 ⇒ 三轴合计 ≥ 2 枚称号 ── */
