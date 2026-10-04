@@ -944,17 +944,32 @@ function encodeCoin(held, count, scale, dayUsd, startI) {
  *    ⚠️ 折扣对**所有币、所有年**生效，不是 BTC 专属 —— 「掺了多少自成交」与币种无关。
  *    ⚠️ 本段原写「2013–2016 不打折（刷量是 2017 年之后的事）」——**该前提不成立**，已按上表落地。
  *
- * 缺年回落：查不到的年取**最近年份**的锚 —— 现只剩一处命中（BTC 2012 回溯段：CoinLore 的 BTC
- * 序列自 2013 起，2012 只影响开局前的回溯段显示）。
+ * 缺年回落：查不到的年取**最近年份**的锚 —— **现无一处命中**。
+ * ⚠️ BTC 2012 回溯段原本走这条回落（借 2013 的 $24M 锚）⇒ 2012-10~12 的日流动性被抬到
+ *    ≈ $2.4–2.7e7，比开局（2013-01 ≈ $2.3e5）**高约 100×** ⇒ 图上开局的量柱被压成一点点、
+ *    往前看反而柱柱冲天。已于 2026-10-05 补上真实锚，见下「BTC 2012 锚」。
  * ⚠️ SOL 2020 原本也走这条回落（借 2021 的锚 ⇒ 高估 2020 下半年 4.7 个月约 **27×**），
  *    已于 2026-10-04 补上 `SOL[2020] = 6.0e7`，见下方「SOL 2020 修正」。
- * ⚠️ **年内形状的已知偏差（2013，2026-10-04 复核后决定原样保留）**：形状来自本管线自身逐日
- *    真实成交额（等比缩放），2013 段≈Bitstamp 单源（Mt.Gox / BTC China / BTC-e 均不在源内）。
- *    实证：11+12 月占全年 **77%**（各月均值 ÷ 年均 = 1%/2%/5%/51%/30%/20%/24%/24%/27%/74%/376%/557%）。
- *    交叉验证后判定**基本属实、非覆盖缺口** —— 史料载 11–12 月全球 $3–5 亿/天（为 4 月峰值 $47.6M
- *    的 6–10×），且本管线 2013 全年总量 ≈ $10.95B 与聚合站口径 ~$12.26B 仅差 11%。
- *    真实偏差只有一处：**4 月偏低**（当时 Mt.Gox 占 60–65%，源里没有它 ⇒ 4 月只占全年 4.3%）。
- *    ⇒ 不修：修正需引入第二个数据口径（外部月线），且会破坏「不做平滑、同形度恒 1.000」的定案。
+ *
+ * ⚠️ **BTC 2012 锚（2026-10-05 用户拍板「补真实的 2012 锚，不做缺年回落」）**：
+ *    2012 年全市场 BTC 日成交额 ≈ **$2.2e5/天** —— Journal du Coin 引 Mt.Gox 透明度报告：
+ *    2012 全年 Mt.Gox 日量「稳定在约 **$200,000**，占全市场 **~90%**」⇒ 全市场 ≈ $2.2e5/天。
+ *    取整为 **2.4e5**（旁证：2012 全市场年成交 ≈20.2M BTC ÷ 365 ≈ 55K BTC/天 × 当年均价 ~$8–10
+ *    ⇒ $4.4–5.5e5/天，与 $2.2e5 同量级；取偏低的 Mt.Gox 口径，宁低不高）。2012 无刷量机器人
+ *    （Markus/Willy 自 2013-02 起）⇒ 不打折。落盘后 2012-10~12 ≈ $1.6–2.7e5/天，与 2013-01
+ *    （$2.3e5）**平滑衔接**，断崖消失。
+ *
+ * ⚠️ **2013 覆盖份额校正（2026-10-05 用户拍板「补 2012 锚 ＋ 修 2013 覆盖偏差」）**：
+ *    原「年内形状的已知偏差（2013）＝基本属实、不修」的判定**不成立、已推翻** —— 形状来自本管线
+ *    自身逐日成交额，而 BTC 的 2013 段只有 Bitstamp（全年）＋ Bitfinex（2013-04 中起），这批源占
+ *    全市场的比例**逐月上升**（年初 ~6% → 年末 ~33%，见 `COVER_2013`）⇒ 年内形状被**系统性扭曲**：
+ *    1 月压到 1%、11+12 月抬到 933%（实为覆盖漂移，非市场形态）。修法：逐日成交额 ÷ 当日覆盖份额
+ *    后再按年归一（`coverShareOf`）⇒ 1 月回到 ~4.6%、年末 ~486%，开局 $2.3e5 → **$1.1e6/天**
+ *    （史料约 $1–3e6/天，落在区间内）。
+ *    ⚠️ 只改**形状**、**不动年均锚**（$24M 不变，故 2013 年均仍 = $24M）；只对 BTC 2013 生效
+ *       （其余年份 / 币覆盖率平稳 ⇒ 校正 ≈ 常数 ⇒ 归一后无影响）。
+ *    ⚠️ 「不做平滑、同形度恒 1.000」**仍然成立** —— 形状是**校正后**成交额的等比缩放（`intraYearCorr`
+ *       比较的也是校正后序列），年内相关系数依旧正好 1.000。
  *
  * ⚠️ **早期年修正（2026-10-04 用户拍板「保折扣、只补早期年」）**：BTC 2013–2016 四格原封不动
  *    照抄 CoinLore 是**错的** —— 漏的是「覆盖缺口」，不是市场真的那么小。铁证在 CoinLore 自己的
@@ -989,7 +1004,7 @@ function encodeCoin(held, count, scale, dayUsd, startI) {
  *    ⚠️ 形状不受影响：年内形状按年独立归一，改锚只改**水平**、不改形状。
  */
 const LIQ_MKT = {
-  BTC:  { 2013: 3.0e7,   2014: 5.0e7,   2015: 7.0e7,   2016: 1.5e8,
+  BTC:  { 2012: 2.4e5,   2013: 3.0e7,   2014: 5.0e7,   2015: 7.0e7,   2016: 1.5e8,
           2017: 2.4e9,   2018: 6.0e9,   2019: 1.49e10, 2020: 2.75e10,
           2021: 4.8e10,  2022: 2.57e10, 2023: 1.82e10, 2024: 3.48e10 },
   DOGE: { 2013: 1.018e5, 2014: 1.1e6,   2015: 1.685e5, 2016: 2.565e5,
@@ -1038,14 +1053,48 @@ function liqAnchorOf(sym, year) {
 const yearOfDay = d => new Date(tsOf(d * 24)).getUTCFullYear();
 
 /**
+ * **BTC 2013 年的数据源覆盖份额锚点**（年内第几天 → 该日「本管线抓到的交易所」占全市场 USD 成交额的
+ * 比例）。只服务 `coverShareOf`，用来消除 2013 年内形状的**覆盖漂移**（理由见上方「2013 覆盖份额校正」）。
+ *
+ * 依据（皆为史料的市场份额，非臆造）：
+ *   · 年初 Mt.Gox 独占 **85–90%**（Beware the Middleman：2012 年末–2013 年初 Mt.Gox 80%+）
+ *     ⇒ Bitstamp ~6%；
+ *   · 2013-05 Mt.Gox ≈ **70%**（The Daily Beast：Mt.Gox $18M/天 = 全市场 70%）⇒ Bitstamp+Bitfinex ~14%；
+ *   · 2013-09 小所合计 >10%（CoinDesk）⇒ 覆盖 ~28%；
+ *   · 2013 年末「三巨头」Bitstamp / Mt.Gox / BTC-e **各 ~30%**（CoinDesk 2013-11~12 逐日表）
+ *     ⇒ Bitstamp+Bitfinex ~33%。
+ * 中间线性插值 ⇒ 单调上升的覆盖份额；Bitfinex 2013-04 中上线那一步被 ~05 月的斜率吸收。
+ */
+const COVER_2013 = [[0, 0.06], [120, 0.14], [243, 0.28], [364, 0.33]];
+
+/**
+ * 某日的**数据源覆盖份额**（仅 BTC 2013；其余一律 1）—— 锚点之间线性插值，两端取端点值。
+ * @param {string} sym
+ * @param {number} d 数据窗天序号（自 DATA_TS 起）
+ */
+function coverShareOf(sym, d) {
+  if (sym !== 'BTC' || yearOfDay(d) !== 2013) return 1;
+  const doy = Math.floor((tsOf(d * 24) - Date.UTC(2013, 0, 1)) / 86400000);
+  const A = COVER_2013;
+  if (doy <= A[0][0]) return A[0][1];
+  for (let k = 1; k < A.length; k++) {
+    if (doy <= A[k][0]) {
+      const [d0, s0] = A[k - 1], [d1, s1] = A[k];
+      return d0 === d1 ? s1 : s0 + (s1 - s0) * ((doy - d0) / (d1 - d0));
+    }
+  }
+  return A[A.length - 1][1];
+}
+
+/**
  * 由「逐日真实美元成交额」算出该币的日流动性序列。
  * @param {string} sym
  * @param {Float64Array} dayUsd  全程逐日真实成交额（未上线日为 0）
  * @param {number} firstDay      该币第一根真 K 线所在的天（**覆盖起点**，可早于锚定日）
  * @param {number} anchorDay     **锚定日** —— 决定 `firstYear`
  *   ⚠️ 与 `firstDay` 分开是 2026-09-30 回溯段的直接结果：BTC 的覆盖起点落在 2012 年，
- *      但锚仍从 2013 年那格起算，否则 `firstYear` 变成 2012。改逐年查表后，覆盖多出的那几天
- *      （2012）走 `liqAnchorOf` 的**缺年回落**（取最近年份 ＝ 2013 的锚）。
+ *      但锚仍从 2013 年那格起算，否则 `firstYear` 变成 2012。2012 那几天现在有**自己的锚**
+ *      （`LIQ_MKT.BTC[2012]`，2026-10-05），不再是「取最近年份 = 2013」的回落值。
  * @returns {{ liq: Float32Array, firstYear, mean: object, corr: object }}
  *   `mean` = 每年**实际算出的**年均（供验收口径⑦核对，改版后应逐年等于锚表）；
  *   `corr` = 年内同形度 `{ mean, worst }`（无平滑 ⇒ 应为 1.000）
@@ -1068,12 +1117,18 @@ function buildLiqDaily(sym, dayUsd, firstDay, anchorDay) {
     return out;
   };
 
+  /* ⓪ **覆盖份额校正**（仅 BTC 2013 非平凡，见 `COVER_2013`）：逐日成交额 ÷ 当日覆盖份额，
+     得到「按全市场口径还原」的成交额。形状与同形度都基于它 ⇒ 年内相关系数仍正好 1.000。
+     ⚠️ 只在**形状**这一步用；K 线包里的成交量**份额**是当日内的相对量，同除一个常数会抵消，不受影响。 */
+  const usdAdj = new Float64Array(TOTAL_DAYS);
+  for (let d = firstDay; d < TOTAL_DAYS; d++) usdAdj[d] = dayUsd[d] / (coverShareOf(sym, d) || 1);
+
   // ① 形状：逐日 ÷ 当年日均 ⇒ 年均恰为 1
-  const shapeAvg = tally(d => dayUsd[d]);
+  const shapeAvg = tally(d => usdAdj[d]);
   const shape = new Float64Array(TOTAL_DAYS);
   for (let d = firstDay; d < TOTAL_DAYS; d++) {
     const avg = shapeAvg.get(yearOfDay(d));
-    shape[d] = avg > 0 ? dayUsd[d] / avg : 1;
+    shape[d] = avg > 0 ? usdAdj[d] / avg : 1;
   }
 
   // ② 逐年查表 + 合成
@@ -1095,7 +1150,9 @@ function buildLiqDaily(sym, dayUsd, firstDay, anchorDay) {
 
   return {
     liq, firstYear, mean,
-    corr: intraYearCorr(liq, dayUsd, firstDay),
+    /* 同形度比的是**校正后**的成交额（`usdAdj`）—— 形状就是它的等比缩放 ⇒ 年内恒为 1.000。
+       （若比原始 `dayUsd`，BTC 2013 会因覆盖校正而掉下来，那是**预期的**校正、不是形状坏了。） */
+    corr: intraYearCorr(liq, usdAdj, firstDay),
   };
 }
 
@@ -1377,7 +1434,7 @@ async function main() {
     anchors: Object.fromEntries(COINS.map(c => [c.sym,
       Object.fromEntries(Object.keys(LIQ_MKT[c.sym]).map(y => [y, Math.round(liqAnchorOf(c.sym, Number(y)))]))])),
     firstYear: Object.fromEntries(COINS.map(c => [c.sym, yearOfDay(anchorDayOf[c.sym])])),
-    smoothing: null,   // 不做平滑（2026-09-29 定案）：年内形状 = 真实成交额的等比缩放，同形度恒 1.000
+    smoothing: null,   // 不做平滑（2026-09-29 定案）：年内形状 = （覆盖校正后）成交额的等比缩放，同形度恒 1.000
     firstDay: coinStartDay,
     bytes: liqRaw.length,
     zipped: liqZip.length,
