@@ -15,7 +15,7 @@ import { createClock, chanOf, equity, exMarkPrice, futuresAvailable, levKind, op
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
-import { enableGod, factorFor } from './core/god.js';
+import { SB_DEFAULT, SB_KEYS, SB_PRESETS, enableGod, factorFor, sbOf } from './core/god.js';
 import { fmtDate, fmtMoney, fmtMoneyShort } from './core/format.js';
 import { canLiquidate, safetyOf } from './core/positions.js';
 import {
@@ -992,6 +992,15 @@ function dispatch(node) {
     if (d.godgo !== undefined) return onGodGo();
     return onGodOff();
   }
+  /* ── 上帝沙盒（2026-10-05）── 与上面几枚同一处境：只出现在上帝面板里，
+     同样以 `s.god` 非空兜底（状态机不靠 DOM）。 */
+  if (d.sb !== undefined || d.sbpreset !== undefined || d.sbseed !== undefined || d.sbroll !== undefined) {
+    if (!s.god) return;
+    if (d.sb !== undefined) return onSb(d.sb);
+    if (d.sbpreset !== undefined) return onSbPreset(d.sbpreset);
+    if (d.sbseed !== undefined) return onSbSeed(node);
+    return onSbRoll();
+  }
 
   if (d.sym !== undefined) return onSym(d.sym);
   if (d.chan !== undefined) return onChan();
@@ -1424,6 +1433,58 @@ function onGodOff() {
 
 /** 上帝面板里输入框的值 —— 输入框没有动作键，只能从同一个面板里按类名找（两个框各有一个唯一类） */
 const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.value ?? null;
+
+/* ── 上帝沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）────────────
+   5 枚旋钮 ＋ 4 组预设 ＋ 种子，全走 `s.god.sb`（种子例外，见 `onSbSeed`）。
+   ⚠️ 只作用在合成层，**不碰真实 OHLC** —— 无论怎么调，行情仍是那段真实历史（见 `god.js` 头注）。 */
+
+/** 旋钮档位（`data-sb="heat:1.5"` / `"mood:-0.15"`）—— 写单枚旋钮。 */
+function onSb(cmd) {
+  const [key, raw] = String(cmd).split(':');
+  if (!SB_KEYS.includes(key)) return;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return;
+  /* 倍率类非负（负方向没有意义）；`mood` 是偏移量，天然可负。口径与 `sbOf` 一致。 */
+  s.god.sb[key] = key === 'mood' ? v : Math.max(0, v);
+  showGod();                           // 重开面板：刷新选中态
+  after();
+}
+
+/** 世界预设（`data-sbpreset="bull"`）—— 5 枚旋钮一次性替换。 */
+function onSbPreset(id) {
+  const p = SB_PRESETS.find(x => x.id === id);
+  if (!p) return;
+  /* 逐键写入而不是整体替换 `s.god.sb` —— 与 `enableGod` 的「只补缺失的键」同一规矩：
+     预设只覆盖它声明的那 5 枚，将来 `sb` 上若多出别的键，不被抹掉。 */
+  for (const k of SB_KEYS) s.god.sb[k] = Number.isFinite(p.sb[k]) ? p.sb[k] : SB_DEFAULT[k];
+  pushLog(s, `沙盒 ｜ 已切换到「${p.name}」`, 'ok');
+  showGod();
+  after();
+}
+
+/** 种子「应用」（输入框 `.god-seed`）—— 写的是**存档本体 `s.seed`**，不是 `s.god.sb`。
+    ⚠️ 归一成 uint32（`rng.rand` 按 `seed >>> 0` 取数）。 */
+function onSbSeed(node) {
+  const v = readGodInput(node, '.god-seed');
+  const num = Number(v);
+  if (v === null || v.trim() === '' || !Number.isFinite(num)) {
+    pushLog(s, '种子：请输入一个数', 'bad');
+    after();
+    return;
+  }
+  s.seed = num >>> 0;
+  pushLog(s, `沙盒 ｜ 种子已换为 ${s.seed}`, 'info');
+  showGod();
+  after();
+}
+
+/** 种子「随机」—— 换一条随机数流（跨所价差 / 事件时刻 / 强平细路径）。 */
+function onSbRoll() {
+  s.seed = (Math.random() * 0x100000000) >>> 0;
+  pushLog(s, `沙盒 ｜ 种子已换为 ${s.seed}`, 'info');
+  showGod();
+  after();
+}
 
 /* ── 主菜单（需求 4 · 方案 §2；存档拆两槽 2026-10-01；改弹窗 2026-10-02）────────
    菜单期间时钟是停的（见 `boot`），选完才真正开盘。

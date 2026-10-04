@@ -1099,8 +1099,65 @@ export function enableGod(s) {
      但注释既然承诺「只补缺失的键」，实现就该按合并写，日后加键不必回头再踩一次）。 */
   if (!s.god) s.god = {};
   if (s.god.lastFill == null) s.god.lastFill = 100000;
+  /* 沙盒旋钮（2026-10-05）：缺就补一份**恒等**默认（见下方 `SB_DEFAULT`）—— 与 `lastFill`
+     同一条「只补缺失的键」的规矩；已存在的旋钮一个不动。 */
+  if (!s.god.sb) s.god.sb = { ...SB_DEFAULT };
   /* 统计（v21 · M1）：这一局**动过上帝模式**（称号「上帝之手」读它）。
      写在解锁那一刻而不是每次开面板：它要回答的是「这局的成绩干不干净」。 */
   s.stat.god = true;
   return s.god;
+}
+
+/* ───────────────────────── 上帝沙盒（2026-10-05 用户拍板）─────────────────────────
+ *
+ * 「让上帝模式成为一个独特的沙盒游乐场」：精选 **5 枚高影响旋钮**，全是**倍率 / 偏移**，
+ * 只作用在**合成层**（热度方程 / NPC 靶心 / 位移幅度 / 跨币传导）——
+ * **不碰任何真实 OHLC 锚点**（与 `crossHeat` 同一条红线）⇒ 无论怎么调，行情仍是那段真实历史，
+ * 变的只是「市场对它的情绪反应有多大、偏向哪边」。
+ *
+ * ⚠️ 默认值恒为**恒等元**（`1` / `0`）⇒ 没开 / 没设置沙盒时**逐位等于改动前**
+ *    （离线断言 §4 逐位核过）。旧存档没有 `s.god.sb` ⇒ `sbOf` 直接回默认。
+ * ⚠️ **种子（`seed`）不进 `sb`** —— 它写的是存档里的 `s.seed` 本体（见 `main.js` 的 `onSbRoll`）：
+ *    全项目所有 `rand(...)` 都直接读 `s.seed`（`rng.js`），再包一层反而多一处能漂的点；
+ *    而且 `s.seed` 的每一处用法（跨所价差 / 事件时刻 / 强平细路径）都发生在**当前小时**，
+ *    改它**不会回头改写**已经画出的 K 线（K 线来自真实 OHLC ＋ 位移台阶，与种子无关）。
+ */
+export const SB_KEYS = ['heat', 'mood', 'npc', 'shock', 'res'];
+
+/** 旋钮的显示名 —— 面板与日志**共用一份字**（LESS IS MORE）。 */
+export const SB_LABEL = {
+  heat: '情绪强度', mood: '情绪偏向', npc: '散户参与度', shock: '冲击强度', res: '跨币共振',
+};
+
+/** 恒等默认：`1` = 不放大，`0` = 不偏移。 */
+export const SB_DEFAULT = { heat: 1, mood: 0, npc: 1, shock: 1, res: 1 };
+
+/**
+ * 预设 —— 每组是一整个「世界」的旋钮组合。
+ *   · **火箭牛市**：情绪强 ＋ 偏贪婪（`mood > 0` ⇒ NPC 净多头 ⇒ 位移向上）＋ 散户更活跃；
+ *   · **深度熊市**：偏恐慌（`mood < 0`）＋ 更强的级联与共振（跌起来更凶）；
+ *   · **高波动**：全部拉满，纯粹的过山车。
+ * ⚠️ 预设**不含种子** —— 换世界不改随机数流（种子由面板上那一行单独控制）。
+ */
+export const SB_PRESETS = [
+  { id: 'default', name: '默认', sb: { heat: 1, mood: 0, npc: 1, shock: 1, res: 1 } },
+  { id: 'bull', name: '火箭牛市', sb: { heat: 1.4, mood: 0.12, npc: 1.6, shock: 1.2, res: 1.1 } },
+  { id: 'bear', name: '深度熊市', sb: { heat: 1.4, mood: -0.15, npc: 1.8, shock: 1.5, res: 1.5 } },
+  { id: 'vol', name: '高波动', sb: { heat: 2.2, mood: 0, npc: 2, shock: 2, res: 2 } },
+];
+
+/** 读侧：把 `s.god.sb` 归一成**恒有 5 个有限数**的旋钮包（坏值 / 缺键一律回默认）。 */
+export function sbOf(s) {
+  const b = (s && s.god && s.god.sb) || null;
+  const n = (v, d) => (Number.isFinite(v) ? v : d);
+  /* 倍率类旋钮**非负**：负倍率会把「冲击 / 情绪」的方向整个翻过来（不是玩家想要的），
+     坏存档 / 手改值一律夹到 0；`mood` 是**偏移量**，天然可负（牛市正 / 熊市负），不夹。 */
+  const mul = (v, d) => Math.max(0, n(v, d));
+  return {
+    heat: mul(b && b.heat, 1),
+    mood: n(b && b.mood, 0),
+    npc: mul(b && b.npc, 1),
+    shock: mul(b && b.shock, 1),
+    res: mul(b && b.res, 1),
+  };
 }

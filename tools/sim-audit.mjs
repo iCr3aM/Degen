@@ -1830,6 +1830,82 @@ section('9l–9o · 模拟深度：跨币危机共振 · 处置效应盈利侧 �
   check('9o 参数值 > 1（下行更重）', god.NPC.downAsym > 1, `downAsym ${god.NPC.downAsym}`);
 }
 
+/* ── 9p · 上帝沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）──
+   5 枚旋钮只作用在**合成层**（热度 / NPC / 冲击 / 共振），默认恒等（1 / 0）⇒ 逐位等于改动前。 */
+section('9p · 上帝沙盒：旋钮归一 · 预设合法性 · shock 线性 · 恒等默认');
+{
+  /* ① `sbOf` 归一 —— 缺 god / 缺 sb / 坏值 / 负值 全都要能兜住 */
+  const D = JSON.stringify(god.SB_DEFAULT);
+  check('9p 无 god ⇒ 恒等默认（1 / 0）', JSON.stringify(god.sbOf({})) === D, '');
+  check('9p 有 god 无 sb ⇒ 恒等默认', JSON.stringify(god.sbOf({ god: {} })) === D, '');
+  check('9p 空 sb ⇒ 恒等默认', JSON.stringify(god.sbOf({ god: { sb: {} } })) === D, '');
+  const w = god.sbOf({ god: { sb: { heat: -2, mood: -0.2, npc: NaN, shock: 'x', res: Infinity } } });
+  check('9p 负倍率夹到 0 · 坏值回默认 · mood 可负',
+    w.heat === 0 && w.mood === -0.2 && w.npc === 1 && w.shock === 1 && w.res === 1,
+    `heat ${w.heat} mood ${w.mood} npc ${w.npc} shock ${w.shock} res ${w.res}`);
+
+  /* ② 预设合法性：5 键齐全 · 倍率非负 · 四组 id / 名唯一 */
+  let ok = true, why = '';
+  for (const p of god.SB_PRESETS) {
+    for (const k of god.SB_KEYS) {
+      if (!Number.isFinite(p.sb[k])) { ok = false; why = `${p.id}.${k} 非有限`; }
+      else if (k !== 'mood' && p.sb[k] < 0) { ok = false; why = `${p.id}.${k} < 0`; }
+    }
+  }
+  const ids = new Set(god.SB_PRESETS.map(p => p.id));
+  const names = new Set(god.SB_PRESETS.map(p => p.name));
+  check('9p 预设 5 枚旋钮齐全且倍率非负', ok, why);
+  check('9p 预设四组（默认 / 火箭牛市 / 深度熊市 / 高波动）且 id / 名唯一',
+    god.SB_PRESETS.length === 4 && ids.size === 4 && names.size === 4,
+    god.SB_PRESETS.map(p => p.name).join(' / '));
+
+  /* ③ `shock` 旋钮对级联冲击**线性**放大（同一场景切倍率，唯一变量就是它） */
+  const T = idx(at(2021, 5, 10));
+  const shockOf = async (sbShock) => {
+    const sp = god.NPC.speed, spMM = god.NPC.mm.speed;
+    god.NPC.speed = 0; god.NPC.mm.speed = 0;        // 冻结建仓 ⇒ 只有被摆弄的那一档会写冲击
+    try {
+      const s = await mk({ sym: 'BTC', i: T, mode: 'fut' });
+      for (let k = 1; k < s.mkt.BTC.npc.length; k++) {
+        const o = s.mkt.BTC.npc[k];
+        o.long = 0; o.longAvg = 0; o.short = 0; o.shortAvg = 0;
+        o.longStopped = false; o.shortStopped = false; o.longTp = false; o.shortTp = false;
+      }
+      if (s.mkt.BTC.mm) {
+        const o = s.mkt.BTC.mm;
+        o.long = 0; o.longAvg = 0; o.short = 0; o.shortAvg = 0;
+        o.longStopped = false; o.shortStopped = false; o.longTp = false; o.shortTp = false;
+      }
+      const price = engine.lastPrice(s, 'BTC');
+      const g = s.mkt.BTC.npc[0];
+      g.long = 1e8; g.longAvg = price * 2; g.short = 0; g.shortAvg = 0;   // 多头跌穿强平线
+      g.longStopped = false; g.shortStopped = false; g.longTp = false; g.shortTp = false;
+      s.mkt.BTC.heat = god.HEAT.base;                 // 中性 ⇒ 建仓靶心 ≈ 0
+      s.mkt.BTC.npcShock = { at: [], v: [] };          // 清掉 `mk` 首次 tick 可能留下的残渣
+      s.god = { lastFill: 0, sb: { ...god.SB_DEFAULT, shock: sbShock } };   // ← 唯一变量
+      engine.tickMarket(s, 'BTC');
+      const tab = s.mkt.BTC.npcShock;
+      let sum = 0;
+      if (tab) for (const v of tab.v) sum += v;
+      return sum;
+    } finally { god.NPC.speed = sp; god.NPC.mm.speed = spMM; }
+  };
+  const s1 = await shockOf(1), s2 = await shockOf(2), s0 = await shockOf(0);
+  check('9p shock 旋钮线性放大级联冲击（×2 ⇒ 幅度 ×2）',
+    s1 !== 0 && Math.abs(s2 / s1 - 2) < 1e-9, `×1 ${f(s1, 0)} ×2 ${f(s2, 0)} ⇒ 比 ${f(s2 / s1, 4)}`);
+  check('9p shock = 0 ⇒ 级联冲击归零', s0 === 0, `×0 ${f(s0, 0)}`);
+
+  /* ④ 恒等默认 ⇒ 与**不开沙盒**逐位一致（显式写一份 1 / 0 不该改变任何东西） */
+  const identOf = async (withSb) => {
+    const s = await mk({ sym: 'BTC', i: T, mode: 'fut' });
+    if (withSb) s.god = { lastFill: 0, sb: { ...god.SB_DEFAULT } };
+    engine.tickMarket(s, 'BTC');
+    return `${s.mkt.BTC.heat}|${s.mkt.BTC.npc[0].long}|${s.mkt.BTC.npc[0].short}`;
+  };
+  const a0 = await identOf(false), a1 = await identOf(true);
+  check('9p 恒等默认逐位 == 不开沙盒', a0 === a1, `${a0} vs ${a1}`);
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);

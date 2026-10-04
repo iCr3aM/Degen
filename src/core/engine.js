@@ -17,7 +17,7 @@ import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, raw
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, shockParamsOf } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, sbOf, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -911,7 +911,9 @@ function absorbedImpact(s, sym, dir, impact) {
  *   （§73.5 的 k3 项）—— NPC 自己写的那些不该再喂热度，否则热度会自激。
  */
 function pushFlow(s, sym, dir, notional, give = 1, kind = 'fut', player = true) {
-  const v = dir * give * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
+  /* 沙盒「冲击强度」（2026-10-05）：整笔位移乘一枚倍率 —— 默认 1 ⇒ **逐位等于改动前**。
+     它同时作用于玩家成交与 NPC 强平（都走这里），所以是「这个市场有多容易被推动」的总闸。 */
+  const v = sbOf(s).shock * dir * give * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
   /* ② **做市库存动态**（2026-10-03 拍板）：本笔相对**本小时基准深度**的占比越大 ⇒ 做市商吃下的
      库存越多 ⇒ 回补越急（`betaFast` 越快）。口径见 `god.INV`：
        `betaFast = 基准 × (1 + kInv × min(q, qCap))`，`q = 本笔名义 ÷ hourLiqRaw`
@@ -1582,7 +1584,9 @@ function pushNpcShock(s, sym, m, dir, notional) {
      （Gemayel & Preda 2024）⇒ 向下的级联冲击 × `NPC.downAsym`（向上不变）。
      ⚠️ 只放大**级联这一条通道**的幅度，不动玩家侧的成交代价 / 位移（红线 A · 不双重计价）。 */
   const amp = dir < 0 ? NPC.downAsym : 1;
-  const v = dir * amp * SHOCK.share * NPC.synthGive * absorbedImpact(s, sym, dir, rawPermImpactFor(s, sym, s.i, notional));
+  /* 沙盒（2026-10-05）：级联这一条通道的幅度也吃 `冲击强度`（`sb.shock`）——
+     ⚠️ 只乘**级联通道**，与 `pushFlow`（玩家侧）各乘各的，不双重计价（红线 A）。 */
+  const v = sbOf(s).shock * dir * amp * SHOCK.share * NPC.synthGive * absorbedImpact(s, sym, dir, rawPermImpactFor(s, sym, s.i, notional));
   if (!Number.isFinite(v) || v === 0) return;
   const tab = m.npcShock || (m.npcShock = { at: [], v: [] });
   const n = tab.at.length;
@@ -1982,11 +1986,14 @@ function flushSlot(s, sym, m, g, lev, price) {
  */
 function crossHeat(s, sym, m) {
   if (!s.mkt) return;
+  /* 沙盒（2026-10-05）：跨币共振强度 `sb.res` 同时放大**外溢**与**回读**两个比例
+     （语义是「邻币被拖着走多快」）—— 两个比例同乘一个倍率，不会制造出「只传染不收」的偏差。 */
+  const sb = sbOf(s);
   const dev = m.heat - HEAT.base;
   const span = HEAT.base - CONTAGION.stressRef;
   const sev = span > 0 ? Math.min(1, Math.max(0, (Math.abs(dev) - CONTAGION.stressRef) / span)) : 0;
   if (sev > 0) {
-    const push = CONTAGION.push * sev;
+    const push = CONTAGION.push * sev * sb.res;
     for (const k in s.mkt) {
       if (k === sym) continue;
       const o = s.mkt[k];
@@ -2000,7 +2007,7 @@ function crossHeat(s, sym, m) {
     const o = s.mkt[k];
     if (o && Number.isFinite(o.heat)) { sum += o.heat - HEAT.base; cnt++; }
   }
-  if (cnt) m.heat = clamp01(m.heat + CONTAGION.read * (sum / cnt));
+  if (cnt) m.heat = clamp01(m.heat + CONTAGION.read * sb.res * (sum / cnt));
 }
 
 /**
@@ -2046,9 +2053,14 @@ export function tickMarket(s, sym) {
      ⚠️ `cascadeMulOf` 仍是模式权重：实物换手（杠杆 1x / 无杠杆盘）⇒ 0，玩家的量不给热度加料（§73.6）。 */
   const liq = hourLiqBase(s, sym, i);
   const pv = liq > 0 ? m.pv / liq : 0;
-  m.heat = clamp01(m.heat + HEAT.k1 * x * (1 + HEAT.k3 * Math.min(pv, 1) * cascadeMulOf(s))
-    - HEAT.kVol * volDev
-    - HEAT.k2 * (m.heat - HEAT.base));
+  /* 沙盒（2026-10-05）：`情绪强度 sb.heat` 放大**驱动项**（价格项 ＋ 波动率项），
+     `情绪偏向 sb.mood` 平移**回复靶心**（中性 → 偏贪婪 / 偏恐惧）——
+     火箭牛市 / 深度熊市预设的方向性正是靠 `mood` 给的（单靠倍率无法表达牛熊）。 */
+  const sb = sbOf(s);
+  const heatTgt = clamp01(HEAT.base + sb.mood);
+  m.heat = clamp01(m.heat + sb.heat * (HEAT.k1 * x * (1 + HEAT.k3 * Math.min(pv, 1) * cascadeMulOf(s))
+    - HEAT.kVol * volDev)
+    - HEAT.k2 * (m.heat - heatTgt));
   m.pv = 0;
   /* ⚠️ P1-2（2026-10-04 审计）：**其余币的 `pv` 也要清**。
      病根：玩家在 BTC 砸了一笔后**切走**去 ETH，则下一小时只有 ETH 被 tick、BTC 的那笔 `pv`
@@ -2066,7 +2078,9 @@ export function tickMarket(s, sym) {
         残尾阈值同理按档缩放（`× w`）—— 否则低权重的 100x 尾巴会被同一个绝对阈值整条抹掉。 */
   const liqDay = liqOf(sym, dayIndexOf(i));
   if (liqDay > 0) {
-    const target = NPC.mom * (m.heat - HEAT.base) * liqDay;
+    /* 沙盒（2026-10-05）：`散户参与度 sb.npc` 放大 NPC 顺势建仓的**靶心**（总敞口）——
+       靶心变了 ⇒ 档位权重与残尾阈值照旧按比例摊，总敞口守恒的口径不受影响。 */
+    const target = sb.npc * NPC.mom * (m.heat - HEAT.base) * liqDay;
     const price = lastPrice(s, sym);
     for (let k = 0; k < NPC.ladder.length; k++) {
       const w = NPC.ladder[k].w;

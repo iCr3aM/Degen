@@ -1225,6 +1225,22 @@ canvas.curve {
 .god-target i { font-style: normal; color: var(--mut); }
 .god-target .num { color: var(--accent); }
 
+/* ── 上帝沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）──────────
+   分组标题 ＋ 5 行旋钮 ＋ 1 行预设 ＋ 1 行种子。行距沿用 `.godp .confirm-rows` 的 8px。
+   ⚠️ 旋钮 / 预设行 = `标签在左 ＋ 档位在右`（与 `.set-row` 的两端对齐一致）；
+      档位组要 `flex: 1` 才不会被 flex 行压扁（`.god-pick` 本身是 grid、无宽度诉求）。 */
+.god-sep {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: calc(11px * var(--ui));
+  color: var(--mut);
+  letter-spacing: .08em;
+}
+.god-sbrow .god-pick { flex: 1; grid-template-columns: repeat(5, 1fr); }
+.god-sbrow .god-presets { grid-template-columns: repeat(4, 1fr); }
+.god-sbrow .set-btn { padding: 0 4px; }   /* 5 列并排时给「0.15×」这类稍长的字留余地 */
+
 /* ══════════════ 开场叙事（Batch 4 · B19） ══════════════
    复用 `.confirm` 的盒子，**不铺暗底**（不是「点外面就能关掉」的菜单，是这一局的入口）。
    `white-space: pre-line`：文案里的 `\n` 直接当成换行，不在 JS 里塞 `<br>`。 */

@@ -22,6 +22,7 @@ import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
 import { OVER_LABEL, badgesOf, epitaphOf, multOf, styleOf, titleOf } from '../core/titles.js';
+import { SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
 import { drawChart, drawEquityCurve } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 import { vibSupported } from './sound.js';
@@ -2873,6 +2874,63 @@ export function openGod(s, sel = null) {
   const ddRow = el('div', 'god-pick god-days');
   for (let dd = 1; dd <= days; dd++) ddRow.append(pickBtn(dd === pick.d, 'godday', dd));
   rows.append(ddRow);
+
+  /* ③ 沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）——
+     精选 **5 枚高影响旋钮 ＋ 4 组世界预设 ＋ 全局种子**，只作用在合成层（热度 / NPC / 冲击 / 共振）。
+     ⚠️ 种子走**独立输入框**（挂 `.god-seed`，**不挂 `data-*`** —— 同资金框的理由：
+        `bind.js` 会 `preventDefault`，挂上去就打不了字）。 */
+  const sb = sbOf(s);
+  rows.append(el('div', 'god-sep', '沙盒'));
+
+  /* 档位表：倍率类 5 档 `[0.5,1,1.5,2,3]`；`mood` 是偏移量可负 `[-0.3,-0.15,0,0.15,0.3]`。
+     ⚠️ 预设里有 1.4 / 1.6 / 2.2 这类**非档位值** ⇒ 预设应用后档位可能**全不高亮**，
+        此时靠下面那排「预设」按钮的选中态告诉玩家现在是哪个世界。 */
+  const SB_STEPS = {
+    heat: [0.5, 1, 1.5, 2, 3], npc: [0.5, 1, 1.5, 2, 3],
+    shock: [0.5, 1, 1.5, 2, 3], res: [0.5, 1, 1.5, 2, 3],
+    mood: [-0.3, -0.15, 0, 0.15, 0.3],
+  };
+  for (const key of SB_KEYS) {
+    const row = el('div', 'set-row god-sbrow');
+    row.append(el('i', null, SB_LABEL[key]));
+    const grp = el('div', 'god-pick');
+    for (const v of SB_STEPS[key]) {
+      const b = el('button', Math.abs(v - sb[key]) < 1e-9 ? 'set-btn on' : 'set-btn',
+        key === 'mood' ? String(v) : `${v}×`);
+      b.dataset.sb = `${key}:${v}`;
+      grp.append(b);
+    }
+    row.append(grp);
+    rows.append(row);
+  }
+
+  /* 预设 —— 一整套「世界」；选中态按 5 枚旋钮**逐键相等**判定（手动微调后自然全灭）。 */
+  const pRow = el('div', 'set-row god-sbrow');
+  pRow.append(el('i', null, '预设'));
+  const pGrp = el('div', 'god-pick god-presets');
+  for (const p of SB_PRESETS) {
+    const on = SB_KEYS.every(k => Math.abs(p.sb[k] - sb[k]) < 1e-9);
+    const b = el('button', on ? 'set-btn on' : 'set-btn', p.name);
+    b.dataset.sbpreset = p.id;
+    pGrp.append(b);
+  }
+  pRow.append(pGrp);
+  rows.append(pRow);
+
+  /* 种子 —— 写的是存档本体 `s.seed`（**不是** `s.god.sb`，见 `god.js` 头注）。 */
+  const seedRow = el('div', 'set-row');
+  const seedIn = el('input', 'god-in god-seed');
+  seedIn.type = 'number';
+  seedIn.inputMode = 'numeric';
+  seedIn.min = '0';
+  seedIn.step = '1';
+  seedIn.value = String(s.seed);
+  const seedBtn = el('button', 'set-btn on', '应用');
+  seedBtn.dataset.sbseed = '';
+  const seedRoll = el('button', 'set-btn', '随机');
+  seedRoll.dataset.sbroll = '';
+  seedRow.append(el('i', null, '种子'), seedIn, seedBtn, seedRoll);
+  rows.append(seedRow);
 
   box.append(rows);
 

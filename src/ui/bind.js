@@ -83,6 +83,13 @@ export const ACTION_KEYS = [
        `addcur:<frac>` / `subcur:<frac>` 框内步进「当前所选币」/ `close` 关），
      分派见 `main.js` 的 `onMarginAdjust`。 */
   'mg',
+  /* 上帝沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）：
+     `sb` ＝ 5 枚旋钮的档位按钮，值是子命令「键:值」（`heat:1.5` / `mood:-0.15` …）；
+     `sbpreset` ＝ 4 组世界预设，值是预设 id（`default` / `bull` / `bear` / `vol`）；
+     `sbseed` ＝ 种子输入框旁那枚「应用」；`sbroll` ＝ 「随机」。
+     分派见 `main.js` 的 `onSb` / `onSbPreset` / `onSbSeed` / `onSbRoll`。
+     ⚠️ 种子输入框本身**不挂 `data-*`**（同资金框：挂了会 `preventDefault` 打不了字）。 */
+  'sb', 'sbpreset', 'sbseed', 'sbroll',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');
