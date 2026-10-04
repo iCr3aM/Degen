@@ -801,6 +801,13 @@ export function feeRateOf(exId, t, kind = 'margin', vol = null) {
   return base * (hit / tiers[0].v);
 }
 
+/** USDT 诞生的时刻（Tether 在 Omni Layer 上发币、交易所开始收 U）—— **两格账本的分界线**。
+ *  它同时是：① `cashCurAt` 的分界 ② `TRANSFER_RAILS.omni.from` ③ 资产页「买 U」卡片的出现时刻。
+ *  三处共用一个常量，免得哪天改了一个漏掉另两个。
+ *  ⚠️ P1-12（2026-10-04 审计）：它**必须声明在 `TRANSFER_RAILS` 之前** —— 否则 ② 处只能写
+ *     字面量、与这里脱钩（原来就是那样：注释声称三处共用，实际 ② 是硬编的日期）。 */
+export const USDT_LIVE = Date.UTC(2014, 10, 20);
+
 /* ══════════════ 跨所转账的**通道（rail）**（v12 · 方案 §11.4） ══════════════
  *
  * 史实上「把钱从 A 所搬到 B 所」在不同年代走的路完全不同 —— 四段，由**转账时刻的年份自动判定**
@@ -828,7 +835,7 @@ export const TRANSFER_RAILS = [
     fees: [{ from: Date.UTC(2013, 0, 1), v: 20 }],               // 固定美元定额（§11.4 建议 $20）
   },
   {
-    id: 'omni', label: 'Omni Layer', from: Date.UTC(2014, 10, 20),
+    id: 'omni', label: 'Omni Layer', from: USDT_LIVE,
     hours: null,                                                 // null ⇒ 交给 arrivalCandles（吃拥堵）
     /* BTC 矿工费：2014–2016 常年 $0.01–0.50；2017 上半年随行情抬升（2017-12 的 $30–56 峰值落在下一段）。 */
     fees: [
@@ -876,11 +883,6 @@ export function railFeeOf(rail, t) {
   for (const s of rail.fees) { if (s.from <= t) v = s.v; else break; }
   return v;
 }
-
-/** USDT 诞生的时刻（Tether 在 Omni Layer 上发币、交易所开始收 U）—— **两格账本的分界线**。
- *  它同时是：① `cashCurAt` 的分界 ② `TRANSFER_RAILS.omni.from` ③ 资产页「买 U」卡片的出现时刻。
- *  三处共用一个常量，免得哪天改了一个漏掉另两个。 */
-export const USDT_LIVE = Date.UTC(2014, 10, 20);
 
 /**
  * **这个年代的钱是哪一种**（v13 · 方案 §2.3）：`'usd'`（美元法币）或 `'usdt'`（稳定币）。
@@ -1189,7 +1191,9 @@ export const ADV = {
    */
   aimCap: 1.5,
   /**
-   * 预警日志门槛：深度乘数首次跌到本值以下（即**降幅 ≥ 10%**，对应 `exposure ≈ 5.5%`）时播报一条。
+   * 预警日志门槛：深度乘数首次跌到本值以下（即**降幅 ≥ 10%**）时播报一条。
+   * ⚠️ 反解出的 exposure：`k·(exposure − t1) ≥ 0.10` ⇒ `exposure ≥ t1 + 0.10/4 = 0.05 + 0.025 = 7.5%`
+   *    （P1-13 · 2026-10-04 审计：旧注写的 5.5% 与 `k = 4` / `t1 = 0.05` 对不上，是漏算了 `+t1` 那一项）。
    * ⚠️ 不能用「进入档 1」当门槛：档 1 入口处的降幅**恰好是 0%**，日志会写成「深度下降 0%」这句废话。
    */
   warnMul: 0.9,

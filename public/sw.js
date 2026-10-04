@@ -26,10 +26,35 @@ const CACHE = 'degen-' + (new URL(self.location.href).searchParams.get('v') || '
 /** 预缓存的应用外壳 —— 断网首次进入也能开出菜单（其余资源按需缓存） */
 const SHELL = ['./', './index.html', './manifest.json'];
 
+/* ⚠️ P0-4（2026-10-04 审计）：**必须把构建产物 `assets/*` 也预缓存**。
+   病根：`vite.config.js` 给产物加了内容哈希（`assets/[name].[hash].js`，2026-10-01），
+   而 `SHELL` 里那张写死的清单**不可能含哈希名** ⇒ 首访时装进去的只有 HTML / manifest。
+   首次访问的那批 `assets/*` 要靠下面 fetch 处理器「网络成功后再写缓存」补上，可它
+   **不覆盖首屏在 SW 接管之前就已发出的请求**（`clients.claim()` 只能从下一次导航起生效），
+   于是「装好 → 立刻断网 → 刷新」时 HTML 出来了、JS/CSS 拿不到 ⇒ **白屏**。
+   修法：安装时现读 `index.html`，把里面引用的 `assets/*` 一并 `cache.add`（名字从 HTML 解析，
+   不写死）；单个资源失败不该拖垮安装。 */
+async function precacheAssets(cache) {
+  try {
+    const res = await fetch('./index.html', { cache: 'no-store' });
+    if (!res || !res.ok) return;
+    const html = await res.text();
+    const base = new URL('./index.html', self.location.href);
+    const urls = [...html.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/g)]
+      .map(m => m[1])
+      .filter(u => u.includes('assets/') && !/^(?:[a-z]+:)?\/\//i.test(u))
+      .map(u => new URL(u, base).href);
+    await Promise.all(urls.map(u => cache.add(u).catch(() => {})));
+  } catch { /* 拉不到 index.html 就退回按需缓存（fetch 处理器仍会在联网时补上） */ }
+}
+
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE)
-      .then(c => c.addAll(SHELL).catch(() => {}))   // 单个 404 不该让整个安装失败
+      .then(async c => {
+        await c.addAll(SHELL).catch(() => {});   // 单个 404 不该让整个安装失败
+        await precacheAssets(c);                  // ＋ 解析 HTML 里的哈希产物一起预缓存
+      })
       .then(() => self.skipWaiting())
   );
 });

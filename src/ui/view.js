@@ -18,7 +18,7 @@
  *    时钟、资金费率、强平、到账全部照旧按小时走。
  */
 
-import { rangeOf, candleAt, volumeAt, playerVolOf, liqOf, dayIndexOf, HOURS_PER_DAY } from '../core/market.js';
+import { rangeOf, candleAt, volumeAt, playerVolOf, liqOf, dayIndexOf, isLoaded, HOURS_PER_DAY } from '../core/market.js';
 import { PAD_R } from './chart.js';
 
 /** 缩放的硬边界：可见 12 ~ 240 根（12.4） */
@@ -139,6 +139,34 @@ function dayBar(sym, d, upto, own = true) {
   return { o, h, l, c, share, pv };
 }
 
+/* ── 1 日线聚合缓存（P1-19 · 2026-10-04 审计）────────────────────────────────
+   病根：`1d` 模式每帧都把视野内每一天**重算一遍**（`dayBar` 逐小时聚合，最多 240 天 × 24 根
+   ≈ 5760 次 `candleAt` / `volumeAt` / `playerVolOf`），但这些**已收盘的天根本不会再变**。
+
+   缓存**只收已收盘的天**（最末小时 `< upto`）：那时 `z = min(dayEnd, upto, r[1]-1)` 与 `upto`
+   无关 ⇒ 结果稳定；**今天那根从不进缓存**（随小时推进 / 玩家成交在变）。
+
+   ⚠️ 失效只有一种情形：**回退（上帝模式倒带）/ 重开把 `s.i` 变小**（`rewindTo` 清空 `s.pvol` ⇒
+      过去那些天的玩家成交会变）。判据就是 `i` 回退 —— `s.i` 是本作唯一时间真相源。
+      正常推进（`i` 增大）**不清缓存**：过去的天不因时间前进而改变。
+   ⚠️ 币种数据**懒加载**：没加载时 `dayBar` 恒返回 null，那属于「临时的空」，**不缓存** ——
+      否则数据到货后会把 null 一直读出来（`isLoaded` 就是这道闸）。 */
+const dayCache = new Map();          // `${sym}|${own?1:0}|${d}` -> bar（可能为 null）
+let dayCacheMarkI = -1;              // 上一次见到的 `i`（变小 = 回退 ⇒ 整表作废）
+
+function dayBarCached(sym, d, upto, own) {
+  const dayEnd = d * HOURS_PER_DAY + HOURS_PER_DAY - 1;
+  /* 今天（含未来）：不缓存也不查缓存，老老实实按 `upto` 算 */
+  if (dayEnd >= upto) return dayBar(sym, d, upto, own);
+  /* 数据没到货：不缓存（见上），直接算（此刻 make 出来也是 null） */
+  if (!isLoaded(sym)) return dayBar(sym, d, upto, own);
+  const key = sym + '|' + (own ? 1 : 0) + '|' + d;
+  if (dayCache.has(key)) return dayCache.get(key);
+  const bar = dayBar(sym, d, upto, own);
+  dayCache.set(key, bar);
+  return bar;
+}
+
 /**
  * 出一帧要画的 K 线与量柱。这是渲染层唯一的入口，也是**唯一**会写回记录的地方
  * （夹取后的 `right` / `count` 必须落回记录，否则玩家一直往同一边拖时数字会越滚越大）。
@@ -150,6 +178,10 @@ function dayBar(sym, d, upto, own = true) {
  *   **历史回顾页必须传假** —— 那一屏讲的是市场史，玩家自己这一局的成交不该混进 2013 年的柱子。
  */
 export function windowFor(sym, i, cssW, own = true, ns = '') {
+  /* 回退 / 重开 ⇒ `s.i` 变小（`rewindTo` 会清空 `s.pvol`，过去那些天的玩家成交随之改变）
+     ⇒ 1 日线缓存整表作废。正常推进不清（过去的天不因时间前进而改变）。见 `dayCache` 段注释。 */
+  if (i < dayCacheMarkI) dayCache.clear();
+  dayCacheMarkI = i;
   const { v } = norm(sym, i, cssW, ns);
   const right = Math.round(v.right);
   const from = right - v.count + 1;
@@ -161,7 +193,7 @@ export function windowFor(sym, i, cssW, own = true, ns = '') {
 
   if (v.mode === '1d') {
     for (let d = from; d <= right; d++) {
-      const bar = dayBar(sym, d, i, own);
+      const bar = dayBarCached(sym, d, i, own);
       if (!bar) continue;
       candles.push(bar);
       /* 日线的量 = **已过小时的份额之和** × 当天真实总量（Batch 4 · B15）：

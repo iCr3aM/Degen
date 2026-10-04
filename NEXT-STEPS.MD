@@ -2449,3 +2449,71 @@ mark − index）虽在公式上更接近 P 定义，但它是**游戏尺度**�
   （可由 `NPC.synthGive` 再调，越小越贴原始、越大对手盘越活跃）。
 
 ---
+
+## 十八、全模块逻辑漏洞审计与修复（2026-10-04）· P0 ×4 ＋ P1 ×19
+
+用户指令：「请详细审计游戏内所有模块，检查是否有遗漏的优化点或逻辑漏洞。」审计出 P0 ×4 / P1 ×19 /
+P2 ×20 / 测试盲区 ×8；经用户拍板（AskUserQuestion）**修复范围 = P0 全量 ＋ P1 全量（P2 本轮不改）**。
+
+### 18.1 P0（4 项 · 全部已修）
+
+| # | 位置 | 病根 | 修法 |
+|---|---|---|---|
+| P0-1 | `engine.buyUsdt` | USD/USDT 按面值 1:1 计入权益，而 `usdtPriceAt` 双向 ⇒ 折价买 U **凭空增权益**、破坏 HUD 不变量 `已实现＋未实现 = 权益 − 本金`，还能越过 `ruinFloorOf` 规避破产 | 成交后 `s.realized += got − usd`：折价记正、溢价记负 ⇒ 守恒 |
+| P0-2 | `engine.rewindTo` | 倒带后 `s.lockI` 未复位（`pauseLocked = s => s.lockI >= 0 && s.i <= s.lockI`，唯一解锁点在 `advanceOneHour`）⇒ 回退到锁定小时之前会被永久卡住、永远不能交易 | 倒带末 `s.lockI = -1` |
+| P0-3 | `tools/fetch-data.mjs` | `--only=` 落盘覆盖正式目录：只含所选币的残缺 manifest ＋ `encodeLiq` 对缺失币整列写 0 ⇒ 一次局部重抓即毁全量数据 | `--only=` 改写独立目录 `public/<DATA_DIR>/_partial`，永不碰正式目录 |
+| P0-4 | `public/sw.js` | `SHELL` 写死清单不可能含哈希版 `assets/*` ⇒ 首访后断网白屏 | install 时抓 `index.html`，正则解析 `(?:src\|href)="([^"]+)"` 里的 `assets/` 引用并入缓存（单个失败不拖垮） |
+
+### 18.2 P1（已修）
+
+- **P1-2 · 非当前币的 `pv` 永不结算**：`pushFlow` 只在 `sym === s.sym` 时结算 ⇒ 非当前币被强平 / ADL 写入的
+  `pv` 沉淀，切回时成凭空热度尖峰。改为结算在**当前币** ＋ `tickMarket` 里清掉其余币的残留 `pv`。
+- **P1-3 · 供应闸与 `capturedOf` 自相矛盾**：闸门只判 `side==='long'`（含 fut），而 `capturedOf` 恒不认 fut
+  ⇒ 改为 `isMarginOrder` 口径，两边一致。
+- **P1-4 · 破产后仍脏写**：`advanceOneHour` 忽略 `liquidateAll` 返回值，破产后继续跑 `advanceMarkBias` /
+  `sampleEquity` ⇒ 改为 `if (liquidateAll(s)) return;`。
+- **P1-5 · 尘埃闸用开仓名义**：`liquidateAll` 用 `pos.notional`（原始名义）判残余，与「按现价算的残余」脱节
+  ⇒ 改用 `pos.size × (1 − frac) × at < MIN_NOTIONAL`（阈值不升）。
+- **P1-6 · F&G 前视**：`tickMarket` 结算当天 F&G 时传的是 `day`（读**当天最后一根小时** = 未来）
+  ⇒ 改传 `day − 1`；`rvFngAt` 同步只在**已收盘**的天出值（`upto % 24 === 23` 才认当天）。
+- **P1-7/8 · σ 源口径**：`fngRawWith` 的分母由 `dailySigma`（含位移）改为 `rawDailySigma`（不含位移），
+  并新增同估计量的 `rawDailySigmaFast`（独立缓存、无需 invalidate）。**heat 的 σ 未改**，理由见 18.3。
+- **P1-9 · 倒带后 σ 缓存未失效**：`rewindTo` 清空 `s.flow` 却不清 σ 缓存 ⇒ 补 `invalidateSigma()`。
+- **P1-10 · 回顾 NOTE 复述标题**：`review.js` 的 `NOTE` 有多条把 `title`/`rt` 又说一遍 ⇒ 只留增量事实，
+  清理 15 条，并删掉无增量的 Coinbase 上市一条。
+- **P1-11 · `exDevOf` 写死 `GAME.seed`**：忽略传入的 `s.seed` ⇒ 换种子局里所间偏移不变。签名改为
+  `exDevOf(exId, sym, hour, seed = GAME.seed)`，三处调用（`exPrice` / `exMarkPrice` / `liquidateAll`）改传 `s.seed`。
+- **P1-12 · `USDT_LIVE` 三处各写各的**：注释声称「三处共用一个常量」，实际 `TRANSFER_RAILS.omni.from` 是硬编日期
+  ⇒ 常量上移到 `TRANSFER_RAILS` 之前，omni 通道改引 `USDT_LIVE`（**同一件事的三种说法从此真的同源**）。
+- **P1-13 · `ADV.warnMul` 注释反解错**：旧注写「对应 exposure ≈ 5.5%」，按 `k = 4` / `t1 = 0.05` 应为
+  `t1 + 0.10/4 = 7.5%` ⇒ 修正注释（漏算了 `+t1` 那一项）。
+- **P1-14 · `anchors.js` 拥堵取值区间不符**：旧注称落在 GDD §6.4 的「+30 至 +60，3–10 天」内，实测两处突破
+  （2017-12 的 `add = 70`、Ordinals 的 `days = 14`）⇒ 改成实测区间 `add` 40–70、`days` 7–14 并注明来源。
+- **P1-15 · `-$0.0`**：`fmtMoney` 对舍入到 0 的极小小负值（如借贷利息 −$0.0001）输出负号 ⇒ `neg` 增加
+  `Number(s) !== 0` 守卫。
+- **P1-16/17 · 卖出键注释与代码相反**：注释说「空仓且无融资」应保留可点（`aria-disabled` ＋ `.off`）给解释，
+  但原式化简后在 `sellOff` 时反而 `disabled = true`（点不出 ⇒ `main.js` 的融资解释分支**永不可达**）
+  ⇒ 改为 `needLev = !dir && !canLev`、`sellExplain = waiting || (needLev && !锁定/暂停)`，真禁用只留给锁定 / 暂停。
+- **P1-18 · 暂停闸门注释口径不符**：注释称本闸门拦「下单 / 平仓」，实际只兜 `exok` / `chan` / `buyu`（其余靠渲染层
+  `frozen` 真禁用；**且不能塞进来**——引导期 `s.paused` 恒真、渲染层用 `view.guide` 豁免）⇒ 改注释说明分工。
+- **P1-19 · 1 日线每帧全量重算**：`view.windowFor` 的 `1d` 分支每帧重聚合视野内每一天（最多 240 × 24 次）
+  ⇒ 新增 `dayBarCached`，**只缓存已收盘的天**（与 `upto` 无关、天然稳定），今天那根不缓存；
+  数据未加载不缓存（防把 null 读死）；**`i` 回退（倒带 / 重开）整表作废**（`s.pvol` 被清 ⇒ 过去那些天的玩家成交会变）。
+
+### 18.3 判定「不改」与一处偏离（必须记录）
+
+- **P1-1 · `ruinFloorOf` 未覆盖 fut ⇒ 有意取舍、不改**：审计原文建议把 fut 也纳入归零阈值；实测若照改，
+  阈值会掉到 **$0.1 量级** ⇒ 直接重现 §十六 刚修掉的「无法爆仓的僵尸仓」。**保留现状**，仅在报告说明。
+- **P1-7/8 偏离 · heat 的 σ 未改（只改了 F&G 显示轨）**：`tickMarket` 的 heat 分子 `heatPriceAt` 含
+  `playerFactor`，换成 `rawDailySigma` 无法做到真正同源，且会重新引入「位移↑⇒σ↑⇒位移↑」的自激
+  （§十七 F1 刚断开的那条环）、影响玩法与 201/201 基线 ⇒ **只改 `fngRawWith` 那条显示轨**，heat 维持原样。
+- **P2（20 项）本轮不动**（用户拍板），清单保留待后续圈定。
+
+### 18.4 验证
+
+- `node tools/sim-audit.mjs` = **201 通过 · 0 失败**。
+- `tools/bench-cdri.mjs`（只读）：四币「显示 σ ÷ 原始 σ」中位仍在现实带、OI ÷ 24h 成交额与清算强度未劣化。
+- `npm run build` ✓（26 modules / gzip 61.52 kB）。
+- 未改动数据包格式 / 未加后端 / `STATE_VERSION` 保持 **31**（本轮无新增存档结构）。
+
+---

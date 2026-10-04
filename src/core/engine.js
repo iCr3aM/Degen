@@ -176,7 +176,7 @@ function advanceMarkBias(s, sym) {
  */
 export function exPrice(s, sym, exId = s.ex) {
   const p = lastPrice(s, sym);
-  return p == null ? null : p * exDevOf(exId, sym, s.i);
+  return p == null ? null : p * exDevOf(exId, sym, s.i, s.seed);
 }
 
 /**
@@ -185,7 +185,7 @@ export function exPrice(s, sym, exId = s.ex) {
  */
 export function exMarkPrice(s, sym, exId = s.ex) {
   const p = markPrice(s, sym);
-  return p == null ? null : p * exDevOf(exId, sym, s.i);
+  return p == null ? null : p * exDevOf(exId, sym, s.i, s.seed);
 }
 
 /** 某个币的持仓的未实现盈亏（按**本仓所在所**的**标记价** —— 三价体系 · 2026-10-03） */
@@ -422,6 +422,27 @@ function rawDailySigma(sym, i) {
   }
   const v = sigmaOf(closes);
   daySigmaRawCache.set(sym, { day, v });
+  return v;
+}
+
+/* σ 的**原始行情版短窗**（P1-8 · 2026-10-04 审计）—— 与 `dailySigmaFast` 逐字同估计量 / 同窗口
+   （`sigmaOf` 总体标准差、`HEAT.volWindow` 天、`d×24+23` 日收盘），唯一差别是读 `rawCloseAt`
+   （**不含位移**）。F&G 的波动率子项是「短窗 σ ÷ 长窗 σ 的偏离」—— 两个 σ 必须**同源**：
+   长窗那一路已按 P1-7 改成 `rawDailySigma`（因为分子 `heatPriceAt` / `rawCloseAt` 读原始行情），
+   短窗若仍读 `closeAt`（含位移）就成了「原始 ÷ 位移」的杂配。
+   ⚠️ **不需要 `invalidateSigma()`**：同 `rawDailySigma`，它不读任何位移 ⇒ 位移变了它也不变。 */
+const daySigmaRawFastCache = new Map();
+function rawDailySigmaFast(sym, i) {
+  const day = dayIndexOf(i);
+  const hit = daySigmaRawFastCache.get(sym);
+  if (hit && hit.day === day) return hit.v;
+
+  const closes = [];
+  for (let d = day - HEAT.volWindow - 1; d < day; d++) {
+    closes.push(rawCloseAt(sym, d * HOURS_PER_DAY + HOURS_PER_DAY - 1));
+  }
+  const v = sigmaOf(closes);
+  daySigmaRawFastCache.set(sym, { day, v });
   return v;
 }
 
@@ -893,7 +914,14 @@ function pushFlow(s, sym, dir, notional, give = 1, kind = 'fut', player = true) 
   const q = raw > 0 ? notional / raw : 0;
   const invMul = 1 + INV.kInv * Math.min(q, INV.qCap);
   if (addFlow(s, sym, v, shockParamsOf(kind, invMul))) invalidateSigma();
-  if (player && notional > 0) mktOf(s, sym).pv += notional;
+  /* ⚠️ P1-2（2026-10-04 审计）：`pv` 只记**当前币** `s.sym` 的玩家成交。
+     病根：结算（`m.pv` 读进热度后清零）只在 `tickMarket(s, s.sym)` 里发生，而写入这里是
+     任何 `pos.sym` —— 玩家在 ETH 界面时一条**非当前币**（BTC）的仓位被强平 / ADL
+     （`pushFlow(pos.sym, …, player=true)`，见 `liquidateAll` / `adlPlayerReduce`）会往
+     `mkt[BTC].pv` 里加一笔，而 BTC 没被 tick ⇒ 那笔 `pv` **永不结算**、一直挂着，
+     直到某次切回 BTC 才被 tickMarket 读进热度 ⇒ 事隔几小时的一记**凭空热度尖峰**。
+     `s.sym` 之外一律不记（`pv` 的口径就是「本小时**当前币**的玩家成交」）。 */
+  if (player && notional > 0 && sym === s.sym) mktOf(s, sym).pv += notional;
 }
 
 /* ───────────────────── NPC 情绪 / 踩踏级联（§73.5 · 2026-10-02） ─────────────────────
@@ -932,20 +960,26 @@ function fngBandStep(prev, v) {
 
 /**
  * 某一天 `d` 的 F&G **原始读数**（0–100）—— 三个子因子等权，贪婪为正。
+ * ⚠️ P1-7（2026-10-04 审计）：归一化用的 σ 一律走**原始行情版**（`rawDailySigma` /
+ *    `rawDailySigmaFast`）。病根：分子 `priceAt` 读的是**原始行情**（`heatPriceAt` /
+ *    `rawCloseAt`），分母原来却读 `dailySigma`（**含位移**）—— 位移把 σ 抬高，于是
+ *    `z = 收益 ÷ σ` 被系统性压小，「玩家拉盘 ⇒ 贪婪读数不动」⇒ 显示轨与它读的行情不同源。
+ *    两处都换成不含位移的 σ 后，整条 `fngRawWith` 只吃原始行情（与回顾轨完全一致）。
  * @param {(i:number)=>number} priceAt 价格读数（实盘走 `heatPriceAt`、回顾页走 `rawCloseAt`）
- * @param {number} d 天序号；读的是**刚结束的那一天**（`d−1` 的最后一小时起算）
+ * @param {number} d 天序号 —— 读的是**第 `d` 天的最后一根小时**（`d×24+23`，已收盘的那一天；
+ *   调用方负责只传已走完的日子，见 `tickMarket` / `rvFngAt` 的去前视注）。
  */
 function fngRawWith(priceAt, sym, d) {
   const H = HOURS_PER_DAY;
   const i1 = d * H + (H - 1);          // 这一天（已收盘）的最后一根小时
   /* ① 动量 25%：30 天收益的 z 分位（`σ_30日 × √30` 归一，夹 ±2σ 后折算到 ±1）。 */
-  const sig = dailySigma(sym, i1);
+  const sig = rawDailySigma(sym, i1);
   const p1 = priceAt(i1);
   const p0 = priceAt(i1 - FNG.window * H);
   const z = sig > 0 && p1 > 0 && p0 > 0 ? (p1 / p0 - 1) / (sig * Math.sqrt(FNG.window)) : 0;
   const mom = Math.max(-1, Math.min(1, z / 2));
   /* ② 波动率 25%：`σ_短 ÷ σ_30日` 的**偏离**，越高越恐惧 ⇒ 取负（与 `HEAT.kVol` 同一支口径）。 */
-  const sigFast = dailySigmaFast(sym, i1);
+  const sigFast = rawDailySigmaFast(sym, i1);
   const dev = sig > 0 && sigFast > 0 ? Math.max(-1, Math.min(1, sigFast / sig - 1)) : 0;
   const vol = -dev;
   /* ③ 成交量 25%：当日额 vs 近 30 日均额（`liqOf` 就是全市场**日成交额**锚），
@@ -993,7 +1027,13 @@ function rvFngAt(sym, i) {
     rvFng.set(sym, c);
   }
   const day = dayIndexOf(upto);
-  while (c.d < day) {
+  /* ⚠️ P1-6b（2026-10-04 审计）：只结算**已收盘**的天 —— `fngRawWith(…, d)` 读的是第 `d` 天
+     最后一根小时（`d×24+23`），若 `d` 是**进行中**的当天，那根还在未来 ⇒ 前视。
+     判据：`upto` 恰在当天的最后一小时 ⇒ 当天算收盘（`settled = day`）；否则最后能结算的是
+     `day − 1`。查表下标 `k = day − c.a` 不变 —— 当天未收盘时该下标落在 `arr` 之外，自然返回
+     `null`（UI 按「今天还没有读数」处理），与低通/分档的既有口径不冲突。 */
+  const settled = (upto % HOURS_PER_DAY) === HOURS_PER_DAY - 1 ? day : day - 1;
+  while (c.d < settled) {
     c.d += 1;
     const raw = fngRawWith(j => rawCloseAt(sym, j), sym, c.d);
     c.v = c.v == null ? raw : c.v + FNG.alpha * (raw - c.v);
@@ -1882,6 +1922,12 @@ export function tickMarket(s, sym) {
     - HEAT.kVol * volDev
     - HEAT.k2 * (m.heat - HEAT.base));
   m.pv = 0;
+  /* ⚠️ P1-2（2026-10-04 审计）：**其余币的 `pv` 也要清**。
+     病根：玩家在 BTC 砸了一笔后**切走**去 ETH，则下一小时只有 ETH 被 tick、BTC 的那笔 `pv`
+     一直挂着；等几小时后切回 BTC 才被上面那行读进热度 ⇒ 一笔**迟到几小时的热度尖峰**。
+     `pv` 的口径是「本小时」⇒ 跨过这一根就该归零（哪怕那一小时该加的料因切走而错过，
+     也比在图上看不到的时段里攒一句「凭空情绪」干净）。 */
+  for (const k in s.mkt) if (k !== sym && s.mkt[k] && s.mkt[k].pv) s.mkt[k].pv = 0;
   /* ③ NPC 顺势建仓：热度高于中性 ⇒ 净多头，低于中性 ⇒ 净空头。取不到深度就不建（不凭空造量）。
      ⚠️ 靶心与残尾阈值都用**日流动性**（与 `syncNpcDrift` 同一把尺子）：用逐小时深度时，
         冷门小时（占比 1/24）的靶心被压小、热门小时又被放大 ⇒ 散户仓位跟着小时形状剧烈抖动。
@@ -1919,8 +1965,13 @@ export function tickMarket(s, sym) {
      写进 `m.fng`（0–100）。⚠️ 它**不参与任何玩法判定**（NPC / 点差 / 踩踏一条都不读它）——
      与上面的 `heat` 完全解耦，只是 UI 那枚浮字的读数来源（见 `god.FNG`）。 */
   const day = dayIndexOf(i);
-  if (m.fngDay !== day) {
-    const raw = fngRawWith(j => heatPriceAt(s, sym, j), sym, day);
+  /* ⚠️ P1-6（2026-10-04 审计）：只结算**已经收盘**的那一天（`day − 1`）。
+     病根：`fngRawWith(…, day)` 读的是**当天最后一根小时**（`day×24+23`）—— 而这里是在
+     当天**第一根**（`m.fngDay !== day` 恰好在这一根成立）就把整个当天的收盘行情读进来
+     ⇒ 前视。改成传 `day − 1`（刚收盘的那一天）；`day < 1` 时（本局头一天还没走完）不结算，
+     保持中性 50，等第二天再起算。 */
+  if (m.fngDay !== day && day >= 1) {
+    const raw = fngRawWith(j => heatPriceAt(s, sym, j), sym, day - 1);
     m.fng = m.fngDay == null ? raw : m.fng + FNG.alpha * (raw - m.fng);
     m.fngDay = day;
     m.fngBand = fngBandStep(m.fngBand, m.fng);
@@ -2407,11 +2458,17 @@ function openCheck(s, side, frac = 1) {
      ⚠️ 只有多头方向消耗供应量（空头没把币拿走）；**OTC 买入同样消耗**（2026-10-04 · F3）：
         场外单也从卖方钱包划走真实代币 ⇒ 一样受流通量上限约束。旧口径整条豁免 OTC，等于
         允许「一口气买超过流通量且市场零反应」—— 与用户审计指令直接冲突。
-     闸门 = 占比 × 当年真实流通量（`supplyCapOf`），整局不会触发 ⇒ **不为它新增终局**（GDD §16 只有两种收场）。 */
-  const cap = supplyCapOf(s.sym, s.i);
-  if (side === 'long' && capturedOf(s, s.sym) + margin * lev / fill > cap) {
-    return { ok: false, why: `${s.sym} 已触及供应量上限，无法继续买入` };
-  }
+     闸门 = 占比 × 当年真实流通量（`supplyCapOf`），整局不会触发 ⇒ **不为它新增终局**（GDD §16 只有两种收场）。
+     ⚠️ P1-3（2026-10-04 审计）：**只对 `isMarginOrder` 的多头生效**，与 `capturedOf` 的口径对齐。
+        病根：闸门原来只看 `side === 'long'`，`fut` 多单也计入 —— 可 `capturedOf`（state.js）
+        **恒不认 `fut`**（合约是衍生品、实物一枚没动，v18 既有拍板）⇒ 两边自相矛盾：
+        闸门会拦一张超过流通量的合约多单，却拦不住「连续多张合约多单叠加超量」
+        （因为分母里的 `capturedOf` 永远停在 0）。按 `isMarginOrder` 收口后，
+        合约多单**整条不进这道闸门**（它本来就不挤占实物流通盘），杠杆 / OTC 多头照旧。 */
+    const cap = supplyCapOf(s.sym, s.i);
+    if (side === 'long' && isMarginOrder && capturedOf(s, s.sym) + margin * lev / fill > cap) {
+      return { ok: false, why: `${s.sym} 已触及供应量上限，无法继续买入` };
+    }
 
   return { ok: true, lev, kind, feeRate, mustUsdt, prev, otc, isMarginOrder, margin, fee, notional, cost, fill, tierCapped };
 }
@@ -2840,6 +2897,14 @@ export function buyUsdt(s, frac = 1) {
   const got = usd / price;             // 花掉的美元买到了多少 U
   b.usd -= usd;
   b.usdt += got;
+  /* ⚠️ P0-1（2026-10-04 审计）：买入这一刻就把**折价/溢价**结进 `s.realized`。
+     病根：`equity` 里 USD / USDT 都按**面值 1:1** 计（见 state.js 注释），而 `usdtPriceAt`
+     双向 —— 折价买 U（$0.90）时现金总量按面值凭空多出 `got − usd`，于是
+       ① 破坏 HUD 那条不变量（`realized + unrealized = 权益 − 本金`）；
+       ② 可以靠「折价买 U」把权益抬回 `ruinFloorOf` 之上，**规避破产**。
+     溢价（$1.05）时反之凭空少钱。两边都靠这一行当场结清：折价 ⇒ `realized` 记正，
+     溢价 ⇒ 记负，**账目守恒**，而「捡便宜 / 挨宰」的手感原样保留（下一行的日志仍照报汇率）。 */
+  s.realized += got - usd;
   /* 日志把**汇率**写出来（而不是只报两个金额）：玩家要能看出这一笔是赚了还是亏了 ——
      0.900 时买 U 是捡便宜、1.050 时是挨宰，那正是这个机制的全部意义。 */
   pushLog(s, `买入 USDT ${fmtMoney(got)}｜1 USDT = $${price.toFixed(3)}｜花费 ${fmtMoney(usd)}`, 'info', 'trade');
@@ -3206,7 +3271,11 @@ export function advanceOneHour(s) {
      1x 多头无借入 ⇒ 两样都不扣。 */
   if (settleFunding(s)) return;
 
-  liquidateAll(s);
+  /* ⚠️ P1-4（2026-10-04 审计）：接住返回值 —— 强平把玩家打到破产（`checkRuin`）时本局已结束
+     （或进了「待领救济金」的待决态），必须**立刻停手**。
+     病根：这里原来忽略返回值，破产/待决后仍往下跑 `advanceMarkBias` 与 `sampleEquity`
+     ⇒ 会往一个已经结束 / 停在遮罩上的状态里继续写基差台阶与资金曲线采样（脏写）。 */
+  if (liquidateAll(s)) return;
 
   /* 标记价基差推进（三价体系 · 2026-10-03）：排在 `liquidateAll` **之后** ——
      这一小时的基差要等本小时的强平都判完才入账 ⇒ mark 在**当根**完全不含玩家自己刚砸出来的
@@ -3290,6 +3359,13 @@ export function rewindTo(s, to) {
   s.godRuined = false;
   s.over = null;
   s.paused = false;
+  /* ⚠️ P0-2（2026-10-04 审计）：`s.lockI` 也要清掉。
+     病根：下单一小时锁（§73.8）的判据是 `s.lockI >= 0 && s.i <= s.lockI`（见 `pauseLocked`），
+     而**唯一的解锁点**是 `advanceOneHour` 里「时钟走过那一刻」。
+     回退如果只是把 `s.i` 拨小、却留着刚才那一笔留下的 `lockI`，玩家就会**卡在锁上**：
+     拨回到 `lockI` 之前（或拨到同小时）后必须一直点继续走满到超过旧 `lockI` 才能再下单 ——
+     而回退后 `s.positions = {}` 早已清空，这笔锁已无任何对应物，纯属残留陷阱。 */
+  s.lockI = -1;
   s.log = [];
 
   /* ③ 时钟落到那一刻 —— **不重放**，见函数头 */
@@ -3305,6 +3381,12 @@ export function rewindTo(s, to) {
   /* ⑤ 资金落到当前所（两格原样）＋ 给资金曲线补一个起点，免得资产页那张图空着 */
   s.books = { [s.ex]: { usd, usdt } };
   sampleEquity(s);
+
+  /* ⚠️ P1-9（2026-10-04 审计）：清空 `s.flow` 之后必须让 σ 缓存失效。
+     价格位移是**逐根**的、σ 的分子分母都读 `closeAt`（含位移）⇒ 把冲击池清成 `{}` 会让
+     实际位移归零，而缓存里还留着「带位移」的旧 σ —— 不回退这一步，回退后头几帧的
+     σ / 滑点 / NPC 热度全按**已经不存在的位移史**算，自相矛盾。 */
+  invalidateSigma();
 
   return usd + usdt;
 }
@@ -3475,7 +3557,7 @@ function liquidateAll(s) {
     const raw = rawCandleAt(sym, s.i);
     if (!raw) continue;
     const bias = markBiasOf(s, sym);
-    const dv = exDevOf(pos0.ex, sym, s.i);
+    const dv = exDevOf(pos0.ex, sym, s.i, s.seed);
     const c = {
       o: (raw.o + bias) * dv,
       h: (raw.h + bias) * dv,
@@ -3519,8 +3601,14 @@ function liquidateAll(s) {
       }
 
       const frac = reduceFraction(pos, at, PARTIAL_TARGET);
-      /* 没有可留的部分（权益已 ≤ 0），或剩下的不足最小名义（会留下尘埃仓）⇒ 整条打掉 */
-      if (!(frac < 1) || pos.notional * (1 - frac) < MIN_NOTIONAL) {
+      /* 没有可留的部分（权益已 ≤ 0），或剩下的不足最小名义（会留下尘埃仓）⇒ 整条打掉。
+         ⚠️ P1-5（2026-10-04 审计）：尘埃闸的尺子改用**现价名义** `pos.size·(1−frac)·at`。
+         病根：这里原来用**开仓名义** `pos.notional·(1−frac)`，而 `adlPlayerReduce` 与
+         `closeCheck` 的尘埃闸都用**现价名义** ⇒ 同一笔「剩余仓位」在两处会得出不同结论
+         （暴涨后开仓名义远小于现价名义 ⇒ 强平这一路会把一个现价早已远超最小名义的残仓
+         误判成尘埃、整条打掉）。三处统一到现价名义，阈值仍是 `MIN_NOTIONAL`（不升，
+         免得动到与 `ruinFloorOf` 的耦合）。 */
+      if (!(frac < 1) || pos.size * (1 - frac) * at < MIN_NOTIONAL) {
         forceLiquidate(s, pos, at);
         if (checkRuin(s)) return true;
         break;

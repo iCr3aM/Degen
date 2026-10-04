@@ -1074,14 +1074,21 @@ export function update(refs, s, view) {
   refs.shortBtn.disabled = !waiting && !(tradable && (!cur || dir === 'short'));
   refs.closeBtn.disabled = !waiting && (!cur || lockedUI || frozen || locked);
   /* 杠杆模式这两枚**四件事共用**：空仓开仓 / 同向加仓 / 反向平仓 —— 所以只要 `tradable` 就能点。
-     「卖出」唯一的例外见下（空仓且该所没有融资 ⇒ 开不出空单，那时才禁）。 */
+     「卖出」唯一的例外见下（空仓且该所没有融资 ⇒ 开不出空单）：那时**保留可点**，只画灰 ＋ 给一句解释。 */
   refs.buyBtn.disabled = !waiting && !tradable;
   /* 「卖出」＝开杠杆空单（要借币，v10）：该所没有融资时**空仓不许开空**。
      ⚠️ 判据只看 `dir === null`：手上压着一张空单时「卖出」是**加仓**（B4）、
         压着一张多单时它是**平多**，两件事都不需要借币 ⇒ 必须能点。
-     ⚠️ 这种「点不动」同样走 `aria-disabled` ＋ `.off`（理由同杠杆行），点一下给一条解释。 */
-  const sellOff = (!dir && !canLev) || waiting;
-  refs.sellBtn.disabled = !waiting && !(tradable && !(sellOff && !waiting));
+     ⚠️ 这种「点不动」同样走 `aria-disabled` ＋ `.off`（理由同杠杆行），点一下给一条解释 ——
+        所以它**绝不能**落到 `disabled`（那会连 `pointerdown` 一起吞掉，点了零反馈）。
+        真禁用只留给「锁定 / 暂停」这类连解释都不该给的态（此时 `tradable` 恒假）。
+        ⚠️ P1-16（2026-10-04 审计）：原式 `!(tradable && !(sellOff && !waiting))` 化简后
+        在 `sellOff` 时反而 **`disabled = true`**，与上面那条注释**完全相反** —— 已改正。 */
+  const needLev = !dir && !canLev;
+  const sellOff = needLev || waiting;
+  /* 「保留可点」的两种情形：① 行情加载中；② 通常可交易、只是空仓且无融资（锁定 / 暂停时不给解释）。 */
+  const sellExplain = waiting || (needLev && !lockedUI && !locked && !frozen);
+  refs.sellBtn.disabled = !sellExplain && !tradable;
   refs.sellBtn.classList.toggle('off', sellOff);
 
   /* 金额档 —— **一档两用**（2026-10-02 用户拍板）：

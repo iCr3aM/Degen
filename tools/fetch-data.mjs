@@ -85,7 +85,7 @@ import { spawnSync } from 'node:child_process';
 import { GAME, COINS, HOUR_MS, DATA_DIR } from '../src/core/config.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const OUT_DIR = join(ROOT, 'public', DATA_DIR);
+const BASE_OUT_DIR = join(ROOT, 'public', DATA_DIR);
 const CACHE_DIR = join(ROOT, '.cache');
 /** Kraken 官方 OHLCVT 归档（本地，不进 git）。见文件头数据源 ⑥ */
 const KRAKEN_DIR = join(ROOT, 'Kraken_OHLCVT_Full_2026Q2');
@@ -130,6 +130,15 @@ const PROBE = args.has('--probe');
 const FROM_CACHE = args.has('--from-cache');
 const onlyArg = [...args].find(a => a.startsWith('--only='));
 const ONLY = onlyArg ? new Set(onlyArg.slice(7).split(',').map(s => s.trim().toUpperCase())) : null;
+
+/* ⚠️ P0-3（2026-10-04 审计）：`--only=` 的**输出目录必须另立** —— 永不覆盖正式目录。
+   病根：`--only=BTC` 时 ① `manifest.coins` 只含 BTC；② `encodeLiq`（见其定义）对未抓的币
+   **整列写 0**，于是 `liq.bin` 里其余四币的日流动性全变 0。而末尾那两处
+   `writeFileSync(OUT_DIR/index.json)` / `liq.bin` 会把这些残片**原样覆盖到正式目录** ——
+   一次局部调试就把线上完整数据包砸成「只剩 BTC、其余币无流动性」的坏包。
+   修法：只要带了 `--only=`，全部产物落进 `public/data/_partial/`（调试用、不进运行时加载路径），
+   正式目录一个字节都不动。 */
+const OUT_DIR = ONLY ? join(BASE_OUT_DIR, '_partial') : BASE_OUT_DIR;
 
 const END_TS = GAME.end;                 // 排他上界：2025-01-01T00:00Z
 /**
@@ -1341,7 +1350,7 @@ async function main() {
   writeFileSync(join(OUT_DIR, 'index.json'), JSON.stringify(manifest, null, 2));
 
   log(`日流动性：${(liqRaw.length / 1024).toFixed(0)}KB → gzip ${(liqZip.length / 1024).toFixed(0)}KB（${TOTAL_DAYS} 天 × ${COINS.length} 币）`);
-  log(`清单：public/${DATA_DIR}/index.json\n`);
+  log(`清单：public/${DATA_DIR}${ONLY ? '/_partial' : ''}/index.json\n`);
 }
 
 main().catch(err => { console.error('\n抓数失败：', err); process.exit(1); });

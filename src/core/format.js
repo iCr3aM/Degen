@@ -62,9 +62,10 @@ export function fmtLogPrice(p) {
  */
 export function fmtMoney(n, { sign = false } = {}) {
   if (!Number.isFinite(n)) return '--';
-  const neg = n < 0;
-  const a = Math.abs(n);
-  const s = a.toFixed(1);
+  const s = Math.abs(n).toFixed(1);
+  /* ⚠️ P1-15（2026-10-04 审计）：舍入到 0 的极小小负值（如借贷利息 −$0.0001）不许带负号 ——
+     否则输出 `-$0.0`，一个「负的零」既刺眼又让玩家以为账没结清。`+s === 0` 即「已舍成零」。 */
+  const neg = n < 0 && Number(s) !== 0;
   const [ip, fp] = s.split('.');
   const body = '$' + group(ip) + '.' + fp;
   if (neg) return '-' + body;

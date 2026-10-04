@@ -939,12 +939,16 @@ const EXDEV_CHAN = hashStr('exdev');
  * @param {string} exId 交易所 id
  * @param {string} sym  币符号（噪声按币独立，免得五个币同向抖动）
  * @param {number} hour 绝对小时序号（`s.i`）
+ * @param {number} [seed] 本局随机种子（`s.seed`）—— **必须传 `s.seed`，不能写死 `GAME.seed`**
+ *   （P1-11 · 2026-10-04 审计）：现在 `s.seed` 恒等于 `GAME.seed`，两者数值相同、看不出差别；
+ *   但 S4 肉鸽化会让 `s.seed` 由玩家输入 / 日期派生 ⇒ 若这里仍读模块常量 `GAME.seed`，
+ *   本所价噪声就会**与存档脱钩**（读档后同 `(所, 币, 小时)` 对不上同一根噪声）⇒ 现先接线。
  * @returns {number} 乘数（≈ 0.97 ~ 1.03）；未知交易所 / 未配置 `dev` 恒返回 1
  */
-export function exDevOf(exId, sym, hour) {
+export function exDevOf(exId, sym, hour, seed = GAME.seed) {
   const d = exchangeOf(exId)?.dev;
   if (!d) return 1;
-  const n = (rand(GAME.seed, hashStr(sym), hour, 0, EXDEV_CHAN) * 2 - 1) * d.amp;
+  const n = (rand(seed, hashStr(sym), hour, 0, EXDEV_CHAN) * 2 - 1) * d.amp;
   const dev = d.basis + n;
   return 1 + Math.max(-d.cap, Math.min(d.cap, dev));
 }
