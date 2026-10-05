@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MARGIN, MIN_NOTIONAL, minNotionalAt, notionalMaxLevAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, BAND, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MARGIN, MIN_NOTIONAL, minNotionalAt, notionalMaxLevAt, openNeedAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, BAND, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
 import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCandleAt, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
@@ -346,41 +346,64 @@ function supplyCapOf(sym, i) {
 }
 
 /**
- * **实质归零的下限**（2026-10-04 用户拍板）—— 玩家当前所、**杠杆通道**下
- * 「能开出的最小一单」需要多少保证金：
+ * **实质归零的门槛**（2026-10-05 用户拍板「改成与 `openCheck` 同源」）——
+ * 「在本所，把**杠杆 / 合约两条通道**里各自的上限杠杆都用上，开**最小一单**需要多少可用余额」，
+ * 取两条通道中**更低**的那条：只要够得着一条，玩家就还能继续玩。
  *
- *     阈值 = 该所最小名义 ÷ 该所杠杆最高倍数         （再以 `MIN_NOTIONAL` 兜底）
+ *     门槛 = min over kind ∈ {margin, fut} of  openNeedAt(本所, 此刻, kind, 该通道上限杠杆)
  *
- * ⚠️ **为什么不再用 `1e-9`**：逐步强平（部分强平）的设计是「**保证金不退、留在仓位里当垫子**」
- *    （见 `positions.reducePosition`）⇒ 它的**总权益逐位守恒**，只在「仓位保证金 ↔ 浮亏」之间
- *    搬家，于是权益**永远不会自己走到 0**。实测（2021-11-10 顶部开 5x 多单、骑 200 天）：
- *    跌到权益 $0.24 时，既不满足 `≤ 1e-9` 的归零、保证金率又已被抬回 20.3%（> 15% 维持线）
- *    ⇒ **再也不会被强平** ⇒ 时钟照走、本局**永不结束**（用户报的「无法出现爆仓结局」）。
- *    真正的「什么都干不了」的下限是**最小下单名义**，不是浮点 0。
- * ⚠️ **为什么要除杠杆**：`openCheck` 判的是**名义**（`margin × lev ≥ 最小名义`）⇒ 杠杆越高、
- *    凑出最小名义所需的保证金越少。除以该所最高杠杆才是「真的一单都开不出」的临界。
- *    （实测：Bitfinex $5 仍能开出 $16.5 名义 ⇒ 不该判归零；$0.24 则两种模式全拒。）
- * ⚠️ **只按杠杆通道算，不问合约**：合约那条路还卡**币种**（`spendableOf(mustUsdt)` 只认 USDT），
- *    且不会有人拿 $0.2 去 100x；把它纳入会把阈值拉到 $0.1 量级、**修不掉**本 bug（已实测）。
- * ⚠️ **兜底用 `MIN_NOTIONAL`**：该所那时还没开业 / 阶梯查不到时，不要制造一个离谱的阈值。
- * ⚠️ **必须与强平尘埃闸同尺**（`liquidateAll` 里那条也判定「剩余不足最小名义就整条打掉」）：
- *    若把尘埃闸从 `MIN_NOTIONAL`($1) 改成 `minNotionalAt`($10)，整条强平的返还额会升到 ~$1.45，
- *    反而在本阈值之上留下新的僵尸 —— **两处只能一起动，本版选择都停在 `MIN_NOTIONAL` 这一档**。
+ * ⚠️ **旧式（`最小名义 ÷ 最高杠杆`）在四处与 `openCheck` 的真实闸门不一致**，各自留下一条
+ *    「开不出一单、却也不算归零」的死区（时钟照走、本局永不结束 —— 用户报的正是这类阻塞）：
+ *    ① **漏了开仓费**：真实闸门除「`保证金 × 杠杆 ≥ 最小名义`」还有「`保证金 + 费 ≤ 可用余额`」，
+ *       反解出来是 `最小名义 × (1/杠杆 + 费率)`，比旧式多一项 `最小名义 × 费率`
+ *       （Bitfinex 2013 ⇒ 门槛从 $3.0303 抬到 $3.0506，缺口 $0.02）；
+ *    ② **只按杠杆通道算**：Binance 永续最小名义 $5、125x ⇒ 门槛 $0.04 —— 手握 $0.05 的玩家
+ *       本来还能做合约，旧式却按 $3.05 判他归零（**误判结束**，比死区更严重）；
+ *    ③ **用该通道上限杠杆，而不是玩家当前所设的杠杆**（见下条）；
+ *    ④ **该所当时根本没这条通道**时旧式仍按它算了一个门槛（`minNotionalAt` 回落 $1）。
+ *
+ * ⚠️ **为什么取「该通道的上限杠杆」而不是玩家此刻设的杠杆**（2026-10-05 二次拍板）：
+ *    杠杆选择器就在交易页上，玩家**随时可以**把杠杆拉高 ⇒ 拿当前杠杆当门槛，会把一个
+ *    「拉到 3x 就还能继续玩」的玩家（美国 1x / $5）当场误判归零。门槛只在
+ *    「**任何杠杆都开不出一单**」时才该判死。代价是「1x 下按钮置灰、要玩家自己拉杠杆」
+ *    这种**软阻塞** —— 比误判结束轻得多，且玩家一眼能看到杠杆键。
+ *
+ * ⚠️ **只算资金闸门，不算行情闸门**：停机维护（`haltedAt`）、极端行情保护带（`BAND`）、
+ *    币没上线、取不到价 —— 这些都是**会过去的**临时状态，拿它们判归零等于「一次停机就炸号」。
+ *    所以这里只反解资金那两条，与 `openCheck` 里那几条并行存在、互不替代。
+ *
+ * ⚠️ **单位与 `equity` 对齐（面值 1:1）**：合约通道要 USDT，而 `usdtPriceAt` 的溢价/折价
+ *    已经在「买 U」那一刻结进 `realized`。按 1:1 折算在门槛量级（<$1）上最多差千分之几，
+ *    且方向**偏保守**（门槛略低 ⇒ 宁可晚判归零）—— 残留的极窄边界由遮罩接住，不会卡死流程。
+ * ⚠️ 两条通道都取不到（理论上不会）⇒ 退回 `MIN_NOTIONAL`，不制造离谱阈值。
+ * ⚠️ **导出**（2026-10-05）：审计要拿它复算「门槛 == 真·开得出一单的门槛（死区宽度 = 0）」。
  */
-const ruinFloorOf = s => {
+export const ruinFloorOf = s => {
   const t = timeOf(s);
-  const lev = Math.max(1, maxLeverageAt(t, s.ex, 'margin'));
-  return Math.max(MIN_NOTIONAL, minNotionalAt(s.ex, t, 'margin') / lev);
+  let floor = Infinity;
+  for (const kind of ['margin', 'fut']) {
+    /* 该所此刻不提供这条通道 ⇒ 它压根不是一个选项，跳过（旧式在这里会凭空造一个 $1 门槛）。 */
+    if (!hasLeverageKindAt(t, s.ex, kind)) continue;
+    const need = openNeedAt(s.ex, t, kind, maxLeverageAt(t, s.ex, kind), vol30Of(s, s.ex, s.i, kind));
+    if (need < floor) floor = need;
+  }
+  return Number.isFinite(floor) ? floor : MIN_NOTIONAL;
 };
 
 /**
- * 账户**实质归零**即破产（GDD §1.3）。
- *
- * ⚠️ 浮点容差仍然要：`margin = cash / (1 + lev×feeRate)` 之后再减 `margin + fee`，
- *    浮点残渣会留下 ~1e-13 的「现金」。`ruinFloorOf` 恒 ≥ `MIN_NOTIONAL`($1) ⇒ 那条残渣
- *    天然被它盖住，无需再单独留一个 `1e-9`（2026-09-28 的旧容差已被本阈值吸收）。
+ * 账户**实质归零**即破产（GDD §1.3）—— 判据 = 「本所两条通道、任何杠杆都开不出一单」。
  */
 const isBankrupt = s => equity(s) < ruinFloorOf(s);
+
+/**
+ * 这一次「开不出一单」该怎么说（2026-10-05）—— 遮罩标题 / 日志 / 结算页**共用同一条判据**：
+ *   · 权益 ≤ 0 ⇒ 「账户归零」（真的清零 / 穿仓倒欠）；
+ *   · 权益 > 0 但低于 `ruinFloorOf` ⇒ 「无力开仓」（还有钱，只是连该所最小一单都凑不出）。
+ *
+ * ⚠️ 只在 `checkRuin` 判真之后调用 ⇒ 不会出现「明明还有得玩却说无力」。
+ * ⚠️ 与 `isBankrupt` 同一把尺子（都用 `equity`），所以这两句话在边界上不会互相打架。
+ */
+export const ruinLabelOf = s => (equity(s) <= 0 ? '账户归零' : '无力开仓');
 
 /* ───────────────────────────── 滑点（P2-B1） ───────────────────────────── */
 
@@ -2895,6 +2918,14 @@ export function openTrade(s, side, frac = 1) {
   if (marginMode) s.stat.margin += 1; else s.stat.fut += 1;
   if (lev > s.stat.maxLev) s.stat.maxLev = lev;
   s.stat.syms[s.sym] = true;
+
+  /* ⚠️ R2（2026-10-05 审计修 · 死区缺口）：开仓**已经落账**（上面全做完了），此处只行使
+     「归零判定」的副作用，返回值必须是 **`ok: true`**（与 `closeTrade` 末尾同一条口径）。
+     为什么要在这里判：开仓费 ＋ 滑点是**当场**从余额里扣掉的真钱，若玩家恰好停在门槛上
+     下单，这一笔之后权益就掉到 `ruinFloorOf` 之下 —— 不在这里判，就会出现「钱已不够开下一单、
+     却还能继续操作」的小时级死区（要等下一根 K 线才由时钟兜住）。
+     破产的收场照旧交给时钟那一步（`advanceOneHour` 会再次 `checkRuin`），这里只是**提前**一档。 */
+  checkRuin(s);
   return { ok: true };
 }
 
@@ -3096,6 +3127,13 @@ export function adjustMargin(s, sym, delta) {
     s.stat.mgDown += 1;                                  // 统计（v32）：减少保证金次数
   }
   pushLog(s, `${add ? '增加' : '减少'}保证金 ${sym}｜${fmtMoneyShort(amount)}｜保证金率 ${fmtRate(marginRateOf(pos, price))}`, 'info', 'trade');
+
+  /* ⚠️ R2（2026-10-05 审计修 · 死区缺口）：调保证金是**纯资金腾挪、无成交** ⇒ 总量口径下
+     权益不变（钱只是从「可用余额」挪进「保证金」或反过来），正常路径下这里**判不出破产**
+     —— 留这一行是为了堵住边角：减少保证金走 `credit`（可能落到 `pos.ex` 那一本账），
+     若仓位不在当前所，这笔钱不会进 `cashOf(s)`，权益当场少一截。不留这一行就是一条小时级死区。
+     与 `closeTrade` 末尾同一条口径：返回值必须是 **`ok: true`**。 */
+  checkRuin(s);
   return { ok: true };
 }
 
@@ -3346,7 +3384,7 @@ function endGame(s, reason) {
   const text = reason === OVER.SETTLED
     ? `活到了 ${fmtDate(GAME.start + (s.endI - 1) * HOUR_MS, false)}，结算`
     : reason === OVER.GAVEUP ? '就此收摊 ｜ 本局结束'
-    : '账户归零，游戏结束';
+    : `${ruinLabelOf(s)}，游戏结束`;
   pushLog(s, text, reason === OVER.SETTLED ? 'ok' : 'bad');
   return { ok: false, why: reason };
 }
@@ -3391,7 +3429,7 @@ function checkRuin(s) {
   if (!s.loaned) {
     s.pending = 'loan';
     s.paused = true;
-    pushLog(s, `账户归零 ｜ 可领 ${fmtMoney(loanAmountAt())} 救济金`, 'bad');
+    pushLog(s, `${ruinLabelOf(s)} ｜ 可领 ${fmtMoney(loanAmountAt())} 救济金`, 'bad');
     return false;
   }
   endGame(s, OVER.LIQUIDATED);
@@ -3439,6 +3477,12 @@ export function buyUsdt(s, frac = 1) {
   /* 日志把**汇率**写出来（而不是只报两个金额）：玩家要能看出这一笔是赚了还是亏了 ——
      0.900 时买 U 是捡便宜、1.050 时是挨宰，那正是这个机制的全部意义。 */
   pushLog(s, `买入 USDT ${fmtMoney(got)}｜1 USDT = $${price.toFixed(3)}｜花费 ${fmtMoney(usd)}`, 'info', 'trade');
+
+  /* ⚠️ R2（2026-10-05 审计修 · 死区缺口）：买 U **当场**就结清了折价 / 溢价（上面那行 `s.realized`）
+     ⇒ 权益当场变动：溢价（`price > 1`）时这一笔真金白银地少了一截，玩家若恰好在门槛上买 U，
+     就会掉到 `ruinFloorOf` 之下。不在这里判，就有「钱已不够开下一单、却还能继续操作」的小时级死区。
+     与 `closeTrade` 末尾同一条口径：返回值必须是 **`ok: true`**（买 U 已经落账）。 */
+  checkRuin(s);
   return { ok: true };
 }
 
@@ -3535,6 +3579,15 @@ export function switchExchange(s, id) {
   pushLog(s, `转账 → ${ex.name}｜${fmtMoneyShort(send)}｜${rail.label} · ${eta}｜手续费 ${fmtMoneyShort(fee)}`
     + (add ? `｜推高拥堵 +${add.toFixed(1)}` : ''), 'info', 'trade');
   s.stat.move += 1;                                    // 统计（v21）：称号「搬家达人」读它
+
+  /* ⚠️ R2（2026-10-05 审计修 · 死区缺口）：换所**当场**就动了权益 —— 手续费立刻扣掉（上行
+     `s.realized -= fee`），且 `s.ex` 已经切到新所（`equity` 只算**当前所**的账）⇒ 权益当场变。
+     玩家若把余额搬到只剩手续费那么多，转账后新所可用余额接近 0 ⇒ 掉到 `ruinFloorOf` 之下。
+     不在这里判，就有「钱已经不够开下一单、却还能继续操作」的小时级死区。
+     ⚠️ 与 `closeTrade` 末尾同一条口径：返回值必须是 **`ok: true`**（转账已经发起）。
+     ⚠️ 这里**不会**把「钱留在旧所」的那种换所误判 —— 门槛看的是**新所**此刻开最小一单要多少，
+        正是玩家真正要面对的那个数（旧所那笔钱要等下一笔转账才搬得回来）。 */
+  checkRuin(s);
   return { ok: true };
 }
 

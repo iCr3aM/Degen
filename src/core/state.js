@@ -7,7 +7,7 @@
  * 日期、行情、解锁币种全部由它派生（`format.fmtDate` / `market`），谁都不许另存一份时间。
  */
 
-import { cashCurAt, DEFAULT_SCENARIO, GAME, isChallenge, scenarioEndIndex, scenarioOf, scenarioStartIndex } from './config.js';
+import { cashCurAt, DEFAULT_SCENARIO, GAME, HOUR_MS, hasLeverageKindAt, isChallenge, maxLeverageAt, openNeedAt, scenarioEndIndex, scenarioOf, scenarioStartIndex } from './config.js';
 import { isMargin } from './positions.js';
 
 /* ⚠️ v29（2026-10-02 · NEXT-STEPS §五 · 提案 B 档 1「收流动性」）：
@@ -125,6 +125,29 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      2014-11-20 之后的年代局 ⇒ `'usdt'`：那个年代搬钱走链上、合约保证金也只要 U，
      给一笔美元只会让玩家先做一次没有意义的「买 U」。 */
   const cur0 = cashCurAt(sc.at);
+
+  /* ✦ 10U 战神（2026-10-05 审计修 · 开局校验 ＋ 自动拉满杠杆）——
+     有的年代局本金（`$10`）低于该所**最小一单**的门槛：Binance 2021 杠杆最小名义 `$5`、
+     1x 时门槛 `$5.02 > $10` ⇒ 开局**一单都开不出**（而默认 `lev = 1` 又不会自动抬）。
+     现实里的做法就是「把杠杆拉上去」——1x 开不出的一单，125x 只要 `$5.06` 就开得出。
+     判据与「归零门槛」**同源**（`config.openNeedAt`）：1x 开不出、但该通道上限杠杆开得出
+     ⇒ 开局直接把杠杆拉满。这样「开局就能开仓」这条不变量在任何年代局都成立，
+     也免得玩家面对一个开局就弹「无力开仓」的死局。
+     ⚠️ 与 `engine.normalizeLeverage` 同一张表、同一个上限口径（`levKind`：`fut` 优先按 `s.mode`），
+        这里开局 `mode = GAME.mode`（`'margin'`）⇒ `kind` 恒为 `'margin'`。
+     ⚠️ 只改**开局**那一档；`classic`（$1000 / Bitfinex / 1x）逐位不变（$1000 ≫ $10.02）。 */
+  const t0 = GAME.start + i0 * HOUR_MS;
+  let lev0 = 1;
+  {
+    const kind = GAME.mode === 'fut' ? 'fut' : 'margin';
+    if (hasLeverageKindAt(t0, sc.ex, kind)) {
+      const levMax = maxLeverageAt(t0, sc.ex, kind);
+      if (openNeedAt(sc.ex, t0, kind, 1) > sc.cash && openNeedAt(sc.ex, t0, kind, levMax) <= sc.cash) {
+        lev0 = levMax;
+      }
+    }
+  }
+
   return {
     v: STATE_VERSION,
 
@@ -414,8 +437,13 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      */
     otcOff: false,
 
-    /** 玩家选择的杠杆（会在档位表里夹取，见 `config.leverageOptionsAt`） */
-    lev: 1,
+    /**
+     * 玩家选择的杠杆（会在档位表里夹取，见 `config.leverageOptionsAt`）。
+     * ⚠️ **开局值不一定等于 1**（2026-10-05 · 10U 战神）：本金低于「1x 最小一单」门槛、
+     *    但拉满杠杆后开得出时，开局直接给该通道的上限杠杆（见上方 `lev0` 的推导）。
+     *    经典全程（$1000 / Bitfinex）恒为 `1`，与旧档逐位相同。
+     */
+    lev: lev0,
 
     /** 下单金额占「可用保证金」的比例，1 = 全部 */
     sizeFrac: 1,

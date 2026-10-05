@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -1772,11 +1772,12 @@ export function renderOver(root, s) {
     ? `你活到了 ${fmtDate(timeOf(s), false)}\n最终权益 ${fmtMoney(eq)}`
     : (quit
       ? `你主动收了摊\n最终权益 ${fmtMoney(eq)}`
-      /* ⚠️ 文案与 `engine.endGame` 的「账户归零，游戏结束」、本函数下面那张遮罩的标题
-         「账户归零」**统一**（2026-10-02 审计修）：原来是孤例「账户清零」。
+      /* ⚠️ 文案与 `engine.endGame` 的 `${ruinLabelOf(s)}，游戏结束`、本函数下面那张遮罩的标题
+         **统一**（2026-10-05 审计修）：三处都走 `engine.ruinLabelOf` 这**同一个判据**
+         （权益 ≈ 0 ⇒「账户归零」；权益 > 0 但开不出最小一单 ⇒「无力开仓」）—— 原来是孤例「账户清零」。
          也**不再写「保证金归零」** —— 这一支同时接管挑战年代局的归零（`OVER.LIQUIDATED`
          在 `isChallenge` 那条路也会落进来），那种归零未必出自保证金；标题已是「爆仓」。 */
-      : `账户归零\n倒在 ${fmtDate(timeOf(s))}`);
+      : `${ruinLabelOf(s)}\n倒在 ${fmtDate(timeOf(s))}`);
 
   box.append(el('b', win ? 'up' : 'down', title), el('p', null, body));
   /* 结局评语（2026-10-05 用户拍板）：不再只显示「结束 ＋ 收益额」，按
@@ -1811,8 +1812,11 @@ export function renderLoan(root, s) {
   const box = el('div', 'over');
   const amount = loanAmountAt();
 
+  /* ⚠️ 标题走 `engine.ruinLabelOf`（2026-10-05 · 与归零判据同源）：权益 ≈ 0 ⇒「账户归零」，
+     权益 > 0 但连该所最小一单都开不出 ⇒「无力开仓」。正文两行保持不变
+     （`el('p')` 那两行是**固定版面**，多一个字节都可能把遮罩撑变形）。 */
   box.append(
-    el('b', 'down', '账户归零'),
+    el('b', 'down', ruinLabelOf(s)),
     el('p', null, `领取 ${fmtMoney(amount)} 救济金\n这笔钱不用还，一局只能领一次`),
   );
   const take = el('button', null, `领取 ${fmtMoney(amount)}`);

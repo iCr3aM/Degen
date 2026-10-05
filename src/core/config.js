@@ -852,6 +852,30 @@ export function feeRateOf(exId, t, kind = 'margin', vol = null) {
   return base * (hit / tiers[0].v);
 }
 
+/**
+ * 开**最小一单**所需的**可用余额**（2026-10-05 · 与 `engine.openCheck` 的资金闸门**同源**）。
+ *
+ * `openCheck` 在 `frac = 1`（把这一笔的额度全押上）时有**两道资金闸门**：
+ *   ① 保证金 ＋ 开仓费 ≤ 可用余额 —— `marginAtLev` 的钳位让它在 `frac = 1` 时**恒成立**
+ *      （`margin = cash / (1 + lev × feeRate)` ⇒ `margin + fee ≡ cash`），是条永不拒绝的路；
+ *   ② 保证金 × 杠杆 ≥ 单笔最小名义 —— **唯一会真的拒绝**的那条。
+ * 把 ② 反解出来就是本函数：
+ *
+ *     需要的最小可用余额 = 最小名义 × (1 / 杠杆 + 费率)
+ *
+ * ⚠️ **它存在的唯一理由就是「同源」**：`engine.ruinFloorOf`（归零门槛）、
+ *    `state.createState` 的开局校验、以及审计里「门槛处恰好翻转」的断言，三处必须用**同一个式子**。
+ *    任何一处自己再抄一遍，都会重新长出「开不出一单、却也不算归零」的死区
+ *    （旧式漏了 `最小名义 × 费率` 这一项，Bitfinex 2013 ⇒ 门槛差 $0.02）。
+ *
+ * @param {number} lev 该通道的杠杆（调用方传**该通道的上限**才算「真的一单都开不出」）
+ * @param {{u:number,b:number}|number|null} vol 该所近 30 天成交量（`engine.vol30Of`），影响阶梯费率
+ */
+export function openNeedAt(exId, t, kind = 'margin', lev = 1, vol = null) {
+  const minN = Math.max(MIN_NOTIONAL, minNotionalAt(exId, t, kind));
+  return minN * (1 / Math.max(1, lev) + feeRateOf(exId, t, kind, vol));
+}
+
 /** USDT 诞生的时刻（Tether 在 Omni Layer 上发币、交易所开始收 U）—— **两格账本的分界线**。
  *  它同时是：① `cashCurAt` 的分界 ② `TRANSFER_RAILS.omni.from` ③ 资产页「买 U」卡片的出现时刻。
  *  三处共用一个常量，免得哪天改了一个漏掉另两个。

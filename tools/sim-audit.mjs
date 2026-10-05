@@ -3326,6 +3326,247 @@ section('15 · 方案 A：玩家盈亏由对手方池承担（零和 · 池恒�
   }
 }
 
+/* ═══════════ 16 · 归零门槛「无死区」（2026-10-05 · 10U 战神 ＋ 无力开仓） ═══════════ */
+section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 公开路径实证）');
+{
+  /* 用户诉求（原话）：「假设玩家提前平仓，但是资金已不足以开仓，如何解决？……不要有缺口，
+     不能有缺口，不允许有缺口」。本节把「缺口宽度 = 0」变成可执行断言 —— 三件事：
+       ① `engine.ruinFloorOf` 复算 == 两条可用通道各按**上限杠杆**算出的 `openNeedAt` 取更低者；
+       ② 在门槛处**真实开仓闸门**（`canOpenAt`）恰好翻转：门槛上开得出、门槛下开不出（二分实证）；
+       ③ 走**公开时钟路径**（`advanceOneHour`；无持仓 ⇒ 末尾无条件 `checkRuin`）实证：
+         权益落在门槛下 ⇒ 判归零；落在门槛上 ⇒ 不判。
+     ⚠️ 门槛公式 = `max($1, 最小名义) × (1 / 杠杆 + 开仓费率)`（**含开仓费**）。 */
+  const setCash = (s, cash) => {
+    const cur = C.cashCurAt(engine.timeOf(s));
+    s.books[s.ex] = cur === 'usd' ? { usd: cash, usdt: 0 } : { usd: 0, usdt: cash };
+  };
+  /* 复算门槛（用 config 的基本件独立再算一遍，**不调** `ruinFloorOf`）——「同源」的可证伪版本。 */
+  const floorFromPrimitives = (s, ex, t) => {
+    let mn = Infinity;
+    for (const k of ['margin', 'fut']) {
+      if (!C.hasLeverageKindAt(t, ex, k)) continue;
+      const need = C.openNeedAt(ex, t, k, C.maxLeverageAt(t, ex, k), engine.vol30Of(s, ex, s.i, k));
+      if (need < mn) mn = need;
+    }
+    return Number.isFinite(mn) ? mn : C.MIN_NOTIONAL;
+  };
+  /* ⚠️ 探针口径（这一版踩过的坑，留档）：
+     ① **不能用「大资金」当探针**（`cash = $1e6`）—— 早期 Bitfinex 的**借贷额度上限**是
+        `当日流动性 × MARGIN.quota`，$1e6 × 3.3x 在 2013 年当场被它挡住 ⇒ 一个小时也扫不到。
+     ② **不能用「全局门槛」当那一档的翻转点** —— 全局门槛取两条通道的**更低者**（如 Binance
+        2021 是合约 $0.042），而 `margin` 模式自己的门槛是 $2.01（最小名义 $10 ÷ 5x）⇒
+        在 $0.042 附近二分只会得到「两档都开不出」，探针看起来像「引擎有缺口」，其实是**探针错了**。
+     ⇒ 正解：每个通道各按**自己**的 `openNeedAt(ex, t, kind, 该通道上限杠杆)` 取一档，
+        并在一根「只有资金闸门在拦路」的小时上做二分（用 `openTrade` 的失败文案认闸门：
+        `下单金额太小` ⇒ 这一根的拦路者正是资金闸门；停机 / 极端行情 / 借贷额度 ⇒ 换下一根）。 */
+  const kindNeedAt = (s, kind) => {
+    const t = engine.timeOf(s);
+    if (!C.hasLeverageKindAt(t, s.ex, kind)) return null;
+    const lev = Math.max(1, C.maxLeverageAt(t, s.ex, kind));
+    s.lev = lev;
+    return C.openNeedAt(s.ex, t, kind, lev, engine.vol30Of(s, s.ex, s.i, kind));
+  };
+
+  for (const sc of C.SCENARIOS) {
+    for (const kind of ['margin', 'fut']) {
+      const t0 = C.GAME.start + C.scenarioStartIndex(sc.id) * H;
+      /* 该局开局那一刻**这条通道根本不存在** ⇒ 它不是一个选项：`ruinFloorOf` 跳过它，
+         这里也不断言（旧式会在这里凭空造一个 $1 门槛，那正是被修的缺口之一）。 */
+      if (!(C.hasLeverageKindAt(t0, sc.ex, kind) && (C.exchangeOf(sc.ex)?.open ?? Infinity) <= t0)) continue;
+      const tag = `${sc.id}/${kind}`;
+
+      /* ① 同源：门槛 == 独立复算 */
+      const s1 = await mk({ scen: sc.id, mode: kind });
+      s1.hintOn = false;
+      s1.lev = Math.max(1, C.maxLeverageAt(t0, sc.ex, kind));
+      const F = engine.ruinFloorOf(s1);
+      const expect = floorFromPrimitives(s1, sc.ex, t0);
+      check(`16a 门槛同源 ${tag}`, Math.abs(F - expect) <= 1e-12 * Math.max(1, F),
+        `floor=${f(F, 8)} 复算=${f(expect, 8)}`);
+
+      /* ② 门槛处恰好翻转（纯闸门二分）：`canOpenAt` 的翻转点 == 该通道自己的门槛。 */
+      const s2 = await mk({ scen: sc.id, mode: kind });
+      s2.hintOn = false;
+      let chI2 = null, need2 = 0, lastWhy = '';
+      for (let k = 0; k < 240 && s2.i < s2.endI - 1; k++) {
+        const need = kindNeedAt(s2, kind);
+        if (need != null) {
+          setCash(s2, need * 0.5);
+          const rLow = engine.openTrade(s2, 'long', 1);   // 0.5×门槛 ⇒ 必被资金闸门拒（失败路径不动状态）
+          setCash(s2, need * 2);
+          const hiOk = engine.canOpenAt(s2, 'long', 1);
+          if (!rLow.ok && hiOk) { chI2 = s2.i; need2 = need; break; }
+          lastWhy = rLow.ok ? '0.5×门槛竟然开得出（门槛算错）'
+            : `${String(rLow.why).split(' ')[0]}${hiOk ? '' : ' ／ 2×门槛也不可开'}`;
+        }
+        engine.advanceOneHour(s2);
+        if (s2.over || s2.pending) break;
+      }
+      if (chI2 == null) {
+        check(`16b 探针小时可用 ${tag}`, false, `240 小时内找不到「只有资金闸门在拦路」的小时（最后一根：${lastWhy}）`);
+        continue;
+      }
+      setCash(s2, need2 * 0.5);
+      const lowOk = engine.openTrade(s2, 'long', 1).ok;   // 失败路径不动状态
+      setCash(s2, need2 * 2);
+      const highOk = engine.canOpenAt(s2, 'long', 1);
+      check(`16b 探针小时：0.5×门槛被拒、2×门槛可开 ${tag}`, lowOk === false && highOk === true,
+        `i=${chI2} need=${f(need2, 8)} 半档=${lowOk} 双档=${highOk}`);
+      let lo = need2 * 0.5, hi = need2 * 2;
+      for (let n = 0; n < 80; n++) {
+        const mid = (lo + hi) / 2;
+        setCash(s2, mid);
+        if (engine.canOpenAt(s2, 'long', 1)) hi = mid; else lo = mid;
+      }
+      check(`16b 门槛处恰好翻转 ${tag}`,
+        Math.abs(hi - need2) <= 1e-12 * Math.max(1, need2),
+        `flip=${f(hi, 10)} 门槛=${f(need2, 10)} 相对差=${((hi - need2) / Math.max(1, need2)).toExponential(2)}`);
+      setCash(s2, need2 * (1 + 1e-9));
+      const justAbove = engine.canOpenAt(s2, 'long', 1);
+      setCash(s2, need2 * (1 - 1e-9));
+      const justBelow = engine.canOpenAt(s2, 'long', 1);
+      check(`16b 门槛上下一线之差翻转 ${tag}`, justAbove === true && justBelow === false,
+        `上=${justAbove} 下=${justBelow}`);
+
+      /* ③ 公开路径：无持仓 ＋ `advanceOneHour` ⇒ `liquidateAll` 末尾无条件 `checkRuin`。
+         ⚠️ `s.hintOn = false` 关掉「破产预警遮罩」—— 否则它抢先把 `s.pending` 置成 `'warn'`，
+            `checkRuin` 的幂等闸会直接返回，探针就测不到东西（那是遮罩流程、不是缺口）。 */
+      const chI = chI2;
+      const s3 = await mk({ scen: sc.id, mode: kind, i: chI });
+      s3.hintOn = false;
+      s3.lev = Math.max(1, C.maxLeverageAt(engine.timeOf(s3), sc.ex, kind));
+      const iBase = s3.i;
+      s3.i = iBase + 1;
+      const F3 = engine.ruinFloorOf(s3);          // 判定发生在**下一根**小时，门槛取那一根
+      s3.i = iBase;
+      setCash(s3, F3 * (1 - 1e-6));
+      engine.advanceOneHour(s3);
+      const belowRuined = s3.pending === 'loan' || !!s3.over;
+      check(`16c 低于门槛 ⇒ 判归零（公开路径）${tag}`, belowRuined,
+        `cash=${f(F3 * (1 - 1e-6), 8)} floor=${f(F3, 8)} pending=${s3.pending} over=${s3.over ? s3.over.reason : 'null'}`);
+
+      const s4 = await mk({ scen: sc.id, mode: kind, i: chI });
+      s4.hintOn = false;
+      s4.lev = Math.max(1, C.maxLeverageAt(engine.timeOf(s4), sc.ex, kind));
+      s4.i = iBase + 1;
+      const F4 = engine.ruinFloorOf(s4);
+      s4.i = iBase;
+      setCash(s4, F4 * (1 + 1e-6));
+      engine.advanceOneHour(s4);
+      check(`16c 高于门槛 ⇒ 不判 ${tag}`, !s4.pending && !s4.over,
+        `cash=${f(F4 * (1 + 1e-6), 8)} floor=${f(F4, 8)} pending=${s4.pending} over=${s4.over ? s4.over.reason : 'null'}`);
+    }
+  }
+
+  /* 16d · 开局校验（10U 战神：本金低于 1x 门槛 ⇒ 开局自动拉满该通道杠杆）。 */
+  {
+    const t0 = C.GAME.start + C.scenarioStartIndex('degen') * H;
+    const levMax = C.maxLeverageAt(t0, 'binance', 'margin');
+    const need1x = C.openNeedAt('binance', t0, 'margin', 1);
+    const dg = createState('degen');
+    check('16d 10U 战神：本金确实低于 1x 最小一单门槛（否则无需自动拉杠杆）',
+      need1x > 10, `1x门槛=${f(need1x, 4)} 本金=10`);
+    check('16d 10U 战神：开局杠杆 = 该所杠杆上限（自动拉满）',
+      dg.lev === levMax, `lev=${dg.lev} 上限=${levMax}`);
+    const sd = await mk({ scen: 'degen' });
+    check('16d 10U 战神：开局 `canOpenAt` 为真（开局就能开仓，无死局）',
+      engine.canOpenAt(sd, 'long', 1),
+      `cash=${f(engine.equity(sd), 4)} floor=${f(engine.ruinFloorOf(sd), 6)} lev=${sd.lev}`);
+    const cl = createState('classic');
+    check('16d classic：开局杠杆仍为 1（逐位不变）', cl.lev === 1, `lev=${cl.lev}`);
+  }
+
+  /* 16e · 四类「小时内立即判定」各一条真实行为断言（不是读源码，是走真路径）。
+     ⚠️ 这四类在改动前只有「下一根 K 线」才兜住 ⇒ 存在最长 1 小时的死区。 */
+  {
+    /* ① 开仓费：现金恰在门槛上 ⇒ 付掉开仓费后权益当场掉到门槛下。
+       用 Bitfinex 2013 开局那一刻（唯一可用通道 = 杠杆，行情闸门全开）。 */
+    const s = await mk({ scen: 'classic', mode: 'margin' });
+    s.hintOn = false;
+    s.lev = Math.max(1, C.maxLeverageAt(engine.timeOf(s), s.ex, 'margin'));
+    const F = engine.ruinFloorOf(s);
+    setCash(s, F * (1 + 1e-9));
+    const r = engine.openTrade(s, 'long', 1);
+    check('16e ①开仓费压到门槛下 ⇒ 当场判归零（开仓本身成功）',
+      r.ok && (s.pending === 'loan' || !!s.over),
+      `ok=${r.ok} pending=${s.pending} over=${s.over ? s.over.reason : 'null'} 权益=${f(engine.equity(s), 8)} floor=${f(F, 8)}`);
+  }
+  {
+    /* ② 换所费：把钱搬到只剩手续费那么多 ⇒ 转账后新所余额近 0。 */
+    const s = await mk({ scen: 'classic', mode: 'margin', i: idx(at(2017, 9, 1)) });
+    s.hintOn = false;
+    const plan = engine.transferPlan(s, 'binance');
+    setCash(s, plan.fee + 0.01);
+    const r = engine.switchExchange(s, 'binance');
+    check('16e ②换所费压到门槛下 ⇒ 当场判归零（转账本身已发起）',
+      r.ok && r.why == null && (s.pending === 'loan' || !!s.over),
+      `ok=${r.ok} why=${r.why || '—'} fee=${f(plan.fee, 4)} 权益=${f(engine.equity(s), 6)} pending=${s.pending} over=${s.over ? s.over.reason : 'null'}`);
+  }
+  {
+    /* ③ 买 U 溢价：溢价买入当场结账 ⇒ 权益少一截。 */
+    let iU = null;
+    for (let i = idx(C.USDT_LIVE) + 1; i < idx(at(2024, 1, 1)); i += 3) {
+      if (C.usdtPriceAt(C.GAME.start + i * H) > 1.005) { iU = i; break; }
+    }
+    check('16e ③前置：时间轴上确有「买 U 溢价」的小时（> $1.005）', iU != null, `i=${iU}`);
+    if (iU != null) {
+      const s = await mk({ scen: 'classic', mode: 'margin', i: iU });
+      s.hintOn = false;
+      s.lev = Math.max(1, C.maxLeverageAt(engine.timeOf(s), s.ex, 'margin'));
+      const price = C.usdtPriceAt(engine.timeOf(s));
+      const F = engine.ruinFloorOf(s);
+      s.books[s.ex] = { usd: F * price * 0.999, usdt: 0 };   // 买之前权益 > 门槛（price > 1）
+      const before = engine.equity(s);
+      const r = engine.buyUsdt(s, 1);
+      check('16e ③买 U 溢价压到门槛下 ⇒ 当场判归零（买 U 本身成功）',
+        r.ok && before >= F && (s.pending === 'loan' || !!s.over),
+        `ok=${r.ok} 前=${f(before, 8)} 后=${f(engine.equity(s), 8)} floor=${f(F, 8)} 汇率=${f(price, 4)}`);
+    }
+  }
+  {
+    /* ④ 减少保证金：纯资金腾挪 ⇒ 权益不变 ⇒ **不许**误判归零（防假阳性）。 */
+    const s = await mk({ scen: 'classic', mode: 'margin', cash: 1e5, i: idx(at(2021, 5, 1)) });
+    s.hintOn = false;
+    s.lev = 1;
+    const o = engine.openTrade(s, 'long', 1);
+    const caps = o.ok ? engine.marginCapsOf(s, 'BTC') : null;
+    const red = caps && caps.reduce > 0 ? Math.min(caps.reduce, s.positions.BTC.margin * 0.25) : 0;
+    const r = red > 0 ? engine.adjustMargin(s, 'BTC', -red) : { ok: false };
+    check('16e ④减少保证金不误判归零（权益不变 ⇒ 不触发）',
+      o.ok && red > 0 && r.ok && !s.pending && !s.over,
+      `开仓=${o.ok} 可减=${f(red, 2)} 调整=${r.ok} pending=${s.pending} over=${s.over ? s.over.reason : 'null'}`);
+  }
+
+  /* 16f · 两句话的自适应文案（与 `isBankrupt` 同一把尺子）。 */
+  {
+    const s = await mk({ scen: 'classic', mode: 'margin' });
+    setCash(s, 0);
+    check('16f 权益 ≤ 0 ⇒「账户归零」', engine.ruinLabelOf(s) === '账户归零', `eq=${f(engine.equity(s), 6)}`);
+    const s2 = await mk({ scen: 'classic', mode: 'margin' });
+    s2.hintOn = false;
+    s2.lev = Math.max(1, C.maxLeverageAt(engine.timeOf(s2), s2.ex, 'margin'));
+    setCash(s2, engine.ruinFloorOf(s2) * 0.5);
+    check('16f 权益 > 0 但低于门槛 ⇒「无力开仓」',
+      engine.equity(s2) > 0 && engine.ruinLabelOf(s2) === '无力开仓',
+      `eq=${f(engine.equity(s2), 8)} floor=${f(engine.ruinFloorOf(s2), 8)}`);
+  }
+
+  /* 16g · 源码 / 导出锚点（防回归删除）：三处共用同一个式子，缺一即拆掉「同源」。 */
+  {
+    check('16g 锚点：`config.openNeedAt` 已导出（门槛 / 开局校验 / 审计三处共用的那个式子）',
+      typeof C.openNeedAt === 'function');
+    const src = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+    check('16g 锚点：`engine.ruinFloorOf` 与 `engine.ruinLabelOf` 均已导出',
+      /export const ruinFloorOf/.test(src) && /export const ruinLabelOf/.test(src));
+    const hits = (src.match(/checkRuin\(s\);/g) || []).length;
+    check('16g 锚点：`checkRuin(s)` 直接调用点 ≥ 5（平仓 / 开仓 / 调保证金 / 买 U / 换所）',
+      hits >= 5, `实得 ${hits} 处`);
+    const rsrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+    check('16g 锚点：遮罩与结算页文案都走 `ruinLabelOf`（两处）',
+      (rsrc.match(/ruinLabelOf\(s\)/g) || []).length >= 2);
+  }
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);
