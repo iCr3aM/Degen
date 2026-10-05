@@ -771,7 +771,9 @@ export function mount(root) {
 
   /* ── 底部 Tab（44px · §6.1）──
      ⚠️ 这 44px **全部从 K 线区扣**：固定块合计 431 → 475px，K 线区 405 → 361px（390×844）。
-        实机若觉得挤，先把 Tab 降到 40px —— **不动 HUD / 持仓条**。 */
+        实机若觉得挤，先把 Tab 降到 40px —— **不动 HUD / 持仓条**。
+     ⚠️ 2026-10-06 密度压缩后交易页固定块**又让出约 50px** 给 K 线区（HUD −6 / 币种条 −4 /
+        持仓条 −6 / 日志条 −4 / 操作区 −30）；上面那两个总数是当版口径、未逐版重算。 */
   const tabs = el('div', 'tabs');
   const tabBtns = new Map();
   for (const [k, label] of [['trade', '交易'], ['assets', '资产'], ['settings', '设置']]) {
