@@ -868,6 +868,16 @@ canvas.curve {
   background: var(--panel);
   border: 1px solid var(--line);
 }
+/* 曲线的时间参照行（2026-10-05 用户拍板）：说明这条线画的是**哪一段**（起 → 止 · N 天）。
+   与区间键同一份数据（`chart.curveWindow`）⇒ 换区间时一起重算，绝不会与图上那段漂。 */
+.curve-cap {
+  display: block;
+  margin-top: 4px;
+  font-size: calc(10px * var(--ui));
+  font-style: normal;
+  color: var(--mut-2);
+  text-align: center;
+}
 
 /* 持仓列表：按**杠杆 / 合约**分组（组名走 `h4`），组内是一个 `.pcard`，行与行之间一条细线。
    用途是**跨币复盘** —— 与交易页那条「只看当前币」的持仓条不是重复（§14.7）。 */

@@ -24,7 +24,7 @@ import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
 import { OVER_LABEL, badgesOf, epitaphOf, multOf, styleOf, titleOf } from '../core/titles.js';
 import { SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
-import { drawChart, drawEquityCurve } from './chart.js';
+import { drawChart, drawEquityCurve, curveWindow } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 import { vibSupported } from './sound.js';
 
@@ -553,8 +553,12 @@ export function mount(root) {
     eqRangeBtns.set(v, b);
   }
   const asCurve = el('canvas', 'curve');
+  /* 曲线下方一行小字：这条线**画的是哪一段**（起 → 止 · N 天）。
+     值由 `curveWindow(s.eq, view.eqRange)` 与 canvas 绘制**共用** ⇒ 与图上那段逐日对齐，
+     换区间键时跟着重算（2026-10-05 用户拍板 · 对齐主流交易端的「区间时间参照」）。 */
+  const asCurveCap = el('i', 'curve-cap');
   const asCurveBox = el('div', 'curve-box');
-  asCurveBox.append(eqRangeRow, asCurve);
+  asCurveBox.append(eqRangeRow, asCurve, asCurveCap);
   /* ③ 买 U（方案 §3.1）：价格 ＋ 金额档 ＋ 一枚「买入」。2014-11-20 之前整块不存在
      （那年头没有 U）—— 与「没有的选项不显示」同一条口径。 */
   const uPrice = el('i');
@@ -798,7 +802,7 @@ export function mount(root) {
     fracBtns, toolRow, toolBtns, levRow, levBtns, spdBtns,
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asNoteNum, asList,
-    asCurve, eqRangeBtns, asBusy, asOnway, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
+    asCurve, asCurveCap, eqRangeBtns, asBusy, asOnway, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
     volBtns, vibBtns, fxBtns, mktBtn, hintBtn, hintRow, colBtn,
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
@@ -1380,6 +1384,14 @@ export function update(refs, s, view) {
       cssW: refs.asCurve.clientWidth,
       cssH: refs.asCurve.clientHeight,
     });
+    /* 说明行「起 → 止 · N 天」：与上图**共用 `curveWindow`** ⇒ 写的段就是画的段，换区间键一起重算。
+       ⚠️ 裁头后可能只剩 1 个点（开局当天 / 整场没动过）⇒ 只写那一天，不编造区间。
+       日期 = 开局时刻 ＋ `(day0 + 下标)` 天（`s.eq[k]` 对应本局第 `day0 + k` 天，见 `sampleEquity`）。 */
+    const { eq: curveEq, first: curveFrom } = curveWindow(s.eq, view.eqRange);
+    const curveDay = k => fmtDate(GAME.start + (s.day0 + k) * 24 * HOUR_MS, false);
+    setText(refs.asCurveCap, curveEq.length >= 2
+      ? `${curveDay(curveFrom)} → ${curveDay(curveFrom + curveEq.length - 1)} · ${curveEq.length - 1} 天`
+      : curveDay(curveFrom));
 
     /* ③ 买 U（方案 §3.1）：2014-11-20 之前整块不存在 —— 那年头没有 U，也没什么可换的。 */
     const usdtLive = now >= USDT_LIVE;

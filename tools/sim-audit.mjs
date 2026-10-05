@@ -2953,8 +2953,8 @@ section('14 · 交易涌现性：资金费双向 · 对手方池偿付上限 · 
   /* ⑦⑧ 两处画曲线的接入点（同一局在哪儿看都是同一段）—— 防回归删除。 */
   const chartSrc = fs.readFileSync(path.join(ROOT, 'src/ui/chart.js'), 'utf8');
   const shareSrc = fs.readFileSync(path.join(ROOT, 'src/ui/shareCard.js'), 'utf8');
-  check('14g 源码锚点：资产页在**区间切片之后**裁头（顺序不能反）',
-    /trimFlatStart\(from > 0 \? all\.slice\(from\) : all\)/.test(chartSrc));
+  check('14g 源码锚点：`curveWindow` **先切窗、后裁头**（顺序不能反）',
+    /const win = from > 0 \? src\.slice\(from\) : src;[\s\S]{0,80}?const eq = trimFlatStart\(win\);/.test(chartSrc));
   check('14g 源码锚点：生涯海报接入同一裁剪',
     /trimFlatStart\(Array\.isArray\(rec\.eq\)/.test(shareSrc));
 }
@@ -3026,6 +3026,67 @@ section('14 · 交易涌现性：资金费双向 · 对手方池偿付上限 · 
     && !/let lo = lg\(o\.base\)/.test(chartSrc));
   check('14i 源码锚点：本金基准虚线只在 `baseIn` 为真时才画',
     /if \(baseIn\) \{[\s\S]*?yOf\(o\.base\)/.test(chartSrc));
+}
+
+/* ── j · 资金曲线展示窗口 `curveWindow`（2026-10-05 用户拍板「只加起止日期」）──
+   它是**唯一真相源**：`drawEquityCurve`（画的那条线）与资产页那行「起 → 止 · N 天」说明行共用它
+   ⇒ 画的段与写的段永远同一段。这里把「切窗 ＋ 裁头」两动作的组合边界钉死，并断言
+   `all[first] === eq[0]`（说明行换算日期就靠 `first` 这个下标）。 */
+{
+  const { curveWindow } = await import('../src/ui/chart.js');
+  check('14j `curveWindow` 已导出', typeof curveWindow === 'function');
+
+  /* ① range = 0 ⇒ 全段；开局就动（k=1）⇒ 不裁，first = 0。 */
+  const all1 = [1000, 1200, 1300, 1400];
+  const w1 = curveWindow(all1, 0);
+  check('14j range=0 ⇒ 取全段、first=0',
+    w1.eq.length === 4 && w1.first === 0 && w1.eq[0] === all1[0],
+    `len=${w1.eq.length} first=${w1.first}`);
+
+  /* ② 全段带观望平线：裁到首个不同点的前一点；`first` 指向 `all` 中该点的下标。 */
+  const all2 = [1000, 1000, 1000, 1200, 1300, 1400];
+  const w2 = curveWindow(all2, 0);
+  check('14j 全段裁头 ⇒ 保留起笔点、first 指向 `all` 中该点',
+    w2.eq.length === 4 && w2.first === 2 && all2[w2.first] === w2.eq[0] && w2.eq[1] === 1200,
+    `len=${w2.eq.length} first=${w2.first}`);
+
+  /* ③ range 切窗后再裁窗内开头的观望期 —— **只看窗内**，不吃窗口外的平线。 */
+  const all3 = [1000, 1000, 1000, 1500, 1500, 1600];
+  const w3 = curveWindow(all3, 3);
+  check('14j 切窗后裁窗内观望期（不吃窗口外的平线）',
+    w3.eq.length === 2 && w3.eq[0] === 1500 && w3.eq[1] === 1600 && w3.first === 4
+    && all3[w3.first] === w3.eq[0],
+    `len=${w3.eq.length} first=${w3.first} ${JSON.stringify(w3.eq)}`);
+
+  /* ④ range 大于长度 ⇒ 退化成全段（`from` 夹到 0），不应出现负下标。 */
+  const w4 = curveWindow(all1, 999);
+  check('14j range > 长度 ⇒ 退化为全段（first 不为负）',
+    w4.eq.length === 4 && w4.first === 0);
+
+  /* ⑤ 窗口内仍平线（一单没动）⇒ 原样一条平线（不是「空」），first 指向窗口首点。 */
+  const all5 = [1000, 1000, 1000, 1000, 1000];
+  const w5 = curveWindow(all5, 2);
+  check('14j 窗口内全程平线 ⇒ 仍返回该窗口（不是空）',
+    w5.eq.length === 2 && w5.first === 3 && all5[w5.first] === w5.eq[0]);
+
+  /* ⑥ 非数组入参：不抛错，返回空窗。 */
+  const w6 = curveWindow(undefined, 7);
+  check('14j 非数组入参 ⇒ 返回空窗（不抛错）', w6.eq.length === 0 && w6.first === 0);
+
+  /* ⑦ 纯函数：入参一个字节都不动（切窗 / 裁头都走新数组）。 */
+  const all7 = [1000, 1000, 1200, 1300];
+  curveWindow(all7, 3);
+  check('14j 纯函数：不改入参',
+    all7.length === 4 && all7[0] === 1000 && all7[1] === 1000 && all7[2] === 1200 && all7[3] === 1300);
+
+  /* ⑧⑨ 两处接入点：canvas 绘制与资产页说明行**共用**同一个 `curveWindow`（防回归各写一份）。 */
+  const chartSrc = fs.readFileSync(path.join(ROOT, 'src/ui/chart.js'), 'utf8');
+  const renderSrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  check('14j 源码锚点：`drawEquityCurve` 的窗口走 `curveWindow(all, …)`',
+    /const \{ eq \} = curveWindow\(all, Number\(o\.range\) \|\| 0\)/.test(chartSrc));
+  check('14j 源码锚点：资产页说明行与绘制共用 `curveWindow(s.eq, view.eqRange)`',
+    /curveWindow\(s\.eq, view\.eqRange\)/.test(renderSrc)
+    && /curve-cap/.test(renderSrc));
 }
 
 /* ═════ 15 · 方案 A：玩家已实现盈亏由**对手方池**承担（零和 · 池恒 ≥ 0 · 上限溢出 · 无玩家自洽）（2026-10-05） ═════

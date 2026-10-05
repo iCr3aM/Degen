@@ -569,6 +569,28 @@ export function trimFlatStart(eq) {
 }
 
 /**
+ * 按 `range` 取资金曲线的**展示窗口**：先切尾部 N 个游戏日，再裁掉窗内开头的观望期平线。
+ * 纯函数 —— `drawEquityCurve`（画的那条线）与资产页那行「起 → 止 · N 天」说明行**共用它**
+ * ⇒ **画的段与写的段永远是同一段**，两处不会漂。
+ *
+ * ⚠️ **两个动作的语义不同，顺序不能反**：先按区间取窗、再裁窗内「钱没动」的开头；
+ *    反过来会把窗口外的点也算进「观望期」，窗口一换结果就错（见 `trimFlatStart` 的注释）。
+ * ⚠️ 全程一个点（开局当天）也要画出来 ⇒ 裁完仍可能只有 1 个点，调用方自己走单点分支。
+ * @param {number[]} all    每日权益（升序，`s.eq`）
+ * @param {number}   range  只看最近多少个游戏日（`0` / 缺省 = 全部）
+ * @returns {{ eq:number[], first:number }} `eq` = 窗口内裁头后的权益；
+ *          `first` = **`eq[0]` 在 `all` 中的下标**（切窗偏移 ＋ 裁头偏移）—— 说明行据此换成日期
+ */
+export function curveWindow(all, range) {
+  const src = Array.isArray(all) ? all : [];
+  const r = Number(range) || 0;
+  const from = r > 0 ? Math.max(0, src.length - r) : 0;
+  const win = from > 0 ? src.slice(from) : src;
+  const eq = trimFlatStart(win);
+  return { eq, first: from + (win.length - eq.length) };
+}
+
+/**
  * 算资金曲线的**纵轴范围**（对数空间，已含上下留白）—— 纯函数，`drawEquityCurve` 与审计共用。
  *
  * ⚠️ 范围**只认传入的窗口 `eq`**（调用方已按 `range` 切片、已裁掉观望期平线）—— 这是 2026-10-05
@@ -638,14 +660,9 @@ export function drawEquityCurve(canvas, o) {
     return;
   }
 
-  /* 区间切片（用户 2026-10-01 拍板）：`range` > 0 只看尾部 N 个游戏日；点数不够就显示全部。
-     ⚠️ 全程一个点（开局当天）也要画出来，所以切片后仍可能只有 1 个点 —— 下面单点分支照旧。
-     ⚠️ **切片之后**再裁开头的观望期平线（2026-10-05 用户拍板）：先按区间取窗、再把窗内
-        开头那段「钱没动」的部分裁掉 —— 两个动作的语义不同，顺序不能反（反了会把窗口外
-        的点也算进「观望期」）。下面取 min/max（区间高低点）自然只认裁完的那一段。 */
-  const range = Number(o.range) || 0;
-  const from = range > 0 ? Math.max(0, all.length - range) : 0;
-  const eq = trimFlatStart(from > 0 ? all.slice(from) : all);
+  /* 窗口整块交给 `curveWindow`（先按区间切片、再裁窗内开头的观望期平线；顺序语义详见那里的注释）。
+     ⚠️ 资产页那行「起 → 止 · N 天」说明行调的是**同一个函数** ⇒ 画的段与写的段永远一致。 */
+  const { eq } = curveWindow(all, Number(o.range) || 0);
 
   const padX = 4;
   const padY = 12;
