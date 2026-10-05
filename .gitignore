@@ -21,10 +21,13 @@ desktop.ini
 .env.*
 
 # ── Trae IDE ──
-# 只保留 `.trae/documents/` 下的设计文档；会话记录（chat-history）与本地状态一律不进仓库。
-.trae/*
-!.trae/documents/
+# 会话记录 / 批次方案 / 本地状态，一律不进仓库（本地文件保留，仅移出版本跟踪）。
+.trae/
+
+# ── 本地归档 ──
+# 路线图（ROADMAP）、交易模型评估稿（TRADEMODEL）与历史批次方案：只留在本机，不进远程。
+docs/
 
 # ── 大体积参考数据 ──
-# Kraken OHLCVT 归档（442 MB）—— 参考/校验用，不进仓库（见 ROADMAP §七 X-4）
+# Kraken OHLCVT 归档（442 MB）—— 参考/校验用，不进仓库（见 docs/ROADMAP.MD §七 X-4）
 Kraken_OHLCVT_Full_2026Q2/
