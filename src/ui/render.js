@@ -2679,8 +2679,20 @@ export function renderReview(refs, rv, view) {
     refs.rvLogs.textContent = '';
     for (let k = rv.log.length - 1; k >= 0; k--) {
       const e = rv.log[k];
-      const row = el('div', 'log-row ' + (e.kind === 'bad' ? 'down' : e.kind === 'ok' ? 'up' : 'mut'));
-      row.append(el('u', null, fmtDate(GAME.start + e.at * HOUR_MS, false)), el('span', null, e.text));
+      /* ⚠️ 2026-10-05 补齐类别配色：这三行原来是**旧版单色**（只按 `kind` 给红/绿/灰），
+         是三处日志入口（K 线页日志条 / 日志浮层 / 这里）里唯一没跟上「六类芯片」的一处 ——
+         同一批事件在复盘页认不出类别，与另两处不一致。
+         现在与 `openLog` 走**同一套 class**：类别芯片 ＋ 左侧色条（`.log-row.<tag>`），
+         全市场级再叠 `.alert`（红边 ＋ 淡红底）。
+         ⚠️ `kind` 一律挂在**正文那一格**上，别挂整行 —— 挂整行会把日期一起染成红/绿
+             （与 `.lg-row > u` 那条注释同一个坑）。 */
+      const tg = tagOf(e, rv.i);
+      const row = el('div', `log-row ${tg}${tg === 'mkt' ? ' alert' : ''}`);
+      row.append(el('i', `log-tag ${tg}`, LOG_TAGS[tg]));
+      row.append(
+        el('u', null, fmtDate(GAME.start + e.at * HOUR_MS, false)),
+        el('span', kindClsOf(e.kind), e.text),
+      );
       refs.rvLogs.append(row);
     }
     if (!refs.rvLogs.childElementCount) refs.rvLogs.append(el('div', 'log-row mut', '—'));

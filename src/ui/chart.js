@@ -54,6 +54,11 @@ const THEME_VARS = {
   LINE: '--line',    // 网格线
   PV_MARGIN: '--pv-margin',   // 量柱里**玩家自己的杠杆**那一段（v20）
   PV_FUT: '--pv-fut',         // 量柱里**玩家自己的合约**那一段（v20）
+  /* 彩色填充上的**文字色**（2026-10-05 收口）：开仓价签 / 强平价签 / 现价签原来把这三种
+     深色**硬编码**在绘制处，主题里改了 `--on-*` 它们不会跟 —— 这里补上映射，逐位不变。 */
+  ON_GOLD: '--on-gold',   // 金底（开仓价签）
+  ON_DOWN: '--on-down',   // 红底（强平价签）
+  ON_UP: '--on-up',       // 绿底（现价签）
   /* M4 分享卡（`shareCard.js`）借这里的取色 —— 底色与面板色，K 线自己用不上，
      但分享卡要跟主题同源（红涨绿跌对调时它也得跟着翻）。 */
   BG: '--bg',
@@ -439,7 +444,7 @@ export function drawChart(canvas, o) {
     const ty = Math.round(clamp(y, top + 8, bot - 8)) + .5;
     ctx.fillStyle = T.GOLD;
     ctx.fillRect(plotW - tw, ty - 8, tw, 16);
-    ctx.fillStyle = '#1a1405';
+    ctx.fillStyle = T.ON_GOLD;
     ctx.textAlign = 'left';
     ctx.fillText(tag, plotW - tw + 3, ty);
 
@@ -462,7 +467,7 @@ export function drawChart(canvas, o) {
       const lw = ctx.measureText(ltag).width + 6;
       ctx.fillStyle = T.DOWN;
       ctx.fillRect(0, ly - 8, lw, 16);
-      ctx.fillStyle = '#1a0508';
+      ctx.fillStyle = T.ON_DOWN;
       ctx.textAlign = 'left';
       ctx.fillText(ltag, 3, ly);
     }
@@ -493,7 +498,10 @@ export function drawChart(canvas, o) {
     const tw = Math.max(PAD_R - 4, ctx.measureText(tag).width + 8);
     ctx.fillStyle = col;
     ctx.fillRect(plotW, y - 9, tw, 18);
-    ctx.fillStyle = '#04140f';
+    /* ⚠️ 现价签的底色 `col` 是**涨跌色**（跟着最后一根 K 线走）⇒ 文字色也必须是同一支
+       「绿底 / 红底上的字」。两者在 `.red-up` 下会一起对调，`--on-up` 与 `--on-down`
+       本身就是同一族深色（#04140f / #1a0508），所以这里取哪一支观感都一致。 */
+    ctx.fillStyle = col === T.UP ? T.ON_UP : T.ON_DOWN;
     ctx.textAlign = 'left';
     ctx.fillText(tag, plotW + 4, y);
   }
@@ -522,6 +530,40 @@ export function drawChart(canvas, o) {
 const CURVE_FLOOR = 1;
 /** 上下各留的余量比（对数空间），免得最高 / 最低那一点贴着边框 */
 const CURVE_PAD_RATIO = 0.06;
+
+/** 判「权益有没有真的动过」的容差 —— 权益是若干次加减得来的浮点数，比 0 更稳的是比本金额。 */
+const CURVE_FLAT_EPS = 1e-9;
+
+/**
+ * **裁掉开头的「观望期平线」**（2026-10-05 用户拍板）。
+ *
+ * 起因：`s.eq` 从**开局第 0 天**起逐日记点，而玩家在没持仓时权益恒等于本金
+ * ⇒ 开局观望的那几十上百天会画成一条贴着基准线的平线，把真正有信息的那一段挤到右边一条缝。
+ * 用户要的是「**只有钱有变化之后才有曲线**」。
+ *
+ * 做法：找到**第一个与首点不相等**的下标 `k`，从 `k − 1` 处切起 ——
+ *   · 保留紧邻的那一个「还在本金上」的点 ⇒ 曲线仍从基准线上起笔，不会凭空从半空中开始；
+ *   · 与首点判等用 `CURVE_FLAT_EPS` 容差，不吃浮点误差。
+ *
+ * ⚠️ **纯函数、不改入参**（需要裁时才 `slice` 出新数组）；两处画曲线共用它（资产页 ＋ 生涯海报），
+ *    保证同一局在哪儿看都是同一段曲线。
+ * ⚠️ **整场没动过**（一单没开）⇒ 原样返回：那种局本来就该是一条平线，不是「没有曲线」。
+ * ⚠️ **开局就动了** ⇒ 原样返回，一个点都不裁。
+ *    ⚠️ 注意判据是 `k <= 1` 而不是 `k === 0`：循环从 `k = 0` 起、而 `eq[0]` 与其自身恒等
+ *       （`|eq[0] − eq[0]| = 0 < eps`）⇒ `k` **至少推进到 1**，`k === 0` 永远不会成立。
+ *       `k === 1` 恰是「首点之后**立刻**就变了」＝没有观望期可裁 —— 此时 `slice(0)` 本就
+ *       逐位不变，直接返回原数组即可（省一次无谓拷贝，也让「不动」在引用层面可断言）。
+ * @param {number[]} eq 每日权益（升序）
+ * @returns {number[]} 裁头后的数组（可能少于 2 点，调用方自己走单点 / 空态分支）
+ */
+export function trimFlatStart(eq) {
+  if (!Array.isArray(eq) || eq.length < 3) return eq;
+  const a0 = eq[0];
+  let k = 0;
+  while (k < eq.length && Math.abs(eq[k] - a0) < CURVE_FLAT_EPS) k++;
+  if (k <= 1 || k >= eq.length) return eq;      // 开局就动（k=1）/ 整场没动过（k=len）：逐位不变
+  return eq.slice(k - 1);
+}
 
 /**
  * @param {HTMLCanvasElement} canvas
@@ -554,10 +596,13 @@ export function drawEquityCurve(canvas, o) {
   }
 
   /* 区间切片（用户 2026-10-01 拍板）：`range` > 0 只看尾部 N 个游戏日；点数不够就显示全部。
-     ⚠️ 全程一个点（开局当天）也要画出来，所以切片后仍可能只有 1 个点 —— 下面单点分支照旧。 */
+     ⚠️ 全程一个点（开局当天）也要画出来，所以切片后仍可能只有 1 个点 —— 下面单点分支照旧。
+     ⚠️ **切片之后**再裁开头的观望期平线（2026-10-05 用户拍板）：先按区间取窗、再把窗内
+        开头那段「钱没动」的部分裁掉 —— 两个动作的语义不同，顺序不能反（反了会把窗口外
+        的点也算进「观望期」）。下面取 min/max（区间高低点）自然只认裁完的那一段。 */
   const range = Number(o.range) || 0;
   const from = range > 0 ? Math.max(0, all.length - range) : 0;
-  const eq = from > 0 ? all.slice(from) : all;
+  const eq = trimFlatStart(from > 0 ? all.slice(from) : all);
 
   const padX = 4;
   const padY = 12;

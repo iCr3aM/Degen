@@ -2911,6 +2911,85 @@ section('14 · 交易涌现性：资金费双向 · 对手方池偿付上限 · 
   check('14f 源码锚点：徽章旧的两行硬上限常量已删除', !/ROW_MAX/.test(src));
 }
 
+/* ── g · 资金曲线裁头 `trimFlatStart`（2026-10-05 用户拍板「只有钱有变化之后才有曲线」）──
+   纯函数，Node 可直接导入（chart.js 顶层不碰 DOM；`theme()` 只在被调用时才读 `getComputedStyle`）。
+   这里把四个边界钉死：长度不足 / 开局就动 / 观望 N 天后动 / 整场没动 ＋ 浮点容差 ＋ 纯函数。 */
+{
+  const { trimFlatStart } = await import('../src/ui/chart.js');
+  check('14g `trimFlatStart` 已导出', typeof trimFlatStart === 'function');
+
+  /* ① 长度 < 3：无从判「开头有没有平线」⇒ 原样返回同一引用（逐位不变）。 */
+  const a0 = [1000, 1000];
+  check('14g 长度 < 3 ⇒ 原样返回（同一引用）', trimFlatStart(a0) === a0);
+
+  /* ② 开局第 1 点就与首点不同（`k === 1`，首点与其自身恒等故 `k` 至少为 1）⇒ 一个点都不裁。 */
+  const a1 = [1000, 1200, 1100];
+  check('14g 开局就动（k=1）⇒ 原样返回', trimFlatStart(a1) === a1);
+
+  /* ③ 观望 3 天后才动 ⇒ 从首个不同点的**前一点**切起（保留起笔点，曲线仍从基准线上起笔）。 */
+  const a2 = [1000, 1000, 1000, 1200, 900];
+  const r2 = trimFlatStart(a2);
+  check('14g 观望 N 天后动 ⇒ 裁到 k-1（保留紧邻的起笔点）',
+    r2.length === 3 && r2[0] === 1000 && r2[1] === 1200 && r2[2] === 900,
+    `len=${r2.length} ${JSON.stringify(r2)}`);
+
+  /* ④ 整场一单没开 ⇒ 全段都等于本金，没有「起笔之后」⇒ 原样返回一条平线。 */
+  const a3 = [1000, 1000, 1000, 1000];
+  check('14g 整场没动过 ⇒ 原样返回（那种局本就该是一条平线）', trimFlatStart(a3) === a3);
+
+  /* ⑤ 浮点容差：差额小于 `CURVE_FLAT_EPS` 仍算「没动」，不吃浮点误差。 */
+  const a4 = [1000, 1000 + 1e-12, 1000, 900];
+  const r4 = trimFlatStart(a4);
+  check('14g 首段浮点噪声不计入「已动」（容差）',
+    r4.length === 2 && r4[0] === 1000 && r4[1] === 900,
+    `len=${r4.length} ${JSON.stringify(r4)}`);
+
+  /* ⑥ 纯函数：`slice` 出新数组，入参一个字节都不动。 */
+  const a5 = [1000, 1000, 1200];
+  trimFlatStart(a5);
+  check('14g 纯函数：不改入参（slice 出新数组）',
+    a5.length === 3 && a5[0] === 1000 && a5[1] === 1000 && a5[2] === 1200);
+
+  /* ⑦⑧ 两处画曲线的接入点（同一局在哪儿看都是同一段）—— 防回归删除。 */
+  const chartSrc = fs.readFileSync(path.join(ROOT, 'src/ui/chart.js'), 'utf8');
+  const shareSrc = fs.readFileSync(path.join(ROOT, 'src/ui/shareCard.js'), 'utf8');
+  check('14g 源码锚点：资产页在**区间切片之后**裁头（顺序不能反）',
+    /trimFlatStart\(from > 0 \? all\.slice\(from\) : all\)/.test(chartSrc));
+  check('14g 源码锚点：生涯海报接入同一裁剪',
+    /trimFlatStart\(Array\.isArray\(rec\.eq\)/.test(shareSrc));
+}
+
+/* ── h · 配色收口（2026-10-05 用户圈定清单）—— 全部只是源码锚点，防回归删除 ──
+   ① K 线三处彩色签的**文字色**改走 `--on-*`（原来硬编码在绘制处，主题改了不跟）；
+   ② 复盘页日志条补齐「六类芯片」——它是三处日志入口里最后一个跟上的；
+   ③ 海报交易明细首行「胜 / 负 / 胜率」按涨跌色**分段**上色。 */
+{
+  const chartSrc = fs.readFileSync(path.join(ROOT, 'src/ui/chart.js'), 'utf8');
+  const reviewSrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  const shareSrc = fs.readFileSync(path.join(ROOT, 'src/ui/shareCard.js'), 'utf8');
+
+  /* ① 硬编码值必须已从**绘制语句**里消失（注释里留个读数不算）。 */
+  check('14h K 线：开仓价签文字色不再硬编码 `#1a1405`，改走 `T.ON_GOLD`',
+    !/ctx\.fillStyle\s*=\s*'#1a1405'/.test(chartSrc) && /T\.ON_GOLD/.test(chartSrc));
+  check('14h K 线：强平价签文字色不再硬编码 `#1a0508`，改走 `T.ON_DOWN`',
+    !/ctx\.fillStyle\s*=\s*'#1a0508'/.test(chartSrc) && /T\.ON_DOWN/.test(chartSrc));
+  check('14h K 线：现价签文字色按涨跌取 `T.ON_UP` / `T.ON_DOWN`',
+    /col === T\.UP \? T\.ON_UP : T\.ON_DOWN/.test(chartSrc));
+  check('14h K 线：`--on-*` 三枚 token 已进 `THEME_VARS`',
+    /ON_GOLD: '--on-gold'/.test(chartSrc) && /ON_DOWN: '--on-down'/.test(chartSrc)
+    && /ON_UP: '--on-up'/.test(chartSrc));
+
+  /* ② 复盘页日志：旧的**单色**写法必须已删除，改与浮层同款（类别芯片 ＋ 色条）。 */
+  check('14h 复盘页日志：旧版按 `kind` 单色渲染的写法已删除',
+    !/log-row ' \+ \(e\.kind === 'bad'/.test(reviewSrc));
+  check('14h 复盘页日志：补上类别芯片 `log-tag`', /el\('i', `log-tag \$\{tg\}`/.test(reviewSrc));
+
+  /* ③ 海报明细：按段数组 `segsA` ＋ 逐段上色（`statA` 由各段 join 出，两处不漂字）。 */
+  check('14h 海报明细：首行按段上色（`segsA`）且 `statA` 由各段拼出',
+    /const segsA = \[/.test(shareSrc) && /segsA\.map\(\(\[txt\]\) => txt\)\.join\(''\)/.test(shareSrc)
+    && /for \(const \[txt, cls\] of segsA\)/.test(shareSrc));
+}
+
 /* ═════ 15 · 方案 A：玩家已实现盈亏由**对手方池**承担（零和 · 池恒 ≥ 0 · 上限溢出 · 无玩家自洽）（2026-10-05） ═════
    病根（本轮资金流审计）：改动前 `closeTrade` 只 `credit(net)`、没有任何配对扣款 ⇒ 玩家**盈利凭空造钱**、
    **亏损凭空销毁**，市场不因玩家盈亏受损 / 受益。方案 A 把 `m.npcFund` 升级为**对手方结算账户**：

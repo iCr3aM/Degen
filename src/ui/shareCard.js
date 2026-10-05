@@ -31,7 +31,7 @@ import { scenarioOf } from '../core/config.js';
 import { fmtDate, fmtMoneyShort } from '../core/format.js';
 import { OVER_LABEL, badgesOf, epitaphOf, multOf, styleOf, titleOf } from '../core/titles.js';
 import { OVER } from '../core/engine.js';
-import { theme } from './chart.js';
+import { theme, trimFlatStart } from './chart.js';
 
 const W = 1080;
 /* ⚠️ 2026-10-05：1350 → **1620**（4:5 → 2:3）。用户要求「文案完整显示 ＋ 再加几行内容」——
@@ -331,9 +331,19 @@ export function drawCard(rec) {
      ⚠️ 胜率口径与 `titles.js` 一致：`closed = win + loss`，`win / closed`；一回合没平过就给「—」。 */
   const closed = (rec.win || 0) + (rec.loss || 0);
   const rate = closed > 0 ? Math.round(((rec.win || 0) / closed) * 100) : null;
-  const statA = `开仓 ${rec.open || 0} 笔 · 胜 ${rec.win || 0} · 负 ${rec.loss || 0}`
-    + ` · 胜率 ${rate == null ? '—' : rate + '%'} · 强平 ${rec.liq || 0} 次`;
   const statB = `杠杆下单 ${rec.margin || 0} 笔 · 合约下单 ${rec.fut || 0} 笔`;
+  /* 明细第一行按段上色（2026-10-05 用户圈定「胜/负/胜率加绿红」）：
+     `cls` 为 `up`/`down` 的段走涨跌色，其余段保持次要灰。`statA` 直接由各段拼出
+     （不另写一遍整串）⇒ 量字号用的串与画出来的串**永远逐字相同**，不会两处漂字。 */
+  const segsA = [
+    [`开仓 ${rec.open || 0} 笔 · `, null],
+    [`胜 ${rec.win || 0}`, 'up'],
+    [' · ', null],
+    [`负 ${rec.loss || 0}`, 'down'],
+    [` · 胜率 ${rate == null ? '—' : rate + '%'}`, rate == null ? null : (rate >= 50 ? 'up' : 'down')],
+    [` · 强平 ${rec.liq || 0} 次`, null],
+  ];
+  const statA = segsA.map(([txt]) => txt).join('');
 
   /* 结局评语 —— **全版**（`epitaphOf(rec)`，含补白句），与弹窗 / 档案页同一句话。
      ⚠️ 只降字号 / 折行、**绝不截断**；最多折两行（最长组合约 60 余字，22px 两行必放得下）。 */
@@ -361,10 +371,12 @@ export function drawCard(rec) {
   const rangeY = epiFirst - 56;
   const finalY = rangeY - 58;
 
-  /* 曲线：从「交易币种」那行下面起，到「终值」上方留白为止 —— 高度自适应（徽章多折一行就矮一点）。 */
+  /* 曲线：从「交易币种」那行下面起，到「终值」上方留白为止 —— 高度自适应（徽章多折一行就矮一点）。
+     ⚠️ 开头的**观望期平线**先裁掉（2026-10-05 用户拍板「只有钱有变化之后才有曲线」）——
+        与资产页共用 `chart.trimFlatStart`，同一局在哪儿看都是同一段曲线。 */
   const cy = ySym + 86;
   const chh = Math.max(150, Math.min(460, finalY - 46 - cy));
-  const eq = Array.isArray(rec.eq) ? rec.eq : [];
+  const eq = trimFlatStart(Array.isArray(rec.eq) ? rec.eq : []);
   if (eq.length >= 2) {
     drawCurve(ctx, P, cy, cw, chh, eq, rec.cash0, tone, t);
   } else {
@@ -395,10 +407,18 @@ export function drawCard(rec) {
   ctx.font = `400 ${epSize}px ${SANS}`;
   epLines.forEach((ln, k) => ctx.fillText(ln, P, epiFirst + k * EPI_DY));
 
-  /* 交易明细（两行） */
-  ctx.fillStyle = t.MUT2 || '#6b7480';
+  /* 交易明细（两行）—— 第一行逐段上色（胜 / 负 / 胜率走涨跌色，其余次要灰），
+     第二行仍是次要灰。⚠️ 逐段推进 `sx`（按 `measureText` 累加），字号统一走 `sSize`
+     （与第二行同档，两行不会一大一小）。 */
   ctx.font = `400 ${sSize}px ${SANS}`;
-  ctx.fillText(statA, P, statAY);
+  let sx = P;
+  for (const [txt, cls] of segsA) {
+    ctx.fillStyle = cls === 'up' ? (t.UP || '#00d18f')
+      : cls === 'down' ? (t.DOWN || '#ff5b6a') : (t.MUT2 || '#6b7480');
+    ctx.fillText(txt, sx, statAY);
+    sx += ctx.measureText(txt).width;
+  }
+  ctx.fillStyle = t.MUT2 || '#6b7480';
   ctx.fillText(statB, P, statBY);
 
   /* 行为足迹（可选） */
