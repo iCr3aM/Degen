@@ -160,8 +160,8 @@ function drawCurve(ctx, x, y, w, h, eq, base, tone, t) {
  *
  * **版面（从上到下）**：
  *   ① DEGEN ＋ 副题 / ② 局名 ＋ **结局** / ③ **主称号 ＋ 风格称号** / ④ 徽章（自动折行）
- *   ⑤ **账本四项（四行）**（本金 · 峰值 · 已实现盈亏 · 最高杠杆，标签靠左、数值靠右，**行间加发丝分隔线**）
- *      ＋ **交易币种**一整行（与账本之间再隔一条）
+ *   ⑤ **账本四项（2×2，一行两个）**（本金｜峰值 / 已实现盈亏｜最高杠杆，每格标签靠左、数值靠右，
+ *      两行之间一条发丝线）＋ **交易币种**一整行（与账本之间再隔一条）
  *   ⑥ 资金曲线（高度自适应）/ ⑦ 终值 ＋ 倍数 / ⑧ 起止 ＋ 天数
  *   ⑨ **结局评语**（全版，最多折两行）/ ⑩ **交易明细**（两行）/ ⑪ **行为足迹**（可选）/ ⑫ 水印
  * ⚠️ ⑤ 与 ⑨ 是 2026-10-02 补的（用户圈定「必要内容」）：原来只有曲线和终值，
@@ -270,24 +270,23 @@ export function drawCard(rec) {
   ctx.lineTo(W - P, sepY);
   ctx.stroke();
 
-  /* 账本四项（2026-10-05 用户拍板：由「一行四格」改**四行**）——
-     标签左对齐到 `P`、数值右对齐到 `W - P`，四行等距，左右两边各自钉死在版心边缘。
-     ⚠️ 旧版是一行四格、各格左对齐，格宽只有 `cw / 4 = 228px`：本金印 `$1,000.0` 就有约 211px，
-        紧贴右边「峰值」的标签（用户实测报的正是这一处）⇒ 数值再长都会与邻格相撞。
-     ⚠️ 四行纵坐标**全部相对 `sepY`**（`sepY + 52 + k × 56`）—— 徽章折行、分隔线下移时整段跟着走，
-        行数恒定 4 ⇒ 块高不随内容变化，下游 `ySym` / 曲线高度也不跳。
-     ⚠️ 行内一律 `textBaseline = 'middle'`（2026-10-05 修「分隔线错位」）：
-        默认的**字母基线**把文字画在 `y` 的**上方**，所以「两行基线的中点」并不是「两行文字的视觉中点」——
-        原来把线放在 `基线 + ROW_DY / 2` 处，线其实落进了**下一行的字形带内**，等于横穿文字。
-        改成 `middle` 后 `y` 即字形中心，中点公式才成立。
-     ⚠️ 2026-10-05 追加（用户拍板「加分隔线 ＋ 看是否要加颜色」）：
-        · 行间加**发丝线**把四行排成一张表（见下方 `HAIR`）；账本与「交易币种」之间再隔一条，
-          四条线**全部落在同一节奏上**（不再出现 171 那种脱格的数）。
-        · 行距 48 → **56**：44px 等宽数字的字形高约 32px，48 只剩 16px 间隙（线两侧各 8px），偏挤；
-          56 给到 24px（两侧各 12px），发丝线才不贴字。
-        · `已实现盈亏` 按**正负**上「涨 / 跌」色 —— 项目配色纪律「彩色只留给语义」，
-          这一项正是盈亏语义；本金 / 峰值 / 最高杠杆保持中性，不滥上色。
-          口径与资产页副行同一个数（`s.realized`），海报上不另算。 */
+  /* 账本四项（2026-10-06 用户拍板：改**2×2，一行两个**）——
+     阅读顺序不变：`本金｜峰值` / `已实现盈亏｜最高杠杆`（左→右、上→下）。
+     每格：标签左对齐到**格左缘**、数值右对齐到**格右缘** ⇒ 一格里两个词各钉一边，左右两列各自分满。
+     ⚠️ 为什么不是「一行四格」：那版格宽只有 `cw / 4 = 228px`，本金印 `$1,000.0` 就有约 211px，
+        紧贴右邻格「峰值」的标签（用户实测报过）⇒ 数值再长都会与邻格相撞。两格时每格 428px，宽裕。
+     ⚠️ 所有纵坐标**全部相对 `sepY`**（`sepY + 52 + 行 × 56`）—— 徽章折行、分隔线下移时整段跟着走，
+        行数恒定 2 ⇒ 块高不随内容变化，下游 `ySym` / 曲线高度也不跳。
+     ⚠️ `textBaseline = 'middle'`（2026-10-05 修「分隔线错位」的结论，继续沿用）：
+        canvas 默认按**字母基线**画（文字在 `y` 的**上方**），「两行基线中点」会落进下一行字形带内、
+        等于横穿文字。置 `middle` 后 `y` 即字形中心，分隔线的中点公式才成立。
+     ⚠️ 分隔线只保留**横线**（2026-10-06 用户拍板）：两行之间一条 ＋ 账本↔「交易币种」一条；
+        列间**不画竖线**（LESS IS MORE，靠 56px 列间距分组）。
+        取色比结构线（2px `--line`）**亮一档**、线宽只 **1px**：1080px 缩到手机不消失，
+        又抢不掉上下两条结构线 —— 层次即「粗暗 = 结构、细亮 = 表格」。
+     ⚠️ `已实现盈亏` 按**正负**上「涨 / 跌」色 —— 项目配色纪律「彩色只留给语义」，
+        这一项正是盈亏语义；本金 / 峰值 / 最高杠杆保持中性，不滥上色。
+        口径与资产页副行同一个数（`s.realized`），海报上不另算。 */
   const realized = rec.realized || 0;
   const ledger = [
     ['本金', fmtMoneyShort(rec.cash0), null],
@@ -301,62 +300,60 @@ export function drawCard(rec) {
     ['最高杠杆', rec.open > 0 ? `${rec.maxLev}x` : '—', null],
   ];
   const LBL_SIZE = 26, ROW_DY = 56, rowY0 = sepY + 52;
-  /* 四项**共用同一档字号**（取四项里最小的那一档）—— 免得一行大字、一行小字，看着参差。
-     可用宽度按**最宽的标签**（「已实现盈亏」）扣，四行都按这一档排 ⇒ 字号不随内容变。 */
+  /* 2×2：列数 2、列间距 56px ⇒ 每格可用宽 = (cw − 56) / 2 = 428px。
+     值右对齐到**本格右缘**（不是版心右缘）—— 左右两列各自分满。 */
+  const COL_N = 2, COL_GAP = 56;
+  const CELL_W = (cw - COL_GAP) / COL_N;
+  const cellX = i => P + (i % COL_N) * (CELL_W + COL_GAP);
+  const rowOf = i => Math.floor(i / COL_N);
+  const rowN = Math.ceil(ledger.length / COL_N);
+  /* 四项**共用同一档字号**（取四项里最小的那一档）—— 免得一格大字、一格小字，看着参差。
+     可用宽度按**最宽标签**（「已实现盈亏」）扣，且按**最窄格**算 ⇒ 字号不随内容变。 */
   let lblMaxW = 0;
   ctx.font = `400 ${LBL_SIZE}px ${SANS}`;
   for (const [label] of ledger) lblMaxW = Math.max(lblMaxW, ctx.measureText(label).width);
   let vSize = 44;
   for (const [, value] of ledger) {
-    const s = fitFont(ctx, value, 44, cw - lblMaxW - 40, MONO, 700);
+    const s = fitFont(ctx, value, 44, CELL_W - lblMaxW - 24, MONO, 700);
     if (s < vSize) vSize = s;
   }
 
-  /* 行间发丝线（2026-10-05 用户拍板）—— 取色比结构线（2px `--line`）**亮一档**、线宽只 **1px**：
-     1080px 缩到手机上不至于连同底色一起消失，又抢不掉上下那两条结构分隔线。
-     层次即「粗暗 = 结构、细亮 = 表格」，与整卡的克制配色同源（不回退到彩色）。
-     ⚠️ 位置 = 两行**视觉中心**的中点 —— 因下面把 `textBaseline` 置成了 `middle`，`y` 就是字形中心，
-        该式才等于真中点（此前按字母基线算 ⇒ 线压在下一行字上，用户报的「错位」）。 */
+  /* 发丝横线：相邻两行之间各一条（取两行**视觉中心**的中点 —— 见上方 `middle` 基线的说明） */
   const HAIR = hexA(t.MUT2 || '#6b7480', 0.38);
-  const rowLine = k => rowY0 + k * ROW_DY + ROW_DY / 2;   // 第 k 行与第 k+1 行的视觉中点
   ctx.strokeStyle = HAIR;
   ctx.lineWidth = 1;
-  for (let k = 0; k < ledger.length - 1; k++) {
+  const hLine = y => {
     ctx.beginPath();
-    ctx.moveTo(P, rowLine(k));
-    ctx.lineTo(W - P, rowLine(k));
+    ctx.moveTo(P, y);
+    ctx.lineTo(W - P, y);
     ctx.stroke();
-  }
+  };
+  for (let k = 0; k < rowN - 1; k++) hLine(rowY0 + (k + 0.5) * ROW_DY);
 
-  /* ⚠️ 账本四行 + 「交易币种」行统一用 `middle` 基线 —— 让 `y` 是**字形中心**，
-     上面的中点公式与下面的 `ySym` 才有意义。画完立刻还原 `alphabetic`（下游终值等仍按基线排）。 */
+  /* ⚠️ 账本 ＋「交易币种」统一 `middle` 基线 —— 让 `y` 是**字形中心**（见上方注释）。
+     画完立刻还原 `alphabetic`（下游终值 / 起止 / 评语仍按字母基线排）。 */
   ctx.textBaseline = 'middle';
-  ledger.forEach(([label, value, cls], k) => {
-    const y = rowY0 + k * ROW_DY;
+  ledger.forEach(([label, value, cls], i) => {
+    const y = rowY0 + rowOf(i) * ROW_DY;
+    const x = cellX(i);
     ctx.textAlign = 'left';
     ctx.fillStyle = t.MUT2 || '#6b7480';
     ctx.font = `400 ${LBL_SIZE}px ${SANS}`;
-    ctx.fillText(label, P, y);
+    ctx.fillText(label, x, y);
     ctx.textAlign = 'right';
     ctx.fillStyle = cls === 'up' ? (t.UP || '#00d18f')
       : cls === 'down' ? (t.DOWN || '#ff5b6a') : (t.FG || '#dbe4f0');
     ctx.font = `700 ${vSize}px ${MONO}`;
-    ctx.fillText(value, W - P, y);
+    ctx.fillText(value, x + CELL_W, y);
   });
   ctx.textAlign = 'left';
 
   /* 交易币种 —— 单独一整行（名字可能很长，右对齐 ＋ 自适应降字号，不截断）。
-     ⚠️ 它与账本之间也画一条发丝线（同色同宽）—— 只表示「这里换了一件事」，不是第二条结构线。
-     行心落在同一节奏上（`rowY0 + 4 × ROW_DY`），分隔线取它与上一行的视觉中点。 */
-  const symDivY = rowLine(ledger.length - 1);   // 第 4 行与「交易币种」的视觉中点
-  ctx.strokeStyle = HAIR;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(P, symDivY);
-  ctx.lineTo(W - P, symDivY);
-  ctx.stroke();
+     ⚠️ 它与账本之间也画一条发丝横线 —— 只表示「这里换了一件事」，不是第二条结构线。
+     行心落在账本同一节奏上（`rowY0 + rowN × ROW_DY`），横线取它与上一行的视觉中点。 */
+  const ySym = rowY0 + rowN * ROW_DY;
+  hLine(rowY0 + (rowN - 0.5) * ROW_DY);
   const symTxt = Array.isArray(rec.syms) && rec.syms.length ? rec.syms.join(' · ') : '—';
-  const ySym = rowY0 + ledger.length * ROW_DY;
   ctx.fillStyle = t.MUT2 || '#6b7480';
   ctx.font = `400 26px ${SANS}`;
   ctx.fillText('交易币种', P, ySym);
