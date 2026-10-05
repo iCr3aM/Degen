@@ -22,7 +22,7 @@ import { confirmationsOf, congestionLabel, congestionOf } from '../core/congesti
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
-import { OVER_LABEL, badgesOf, epitaphOf, multShown, styleOf, titleOf } from '../core/titles.js';
+import { badgesOf, epitaphOf, multShown, overLabelOf, styleOf, titleOf } from '../core/titles.js';
 import { SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
 import { drawChart, drawEquityCurve, curveWindow } from './chart.js';
 import { windowFor, setYPx } from './view.js';
@@ -1754,7 +1754,9 @@ function candle24(sym, i) {
 }
 
 /**
- * 覆盖全屏的结束遮罩。两种结局：收盘结算（赢）/ 爆仓。
+ * 覆盖全屏的结束遮罩。大字标题**按结局 × 余额**取（走 `titles.overLabelOf`）：
+ * 收盘结算（赢）/ 爆仓（打穿且归零）/ 无力开仓（打穿但还有余额）/
+ * 归零收摊 / 断粮收摊（主动认输的两支）。
  * （原来还有一种「债务违约」，已随 2026-10-01 的一次性救济金改造整体移除 —— 那笔钱不用还。）
  */
 export function renderOver(root, s) {
@@ -1767,17 +1769,24 @@ export function renderOver(root, s) {
   const quit = reason === 'gaveup';
   const eq = equity(s);
 
-  const title = win ? '收盘结算' : (quit ? '收摊' : '爆仓');
+  /* 大字标题走 `titles.overLabelOf`（2026-10-05 用户拍板「权益 > 0 时改『无力开仓』」）——
+     **与档案页 / 海报那一格是同一个词**（爆仓 / 无力开仓 / 归零收摊 / 断粮收摊），
+     玩家在这一刻看到的字，进档案后原样还在。
+     ⚠️ 判据用**实时权益**（本函数只有 `s`）：与 `careerOf().final` 同源（都是 `equity(s)`），
+        与归零遮罩标题那句判据**逐位一致** —— 两种「爆仓」在标题上分开，
+        正是为了修掉「标题写『爆仓』、正文写『无力开仓』」这句自相矛盾。 */
+  const title = win ? '收盘结算' : overLabelOf({ reason, final: eq });
   const body = win
     ? `你活到了 ${fmtDate(timeOf(s), false)}\n最终权益 ${fmtMoney(eq)}`
     : (quit
-      ? `你主动收了摊\n最终权益 ${fmtMoney(eq)}`
-      /* ⚠️ 文案与 `engine.endGame` 的 `${ruinLabelOf(s)}，游戏结束`、本函数下面那张遮罩的标题
-         **统一**（2026-10-05 审计修）：三处都走 `engine.ruinLabelOf` 这**同一个判据**
-         （权益 ≈ 0 ⇒「账户归零」；权益 > 0 但开不出最小一单 ⇒「无力开仓」）—— 原来是孤例「账户清零」。
-         也**不再写「保证金归零」** —— 这一支同时接管挑战年代局的归零（`OVER.LIQUIDATED`
-         在 `isChallenge` 那条路也会落进来），那种归零未必出自保证金；标题已是「爆仓」。 */
-      : `${ruinLabelOf(s)}\n倒在 ${fmtDate(timeOf(s))}`);
+      /* ⚠️ 标题已是「归零收摊 / 断粮收摊」（含「收摊」二字）⇒ 正文**不再重复「收摊」**，
+         只留「主动」这层意思 ＋ 最终权益，与「你活到了 <日期> / 倒在 <日期>」同一版式。 */
+      ? `你主动结束了这一局\n最终权益 ${fmtMoney(eq)}`
+      /* ⚠️ 正文**不再复述余额口径**（2026-10-05 审计修）：`title` 已经走 `overLabelOf`
+         （爆仓 / 无力开仓），若这里再复述一遍归零口径，「无力开仓」那一支会是
+         **标题与正文同一个词、同一张卡重复两行**。改成与「收盘结算 / 收摊」同一版式：
+         一行说**怎么了**、一行给**最终权益**。余额口径的全集表见 `titles.overLabelOf`。 */
+      : `倒在 ${fmtDate(timeOf(s))}\n最终权益 ${fmtMoney(eq)}`);
 
   box.append(el('b', win ? 'up' : 'down', title), el('p', null, body));
   /* 结局评语（2026-10-05 用户拍板）：不再只显示「结束 ＋ 收益额」，按
@@ -2717,8 +2726,9 @@ export function renderReview(refs, rv, view) {
 
 /* ══════════════ 交易档案页（M2 · 2026-10-01） ══════════════ */
 
-/* 结局的显示名走 `core/titles.js` 的 `OVER_LABEL`（与生涯海报同一份字）；
-   这里只留**配色** —— 它要的是 CSS 类名，是 UI 层自己的事。 */
+/* 结局的显示名走 `core/titles.js` 的 `overLabelOf`（与生涯海报同一份字，含余额口径：
+   爆仓 / 无力开仓 / 归零收摊 / 断粮收摊 / 结算）；这里只留**配色** —— 它要的是 CSS 类名，
+   是 UI 层自己的事，且**只按 `reason`**：「被动结束」红、「活着到收盘」绿、「主动收摊」灰。 */
 const OVER_TONE = { [OVER.LIQUIDATED]: 'down', [OVER.SETTLED]: 'up', [OVER.GAVEUP]: 'mut' };
 
 /**
@@ -2757,7 +2767,7 @@ function careerRow(r) {
   /* 风格称号（2026-10-04）—— 与主称号**并列**（中间一枚「·」）：主称号说「打成什么样」，
      风格说「怎么打的」。两枚都走 `core/titles.js` ⇒ 与海报同一份字（LESS IS MORE）。 */
   head.append(el('em', 'career-style', '· ' + styleOf(r)));
-  head.append(el('u', OVER_TONE[r.reason] || 'mut', OVER_LABEL[r.reason] || '结束'));
+  head.append(el('u', OVER_TONE[r.reason] || 'mut', overLabelOf(r)));
   const del = el('button', 'career-del', '删除');
   del.dataset.careers = 'del:' + r.id;
   const poster = el('button', 'career-share', '生成海报');

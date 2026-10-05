@@ -29,7 +29,7 @@
 
 import { scenarioOf } from '../core/config.js';
 import { fmtDate, fmtMoneyShort } from '../core/format.js';
-import { OVER_LABEL, badgesOf, epitaphOf, multShown, styleOf, titleOf } from '../core/titles.js';
+import { badgesOf, epitaphOf, multShown, overLabelOf, styleOf, titleOf } from '../core/titles.js';
 import { OVER } from '../core/engine.js';
 import { theme, trimFlatStart } from './chart.js';
 
@@ -216,7 +216,7 @@ export function drawCard(rec) {
   ctx.fillStyle = rec.reason === OVER.LIQUIDATED ? (t.DOWN || '#ff5b6a')
     : rec.reason === OVER.SETTLED ? (t.UP || '#00d18f') : (t.MUT2 || '#6b7480');
   ctx.font = `500 30px ${SANS}`;
-  ctx.fillText(OVER_LABEL[rec.reason] || '结束', W - P, 236);
+  ctx.fillText(overLabelOf(rec), W - P, 236);
   ctx.textAlign = 'left';
 
   /* 主称号 ＋ 风格称号（2026-10-04 · 用户拍板「主称号 ＋ 风格称号 ＋ 徽章池」）——

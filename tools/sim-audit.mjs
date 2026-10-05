@@ -1430,8 +1430,8 @@ section('11 · 跨年代边界：边界前后 openTrade 行为可解释 + 全时
   }
 }
 
-/* ═══════════════════ 12 · 称号三轴：覆盖矩阵 ＋ fuzz（无缺口） ═══════════════════ */
-section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩阵 ＋ 随机 fuzz（无缺口）');
+/* ═══════════════ 12 · 称号三轴 ＋ 结局标签：覆盖矩阵 ＋ fuzz（无缺口） ═══════════════ */
+section('12 · 称号三轴（主称号 / 风格称号 / 徽章）＋ 结局标签 —— 覆盖矩阵 ＋ 随机 fuzz（无缺口）');
 {
   /* ⚠️ `titles.js` 是**纯函数**（不读 localStorage、不碰 DOM），所以本小节既不用打桩、也不改 src。 */
   const T = await import('../src/core/titles.js');
@@ -1512,21 +1512,25 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
   /* ── A2 · 主称号「结局 × 倍数」穷举矩阵（2026-10-05 用户实测修）──────────────────
      上一版只对四档结局写死（爆仓 / 收摊各一枚），**破产档完全没按「曾经多高」分** ⇒
      峰顶 7.1m、终值 −265k 的局被叫「收摊的人」，与事实不符（用户原话）。
-     现在（2026-10-05 再扩）：破产档按**峰顶倍数**分 6 档 ＋ 欠钱 1 档，结算档按终值倍数分 13 档。
-     这里把两条轴都穷举一遍，并单列「欠钱压过峰顶」这条优先级。 */
+     现在（2026-10-05 再扩）：破产档按**峰顶倍数**分 6 档 ＋ 欠钱 1 档 ＋ 弹尽粮绝 1 档，
+     结算档按终值倍数分 13 档。这里把两条轴都穷举一遍，并单列「欠钱压过峰顶」这条优先级。 */
   /* ⚠️ 破产档拆成**两条正交的轴**：
      · `DEBT_TITLE`（欠钱）不是「冲到多高」的一档，是**比归零更糟**的独立结局（`final < 0`）；
+     · `STARVED_TITLE`（弹尽粮绝，2026-10-05 新增）也不是峰顶档 —— 它是**最低那一档的余额口径**：
+       峰顶 < 2x 且 `final > 0`（账户还剩一点、却连最小一单都开不出）。判据与
+       `engine.ruinLabelOf` 同源（权益 ≤ 0 ⇒ 归零者，> 0 ⇒ 弹尽粮绝）。
      · `BUST_TITLES` 是**峰顶阶梯**，**下标越大 ＝ 曾经冲得越高**（`归零者` → `功亏一篑`）。
        破产档报的是**绝对高度**（2026-10-05 用户实测修）⇒ 阈值**不随时长归一**，
        所以 A3 ④ 的断言是「同一峰顶在 6 个局别判同一档」，而不是「短局升档」。 */
   const DEBT_TITLE = '负债累累';
+  const STARVED_TITLE = '弹尽粮绝';
   const BUST_TITLES = ['归零者', '纸上富贵', '高台跳水', '黄粱一梦', '登月坠落', '功亏一篑'];
-  const BUST_ALL = [DEBT_TITLE, ...BUST_TITLES];
+  const BUST_ALL = [DEBT_TITLE, STARVED_TITLE, ...BUST_TITLES];
   const LIVE_TITLES = ['陪跑的', '活下来的', '保本的', '小赚一笔', '翻倍的人', '小富即安',
     '钻石手', '滚雪球', '币圈锦鲤', '百倍战神', '千倍传奇', '万倍传奇', '亿倍传奇'];
   const TITLE_SET = new Set([...BUST_ALL, ...LIVE_TITLES]);
-  check('12 主称号档位恰 20 枚（破产 7 ＝ 峰顶 6 ＋ 欠钱 1，结算 13）',
-    TITLE_SET.size === 20, `${TITLE_SET.size}`);
+  check('12 主称号档位恰 21 枚（破产 8 ＝ 峰顶 6 ＋ 欠钱 1 ＋ 弹尽粮绝 1，结算 13）',
+    TITLE_SET.size === 21, `${TITLE_SET.size}`);
   /* 破产档：`reason` 两种都算破产，逐条按峰顶倍数验（`final = 0` ⇒ 清零但**不欠钱**）。 */
   for (const reason of [OVER.LIQUIDATED, OVER.GAVEUP]) {
     const cases = [[0, '归零者'], [1.99, '归零者'], [2, '纸上富贵'], [4.99, '纸上富贵'],
@@ -1538,6 +1542,24 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
         got === want ? '' : `实得 «${got}»`);
     }
   }
+  /* 弹尽粮绝档（2026-10-05 新增）：**账户还剩一点、却开不出最小一单** ——
+     用户原话「爆仓和开不出单的称号肯定是不一样的」。判据与 `engine.ruinLabelOf` 同源：
+     权益 ≤ 0 ⇒「归零者」（账户真清零），权益 > 0 ⇒「弹尽粮绝」。 */
+  for (const reason of [OVER.LIQUIDATED, OVER.GAVEUP]) {
+    for (const [final, peakMult, want] of [
+      [8, 1, '弹尽粮绝'],        // 只剩 $8（< $10.02 门槛）、峰顶 1x ⇒ 不是「归零者」
+      [0.01, 1.99, '弹尽粮绝'],  // 名义上还剩 1 分钱也算「还剩一点」
+      [0, 1, '归零者'],          // 真归零 ⇒ 仍是「归零者」
+      [-1e-9, 1, '负债累累'],    // 只要为负 ⇒ 欠钱档置顶
+      [8, 2, '纸上富贵'],        // 峰顶 ≥ 2x ⇒ 峰顶阶梯优先（弹尽粮绝只管最低一档）
+      [8, 5000, '功亏一篑'],     // 峰顶越高越优先，与余额无关
+    ]) {
+      const got = T.titleOf(rec({ reason, cash0: 1000, peak: peakMult * 1000, final }));
+      check(`12 破产档（${reason}）终值 ${final} / 峰顶 ${peakMult}x ⇒ «${want}»`, got === want,
+        got === want ? '' : `实得 «${got}»`);
+    }
+  }
+
   /* 欠钱档：`final < 0`（穿仓 / 借爆倒欠）优先于峰顶倍数 —— 那是比归零更糟的结局。 */
   for (const reason of [OVER.LIQUIDATED, OVER.GAVEUP]) {
     const got = T.titleOf(rec({ reason, cash0: 1000, peak: 5e6, final: -265000 }));
@@ -1553,20 +1575,21 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     const got = T.titleOf(rec({ reason: OVER.SETTLED, cash0: 1000, final: m * 1000 }));
     check(`12 结算档终值 ${m}x ⇒ «${want}»`, got === want, got === want ? '' : `实得 «${got}»`);
   }
-  /* 硬规矩：**破产局的称号一定落在破产 7 档里**（不许混进结算 13 档），反之亦然。 */
+  /* 硬规矩：**破产局的称号一定落在破产 8 档里**（不许混进结算 13 档），反之亦然。
+     ⚠️ 终值三种符号（负 / 零 / 正）都要过一遍 —— 「弹尽粮绝」正是 `final > 0` 那一支。 */
   {
     let crossed = 0;
     for (const reason of [OVER.LIQUIDATED, OVER.GAVEUP]) {
-      for (const pk of [0, 1, 5, 20, 100, 500, 5000]) {
-        if (!BUST_ALL.includes(T.titleOf(rec({ reason, cash0: 1000, peak: pk * 1000, final: 0 })))) crossed++;
+      for (const final of [-1, 0, 8]) {
+        for (const pk of [0, 1, 5, 20, 100, 500, 5000]) {
+          if (!BUST_ALL.includes(T.titleOf(rec({ reason, cash0: 1000, peak: pk * 1000, final })))) crossed++;
+        }
       }
-      /* 欠钱档也必须在破产一侧（`final < 0` 不许混进结算的那 13 档）。 */
-      if (!BUST_ALL.includes(T.titleOf(rec({ reason, cash0: 1000, peak: 3000, final: -1 })))) crossed++;
     }
     for (const f of [0.1, 0.5, 1, 2, 10, 50, 200, 1e5, 1e9]) {
       if (!LIVE_TITLES.includes(T.titleOf(rec({ reason: OVER.SETTLED, cash0: 1000, final: f * 1000 })))) crossed++;
     }
-    check('12 结局轴互不串档（破产 7 档 ⇄ 结算 13 档）', crossed === 0, `串档 ${crossed} 次`);
+    check('12 结局轴互不串档（破产 8 档 ⇄ 结算 13 档）', crossed === 0, `串档 ${crossed} 次`);
   }
   /* 硬规矩：**破产局不许拿到任何「暗示活下来」的风格称号**。 */
   {
@@ -1781,11 +1804,11 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
   check('12 fuzz：单局徽章数 ≤ 14（海报折行放得下）', maxBadges <= 14, `实测最多 ${maxBadges} 枚`);
 
   /* ── A4 · 结局评语 `epitaphOf`（2026-10-05 用户拍板「弹窗给一小段文案」）───────────
-     16 档档位句逐一取到、恒非空；破产局**绝不说「活下来」**（与称号同一条硬规矩）；
+     17 档档位句逐一取到、恒非空；破产局**绝不说「活下来」**（与称号同一条硬规矩）；
      8 条补白各自能被一条画像触发；`short` 版恒为全句前缀（海报 2026-10-05 起改用**全版**，
      但 `short` 仍是「只取档位句」的合法出口，前缀关系必须继续成立）。 */
   {
-    /* 破产 7 档（欠钱置顶 ＋ 峰顶 6 档）—— 代表画像，`final` 定欠钱、`peak` 定阶梯。 */
+    /* 破产 8 档（欠钱置顶 ＋ 峰顶 6 档 ＋ 弹尽粮绝）—— 代表画像，`final` 定欠钱 / 弹尽粮绝、`peak` 定阶梯。 */
     const EPI_BUST = [
       { final: -1, peak: 0 },              // 负债累累
       { final: 0, peak: 5000 * 1000 },     // 功亏一篑（≥1000x）
@@ -1794,6 +1817,7 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
       { final: 0, peak: 10 * 1000 },       // 高台跳水（≥5x）
       { final: 0, peak: 3 * 1000 },        // 纸上富贵（≥2x）
       { final: 0, peak: 1 * 1000 },        // 归零者
+      { final: 8, peak: 1 * 1000 },        // 弹尽粮绝（账户还剩一点，却开不出最小一单）
     ];
     /* 存活 9 档 —— 按终值倍数取代表点（含末档 1e9 盖过亿倍门槛）。 */
     const EPI_LIVE = [0.5, 1.5, 3, 10, 50, 500, 5000, 1e6, 1e9];
@@ -1811,10 +1835,21 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
       if (!t || typeof t !== 'string') empty++;
       texts.push(t);
     }
-    check('12 结局评语：16 档全部取到且非空', empty === 0, `空 ${empty} 档`);
+    check('12 结局评语：17 档全部取到且非空', empty === 0, `空 ${empty} 档`);
     check('12 结局评语：破产局绝不说「活下来」', lied === 0, `出现 ${lied} 次`);
-    check('12 结局评语：16 档产出 ≥ 12 种不同句子（覆盖不同玩家）',
+    check('12 结局评语：17 档产出 ≥ 12 种不同句子（覆盖不同玩家）',
       new Set(texts).size >= 12, `${new Set(texts).size} 种`);
+
+    /* ⚠️ 最低那一档的两句必须**各自精确可取**（2026-10-05 新增弹尽粮绝句）——
+       旧版那句「从零开始，也回到了零」在「账户还剩 $8」的局里是假话，两句不能混用。 */
+    const lineZero = T.epitaphOf(rec({ reason: OVER.LIQUIDATED, cash0: 1000, peak: 1000, final: 0 }));
+    const lineLeft = T.epitaphOf(rec({ reason: OVER.LIQUIDATED, cash0: 1000, peak: 1000, final: 8 }));
+    check('12 结局评语：真归零 ⇒ 说「回到了零」', lineZero.includes('回到了零'), lineZero);
+    check('12 结局评语：还剩一点 ⇒ 不说「回到了零」，且点明「不是归零，是出局」',
+      !lineLeft.includes('回到了零') && lineLeft.includes('不是归零')
+      && !FORBID.some(w => lineLeft.includes(w)), lineLeft);
+    check('12 结局评语：两支确实是两句不同的话', lineZero !== lineLeft,
+      lineZero === lineLeft ? '两支撞成同一句' : '');
 
     /* 补白句：9 条画像各触发一次，且**比 `short` 版更长**（证明真的加了一句）。
        v32 新增最后一条：滚仓（浮盈减保证金 ＋ 持续加仓）。 */
@@ -1835,6 +1870,69 @@ section('12 · 称号三轴：主称号 / 风格称号 / 徽章 —— 覆盖矩
     }
     check('12 结局评语：9 条补白各自可触发（全句比 short 版长）', noTail === 0, `未触发 ${noTail} 条`);
     check('12 结局评语：short 版恒为全句前缀（供单行场景）', notPrefix === 0, `不符 ${notPrefix} 条`);
+  }
+
+  /* ── A5 · 结局口径穷举 `overLabelOf`（2026-10-05 用户原话：「你要详细检查所有的结束游戏的口径，
+     比如玩家开不出仓、玩家爆仓、玩家第一次爆仓收摊、玩家开不出仓收摊」）────────────────
+     结局标签是**一条独立的正交轴**：`reason`（怎么结束的）× 终值符号（还剩多少）。
+     ⚠️ 这里穷举的是**全部可达组合**（不是抽样）——`reason` 3 种 × 终值 3 符号 = 9 格，
+        其中 `SETTLED` 的三种终值符号在引擎里不可达（活着到收盘 ⇔ 权益必为正），
+        但**函数不许崩、不许留空**，所以照测。 */
+  {
+    const CASES = [
+      [OVER.SETTLED, 5000, '结算'],
+      [OVER.LIQUIDATED, 0, '爆仓'],
+      [OVER.LIQUIDATED, -1, '爆仓'],
+      [OVER.LIQUIDATED, 8, '无力开仓'],
+      [OVER.GAVEUP, 0, '归零收摊'],
+      [OVER.GAVEUP, -1, '归零收摊'],
+      [OVER.GAVEUP, 8, '断粮收摊'],
+    ];
+    const seen = new Set();
+    for (const [reason, final, want] of CASES) {
+      const got = T.overLabelOf(rec({ reason, cash0: 1000, peak: 1000, final }));
+      check(`12 A5 结局标签（${reason} / 终值 ${final}）⇒ «${want}»`, got === want,
+        got === want ? '' : `实得 «${got}»`);
+      seen.add(want);
+    }
+    check('12 A5 五种口径两两不同（结算 / 爆仓 / 无力开仓 / 归零收摊 / 断粮收摊）', seen.size === 5, `${seen.size} 种`);
+    /* 字数硬上限 4：档案页头行 `nowrap`（不许换行）＋ 海报与局名同行右对齐。 */
+    let tooLong = 0;
+    for (const [reason, final] of CASES) {
+      const s = T.overLabelOf(rec({ reason, cash0: 1000, peak: 1000, final }));
+      if (!s || s.length > 4) tooLong++;
+    }
+    check('12 A5 标签字数 2–4 字、恒非空（版面固定不换行）', tooLong === 0, `越界 ${tooLong} 条`);
+    /* `SETTLED` 的三种终值符号都要有落点（引擎不可达，但函数不许返回空）。 */
+    check('12 A5 SETTLED 恒为「结算」（含负 / 零这类不可达输入）',
+      [5000, 0, -1].every(f => T.overLabelOf(rec({ reason: OVER.SETTLED, cash0: 1000, final: f })) === '结算'));
+    /* 与 `titleOf` 的**同源**：标签说「无力开仓 / 断粮收摊」的局，称号必是「弹尽粮绝」。 */
+    let drift = 0;
+    for (const reason of [OVER.LIQUIDATED, OVER.GAVEUP]) {
+      for (const final of [0, 8]) {
+        const r = rec({ reason, cash0: 1000, peak: 1000, final });
+        const lab = T.overLabelOf(r), ti = T.titleOf(r);
+        const starved = lab === '无力开仓' || lab === '断粮收摊';
+        if (starved !== (ti === STARVED_TITLE)) drift++;
+      }
+    }
+    check('12 A5 标签的余额口径与主称号同源（无力开仓/断粮收摊 ⇔ 弹尽粮绝）', drift === 0, `错位 ${drift} 处`);
+    /* 单一出口：两处 UI 都不许再直接下标取底表（否则缺口会重新长出来）。 */
+    const uiFiles = ['src/ui/render.js', 'src/ui/shareCard.js'].map(f => fs.readFileSync(path.join(ROOT, f), 'utf8'));
+    check('12 A5 两处 UI 都走 `overLabelOf`，且都不再引用 `OVER_LABEL`',
+      uiFiles.every(t => /overLabelOf\(/.test(t)) && uiFiles.every(t => !/OVER_LABEL/.test(t)));
+    /* 弹窗大字标题与档案标签**同一个词**：`renderOver` 的标题也走 `overLabelOf`。 */
+    check('12 A5 结算弹窗大字标题也走 `overLabelOf`（同一份字）',
+      /overLabelOf\(\{\s*reason,\s*final:\s*eq\s*\}\)/.test(uiFiles[0]));
+    /* 标题已经是余额口径 ⇒ 正文**不许再复述一遍**（否则「无力开仓」那一支会
+       标题与正文同一个词、同一张卡重复两行）。断言只看 `renderOver` 这**一个函数体**，
+       不看整个文件（`renderLoan` 那张遮罩仍然该走 `ruinLabelOf`）。 */
+    const overFn = (uiFiles[0].match(/export function renderOver[\s\S]*?\n}\n/) || [''])[0];
+    check('12 A5 结算弹窗正文不复述余额口径（`renderOver` 函数体内不出现 `ruinLabelOf`）',
+      overFn.length > 0 && !/ruinLabelOf/.test(overFn));
+    /* 主动收摊：标题已是「归零收摊 / 断粮收摊」⇒ 正文不许再写一遍「收了摊」。 */
+    check('12 A5 收摊弹窗正文不复述「收摊」（标题已含该词）',
+      !/收了摊/.test(overFn) && /你主动结束了这一局/.test(overFn));
   }
 
   /* ── D · 真引擎端到端：真打一局 ⇒ 真实 `s.stat` 摊成记录 ⇒ 三轴合计 ≥ 2 枚称号 ── */
@@ -3562,8 +3660,9 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     check('16g 锚点：`checkRuin(s)` 直接调用点 ≥ 5（平仓 / 开仓 / 调保证金 / 买 U / 换所）',
       hits >= 5, `实得 ${hits} 处`);
     const rsrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
-    check('16g 锚点：遮罩与结算页文案都走 `ruinLabelOf`（两处）',
-      (rsrc.match(/ruinLabelOf\(s\)/g) || []).length >= 2);
+    const rl = (rsrc.match(/ruinLabelOf\(s\)/g) || []).length;
+    check('16g 锚点：`ruinLabelOf` 只在归零遮罩用一次（结算页正文不复述，改走 `overLabelOf`）',
+      rl === 1 && /overLabelOf\(\{\s*reason,\s*final:\s*eq\s*\}\)/.test(rsrc), `实得 ${rl} 处`);
   }
 }
 
