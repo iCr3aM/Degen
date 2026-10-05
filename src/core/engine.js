@@ -1974,7 +1974,7 @@ function adlPlayerReduce(s, pos, take, price) {
   let f = pnl > 0 ? Math.max(0, Math.min(1, take / pnl)) : 1;
   /* 残余闸（F2）：剩下的那块按现价的名义不足最小名义 ⇒ 整条平掉，不留分批也卖不掉的尘埃仓。 */
   if (f < 1) {
-    const minClose = Math.max(MIN_NOTIONAL, minNotionalAt(pos.ex, timeOf(s), isMargin(pos) ? 'margin' : 'fut'));
+    const minClose = Math.max(MIN_NOTIONAL, minNotionalAt(pos.ex, timeOf(s), isMargin(pos) ? 'margin' : 'fut', pos.sym));
     if (pos.size * (1 - f) * price < minClose) f = 1;
   }
   const closedSize = pos.size * f;
@@ -2748,11 +2748,12 @@ function openCheck(s, side, frac = 1) {
   if (!(margin > 0) || margin + fee > cash + 1e-9) {
     return { ok: false, why: mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用保证金不足' };
   }
-  /* 单笔最小名义（2026-09-30 建闸 · 2026-10-01 丙案改按「所 × 产品 × 年代」取值）：
+  /* 单笔最小名义（2026-09-30 建闸 · 2026-10-01 丙案改按「所 × 产品 × 年代」取值；
+     2026-10-05 再补**交易对**这一维 —— Binance 合约 2023-11-02 起 BTC 100 / ETH 20 / 其余 5）：
      余额只剩浮点残值时上面那条**拦不住**（`margin > 0` 恒真），会建出一张点不掉的幽灵持仓。
      `MIN_NOTIONAL`（$1）降级为**浮点保底**，真实门槛走 `config.minNotionalAt` ——
      产品口径与费率**同源**（都用这一单自己的 `isMarginOrder`），所以切页面换不出不同的门槛。 */
-  const minNotional = Math.max(MIN_NOTIONAL, minNotionalAt(s.ex, timeOf(s), isMarginOrder ? 'margin' : 'fut'));
+  const minNotional = Math.max(MIN_NOTIONAL, minNotionalAt(s.ex, timeOf(s), isMarginOrder ? 'margin' : 'fut', s.sym));
   if (!(margin * lev >= minNotional)) {
     return { ok: false, why: `下单金额太小 ｜ 单笔名义需 ≥ ${fmtMoneyShort(minNotional)}` };
   }
@@ -2967,9 +2968,9 @@ function closeCheck(s, frac = 1) {
   /* **最小平仓金额**（2026-10-02 用户拍板）：只卡**分批**（`f < 1`），全平永不设门槛 ——
      门槛卡住全平会把玩家困在一条小仓位上，与 OTC 那条「门槛只卡买入、不卡平仓」同一理由。
      ⚠️ 没有这一条，`1/4` → `1/4` → … 能无限切下去（仓位几何缩小、永不归零）：既留下尘埃仓，
-        也把「分批卖出」变成一条刷手续费的通道。门槛与开仓**同源**（所 × 产品 × 年代）。 */
+        也把「分批卖出」变成一条刷手续费的通道。门槛与开仓**同源**（所 × 产品 × 交易对 × 年代）。 */
   if (f < 1) {
-    const minClose = Math.max(MIN_NOTIONAL, minNotionalAt(pos.ex, timeOf(s), pk));
+    const minClose = Math.max(MIN_NOTIONAL, minNotionalAt(pos.ex, timeOf(s), pk, pos.sym));
     if (notional < minClose) {
       return { ok: false, why: `单笔平仓金额太小 ｜ 至少 ${fmtMoneyShort(minClose)}（或点「全部」）` };
     }

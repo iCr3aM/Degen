@@ -590,7 +590,9 @@ export const MIN_NOTIONAL = 1;
  *     宁可保守（早年也按 $10 卡）。早年真实的最小名义按 BTC 计价（0.001 BTC）、随币价浮动，
  *     本作**不做「按币价浮动的门槛」**。
  *   - **Binance 合约**：交易对不同则 $5–10，取**下沿 $5**；`BTCUSDT` / `ETHUSDT` 于
- *     **2023-11-02** 上调至 **$20**（官方公告）。
+ *     **2023-11-02** 由官方公告上调 ⇒ **BTC = $100、ETH = $20**，其余 U 本位永续
+ *     （DOGE / XRP / SOL…）仍是 **$5**（2026-10-05 联网核对：2023-11-02 公告 ＋ 2026-04-14
+ *     公告「BTC 100 → 50」反证改动前值确为 100）⇒ 从这一档起按**交易对**再拆一列。
  *
  * ⚠️ 这些数相对本作资金量级（开局 $1,000 → 中后期百万）小三个数量级，
  *    **只影响「极小单被拒」这一件事**，不参与任何平衡。
@@ -606,7 +608,15 @@ const MIN_NOTIONAL_STEPS = {
   },
   binance: {
     margin: [{ from: Date.UTC(2017, 6, 14), v: 10 }, { from: Date.UTC(2024, 0, 1), v: 5 }],
-    fut: [{ from: Date.UTC(2019, 8, 13), v: 5 }, { from: Date.UTC(2023, 10, 2), v: 20 }],
+    /* ⚠️ 2026-10-05 按**交易对**再拆一列：2023-11-02 官方只上调了 `BTCUSDT`（→ 100）
+       与 `ETHUSDT`（→ 20），其余 U 本位永续仍是 5 ⇒ `sym` 是**覆盖表**，缺省取 `v`。
+       `v` 取 5（当年最便宜的一档）：`ruinFloorOf` 不传 `sym`（它只问「最便宜的**任一**交易对
+       要多少」，取可达下界），拿到的正是 5；`openTrade` / `closeCheck` 传本单自己的币，
+       BTC 单才会按 100 卡。 */
+    fut: [
+      { from: Date.UTC(2019, 8, 13), v: 5 },
+      { from: Date.UTC(2023, 10, 2), v: 5, sym: { BTC: 100, ETH: 20 } },
+    ],
   },
 };
 
@@ -620,14 +630,19 @@ const MIN_NOTIONAL_STEPS = {
  * @param {number} t    时刻（毫秒）—— 门槛是**年代阶梯**，同一家所不同年份可能不同
  * @param {'margin'|'fut'} kind 产品。**判据与费率同源**：由这一单**自己的性质**决定
  *   （`engine.openTrade` 的 `isMarginOrder`），不是由玩家此刻站在哪个页面决定。
+ * @param {string|null} [sym] 交易对（`BTC` / `ETH` / …）—— 只有 `binance.fut` 的 2023-11-02 档
+ *   用它做**覆盖**（BTC 100 / ETH 20）。传 `null`（或缺省）取该档缺省值 `v`
+ *   = **最便宜的一档**，正是 `ruinFloorOf` 要的「任一交易对的可达下界」。
  * @returns {number} ≥ `MIN_NOTIONAL` 的正数
  */
-export function minNotionalAt(exId, t, kind = 'margin') {
+export function minNotionalAt(exId, t, kind = 'margin', sym = null) {
   const ladder = MIN_NOTIONAL_STEPS[exId]?.[kind === 'fut' ? 'fut' : 'margin'];
   if (!ladder) return MIN_NOTIONAL;
-  let v = null;
-  for (const s of ladder) { if (s.from <= t) v = s.v; else break; }
-  return v != null ? Math.max(MIN_NOTIONAL, v) : MIN_NOTIONAL;
+  let step = null;
+  for (const s of ladder) { if (s.from <= t) step = s; else break; }
+  if (!step) return MIN_NOTIONAL;
+  const bySym = sym != null && step.sym ? step.sym[sym] : null;
+  return Math.max(MIN_NOTIONAL, bySym != null ? bySym : step.v);
 }
 
 /**
@@ -870,9 +885,12 @@ export function feeRateOf(exId, t, kind = 'margin', vol = null) {
  *
  * @param {number} lev 该通道的杠杆（调用方传**该通道的上限**才算「真的一单都开不出」）
  * @param {{u:number,b:number}|number|null} vol 该所近 30 天成交量（`engine.vol30Of`），影响阶梯费率
+ * @param {string|null} [sym] 交易对（2026-10-05 加）：透传给 `minNotionalAt`。
+ *   ⚠️ `ruinFloorOf` **刻意不传** —— 它问的是「最便宜的**任一**交易对要多少」，
+ *   传一个具体币反而会把门槛抬到那个币的档（BTC 100）上，误判「还开得出 DOGE」的玩家归零。
  */
-export function openNeedAt(exId, t, kind = 'margin', lev = 1, vol = null) {
-  const minN = Math.max(MIN_NOTIONAL, minNotionalAt(exId, t, kind));
+export function openNeedAt(exId, t, kind = 'margin', lev = 1, vol = null, sym = null) {
+  const minN = Math.max(MIN_NOTIONAL, minNotionalAt(exId, t, kind, sym));
   return minN * (1 / Math.max(1, lev) + feeRateOf(exId, t, kind, vol));
 }
 

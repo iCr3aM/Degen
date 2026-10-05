@@ -3664,6 +3664,45 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     check('16g 锚点：`ruinLabelOf` 只在归零遮罩用一次（结算页正文不复述，改走 `overLabelOf`）',
       rl === 1 && /overLabelOf\(\{\s*reason,\s*final:\s*eq\s*\}\)/.test(rsrc), `实得 ${rl} 处`);
   }
+
+  /* 16h · 单笔最小名义的**交易对**维度（2026-10-05 · Binance 合约 2023-11-02 起按交易对拆档）。
+     现实口径（联网核对）：2023-11-02 官方只上调 `BTCUSDT` → $100、`ETHUSDT` → $20，
+     其余 U 本位永续（DOGE / XRP / SOL…）仍是 $5 ⇒ 旧版「一律 $20」在 BTC 上偏松、在其余币上偏紧。 */
+  {
+    const tB = at(2023, 9, 1);   // 2023-11-02 之前（时间轴内）
+    const tA = at(2024, 6, 1);   // 2023-11-02 之后（本作时间轴止于 2024-12-31）
+    const mn = (t, sym) => C.minNotionalAt('binance', t, 'fut', sym);
+    check('16h 2023-11-02 前：Binance 合约 BTC / ETH / DOGE 一律 $5',
+      mn(tB, 'BTC') === 5 && mn(tB, 'ETH') === 5 && mn(tB, 'DOGE') === 5,
+      `BTC=${mn(tB, 'BTC')} ETH=${mn(tB, 'ETH')} DOGE=${mn(tB, 'DOGE')}`);
+    check('16h 2023-11-02 起：BTC=$100、ETH=$20、DOGE / XRP / SOL=$5（按交易对拆档）',
+      mn(tA, 'BTC') === 100 && mn(tA, 'ETH') === 20 &&
+      ['DOGE', 'XRP', 'SOL'].every(x => mn(tA, x) === 5),
+      `BTC=${mn(tA, 'BTC')} ETH=${mn(tA, 'ETH')} DOGE=${mn(tA, 'DOGE')} XRP=${mn(tA, 'XRP')} SOL=${mn(tA, 'SOL')}`);
+    check('16h 不传交易对 ⇒ 取该档最便宜的一格 $5（`ruinFloorOf` 的可达下界）',
+      C.minNotionalAt('binance', tA, 'fut') === 5 &&
+      Math.abs(C.openNeedAt('binance', tA, 'fut', 20) - 5 * (1 / 20 + C.feeRateOf('binance', tA, 'fut'))) <= 1e-12,
+      `minNotional=${C.minNotionalAt('binance', tA, 'fut')} need=${f(C.openNeedAt('binance', tA, 'fut', 20), 8)}`);
+    check('16h 其它所 / 其它产品不受交易对维度影响（BitMEX 合约 $1；Binance 杠杆 $10 → $5）',
+      C.minNotionalAt('bitmex', tA, 'fut', 'BTC') === 1 &&
+      C.minNotionalAt('binance', tA, 'margin', 'BTC') === 5 &&
+      C.minNotionalAt('binance', at(2020, 1, 1), 'margin', 'BTC') === 10);
+
+    /* 真闸门（不是读表）：同所同时刻、同样 $1 本金 @ 该通道上限杠杆 —— BTC 单被最小名义拒，DOGE 单照开。
+       $1 × 20x ⇒ 名义 ≈ $19.84：够 DOGE（$5）不够 BTC（$100）。 */
+    const canOpenFut = async (sym) => {
+      const s = await mk({ scen: 'classic', sym, mode: 'fut', i: idx(tA) });
+      s.hintOn = false;
+      s.ex = 'binance';
+      s.books.binance = { usd: 0, usdt: 1 };
+      s.lev = Math.max(1, C.maxLeverageAt(engine.timeOf(s), 'binance', 'fut'));
+      return engine.canOpenAt(s, 'long', 1);
+    };
+    const okBtc = await canOpenFut('BTC');
+    const okDoge = await canOpenFut('DOGE');
+    check('16h 真闸门：$1 @ Binance 合约上限杠杆 —— BTC 单被拒、DOGE 单可开（交易对拆档确实生效）',
+      okBtc === false && okDoge === true, `BTC=${okBtc} DOGE=${okDoge}`);
+  }
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */
