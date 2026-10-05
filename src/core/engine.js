@@ -23,7 +23,7 @@ import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate 
 import {
   equityOf, isLiquidatable, isMargin, liquidationPrice, maintRateOf, marginRateOf, openPosition, pnlOf,
   reduceFraction, reducePosition,
-  FUNDING, FR, INSURE, fundingOf, premiumIndexOf, fundingRateOf, canLiquidate, paysFunding, paysInterest, borrowedOf, borrowCurOf, shockKindOf,
+  FUNDING, FR, INSURE, CPOOL, fundingOf, premiumIndexOf, fundingRateOf, canLiquidate, paysFunding, paysInterest, borrowedOf, borrowCurOf, shockKindOf,
   bankruptcyFillPrice, effLevOf,
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
@@ -1514,6 +1514,24 @@ function cascadeMulOf(s) {
 }
 
 /**
+ * **NPC 减仓的已实现盈亏**（方案 A ② · 2026-10-05）—— 成本名义口径，**正 = 赚**。
+ *
+ * NPC 账本的 `long/short` 是**成本名义**（`均价 × 数量`，从不按价重估）⇒ 减 `mag` 那一刻：
+ *   · 多头：`mag × (现价 / 均价 − 1)`；
+ *   · 空头：`mag × (1 − 现价 / 均价)`。
+ * 正 = NPC 赚（对手方池付出）、负 = NPC 亏（池收入）—— 与 `settlePool` **同一符号约定**。
+ * （推导见 `adlProfitRate` 的成本名义一列，两者是同一口径的连续 / 离散版。）
+ * @param {boolean} long 是否多头档
+ * @param {number} mag 减仓的**正**名义额（不是增量 `delta`，`delta` 减仓时为负）
+ * @param {number} avg 该侧均价
+ * @param {number} price 现价
+ */
+function npcRealised(long, mag, avg, price) {
+  if (!(mag > 0) || !(avg > 0) || !(price > 0)) return 0;
+  return long ? mag * (price / avg - 1) : mag * (1 - price / avg);
+}
+
+/**
  * NPC 顺势建仓：把某一侧净持仓朝 `target` 靠 `NPC.speed`。
  *
  * ⚠️ **不再 `pushFlow`**（2026-10-02 审计修，用户拍板）。原来每小时把建仓增量写进冲击池：
@@ -1529,6 +1547,8 @@ function cascadeMulOf(s) {
  * @param {number} price 这一刻的标记价（摊平均价用）
  * @param {number} floor 残尾归零阈值（名义额，调用侧给 `日流动性 × NPC.floor × 该档权重`）
  * @param {number} [speed] 每小时朝靶心靠的比例（缺省 `NPC.speed`；做市盘传 `NPC.mm.speed`）
+ * @returns {number} 本次**减仓**（含残尾清零）的已实现盈亏（正 = NPC 赚）—— 供调用方入对手方池；
+ *   没有减仓（纯加仓 / 无变化）时返回 0。方案 A ②：NPC 减仓也要结算，否则「无玩家时」池无收入流。
  */
 function stepNpc(slot, side, target, price, floor, speed = NPC.speed) {
   const long = side === 'long';
@@ -1541,13 +1561,22 @@ function stepNpc(slot, side, target, price, floor, speed = NPC.speed) {
   if (next < floor) {                                                                // 残尾 ⇒ 直接清零
     /* ⚠️ 连**止损 / 止盈标志**一起清（v28 / G1）：这一档该侧已经空了，下一轮建仓是**新的仓**，
        必须能重新触发止损 / 止盈 —— 否则「上一轮止过损 / 止过盈」会一直压着新仓不让它触发。 */
-    if (cur !== 0) { slot[key] = 0; slot[avgKey] = 0; slot[stopKey] = false; slot[tpKey] = false; }
-    return;
+    if (cur !== 0) {
+      /* 残尾清零同样是**减仓**（把 `cur` 平掉）⇒ 它的已实现盈亏也要入池（方案 A ②）——
+         不结算就等于让一小笔钱消失。量级 < `floor`（本就微小），但口径要闭合。 */
+      const realised = npcRealised(long, cur, slot[avgKey], price);
+      slot[key] = 0; slot[avgKey] = 0; slot[stopKey] = false; slot[tpKey] = false;
+      return realised;
+    }
+    return 0;
   }
   const delta = next - cur;
-  if (!(Math.abs(delta) > 1e-9)) return;
+  if (!(Math.abs(delta) > 1e-9)) return 0;
+  /* **减仓**（`delta < 0`）⇒ 已实现盈亏入池；**加仓**（`delta > 0`）只摊均价，不结算（方案 A ②）。 */
+  const realised = delta < 0 ? npcRealised(long, -delta, slot[avgKey], price) : 0;
   slot[key] = next;
   if (delta > 0 && price > 0) slot[avgKey] = (slot[avgKey] * cur + price * delta) / next;   // 加仓 ⇒ 摊平均价
+  return realised;
 }
 
 /**
@@ -1660,6 +1689,61 @@ function fundBaseOf(s, sym) {
 function seedFund(s, sym) {
   if (Number.isFinite(s.fund)) return;
   s.fund = fundBaseOf(s, sym);
+}
+
+/**
+ * **对手方池的上限**（方案 A · 2026-10-05）—— 当日流动性 × `CPOOL.capFrac`。
+ * 与 `fundBaseOf` 复用**同一把尺子**（`liqOf` + `CPOOL.capFrac`）：随年代自动缩放，
+ * 2013 与 2025 同一条线。流动性取不到（0）⇒ 上限 0（池不吸收，全部溢出进基金）。
+ */
+function poolCapOf(s, sym) {
+  const liq = liqOf(sym, dayIndexOf(s.i));
+  return liq > 0 ? liq * CPOOL.capFrac : 0;
+}
+
+/**
+ * **对手方池结算**（方案 A · 2026-10-05）—— 把一笔**已实现盈亏**记进逐币对手方池 `m.npcFund`。
+ *
+ * 取代改动前「玩家平仓盈亏凭空造钱 / 销毁」的缺口（`closeTrade` 里只有 `credit` 没有配对扣款）。
+ * 口径：
+ *   `realized > 0`（被结算一方**赚**）⇒ 池付出 ⇒ `npcFund −= realized`；
+ *   `realized < 0`（赚的负数，即**亏**）⇒ 池收入 ⇒ `npcFund −= realized`（增加）。
+ *   ⇒ 玩家毛盈亏 `pnl` 与 NPC 减仓已实现盈亏**同一符号约定**，故共用本函数。
+ *
+ * 两条边界：
+ *   · **池被抽干**（`npcFund < 0`）：
+ *       - `backstop = true`（**玩家**）⇒ 缺口由保险基金 `s.fund` 补回 0 —— 现实里交易所
+ *         永远足额结算**用户**盈亏，兜底是 SAFU 的责任；打折会与日志「盈利 $X」自相矛盾。
+ *         `s.fund` 因此可为负 —— 语义 = 交易所层面的穿仓欠账（现有设计）。
+ *       - `backstop = false`（**NPC**）⇒ **只在池子付得起的范围内兑付**（池恒 ≥ 0，不动基金）。
+ *         为什么 NPC 不吃基金兜底：NPC 账本是**净持仓**，在长牛里常年净多 ⇒ 它的已实现盈利
+ *         没有一个**真实对手方**（对手方在模型之外），若拿基金兜就是让基金成为无限对手方 ——
+ *         实测 12 年把基金从 `+$3.9e7` 抽到 `−$9.2e9`（结构性失血，§7 红灯）。基金的职责是
+ *         SAFU（保护**用户**），不负责给模拟的 NPC 内部盈亏兜底。
+ *   · **池顶到上限** ⇒ 溢出转入保险基金，池不无限膨胀。
+ *
+ * ⚠️ **手续费与保证金退回都不进池**：只有**毛盈亏**参与 —— 费用归交易所、保证金是玩家自己的抵押品。
+ * ⚠️ **强平盈亏不走这里**（仍走 `fundSettle` → `s.fund`），避免同一笔钱两边都记。
+ * @param {number} realized 被结算一方的已实现盈亏（正 = 赚）
+ * @param {boolean} [backstop] `true`（缺省）= 池抽干时由保险基金足额兜底（**玩家**）；
+ *   `false` = 只在池余额内兑付（**NPC**，不碰基金）。
+ */
+function settlePool(s, sym, realized, backstop = true) {
+  if (!Number.isFinite(realized) || realized === 0) return;
+  const m = mktOf(s, sym);
+  const before = Number.isFinite(m.npcFund) ? m.npcFund : 0;
+  m.npcFund = before - realized;
+  if (m.npcFund < 0) {
+    if (backstop) { s.fund += m.npcFund; m.npcFund = 0; }   // 玩家：SAFU 足额兑付
+    else m.npcFund = 0;                                     // NPC：池子付得起多少就付多少
+  }
+  const cap = poolCapOf(s, sym);
+  if (m.npcFund > cap) { s.fund += m.npcFund - cap; m.npcFund = cap; }     // 顶到上限 ⇒ 溢出进基金
+}
+
+/** **玩家已实现盈亏入池**（方案 A ①）—— `settlePool` 的语义化入口，供 `closeTrade` 调用。 */
+function settlePlayerPnl(s, sym, pnl) {
+  settlePool(s, sym, pnl, true);   // 玩家：抽干时由保险基金足额兜底（SAFU）
 }
 
 /**
@@ -1986,6 +2070,9 @@ function flushSlot(s, sym, m, g, lev, price) {
   const stop = drop * NPC.stopFrac;                 // 止损带：强平线 × 0.6
   const take = drop * NPC.tpFrac;                   // G1 · 止盈带（0.4 < 0.6 ⇒ 盈利侧比亏损侧更急）
   let liqNotional = 0;
+  /* 方案 A ②：自愿**止损 / 止盈**的已实现盈亏累加，函数末尾一次性入池。
+     ⚠️ 两个**强平**分支不在此列 —— 它们仍走 `fundSettle` → `s.fund`（避免同一笔钱两边都记）。 */
+  let realised = 0;
   /* 多头：先自愿止损（平 50%、一次性），跌破强平线则全平并复位。 */
   if (g.long > 0 && g.longAvg > 0) {
     if (price < g.longAvg * (1 - drop)) {
@@ -2001,6 +2088,7 @@ function flushSlot(s, sym, m, g, lev, price) {
         pushNpcShock(s, sym, m, -1, cut);
         g.long -= cut;
         g.longStopped = true;
+        realised += npcRealised(true, cut, g.longAvg, price);   // 方案 A ②：止损已实现盈亏入池
       } else if (g.longStopped && price >= g.longAvg * (1 - stop)) {
         g.longStopped = false;                      // 回升出带 ⇒ 下一轮可再触发
       }
@@ -2010,6 +2098,7 @@ function flushSlot(s, sym, m, g, lev, price) {
         pushNpcShock(s, sym, m, -1, cut);           // 卖出兑现 ⇒ 向下
         g.long -= cut;
         g.longTp = true;
+        realised += npcRealised(true, cut, g.longAvg, price);   // 方案 A ②：止盈已实现盈亏入池
       } else if (g.longTp && price <= g.longAvg * (1 + take)) {
         g.longTp = false;                           // 回落出带 ⇒ 下一轮可再触发
       }
@@ -2030,6 +2119,7 @@ function flushSlot(s, sym, m, g, lev, price) {
         pushNpcShock(s, sym, m, 1, cut);
         g.short -= cut;
         g.shortStopped = true;
+        realised += npcRealised(false, cut, g.shortAvg, price);   // 方案 A ②：止损已实现盈亏入池
       } else if (g.shortStopped && price <= g.shortAvg * (1 + stop)) {
         g.shortStopped = false;                     // 回落出带 ⇒ 下一轮可再触发
       }
@@ -2039,11 +2129,14 @@ function flushSlot(s, sym, m, g, lev, price) {
         pushNpcShock(s, sym, m, 1, cut);            // 买回平空兑现 ⇒ 向上
         g.short -= cut;
         g.shortTp = true;
+        realised += npcRealised(false, cut, g.shortAvg, price);   // 方案 A ②：止盈已实现盈亏入池
       } else if (g.shortTp && price >= g.shortAvg * (1 - take)) {
         g.shortTp = false;                          // 回升出带 ⇒ 下一轮可再触发
       }
     }
   }
+  /* 方案 A ②：本档自愿止损 / 止盈的已实现盈亏一次性入池（强平那两支已在上面各走各的）。 */
+  settlePool(s, sym, realised, false);   // NPC：只在池余额内兑付（不碰保险基金）
   return liqNotional;
 }
 
@@ -2161,11 +2254,15 @@ export function tickMarket(s, sym) {
        靶心变了 ⇒ 档位权重与残尾阈值照旧按比例摊，总敞口守恒的口径不受影响。 */
     const target = sb.npc * NPC.mom * (m.heat - HEAT.base) * liqDay;
     const price = lastPrice(s, sym);
+    /* 方案 A ②（2026-10-05）：本小时 NPC 减仓的**已实现盈亏累加后一次性入池** ——
+       `stepNpc` 只结算自己那个格子的减仓，不认识 `s` / `m`，故在这里汇总再写池
+       （避免 `stepNpc` 反向依赖 `mktOf`）。加仓返回 0，无需区分。 */
+    let npcRealisedSum = 0;
     for (let k = 0; k < NPC.ladder.length; k++) {
       const w = NPC.ladder[k].w;
       const floor = liqDay * NPC.floor * w;
-      stepNpc(m.npc[k], 'long', target * w, price, floor);
-      stepNpc(m.npc[k], 'short', -target * w, price, floor);
+      npcRealisedSum += stepNpc(m.npc[k], 'long', target * w, price, floor);
+      npcRealisedSum += stepNpc(m.npc[k], 'short', -target * w, price, floor);
     }
     /* ③′ **做市盘**（缺口 6-A · 2026-10-03）：站到趋势盘**对面**，库存回补更快。
        ⚠️ 靶心取**趋势盘六档的实际净持仓**（而不是 `target` 这个稳态靶心）—— 做市盘吃的是
@@ -2174,9 +2271,10 @@ export function tickMarket(s, sym) {
     if (m.mm) {
       const targetMM = -NPC.mm.absorb * trendNet(m);
       const floorMM = liqDay * NPC.floor;
-      stepNpc(m.mm, 'long', targetMM, price, floorMM, NPC.mm.speed);
-      stepNpc(m.mm, 'short', -targetMM, price, floorMM, NPC.mm.speed);
+      npcRealisedSum += stepNpc(m.mm, 'long', targetMM, price, floorMM, NPC.mm.speed);
+      npcRealisedSum += stepNpc(m.mm, 'short', -targetMM, price, floorMM, NPC.mm.speed);
     }
+    settlePool(s, sym, npcRealisedSum, false);   // NPC：只在池余额内兑付（不碰保险基金）
   }
   /* ⚠️ 2026-10-04：这里传的是**原始行情 σ**（`rawDailySigma`），不是上面那个给热度用的
      `sig`（`dailySigma`，含位移）。理由见 `rawDailySigma` 表头 —— 净持仓折价位、以及推价的
@@ -3030,6 +3128,10 @@ export function closeTrade(s, why = '手动', frac = 1) {
   /* 平仓款**按 `pos.mix` 同比例退回两格**（v13 · 方案 §9.2 ③）——
      2013 年用美元开的仓，平掉回的还是美元：否则那家所会凭空空降一笔 USDT。 */
   credit(s, pos.ex, net, { usd: pos.mix.usd * f, usdt: pos.mix.usdt * f });
+  /* **对手方结算**（方案 A · 2026-10-05）：玩家这一笔的**毛盈亏**由对手方池承担 ——
+     `pnl > 0` ⇒ 池付出；`pnl < 0` ⇒ 池收入。取代改动前「credit 凭空造钱 / 亏损凭空销毁」。
+     ⚠️ 只结算**毛盈亏**：手续费归交易所、保证金退回是玩家自己的抵押品，都不进池。 */
+  settlePlayerPnl(s, sym, pnl);
   s.realized += pnl - fee;
   /* 交易统计（v21）：按**本笔回合净额**（毛盈亏 − 本笔分摊的开仓费 − 平仓费）分胜负 ——
      与日志里报的「净额」同一口径，所以玩家看到的「盈利」与档案里的「盈利笔数」对得上。

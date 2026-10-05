@@ -2894,6 +2894,169 @@ section('14 · 交易涌现性：资金费双向 · 对手方池偿付上限 · 
     T.styleOf(r2) === '场外玩家', T.styleOf(r2));
 }
 
+/* ═════ 15 · 方案 A：玩家已实现盈亏由**对手方池**承担（零和 · 池恒 ≥ 0 · 上限溢出 · 无玩家自洽）（2026-10-05） ═════
+   病根（本轮资金流审计）：改动前 `closeTrade` 只 `credit(net)`、没有任何配对扣款 ⇒ 玩家**盈利凭空造钱**、
+   **亏损凭空销毁**，市场不因玩家盈亏受损 / 受益。方案 A 把 `m.npcFund` 升级为**对手方结算账户**：
+     · 玩家毛盈亏 `pnl` ⇒ 池 `npcFund −= pnl`（正 = 池付出）；抽干时由保险基金 `s.fund` 足额兜底（SAFU）；
+     · NPC 减仓 / 止损 / 止盈的已实现盈亏也入池，但**只在池余额内兑付**、不吃基金（见 `settlePool` 注释）。
+   本节全部走**真引擎**（`openTrade` / `closeTrade` / `advanceOneHour`），不做「只比符号」的假绿
+   （仅 g 组是刻意的源码锚点，用于防回归删除）。 */
+section('15 · 方案 A：玩家盈亏由对手方池承担（零和 · 池恒≥0 · 上限溢出 · 无玩家自洽）');
+{
+  const bookCash = (s, ex) => { const b = s.books[ex]; return b ? b.usd + b.usdt : 0; };
+  /* 走一个完整往返（开仓 → 推进到「价格相对开仓价达标」→ 平仓），返回平仓前后的账户快照。
+     `dir` = 'up'（等价格高于开仓价）/ 'down'（等低于）。
+     `pool0`：平仓前把池**精确**设成它（15c/d 边界用）。
+     `pool0Frac`：平仓前把池设成 `cap × frac`（15a/b 用）——
+       ⚠️ 为什么需要它：`npcFund` 播种为 0，且会被 NPC 已实现盈利**抽干至 0**（`backstop=false` 就地截断），
+          于是在没有玩家注入资金费的审计场景里，池常常**恰好停在 0**。若不动它，一笔玩家盈利会立刻
+          触发 SAFU 兜底（Δpool=0、Δfund=−pnl），那就测不到「池吸收毛盈亏」这条主路径了 ——
+          所以 a/b 先把池摆到**远离两端边界**的半仓水位，再平仓。 */
+  const roundTrip = async ({ side, dir, i0, pool0 = null, pool0Frac = null }) => {
+    const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'fut', cash: 1e6, i: i0 });
+    s.ex = 'bitmex';
+    s.books[s.ex] = { usd: 0, usdt: 1e6 };
+    s.hintOn = false;                                  // 老手：不触发预警遮罩（会拦在结算之前）
+    s.lev = 3;                                         // 低杠杆 ⇒ 推进期间不易被强平
+    engine.tickMarket(s, 'BTC');
+    const o = engine.openTrade(s, side, 0.05);
+    if (!o.ok || !s.positions.BTC) return null;
+    const entry = s.positions.BTC.entry;
+    for (let k = 0; k < 1000 && s.positions.BTC; k++) {
+      engine.advanceOneHour(s);
+      if (s.over || s.pending) break;
+      const p = engine.lastPrice(s, 'BTC');
+      if (dir === 'up' ? p > entry * 1.01 : p < entry * 0.99) break;
+    }
+    const pos = s.positions.BTC;
+    if (!pos) return null;
+    const m = s.mkt.BTC;
+    const cap = market.liqOf('BTC', market.dayIndexOf(s.i)) * P.CPOOL.capFrac;
+    if (pool0 != null) m.npcFund = pool0;                    // 15d：精确摆到上限
+    else if (pool0Frac != null) m.npcFund = cap * pool0Frac; // 15a/b：半仓，远离两端边界
+    const snap = { ex: bookCash(s, pos.ex), pool: m.npcFund, fund: s.fund, real: s.realized };
+    const r = engine.closeTrade(s, '审计15');
+    if (!r.ok) return null;
+    return { s, pos, entry, cap, snap, after: { ex: bookCash(s, pos.ex), pool: m.npcFund, fund: s.fund, real: s.realized } };
+  };
+  /* 从「平仓款 = 保证金 + 毛盈亏 − 平仓费」**反解成交价 `fill`** ⇒ 独立算出毛盈亏 / 手续费，
+     与引擎内部分毫对照（这样「Δpool = −pnl」才是真断言，而不是拿 `−Δpool` 当 pnl 自证）。 */
+  const parse = (t) => {
+    const { s, pos, entry, snap, after } = t;
+    const sign = pos.side === 'long' ? 1 : -1;
+    const size = pos.size;
+    const pk = P.isMargin(pos) ? 'margin' : 'fut';
+    const fr = C.feeRateOf(pos.ex, engine.timeOf(s), pk, engine.vol30Of(s, pos.ex, s.i, pk));
+    const dcash = after.ex - snap.ex, dpool = after.pool - snap.pool;
+    const dfund = after.fund - snap.fund, dreal = after.real - snap.real;
+    const K = dcash - pos.margin + entry * size * sign;
+    const fill = K / (size * (sign - fr));
+    const pnl = (fill - entry) * size * sign;
+    const fee = size * fill * fr;
+    return { dcash, dpool, dfund, dreal, fill, pnl, fee, margin: pos.margin };
+  };
+
+  /* a · 玩家**盈利** ⇒ 池逐位吸收毛盈亏、基金不动、玩家足额拿到钱。 */
+  const prof = await roundTrip({ side: 'long', dir: 'up', i0: idx(at(2017, 4, 1)), pool0Frac: 0.5 });
+  check('15a 前置：玩家平仓**盈利**（多头，价格上行）', !!prof && parse(prof).pnl > 0,
+    prof ? `pnl=${f(parse(prof).pnl, 2)}` : '未取到往返样本');
+  if (prof) {
+    const p = parse(prof);
+    check('15a 零和：玩家毛盈利被对手方池**逐位**吸收（Δpool = −pnl，非凭空造钱）',
+      Math.abs(p.dpool + p.pnl) <= 1e-6 * Math.max(1, Math.abs(p.pnl)),
+      `Δpool=${f(p.dpool, 6)} pnl=${f(p.pnl, 6)}`);
+    check('15a 池未触边界 ⇒ 保险基金分毫不动（Δfund = 0）', Math.abs(p.dfund) < 1e-6, `Δfund=${f(p.dfund, 6)}`);
+    check('15a 现金恒等式：Δcash = 保证金 + pnl − 平仓费（玩家足额拿到盈利）',
+      Math.abs(p.dcash - (p.margin + p.pnl - p.fee)) < 1e-6,
+      `Δcash=${f(p.dcash, 6)} 应=${f(p.margin + p.pnl - p.fee, 6)}`);
+  }
+
+  /* b · 玩家**亏损** ⇒ 池反向增收毛亏损（钱不再凭空销毁）。 */
+  const loss = await roundTrip({ side: 'long', dir: 'down', i0: idx(at(2018, 1, 15)), pool0Frac: 0.5 });
+  check('15b 前置：玩家平仓**亏损**（多头，价格下行）', !!loss && parse(loss).pnl < 0,
+    loss ? `pnl=${f(parse(loss).pnl, 2)}` : '未取到往返样本');
+  if (loss) {
+    const p = parse(loss);
+    check('15b 零和：玩家毛亏损被对手方池**逐位**收入（Δpool = −pnl > 0，非凭空销毁）',
+      Math.abs(p.dpool + p.pnl) <= 1e-6 * Math.max(1, Math.abs(p.pnl)) && p.dpool > 0,
+      `Δpool=${f(p.dpool, 6)} pnl=${f(p.pnl, 6)}`);
+    check('15b 池未触边界 ⇒ 保险基金分毫不动（Δfund = 0）', Math.abs(p.dfund) < 1e-6, `Δfund=${f(p.dfund, 6)}`);
+  }
+
+  /* c · 池被抽干 ⇒ **足额兑付**、差额由保险基金补（SAFU），池恒 ≥ 0。 */
+  const floored = await roundTrip({ side: 'long', dir: 'up', i0: idx(at(2017, 4, 1)), pool0: 0 });
+  if (floored) {
+    const p = parse(floored);
+    check('15c 池为空（$0）⇒ 玩家仍**足额**拿到盈利（Δcash 按公式，不打折）',
+      p.pnl > 0 && Math.abs(p.dcash - (p.margin + p.pnl - p.fee)) < 1e-6,
+      `pnl=${f(p.pnl, 2)} Δcash=${f(p.dcash, 2)}`);
+    check('15c 缺口由保险基金补回 0（Δfund = −缺口 = −pnl，池恒 ≥ 0）',
+      floored.after.pool === 0 && Math.abs(p.dfund + p.pnl) <= 1e-6 * Math.max(1, Math.abs(p.pnl)),
+      `池余=${f(floored.after.pool, 6)} Δfund=${f(p.dfund, 6)} 缺口=${f(-p.pnl, 6)}`);
+  }
+
+  /* d · 玩家亏损把池顶到上限 ⇒ 溢出转入保险基金，池 = cap（不无限膨胀）。 */
+  const capProbe = await roundTrip({ side: 'long', dir: 'down', i0: idx(at(2018, 1, 15)) });
+  if (capProbe) {
+    const pool0 = capProbe.cap;                        // 摆到**恰好顶格** ⇒ 任何一笔亏损都必溢出
+    /* ⚠️ 曾用 `cap × 0.999`，但 0.1% 的余量（≈13.5 万）远大于这局的实际亏损（≈1 万）⇒ 池根本没到顶，
+       测的其实是「未到顶」，红灯是**测试前提写错**，不是实现错。顶格摆位才能可靠命中溢出分支。 */
+    const t = await roundTrip({ side: 'long', dir: 'down', i0: idx(at(2018, 1, 15)), pool0 });
+    if (t) {
+      const p = parse(t);
+      const expectFund = (pool0 - p.pnl) - t.cap;      // 溢出额
+      check('15d 池顶到上限 ⇒ 池恰好停在 cap（不无限膨胀）',
+        p.pnl < 0 && Math.abs(t.after.pool - t.cap) < 1e-6, `池=${f(t.after.pool, 4)} cap=${f(t.cap, 4)}`);
+      check('15d 溢出额逐位转入保险基金（Δfund = 池水位 + 毛亏损 − cap）',
+        Math.abs(p.dfund - expectFund) < 1e-6 * Math.max(1, Math.abs(expectFund)),
+        `Δfund=${f(p.dfund, 4)} 应=${f(expectFund, 4)}`);
+    }
+  }
+
+  /* e · 无玩家推进 200h：池始终有限、恒 ≥ 0，且**确有变化**（NPC 减仓 / 资金费给池收入流，非死水）。 */
+  {
+    const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'fut', cash: 1e6, i: idx(at(2017, 4, 1)) });
+    s.hintOn = false;
+    let min = Infinity, max = -Infinity, finite = true, neg = false;
+    for (let k = 0; k < 200; k++) {
+      engine.advanceOneHour(s);
+      const pf = s.mkt.BTC ? (s.mkt.BTC.npcFund || 0) : 0;
+      if (!Number.isFinite(pf)) finite = false;
+      if (pf < 0) neg = true;
+      min = Math.min(min, pf); max = Math.max(max, pf);
+    }
+    check('15e 无玩家 200h：池全程有限且恒 ≥ 0', finite && !neg, `min=${f(min, 2)} max=${f(max, 2)}`);
+    check('15e 无玩家时池**确有变化**（NPC 减仓 / 资金费给池收入流，不是恒 0 的死水）',
+      max - min > 1e-6, `max−min=${f(max - min, 6)}`);
+  }
+
+  /* f · 长跑（月度采样到本局终点）：池恒 ≥ 0 且有限 —— 池不会在 12 年里被抽成负数或爆成 Infinity。 */
+  {
+    const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'fut', cash: 1e5, i: idx(at(2017, 4, 1)) });
+    s.hintOn = false;
+    let min = Infinity, max = -Infinity, finite = true;
+    for (let step = 0; step < 130 && s.i < s.endI; step++) {
+      for (let j = 0; j < 24 * 30; j++) engine.advanceOneHour(s);
+      const pf = s.mkt.BTC ? (s.mkt.BTC.npcFund || 0) : 0;
+      if (!Number.isFinite(pf)) { finite = false; break; }
+      min = Math.min(min, pf); max = Math.max(max, pf);
+    }
+    check('15f 长跑（月度采样）：池全程有限且恒 ≥ 0（NPC 侧只在池余额内兑付）',
+      finite && min >= -1e-9, `min=${f(min, 2)} max=${f(max, 2)}`);
+  }
+
+  /* g · 源码锚点（防回归删除）：调用点 + `fundSettle` 口径未动 + 玩家/NPC 兜底分叉。 */
+  {
+    const src = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+    check('15g 锚点：`closeTrade` 内确有 `settlePlayerPnl(s, sym, pnl)` 调用',
+      /settlePlayerPnl\(s,\s*sym,\s*pnl\)/.test(src));
+    check('15g 锚点：`fundSettle` 口径未被改动（仍 `s.fund += notional / lev - loss;`）',
+      /s\.fund \+= notional \/ lev - loss;/.test(src));
+    check('15g 锚点：`settlePool` 对玩家兜底、对 NPC 不兜底（backstop 两支俱全）',
+      /if \(backstop\)/.test(src) && /else m\.npcFund = 0;/.test(src));
+  }
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);
