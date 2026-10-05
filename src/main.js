@@ -2057,7 +2057,10 @@ function armDelete(node) {
   delArmed = true;
   delNode = node;
   const old = node.textContent;
-  node.textContent = '确认删除';
+  /* ⚠️ 文案是「确认」而不是「确认删除」（2026-10-05 修）：两者同为 2 个汉字 ⇒ 与原来的
+     「删除」**等宽**，武装前后行内零位移 —— 头行那 6 个元素才不会被挤到折行（见 `style.css`
+     的 `.career-head`）。语义靠变红的 `.warn` 承担，不靠多两个字。 */
+  node.textContent = '确认';
   node.classList.add('warn');
   delUndo = () => { node.textContent = old; node.classList.remove('warn'); };
   clearTimeout(delTimer);

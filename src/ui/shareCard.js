@@ -29,7 +29,7 @@
 
 import { scenarioOf } from '../core/config.js';
 import { fmtDate, fmtMoneyShort } from '../core/format.js';
-import { OVER_LABEL, badgesOf, epitaphOf, multOf, styleOf, titleOf } from '../core/titles.js';
+import { OVER_LABEL, badgesOf, epitaphOf, multShown, styleOf, titleOf } from '../core/titles.js';
 import { OVER } from '../core/engine.js';
 import { theme, trimFlatStart } from './chart.js';
 
@@ -334,9 +334,13 @@ export function drawCard(rec) {
   const statB = `杠杆下单 ${rec.margin || 0} 笔 · 合约下单 ${rec.fut || 0} 笔`;
   /* 明细第一行按段上色（2026-10-05 用户圈定「胜/负/胜率加绿红」）：
      `cls` 为 `up`/`down` 的段走涨跌色，其余段保持次要灰。`statA` 直接由各段拼出
-     （不另写一遍整串）⇒ 量字号用的串与画出来的串**永远逐字相同**，不会两处漂字。 */
+     （不另写一遍整串）⇒ 量字号用的串与画出来的串**永远逐字相同**，不会两处漂字。
+     ⚠️ 补「平仓 M 笔」（2026-10-05 审计修）：`open` 是**开仓笔数**、`win + loss` 是**平仓笔数**，
+        两者本就不相等（部分仓位到收盘还没平，且加仓会多记开仓笔）。原来只印
+        「开仓 N · 胜 a · 负 b」，玩家会以为 a+b 该等于 N —— 补上 `M = a+b` 把两个口径摆明。 */
   const segsA = [
     [`开仓 ${rec.open || 0} 笔 · `, null],
+    [`平仓 ${closed} 笔 · `, null],
     [`胜 ${rec.win || 0}`, 'up'],
     [' · ', null],
     [`负 ${rec.loss || 0}`, 'down'],
@@ -391,10 +395,12 @@ export function drawCard(rec) {
   ctx.fillStyle = tone;
   ctx.font = `700 68px ${MONO}`;
   ctx.fillText(fmtMoneyShort(rec.final), P, finalY);
-  const m = multOf(rec);
+  /* ⚠️ 倍数（2026-10-05 审计修）：破产局终值 ≤ 0，`final / cash0` 印出来是 `×0.00` ——
+     改报**峰顶倍数**并加「峰值」前缀（与档案页共用 `multShown`，同一局两处口径一致）。 */
+  const mv = multShown(rec);
   ctx.font = `700 46px ${MONO}`;
   ctx.textAlign = 'right';
-  ctx.fillText(`×${m.toFixed(m < 10 ? 2 : 1)}`, W - P, finalY);
+  ctx.fillText((mv.peak ? '峰值 ' : '') + `×${mv.v.toFixed(mv.v < 10 ? 2 : 1)}`, W - P, finalY);
   ctx.textAlign = 'left';
 
   /* 起止 ＋ 天数 */

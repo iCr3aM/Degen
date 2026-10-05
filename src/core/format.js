@@ -16,6 +16,11 @@ function group(intStr) {
  *   108143.1 / 1234.56 / 3.1416 / 0.52341 / 0.000123
  * ⚠️ 不导出（2026-10-02 审计）：它只服务本文件（`fmtMoneyShort` / `fmtQty`），
  *    外部读者一律走那两个 —— 放出去只会多一套「价格怎么显示」的口径。
+ *
+ * ⚠️ 最末档 `d = 8 → 6`（2026-10-05）：DOGE 早期 `$0.000089` 这类价，8 位小数会印成
+ *    `0.00008900`（10 字符）—— 持仓行 / 日志里刚好多出一截、被 `text-overflow` 啃掉价格尾部。
+ *    收成 6 位后任何 `< 0.01` 的价恒定 8 字符（`0.000089`），量级信息不丢（第 6 位仍有值），
+ *    与上面 `[0.0001, 0.01)` 那一档的 `d = 6` 也并成同一口径。
  */
 function fmtPrice(p) {
   if (!Number.isFinite(p)) return '--';
@@ -25,8 +30,7 @@ function fmtPrice(p) {
   else if (a >= 100) d = 3;
   else if (a >= 1) d = 4;
   else if (a >= 0.01) d = 5;
-  else if (a >= 0.0001) d = 6;
-  else d = 8;
+  else d = 6;
 
   const neg = p < 0;
   const s = Math.abs(p).toFixed(d);

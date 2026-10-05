@@ -209,7 +209,7 @@ b, strong { font-weight: 600; }
      原来这里挂着 `border-bottom` 那道分隔线，但它下面紧跟的第一块 —— 交易页的两格账户
      （`.hud .cell`）、资产页的抬头、设置页的 `.set-card`、回顾 / 档案页的卡片 —— **自己就带边框**
      ⇒ 是「两圈框中间再夹一条线」，重复。撤掉那道线后，顶栏从 48 收到 44px
-     （`.who` 两行内容 33.75px、按钮 32px，四周仍各留 5px，都放得下），
+     （`.who` 两行内容 32.5px、按钮 32px，四周仍各留 5px，都放得下），
      省下的 4px 与上一次 52→48 一样**全部让给 K 线区**。 */
   height: calc(44px * var(--ui));
 }
@@ -219,7 +219,9 @@ b, strong { font-weight: 600; }
   min-width: 0;
   line-height: 1.25;
 }
-.top .who b { font-size: calc(15px * var(--ui)); font-weight: 600; color: var(--accent); }
+/* 局名：15 → **14px**（2026-10-05 字号阶梯保守收敛，并进 14px 主数值档）。
+   ⚠️ 顶栏高度 44px 不动 —— 两行内容 32.5px 仍留足余量（见 `.top` 那条注释）。 */
+.top .who b { font-size: calc(14px * var(--ui)); font-weight: 600; color: var(--accent); }
 /* 上帝模式**常驻标识**（本轮 ④）：改过资金 / 跳过日期之后，标题转金 ——
    ⚠️ 必须写成 `.top .who b.gold`（0,3,1）这一级：上面那条 (0,2,1) 压过全局 `.gold`（0,1,0）。 */
 .top .who b.gold { color: var(--gold); }
@@ -827,12 +829,15 @@ b, strong { font-weight: 600; }
 /* 总资产卡：复用交易页 HUD 那副格子（同样的 `.cell` 三行结构，字色 / 行高全部一致）。
    单列 —— 「合计」只有一格，拆两列没有意义（分列那件事已由上面 `asSlots` 那两格承担）。 */
 .hud.one { grid-template-columns: 1fr; }
-/* B6-c（§7.12 ④ · 主数值提到 18px）：**全屏唯一的主数值**，只给这一格。
-   ⚠️ 格子高度必须跟着长：数值行 20 → 24px，内容 48 → 52 ⇒ 66 → **70px**。
+/* B6-c（§7.12 ④ · 主数值提到 18px → **16px**，2026-10-05 字号阶梯保守收敛）：
+   **全屏唯一的主数值**，只给这一格。
+   ⚠️ 行高 / 格子高度**不动**（数值行仍 24px、格高仍 70px）：只并档字号，不改纵向节奏 ——
+      18 → 16 后数字在 24px 行盒里略松，但读数位置、格子高度一律不变（「元素固定」）。
+   ⚠️ 格子高度那笔账：数值行 20 → 24px，内容 48 → 52 ⇒ 66 → **70px**。
       资产页整页可滚（`.page` 那条），这 4px 只占页面滚动、不占 K 线高度 —— 与交易页的账无关。
-      18px 下 `$1,234,567.89` 约 130px，格子可用宽 340px（390 屏），不会截尾。 */
+      改 16px 后 `$1,234,567.89` 约 115px，格子可用宽 340px（390 屏），更不会截尾。 */
 .hud.one .cell { height: calc(70px * var(--ui)); }
-.hud.one .cell b { font-size: calc(18px * var(--ui)); line-height: calc(24px * var(--ui)); }
+.hud.one .cell b { font-size: calc(16px * var(--ui)); line-height: calc(24px * var(--ui)); }
 
 /* 明细拆解（用户 2026-10-01 拍板 · 选项 A）：总资产卡下面那两行 ——
    已占用保证金 / 在途转账。复用设置页那副「标签 —— 读数」的样子（同字号、同次要色），
@@ -1118,10 +1123,13 @@ canvas.curve {
 .confirm h3 { margin: 0; font-size: calc(14px * var(--ui)); font-weight: 600; }
 /* 三行「标签 —— 数值」：行高 20px 排开，不用 gap —— 遵守「间距只走既定档位、不另写 gap」那条约束 */
 .confirm-rows { margin-top: 12px; }
+/* ⚠️ `white-space: nowrap`（2026-10-05）：一行「标签 —— 数值」，两者都不许折行 ——
+   与全局「元素固定、不换行」同一条。标签 / 数值都是短串，正常机型不会溢出。 */
 .confirm-row {
   display: flex;
   justify-content: space-between;
   gap: 8px;
+  white-space: nowrap;
   line-height: calc(20px * var(--ui));
   font-size: calc(12px * var(--ui));
 }
@@ -1556,15 +1564,23 @@ button { user-select: none; -webkit-user-select: none; }
 .careers-empty { padding: 24px 0; text-align: center; font-size: calc(12px * var(--ui)); color: var(--mut-2); }
 /* 一条生涯记录：四代信息（年代 ＋ 称号 ＋ 结局 / 起止 ＋ 天数 / 终值 ＋ 倍数 / 徽章） */
 .career { background: var(--panel); border: 1px solid var(--line); padding: 8px 10px; }
-.career-head { display: flex; align-items: baseline; gap: 8px; }
-.career-head b { font-size: calc(13px * var(--ui)); font-weight: 600; }
-.career-head u { margin-left: auto; text-decoration: none; font-size: calc(12px * var(--ui)); }
+/* ⚠️ 头行六元素「永不换行，溢出截称号」（2026-10-05 修）：
+   一行里排着 局名 / 称号 / 风格 / 结局 / [删除] / [生成海报]。flex 默认只挡「挤到第二行」，
+   挡不住 CJK 元素**内部逐字折行** —— 局名长一点（`LUNA 归零周`）＋ 称号 ＋ 风格叠起来就装不下，
+   文字被压成两行。这里三道锁：
+     ① 整行 `white-space: nowrap` 彻底封死折行（子元素继承）；
+     ② 装饰性的称号 / 风格是唯一可以让位的，`min-width:0 ＋ ellipsis` 让它们截尾；
+     ③ 其余的局名 / 结局 / 两枚键 `flex:none` 钉死 —— 读数与可点的键永远完整。
+   ⚠️ 武装删除时的文案已同步收成「确认」（与「删除」等宽，`main.js` 的 `armDelete`）。 */
+.career-head { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+.career-head b { flex: none; font-size: calc(13px * var(--ui)); font-weight: 600; }
+.career-head u { flex: none; margin-left: auto; text-decoration: none; font-size: calc(12px * var(--ui)); }
 /* 主称号（M3）—— 局名右边一枚，比局名轻、比副行重；`u` 仍由 `margin-left:auto` 顶到最右 */
-.career-title { font-style: normal; font-size: calc(11px * var(--ui)); color: var(--mut); }
+.career-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-style: normal; font-size: calc(11px * var(--ui)); color: var(--mut); }
 /* 风格称号（2026-10-04）—— 与主称号并列（「· 不死鸟」）。
    ⚠️ 用 `--accent` 而不是主称号的 `--mut`：两枚并排放着，颜色必须一眼分得开，
       否则读起来像一句被拆成两半的话（语义不同：一枚是结局、一枚是人设）。 */
-.career-style { font-style: normal; font-size: calc(11px * var(--ui)); color: var(--accent); }
+.career-style { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-style: normal; font-size: calc(11px * var(--ui)); color: var(--accent); }
 /* 徽章排（M3）—— 无徽章时整条不渲染（`careerRow` 里判 `length`）
    ⚠️ `margin-top: 6` → **4**（2026-10-03 修）：卡内四段（head / 徽章 / 副行 / 数值）原来是 6、4、6
    混排，段与段的呼吸一眼不齐 —— 统一到 4，与 `.career-sub` 同档。 */
@@ -1582,14 +1598,18 @@ button { user-select: none; -webkit-user-select: none; }
   color: var(--mut-2);
   font-feature-settings: "tnum";
 }
-.career-num { margin-top: 4px; display: flex; align-items: baseline; gap: 8px; font-feature-settings: "tnum"; }
+/* ⚠️ `white-space: nowrap`（2026-10-05）：终值 ＋ 倍数一行同样不许折行 —— 破产局改报
+   「峰值 ×N」后这一行比原来长，与头行同一条「元素固定」的规矩。 */
+.career-num { margin-top: 4px; display: flex; align-items: baseline; gap: 8px; white-space: nowrap; font-feature-settings: "tnum"; }
 .career-num b { font-size: calc(14px * var(--ui)); }
 .career-num u { margin-left: auto; text-decoration: none; font-size: calc(12px * var(--ui)); }
 /* 结局评语（2026-10-05）—— 档案卡里的一行故事，字号与 `.career-sub` 同档（11px），
    但用 `--mut` 而非 `--mut-2`：它是「评述」，比日期 / 天数那类元数据更该被读到。 */
 .career-ep { margin-top: 4px; font-size: calc(11px * var(--ui)); color: var(--mut); line-height: 1.6; }
-/* 分享键（M4）—— 挂在 `career-head` 末位（`u` 的 `margin-left:auto` 把这两枚一起顶到最右） */
+/* 分享键（M4）—— 挂在 `career-head` 末位（`u` 的 `margin-left:auto` 把这两枚一起顶到最右）
+   ⚠️ `flex:none`（2026-10-05）：头行不许挤窄这两枚键 —— 让位的只有称号 / 风格。 */
 .career-share {
+  flex: none;
   font-family: inherit;
   font-size: calc(11px * var(--ui));
   line-height: 1;
@@ -1606,6 +1626,7 @@ button { user-select: none; -webkit-user-select: none; }
       武装是个**持续**状态，`pointerdown` 一松手 `:active` 就没了，玩家看不清自己在确认什么。
       与 `.scen.warn`（年代卡武装）同一枚下跌色。 */
 .career-del {
+  flex: none;
   font-family: inherit;
   font-size: calc(11px * var(--ui));
   line-height: 1;

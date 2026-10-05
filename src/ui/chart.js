@@ -22,8 +22,12 @@
 
 import { fmtMoneyShort } from '../core/format.js';
 
-/** 右侧价格标签宽（`view.js` 算单根 K 线宽度时要用同一份，故导出） */
-export const PAD_R = 52;
+/* 右侧价格标签宽（`view.js` 算单根 K 线宽度时要用同一份，故导出）。
+ * ⚠️ 2026-10-05 由 52 → **56**：标签位原来只够 12px 等宽 6 字符（`0.0001` 级），
+ *    DOGE 早期（$0.000089 这类 8 字符）必被画布右缘裁掉。现改由**降字号**补足宽度：
+ *    轴签 12 → 10px（0.6em ⇒ 6px/字），8 字符 = 48px ≤ 可用 `56 − 6 = 50px`，完整显示。
+ *    离轴仍留 6px（见下方标签起笔 `plotW + 6`），观感不变。 */
+export const PAD_R = 56;
 /** 底部留白（右侧价格标签高 18px，贴边会被切掉） */
 const PAD_B = 16;
 /** 顶部留白的**兜底值**（Batch 5 · B27）：真实值由调用方按左上角遮罩实测高度传进来（`o.topInset`），
@@ -233,7 +237,9 @@ export function drawChart(canvas, o) {
   const xAt = k => (slots - n + k) * cw + cw / 2;
 
   // ── 网格线 + 右侧价格标签（三档，只铺在价格区） ──
-  ctx.font = '12px ui-monospace, monospace';
+  // ⚠️ 10px（T5 微注档，2026-10-05）：轴签从 12 降到 10，配合 PAD_R 56 把 DOGE 早期
+  //    `0.000089` 这类 8 字符极小价完整塞进右侧标签位（详见 PAD_R 注释）。
+  ctx.font = '10px ui-monospace, monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   for (let g = 0; g <= 3; g++) {
@@ -439,7 +445,8 @@ export function drawChart(canvas, o) {
     //    夹取的**下界必须是 `top + 8`**（Batch 5 · B27）：原来写死 `8`，而 `top` 现在等于遮罩高度
     //    （≈28px）⇒ 标签矩形会落到 y ∈ [1,17]、**整块躺在遮罩底下**，这正是「强平价显示不全」的原因。
     const tag = (side === 'short' ? '空 ' : '多 ') + axisLabel(entry);
-    ctx.font = '12px ui-monospace, monospace';
+    // ⚠️ 10px（T5 微注档，2026-10-05，与轴签同档）：下方强平签也复用这一句的字体。
+    ctx.font = '10px ui-monospace, monospace';
     const tw = ctx.measureText(tag).width + 6;
     const ty = Math.round(clamp(y, top + 8, bot - 8)) + .5;
     ctx.fillStyle = T.GOLD;
@@ -494,7 +501,9 @@ export function drawChart(canvas, o) {
     ctx.setLineDash([]);
 
     const tag = axisLabel(mark);
-    ctx.font = '12px ui-monospace, monospace';
+    // ⚠️ 10px（T5 微注档，2026-10-05，与轴签同档）：改字号后 8 字符 = 48px，
+    //    `tw` 的兜底下限（PAD_R − 4）已不再是「唯一」的显宽来源。
+    ctx.font = '10px ui-monospace, monospace';
     const tw = Math.max(PAD_R - 4, ctx.measureText(tag).width + 8);
     ctx.fillStyle = col;
     ctx.fillRect(plotW, y - 9, tw, 18);

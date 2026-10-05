@@ -152,6 +152,25 @@ export const OVER_LABEL = {
 };
 
 /**
+ * **展示用倍数**（档案页 ＋ 生涯海报共用，2026-10-05 审计修）。
+ *
+ * 为什么不能直接用 `multOf`：破产局的终值必 ≤ 0 ⇒ 倍数印出来是 `×0.00` / `×-0.12` ——
+ * 数学没错，但紧挨着「终值 $0.0」读着就像一个坏值。玩家真正要知道的是**曾经冲到多高**，
+ * 那正是 `titleOf` 破产轴用的**峰顶倍数**（`peak / cash0`），海报的「账本四格」也早印着「峰值」。
+ *
+ * 判据 = `bustOf(rec) || m ≤ 0.01`：
+ *   · `reason` 是档案里的权威结局字段；
+ *   · `m ≤ 0.01` 是兜底 —— 结算局若只剩不到 1% 本金，`toFixed(2)` 同样会印成 `×0.00`（坏值）。
+ * @returns {{v:number, peak:boolean}} `v` = 要显示的倍数数值；`peak=true` 时调用方补「峰值」前缀。
+ */
+export function multShown(rec) {
+  const m = multOf(rec);
+  if (!bustOf(rec) && m > 0.01) return { v: m, peak: false };
+  const p = multAt(rec.peak, rec.cash0);
+  return { v: Number.isFinite(p) && p > 0 ? p : m, peak: true };
+}
+
+/**
  * 主称号 —— **结局 × 倍数 × 金额**。混合风格：低档写实（陪跑 / 活下来），高档用梗（钻石手 / 千倍传奇）。
  *
  * 第一分叉是**破产还是活着**（`bustOf`）：

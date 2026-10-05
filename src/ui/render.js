@@ -22,7 +22,7 @@ import { confirmationsOf, congestionLabel, congestionOf } from '../core/congesti
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
-import { OVER_LABEL, badgesOf, epitaphOf, multOf, styleOf, titleOf } from '../core/titles.js';
+import { OVER_LABEL, badgesOf, epitaphOf, multShown, styleOf, titleOf } from '../core/titles.js';
 import { SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
 import { drawChart, drawEquityCurve, curveWindow } from './chart.js';
 import { windowFor, setYPx } from './view.js';
@@ -2741,7 +2741,7 @@ export function renderCareers(refs, list) {
  * 头行末位两枚键（`u` 的 `margin-left:auto` 把它们一起顶到最右）：
  *   - **生成海报**（M5）：值带记录 id ⇒ `main.js` 按 id 取回那一条去画图（见 `onPoster`）；
  *   - **删除**（M5）：值同样带 id，走**武装式双重确认**（`main.js` 的 `armDelete`）——
- *     点一次只把这枚键改成红字「确认删除」，3 秒无后续自动还原；再点一次才真删。
+ *     点一次只把这枚键改成红字「确认」，3 秒无后续自动还原；再点一次才真删。
  *     删除键排在左边、「生成海报」留在原来的最右位 —— 老玩家的手感不动。
  */
 function careerRow(r) {
@@ -2767,8 +2767,10 @@ function careerRow(r) {
   const num = el('div', 'career-num');
   const tone = r.final >= r.cash0 ? 'up' : 'down';
   num.append(el('b', 'num ' + tone, fmtMoneyShort(r.final)));
-  const mult = multOf(r);
-  num.append(el('u', tone, `×${mult.toFixed(mult < 10 ? 2 : 1)}`));
+  /* ⚠️ 倍数额（2026-10-05 审计修）：破产局终值 ≤ 0，`final / cash0` 会印成 `×0.00` / `×-0.12`，
+     像个坏值 —— 改报**峰顶倍数**并加上「峰值」前缀（与海报共用 `multShown` 同一口径）。 */
+  const mv = multShown(r);
+  num.append(el('u', tone, (mv.peak ? '峰值 ' : '') + `×${mv.v.toFixed(mv.v < 10 ? 2 : 1)}`));
   row.append(num);
 
   /* 结局评语（2026-10-05 用户拍板）：与弹窗 / 海报共用 `titles.epitaphOf` —— 同一局在哪儿看

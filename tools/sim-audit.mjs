@@ -3089,6 +3089,80 @@ section('14 · 交易涌现性：资金费双向 · 对手方池偿付上限 · 
     && /curve-cap/.test(renderSrc));
 }
 
+/* ── k · 细节修复（2026-10-05 用户圈定清单）──────────────────────────────
+   ① 档案头行「永不换行」＋ 武装文案与「删除」等宽；
+   ② K 线极小价标签（PAD_R 56 ＋ 轴签 10px）装得下 8 字符；
+   ③ 极小价格式化收成 6 位小数（≤8 字符），不再被持仓行 ellipsis 啃尾；
+   ④ 破产局「倍数」改报**峰顶倍数**（不再印 ×0.00 坏值）；
+   ⑤ 海报明细补「平仓 M 笔」口径。
+   ⚠️ ①②⑤ 只能做源码锚点（CSS / 绘制 / 版面，Node 里量不到像素）；③④ 是纯函数，跑真实取值。 */
+{
+  /* ① CSS：头行三道锁 ＋ 二次确认弹层不折行 */
+  const css = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
+  check('14k 档案头行 `white-space: nowrap`（六元素同排不折行）',
+    /\.career-head \{[^}]*white-space: nowrap/.test(css));
+  check('14k 档案「终值 ＋ 倍数」行 `white-space: nowrap`（改报「峰值 ×N」后同锁不折行）',
+    /\.career-num \{[^}]*white-space: nowrap/.test(css));
+  check('14k 档案头行称号 / 风格可截尾（`min-width:0` ＋ ellipsis）',
+    /\.career-title \{[^}]*min-width: 0[^}]*text-overflow: ellipsis/.test(css)
+    && /\.career-style \{[^}]*min-width: 0[^}]*text-overflow: ellipsis/.test(css));
+  check('14k 档案头行的局名 / 结局 / 两枚键 `flex:none`（永不被挤窄）',
+    /\.career-head b \{[^}]*flex: none/.test(css)
+    && /\.career-head u \{[^}]*flex: none/.test(css)
+    && /\.career-del \{[^}]*flex: none/.test(css)
+    && /\.career-share \{[^}]*flex: none/.test(css));
+  check('14k 二次确认弹层行 `white-space: nowrap`',
+    /\.confirm-row \{[^}]*white-space: nowrap/.test(css));
+
+  /* ② 武装文案收成「确认」：与「删除」同为 2 汉字 ⇒ 武装前后零位移 */
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+  check('14k 武装文案收成「确认」（2 汉字，与「删除」等宽 ⇒ 零位移）',
+    /node\.textContent = '确认';/.test(mainSrc) && !/node\.textContent = '确认删除';/.test(mainSrc));
+
+  /* ③ K 线：PAD_R 56 ＋ 轴签 / 三处价签 10px ⇒ 8 字符（`0.000089`）装得下 */
+  const chartSrc = fs.readFileSync(path.join(ROOT, 'src/ui/chart.js'), 'utf8');
+  check('14k 源码锚点：`PAD_R` 加宽到 56', /export const PAD_R = 56;/.test(chartSrc));
+  check('14k 源码锚点：轴签 / 开仓签 / 强平签 / 现价签统一 10px（≥4 处）',
+    (chartSrc.match(/'10px ui-monospace, monospace'/g) || []).length >= 4,
+    `${(chartSrc.match(/'10px ui-monospace, monospace'/g) || []).length} 处`);
+  /* 像素账：10px 等宽 ≈ 6px/字 ⇒ 8 字符 48px ≤ 可用 `PAD_R − 6 = 50px`。 */
+  const avail = 56 - 6, labelW = 8 * 10 * 0.6;
+  check('14k 极小价标签（8 字符）塞得进右侧标签位', labelW <= avail, `label=${labelW} avail=${avail}`);
+
+  /* ④ 极小价格式化：`0.000089` 必须恰好 8 字符（旧口径是 10 字符的 `0.00008900`） */
+  check('14k `fmtLogPrice` 极小价完整且 ≤8 字符（DOGE 级）',
+    F.fmtLogPrice(0.000089) === '0.000089', F.fmtLogPrice(0.000089));
+  /* 上沿：`[1e-4, 1e-2)` 那一档本来就是 6 位 —— 两档并档后接口连续、不跳字符数。 */
+  check('14k 极小价与上一档口径连续（`0.000123` 恒 8 字符）',
+    F.fmtLogPrice(0.000123) === '0.000123' && F.fmtLogPrice(0.000123).length === 8,
+    F.fmtLogPrice(0.000123));
+
+  /* ⑤ 倍数：破产 / 近乎归零 ⇒ 改报峰顶倍数（档案页 ＋ 海报共用 `multShown`） */
+  const T = await import('../src/core/titles.js');
+  const mrec = (o) => ({ cash0: 1000, final: 2000, peak: 3000, reason: engine.OVER.SETTLED, ...o });
+  const ok = T.multShown(mrec({}));
+  check('14k 结算局倍数 = `final / cash0`（正常档不带「峰值」前缀）',
+    ok.peak === false && Math.abs(ok.v - 2) < 1e-9, `v=${ok.v} peak=${ok.peak}`);
+  const bust = T.multShown(mrec({ reason: engine.OVER.LIQUIDATED, final: 0, peak: 47000 }));
+  check('14k 破产局改报峰顶倍数（`峰值 ×47`，不再印 ×0.00）',
+    bust.peak === true && Math.abs(bust.v - 47) < 1e-9, `v=${bust.v} peak=${bust.peak}`);
+  const near = T.multShown(mrec({ final: 5, peak: 900 }));      // 终值仅剩 0.5% 本金
+  check('14k 兜底：终值 ≤ 本金 1% 的结算局也改报峰顶（避开 ×0.00 坏值）',
+    near.peak === true && Math.abs(near.v - 0.9) < 1e-9, `v=${near.v} peak=${near.peak}`);
+  const justAbove = T.multShown(mrec({ final: 20, peak: 900 })); // 2% 本金 ⇒ 门槛之上，仍报终值
+  check('14k 门槛之上（终值 2% 本金）仍报终值倍数（不误触发峰顶）',
+    justAbove.peak === false && Math.abs(justAbove.v - 0.02) < 1e-9, `peak=${justAbove.peak}`);
+
+  /* ⑥ 两处接入点 ＋ 海报明细补「平仓 M 笔」（防回归各写一份 / 又被删掉） */
+  const shareSrc = fs.readFileSync(path.join(ROOT, 'src/ui/shareCard.js'), 'utf8');
+  const renderSrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  check('14k 海报 / 档案倍数共用 `multShown`（同一局两处口径一致）',
+    /multShown\(rec\)/.test(shareSrc) && /multShown\(r\)/.test(renderSrc)
+    && !/multOf/.test(shareSrc) && !/multOf/.test(renderSrc));
+  check('14k 海报明细补「平仓 M 笔」口径（开仓 ≠ 平仓，摆在明面）',
+    /平仓 \$\{closed\} 笔/.test(shareSrc));
+}
+
 /* ═════ 15 · 方案 A：玩家已实现盈亏由**对手方池**承担（零和 · 池恒 ≥ 0 · 上限溢出 · 无玩家自洽）（2026-10-05） ═════
    病根（本轮资金流审计）：改动前 `closeTrade` 只 `credit(net)`、没有任何配对扣款 ⇒ 玩家**盈利凭空造钱**、
    **亏损凭空销毁**，市场不因玩家盈亏受损 / 受益。方案 A 把 `m.npcFund` 升级为**对手方结算账户**：
