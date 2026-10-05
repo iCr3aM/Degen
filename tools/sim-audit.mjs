@@ -2990,6 +2990,44 @@ section('14 · 交易涌现性：资金费双向 · 对手方池偿付上限 · 
     && /for \(const \[txt, cls\] of segsA\)/.test(shareSrc));
 }
 
+/* ── i · 资金曲线纵轴范围 `curveRange`（2026-10-05 用户反馈「资金量大时短区间是一条贴顶直线」）──
+   `drawEquityCurve` 取的窗口就是「已按 `range` 切片 ＋ 已裁掉观望期平线」的那一段，纵轴整块
+   由这个纯函数算。这里用真实数值把「按窗口自适应、区间一换整条重算」钉死。 */
+{
+  const { curveRange } = await import('../src/ui/chart.js');
+  const lg = v => Math.log10(Math.max(1, v));
+
+  /* ① 资金 $1M、一周窗口只在 ±3.5% 内波动：本金（$1,000）必须**被排除**，纵轴按窗口铺满。 */
+  const eqA = [1e6, 950000, 1020000, 990000, 1005000];
+  const A = curveRange(eqA, 1000);
+  const spanA = lg(Math.max(...eqA)) - lg(Math.min(...eqA));
+  check('14i 大资金 + 窄窗口 ⇒ 本金被排除、纵轴按窗口铺满（不再横跨 3 个数量级）',
+    A.baseIn === false && (A.hi - A.lo) < 0.1 && (A.hi - A.lo) < spanA * 1.3,
+    `baseIn=${A.baseIn} 纵轴跨度=${f(A.hi - A.lo, 4)} 数据跨度=${f(spanA, 4)}`);
+  check('14i 窗口波动占可见高度 > 70%（高/低点因此看得见）',
+    spanA / (A.hi - A.lo) > 0.7, `占比=${f(spanA / (A.hi - A.lo), 3)}`);
+
+  /* ② 贴近本金的窄窗口（$1,000 → $1,050）：本金并入，且纵轴**不再被旧的 0.1 下限钉住**。 */
+  const B = curveRange([1000, 1020, 1050], 1000);
+  check('14i 贴近本金的窄窗口 ⇒ 本金并入，纵轴跨度 < 0.05（旧 0.1 下限会把 +5% 压平）',
+    B.baseIn === true && (B.hi - B.lo) < 0.05 && B.lo <= lg(1000) && B.hi >= lg(1050),
+    `baseIn=${B.baseIn} 纵轴跨度=${f(B.hi - B.lo, 4)}`);
+
+  /* ③ 全程一条平线（一单没开）⇒ 仍撑开极小一档，避免除 0；上下界有限。 */
+  const C = curveRange([1000, 1000, 1000], 1000);
+  check('14i 平线窗口 ⇒ 撑开极小一档（有限、非 0）',
+    Number.isFinite(C.lo) && Number.isFinite(C.hi) && C.hi > C.lo && (C.hi - C.lo) < 1e-6,
+    `lo=${f(C.lo, 8)} hi=${f(C.hi, 8)}`);
+
+  /* ④ 接入锚点：`drawEquityCurve` 必须走它（防回归成「又写回 lg(base) 起手」）。 */
+  const chartSrc = fs.readFileSync(path.join(ROOT, 'src/ui/chart.js'), 'utf8');
+  check('14i 源码锚点：`drawEquityCurve` 纵轴走 `curveRange`、不再从 `lg(base)` 起手',
+    /const \{ lo, hi, baseIn \} = curveRange\(eq, o\.base\)/.test(chartSrc)
+    && !/let lo = lg\(o\.base\)/.test(chartSrc));
+  check('14i 源码锚点：本金基准虚线只在 `baseIn` 为真时才画',
+    /if \(baseIn\) \{[\s\S]*?yOf\(o\.base\)/.test(chartSrc));
+}
+
 /* ═════ 15 · 方案 A：玩家已实现盈亏由**对手方池**承担（零和 · 池恒 ≥ 0 · 上限溢出 · 无玩家自洽）（2026-10-05） ═════
    病根（本轮资金流审计）：改动前 `closeTrade` 只 `credit(net)`、没有任何配对扣款 ⇒ 玩家**盈利凭空造钱**、
    **亏损凭空销毁**，市场不因玩家盈亏受损 / 受益。方案 A 把 `m.npcFund` 升级为**对手方结算账户**：

@@ -514,7 +514,7 @@ export function drawChart(canvas, o) {
  *  （2026-10-04）—— 原先这里的两条避让常量（`SIDE_RESERVE` / `SIDE_SHIFT`）随之删除。 */
 
 /* ═════════════════════ 资金曲线（v13 · 方案 §4；区间＋高低点 2026-10-01） ═════════════════════
- * 把 `s.eq`（每个游戏日一个权益点）画成一条折线 ＋ 一条 $1,000 基准虚线。
+ * 把 `s.eq`（每个游戏日一个权益点）画成一条折线 ＋（可选）一条本金基准虚线。
  *
  * ⚠️ 它**住在本文件**的原因只有一个：K 线那套「读 `:root` 变量（`theme()`）＋ dpr 缩放」
  *    的地基在这里，另起一个模块只会把这两件事抄第二遍。
@@ -522,6 +522,9 @@ export function drawChart(canvas, o) {
  *    而那正是玩家最需要看清「有没有在慢慢往上爬」的一段。
  * ⚠️ 它是**复盘图**：不画轴、不画网格、不做任何手势 —— 资产页上点它什么也不会发生。
  *    「区间切换」由上方那排 `.opt` 键（`main.js` 分派 `eqrange`）驱动，图上依旧没有手势。
+ * ⚠️ **纵轴范围只认当前所选区间**（2026-10-05 修）：按窗口自身的 min/max 定范围，区间一换
+ *    高/低点与上下边界**整条重算**；本金基准线只在「离数据不远、不会把纵轴拉爆」时才并入，
+ *    否则资金早已远离本金，并进来会把窗口压成贴顶直线（详见下方 `baseIn` 那段注释）。
  * ⚠️ **区间高低点**（用户 2026-10-01 拍板，对齐 OKX）：只在**当前所选区间**内取 min/max
  *    并各画一枚点 ＋ 一行小字读数，值走 `fmtMoneyShort`（与 HUD 同一套 K/M/B 后缀）。
  */
@@ -563,6 +566,46 @@ export function trimFlatStart(eq) {
   while (k < eq.length && Math.abs(eq[k] - a0) < CURVE_FLAT_EPS) k++;
   if (k <= 1 || k >= eq.length) return eq;      // 开局就动（k=1）/ 整场没动过（k=len）：逐位不变
   return eq.slice(k - 1);
+}
+
+/**
+ * 算资金曲线的**纵轴范围**（对数空间，已含上下留白）—— 纯函数，`drawEquityCurve` 与审计共用。
+ *
+ * ⚠️ 范围**只认传入的窗口 `eq`**（调用方已按 `range` 切片、已裁掉观望期平线）—— 这是 2026-10-05
+ *    用户反馈的病根：原先纵轴下界恒取 `lg(base)`（开局本金），资金涨到几十上百倍后再选「一周」，
+ *    窗口内只波动不到 1%，却被一条从本金一路拉到当前的纵轴压成贴着顶边的直线，高/低两枚标记
+ *    也几乎重叠（看着就是「没有高低点」）。按窗口自身 min/max 定范围后，区间一换整条重算，
+ *    波动自然铺满整幅高度 —— 与 K 线价格轴「只按视野内的 K 线自动适配」同一套口径。
+ *
+ * ⚠️ 本金基准线**只在它不会把纵轴拉爆时才并入**：本金落在窗口内 ⇒ 必然并入（开局那一段窗口
+ *    的起点就是本金）；落在窗外时，只有当「并入后的总跨度 ≤ 窗口跨度的 2 倍」才并（窗口本身
+ *    几乎没跨度时，收窄到「本金落在窗口 ±0.05 数量级内」才并）。返回的 `baseIn` 供调用方决定
+ *    要不要画那条基准虚线 —— 没并入时 `yOf` 会把它推出画布。
+ *
+ * ⚠️ 窗口内**全程一条水平线**（一单没开）时撑开极小一档，只为了避免除 0；撑开量必须小到不影响
+ *    观感（原来是 0.1 个数量级 ≈26%，会把窄窗口里 +5% 的真实波动也一起压平）。
+ * @param {number[]} eq   权益窗口（升序，已切片 ＋ 裁头）
+ * @param {number} base   本金（基准线）
+ * @returns {{ lo:number, hi:number, baseIn:boolean }} 对数空间上下界（含留白）＋ 基准是否已并入
+ */
+export function curveRange(eq, base) {
+  const lg = v => Math.log10(Math.max(CURVE_FLOOR, v));
+  let lo = Infinity, hi = -Infinity;
+  for (const v of eq) {
+    const g = lg(v);
+    if (g < lo) lo = g;
+    if (g > hi) hi = g;
+  }
+  const gBase = lg(base);
+  const span0 = hi - lo;
+  const baseIn = (gBase >= lo && gBase <= hi)
+    || (span0 <= 0.05
+      ? Math.abs(gBase - (lo + hi) / 2) <= 0.05
+      : Math.max(hi, gBase) - Math.min(lo, gBase) <= span0 * 2);
+  if (baseIn) { lo = Math.min(lo, gBase); hi = Math.max(hi, gBase); }
+  if (hi - lo < 1e-9) { const c = (hi + lo) / 2; lo = c - 5e-10; hi = c + 5e-10; }
+  const pad = (hi - lo) * CURVE_PAD_RATIO;
+  return { lo: lo - pad, hi: hi + pad, baseIn };
 }
 
 /**
@@ -610,32 +653,24 @@ export function drawEquityCurve(canvas, o) {
   const plotH = Math.max(1, H - padY * 2);
 
   const lg = v => Math.log10(Math.max(CURVE_FLOOR, v));
-  let lo = lg(o.base);
-  let hi = lo;
-  for (const v of eq) {
-    const g = lg(v);
-    if (g < lo) lo = g;
-    if (g > hi) hi = g;
-  }
-  /* 全程一条水平线（比如开局第一天）时 `hi === lo` ⇒ 强行撑开 0.1 个数量级，
-     否则 `hi - lo` 为 0 会把所有点除成 NaN。 */
-  if (hi - lo < 0.1) { const c = (hi + lo) / 2; lo = c - 0.05; hi = c + 0.05; }
-  const pad = (hi - lo) * CURVE_PAD_RATIO;
-  lo -= pad; hi += pad;
+  /* 纵轴范围整块交给 `curveRange`（纯函数，随所选区间逐次重算；详见那里的注释）。 */
+  const { lo, hi, baseIn } = curveRange(eq, o.base);
   const yOf = v => padY + plotH * (1 - (lg(v) - lo) / (hi - lo));
   const xOf = k => (eq.length === 1 ? padX + plotW / 2 : padX + plotW * k / (eq.length - 1));
 
-  // ── 基准虚线（$1,000）──
-  ctx.save();
-  ctx.setLineDash([4, 4]);
-  ctx.strokeStyle = T.LINE;
-  ctx.lineWidth = 1;
-  const yb = Math.round(yOf(o.base)) + .5;
-  ctx.beginPath();
-  ctx.moveTo(padX, yb);
-  ctx.lineTo(W - padX, yb);
-  ctx.stroke();
-  ctx.restore();
+  // ── 基准虚线（本金）—— 只有它落在最终纵轴内才画（见上方 `baseIn`）──
+  if (baseIn) {
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = T.LINE;
+    ctx.lineWidth = 1;
+    const yb = Math.round(yOf(o.base)) + .5;
+    ctx.beginPath();
+    ctx.moveTo(padX, yb);
+    ctx.lineTo(W - padX, yb);
+    ctx.stroke();
+    ctx.restore();
+  }
 
   /* 抽稀（用户 2026-10-01 拍板）：一列像素里塞进多个点时只留**最高 / 最低**两点。
      全景 4,383 点 ÷ 366px ≈ 12 点每像素，逐点 `lineTo` 既费又糊；按 px 分桶取 min/max
