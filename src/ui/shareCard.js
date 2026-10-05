@@ -160,7 +160,8 @@ function drawCurve(ctx, x, y, w, h, eq, base, tone, t) {
  *
  * **版面（从上到下）**：
  *   ① DEGEN ＋ 副题 / ② 局名 ＋ **结局** / ③ **主称号 ＋ 风格称号** / ④ 徽章（自动折行）
- *   ⑤ **账本四项（四行）**（本金 · 峰值 · 已实现盈亏 · 最高杠杆，标签靠左、数值靠右）＋ **交易币种**一整行
+ *   ⑤ **账本四项（四行）**（本金 · 峰值 · 已实现盈亏 · 最高杠杆，标签靠左、数值靠右，**行间加发丝分隔线**）
+ *      ＋ **交易币种**一整行（与账本之间再隔一条）
  *   ⑥ 资金曲线（高度自适应）/ ⑦ 终值 ＋ 倍数 / ⑧ 起止 ＋ 天数
  *   ⑨ **结局评语**（全版，最多折两行）/ ⑩ **交易明细**（两行）/ ⑪ **行为足迹**（可选）/ ⑫ 水印
  * ⚠️ ⑤ 与 ⑨ 是 2026-10-02 补的（用户圈定「必要内容」）：原来只有曲线和终值，
@@ -274,17 +275,23 @@ export function drawCard(rec) {
      ⚠️ 旧版是一行四格、各格左对齐，格宽只有 `cw / 4 = 228px`：本金印 `$1,000.0` 就有约 211px，
         紧贴右边「峰值」的标签（用户实测报的正是这一处）⇒ 数值再长都会与邻格相撞。
      ⚠️ 四行纵坐标**全部相对 `sepY`**（`sepY + 62 + k × 48`）—— 徽章折行、分隔线下移时整段跟着走，
-        行数恒定 4 ⇒ 块高不随内容变化，下游 `ySym` / 曲线高度也不跳。 */
+        行数恒定 4 ⇒ 块高不随内容变化，下游 `ySym` / 曲线高度也不跳。
+     ⚠️ 2026-10-05 追加（用户拍板「加分隔线 ＋ 看是否要加颜色」）：
+        · 行间加**发丝线**把四行排成一张表（见下方 `HAIR`）；账本与「交易币种」之间再隔一条。
+        · `已实现盈亏` 按**正负**上「涨 / 跌」色 —— 项目配色纪律「彩色只留给语义」，
+          这一项正是盈亏语义；本金 / 峰值 / 最高杠杆保持中性，不滥上色。
+          口径与资产页副行同一个数（`s.realized`），海报上不另算。 */
+  const realized = rec.realized || 0;
   const ledger = [
-    ['本金', fmtMoneyShort(rec.cash0)],
-    ['峰值', fmtMoneyShort(rec.peak)],
+    ['本金', fmtMoneyShort(rec.cash0), null],
+    ['峰值', fmtMoneyShort(rec.peak), null],
     /* 已实现盈亏（2026-10-05 用户圈定）—— `s.realized` 是**已平仓回合净额**累计，
        与「峰值」（含浮盈）不同：这一个才是真正落袋的数。老档案没有该字段时按 0 处理。 */
-    ['已实现盈亏', fmtMoneyShort(rec.realized || 0)],
+    ['已实现盈亏', fmtMoneyShort(realized), realized > 0 ? 'up' : realized < 0 ? 'down' : null],
     /* ⚠️ 2026-10-05 审计修：**一单没开就别报「1x」** —— `s.stat.maxLev` 初值就是 1（见 `state.js`），
        空仓局会把它原样带出来，海报上出现一个玩家从没用过的杠杆。与同页「交易币种」的空态写法
        （`'—'`）保持一致；开过仓（哪怕只开过 1x）才如实显示。 */
-    ['最高杠杆', rec.open > 0 ? `${rec.maxLev}x` : '—'],
+    ['最高杠杆', rec.open > 0 ? `${rec.maxLev}x` : '—', null],
   ];
   const LBL_SIZE = 26, ROW_DY = 48, rowY0 = sepY + 62;
   /* 四项**共用同一档字号**（取四项里最小的那一档）—— 免得一行大字、一行小字，看着参差。
@@ -297,20 +304,44 @@ export function drawCard(rec) {
     const s = fitFont(ctx, value, 44, cw - lblMaxW - 40, MONO, 700);
     if (s < vSize) vSize = s;
   }
-  ledger.forEach(([label, value], k) => {
+
+  /* 行间发丝线（2026-10-05 用户拍板）—— 取色比结构线（2px `--line`）**亮一档**、线宽只 **1px**：
+     1080px 缩到手机上不至于连同底色一起消失，又抢不掉上下那两条结构分隔线。
+     层次即「粗暗 = 结构、细亮 = 表格」，与整卡的克制配色同源（不回退到彩色）。 */
+  const HAIR = hexA(t.MUT2 || '#6b7480', 0.38);
+  const rowLine = k => rowY0 + k * ROW_DY + ROW_DY / 2;   // 第 k 行与第 k+1 行的中线
+  ctx.strokeStyle = HAIR;
+  ctx.lineWidth = 1;
+  for (let k = 0; k < ledger.length - 1; k++) {
+    ctx.beginPath();
+    ctx.moveTo(P, rowLine(k));
+    ctx.lineTo(W - P, rowLine(k));
+    ctx.stroke();
+  }
+
+  ledger.forEach(([label, value, cls], k) => {
     const y = rowY0 + k * ROW_DY;
     ctx.textAlign = 'left';
     ctx.fillStyle = t.MUT2 || '#6b7480';
     ctx.font = `400 ${LBL_SIZE}px ${SANS}`;
     ctx.fillText(label, P, y);
     ctx.textAlign = 'right';
-    ctx.fillStyle = t.FG || '#dbe4f0';
+    ctx.fillStyle = cls === 'up' ? (t.UP || '#00d18f')
+      : cls === 'down' ? (t.DOWN || '#ff5b6a') : (t.FG || '#dbe4f0');
     ctx.font = `700 ${vSize}px ${MONO}`;
     ctx.fillText(value, W - P, y);
   });
   ctx.textAlign = 'left';
 
-  /* 交易币种 —— 单独一整行（名字可能很长，右对齐 ＋ 自适应降字号，不截断） */
+  /* 交易币种 —— 单独一整行（名字可能很长，右对齐 ＋ 自适应降字号，不截断）。
+     ⚠️ 它与账本之间也画一条发丝线（同色同宽）—— 只表示「这里换了一件事」，不是第二条结构线。 */
+  const symDivY = rowY0 + (ledger.length - 1) * ROW_DY + 27;   // 第 4 行与「交易币种」的中线
+  ctx.strokeStyle = HAIR;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(P, symDivY);
+  ctx.lineTo(W - P, symDivY);
+  ctx.stroke();
   const symTxt = Array.isArray(rec.syms) && rec.syms.length ? rec.syms.join(' · ') : '—';
   const ySym = rowY0 + (ledger.length - 1) * ROW_DY + 54;
   ctx.fillStyle = t.MUT2 || '#6b7480';
@@ -387,11 +418,17 @@ export function drawCard(rec) {
   const finalY = rangeY - 58;
 
   /* 曲线：从「交易币种」那行下面起，到「终值」上方留白为止 —— 高度自适应（徽章多折一行就矮一点）。
+     ⚠️ 2026-10-05 用户拍板「高度压缩一点点，可视性最佳」：
+        · 高度上限 **460 → 400**、上边距 **86 → 70**（曲线整体更贴紧账本、块间更紧凑）；
+        · 富余的竖直空间**上下均分**（`cy` 居中）—— 若像原来那样只钉住顶端，压缩后会在曲线与终值
+          之间留出一条空带；均分后上下两道留白对称，读起来是「有意的呼吸」而不是「排版漏了一行」。
      ⚠️ 开头的**观望期平线**先裁掉（2026-10-05 用户拍板「只有钱有变化之后才有曲线」）——
         与资产页共用 `chart.trimFlatStart`，同一局在哪儿看都是同一段曲线。 */
-  const cy = ySym + 86;
-  const chh = Math.max(150, Math.min(460, finalY - 46 - cy));
   const eq = trimFlatStart(Array.isArray(rec.eq) ? rec.eq : []);
+  const cyTop = ySym + 70;
+  const availH = finalY - 46 - cyTop;              // 账本底 → 终值上方留白之间可用高度
+  const chh = Math.max(150, Math.min(400, availH)); // 上限 400（原来 460）；保底 150 不变
+  const cy = cyTop + Math.max(0, (availH - chh) / 2);
   if (eq.length >= 2) {
     drawCurve(ctx, P, cy, cw, chh, eq, rec.cash0, tone, t);
   } else {
