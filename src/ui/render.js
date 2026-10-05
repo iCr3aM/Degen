@@ -559,7 +559,7 @@ export function mount(root) {
   const asCurveCap = el('i', 'curve-cap');
   const asCurveBox = el('div', 'curve-box');
   asCurveBox.append(eqRangeRow, asCurve, asCurveCap);
-  /* ③ 买 U（方案 §3.1）：价格 ＋ 金额档 ＋ 一枚「买入」。2014-11-20 之前整块不存在
+  /* ③ 买 U（方案 §3.1）：价格 ＋ 金额档 ＋ 一枚「买入」。2014-10-06 之前整块不存在
      （那年头没有 U）—— 与「没有的选项不显示」同一条口径。 */
   const uPrice = el('i');
   const uHead = el('div', 'set-row');
@@ -1393,7 +1393,7 @@ export function update(refs, s, view) {
       ? `${curveDay(curveFrom)} → ${curveDay(curveFrom + curveEq.length - 1)} · ${curveEq.length - 1} 天`
       : curveDay(curveFrom));
 
-    /* ③ 买 U（方案 §3.1）：2014-11-20 之前整块不存在 —— 那年头没有 U，也没什么可换的。 */
+    /* ③ 买 U（方案 §3.1）：2014-10-06 之前整块不存在 —— 那年头没有 U，也没什么可换的。 */
     const usdtLive = now >= USDT_LIVE;
     refs.uCard.hidden = !usdtLive;
     if (usdtLive) {

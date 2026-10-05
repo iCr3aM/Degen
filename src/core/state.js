@@ -122,7 +122,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
   const i0 = scenarioStartIndex(sc.id);
   /* 开局那笔钱落在**哪一格** —— 与「搬钱走哪条通道」「救济金打哪一格」「上帝填哪一格」同一个
      判据（`config.cashCurAt`）。经典全程（2013）⇒ `'usd'`，与旧档逐位相同；
-     2014-11-20 之后的年代局 ⇒ `'usdt'`：那个年代搬钱走链上、合约保证金也只要 U，
+     2014-10-06 之后的年代局 ⇒ `'usdt'`：那个年代搬钱走链上、合约保证金也只要 U，
      给一笔美元只会让玩家先做一次没有意义的「买 U」。 */
   const cur0 = cashCurAt(sc.at);
 

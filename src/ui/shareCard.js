@@ -160,7 +160,7 @@ function drawCurve(ctx, x, y, w, h, eq, base, tone, t) {
  *
  * **版面（从上到下）**：
  *   ① DEGEN ＋ 副题 / ② 局名 ＋ **结局** / ③ **主称号 ＋ 风格称号** / ④ 徽章（自动折行）
- *   ⑤ **账本四格**（本金 · 峰值 · 已实现盈亏 · 最高杠杆）＋ **交易币种**一整行
+ *   ⑤ **账本四项（四行）**（本金 · 峰值 · 已实现盈亏 · 最高杠杆，标签靠左、数值靠右）＋ **交易币种**一整行
  *   ⑥ 资金曲线（高度自适应）/ ⑦ 终值 ＋ 倍数 / ⑧ 起止 ＋ 天数
  *   ⑨ **结局评语**（全版，最多折两行）/ ⑩ **交易明细**（两行）/ ⑪ **行为足迹**（可选）/ ⑫ 水印
  * ⚠️ ⑤ 与 ⑨ 是 2026-10-02 补的（用户圈定「必要内容」）：原来只有曲线和终值，
@@ -269,10 +269,12 @@ export function drawCard(rec) {
   ctx.lineTo(W - P, sepY);
   ctx.stroke();
 
-  /* 账本四格 —— 标签在上（小字灰）、数值在下（等宽大字）。
-     ⚠️ 四段纵坐标**全部相对 `sepY`**（`+56 / +112 / +182`）—— 徽章折行、分隔线下移时整段跟着走。 */
-  const colW = cw / 4;
-  const yLbl = sepY + 56, yVal = sepY + 112, ySym = sepY + 182;
+  /* 账本四项（2026-10-05 用户拍板：由「一行四格」改**四行**）——
+     标签左对齐到 `P`、数值右对齐到 `W - P`，四行等距，左右两边各自钉死在版心边缘。
+     ⚠️ 旧版是一行四格、各格左对齐，格宽只有 `cw / 4 = 228px`：本金印 `$1,000.0` 就有约 211px，
+        紧贴右边「峰值」的标签（用户实测报的正是这一处）⇒ 数值再长都会与邻格相撞。
+     ⚠️ 四行纵坐标**全部相对 `sepY`**（`sepY + 62 + k × 48`）—— 徽章折行、分隔线下移时整段跟着走，
+        行数恒定 4 ⇒ 块高不随内容变化，下游 `ySym` / 曲线高度也不跳。 */
   const ledger = [
     ['本金', fmtMoneyShort(rec.cash0)],
     ['峰值', fmtMoneyShort(rec.peak)],
@@ -284,24 +286,33 @@ export function drawCard(rec) {
        （`'—'`）保持一致；开过仓（哪怕只开过 1x）才如实显示。 */
     ['最高杠杆', rec.open > 0 ? `${rec.maxLev}x` : '—'],
   ];
-  /* 四格**共用同一档字号**（取四者里最小的那一档）—— 免得一格大字、一格小字，看着参差。 */
+  const LBL_SIZE = 26, ROW_DY = 48, rowY0 = sepY + 62;
+  /* 四项**共用同一档字号**（取四项里最小的那一档）—— 免得一行大字、一行小字，看着参差。
+     可用宽度按**最宽的标签**（「已实现盈亏」）扣，四行都按这一档排 ⇒ 字号不随内容变。 */
+  let lblMaxW = 0;
+  ctx.font = `400 ${LBL_SIZE}px ${SANS}`;
+  for (const [label] of ledger) lblMaxW = Math.max(lblMaxW, ctx.measureText(label).width);
   let vSize = 44;
-  for (const [, v] of ledger) {
-    const s = fitFont(ctx, v, 44, colW - 16, MONO, 700);
+  for (const [, value] of ledger) {
+    const s = fitFont(ctx, value, 44, cw - lblMaxW - 40, MONO, 700);
     if (s < vSize) vSize = s;
   }
   ledger.forEach(([label, value], k) => {
-    const x = P + k * colW;
+    const y = rowY0 + k * ROW_DY;
+    ctx.textAlign = 'left';
     ctx.fillStyle = t.MUT2 || '#6b7480';
-    ctx.font = `400 24px ${SANS}`;
-    ctx.fillText(label, x, yLbl);
+    ctx.font = `400 ${LBL_SIZE}px ${SANS}`;
+    ctx.fillText(label, P, y);
+    ctx.textAlign = 'right';
     ctx.fillStyle = t.FG || '#dbe4f0';
     ctx.font = `700 ${vSize}px ${MONO}`;
-    ctx.fillText(value, x, yVal);
+    ctx.fillText(value, W - P, y);
   });
+  ctx.textAlign = 'left';
 
   /* 交易币种 —— 单独一整行（名字可能很长，右对齐 ＋ 自适应降字号，不截断） */
   const symTxt = Array.isArray(rec.syms) && rec.syms.length ? rec.syms.join(' · ') : '—';
+  const ySym = rowY0 + (ledger.length - 1) * ROW_DY + 54;
   ctx.fillStyle = t.MUT2 || '#6b7480';
   ctx.font = `400 26px ${SANS}`;
   ctx.fillText('交易币种', P, ySym);

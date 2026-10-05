@@ -3688,20 +3688,26 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
       C.minNotionalAt('binance', tA, 'margin', 'BTC') === 5 &&
       C.minNotionalAt('binance', at(2020, 1, 1), 'margin', 'BTC') === 10);
 
-    /* 真闸门（不是读表）：同所同时刻、同样 $1 本金 @ 该通道上限杠杆 —— BTC 单被最小名义拒，DOGE 单照开。
-       $1 × 20x ⇒ 名义 ≈ $19.84：够 DOGE（$5）不够 BTC（$100）。 */
+    /* 真闸门（不是读表）：同所同时刻、同一笔探针资金 @ 该通道上限杠杆 —— BTC 单被最小名义拒，DOGE 单照开。
+       探针资金取两者门槛（`openNeedAt`，按**当前**上限杠杆算）的**中点** ⇒ 与上限杠杆解耦：
+       2026-10-05 删掉 Binance 2021 的 20x 档、上限变 125x 后，这条仍能证明「按交易对拆档确实生效」。 */
+    const levFut = Math.max(1, C.maxLeverageAt(tA, 'binance', 'fut'));
+    const needBtc = C.openNeedAt('binance', tA, 'fut', levFut, null, 'BTC');
+    const needDoge = C.openNeedAt('binance', tA, 'fut', levFut, null, 'DOGE');
+    const cashProbe = (needBtc + needDoge) / 2;   // BTC（$100）与 DOGE（$5）门槛的中点
     const canOpenFut = async (sym) => {
       const s = await mk({ scen: 'classic', sym, mode: 'fut', i: idx(tA) });
       s.hintOn = false;
       s.ex = 'binance';
-      s.books.binance = { usd: 0, usdt: 1 };
-      s.lev = Math.max(1, C.maxLeverageAt(engine.timeOf(s), 'binance', 'fut'));
+      s.books.binance = { usd: 0, usdt: cashProbe };
+      s.lev = levFut;
       return engine.canOpenAt(s, 'long', 1);
     };
     const okBtc = await canOpenFut('BTC');
     const okDoge = await canOpenFut('DOGE');
-    check('16h 真闸门：$1 @ Binance 合约上限杠杆 —— BTC 单被拒、DOGE 单可开（交易对拆档确实生效）',
-      okBtc === false && okDoge === true, `BTC=${okBtc} DOGE=${okDoge}`);
+    check('16h 真闸门：探针资金 @ Binance 合约上限杠杆 —— BTC 单被拒、DOGE 单可开（交易对拆档确实生效）',
+      okBtc === false && okDoge === true,
+      `BTC=${okBtc} DOGE=${okDoge} lev=${levFut} cash=${f(cashProbe, 4)} needBTC=${f(needBtc, 4)} needDOGE=${f(needDoge, 4)}`);
   }
 }
 
