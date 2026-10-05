@@ -1,8 +1,8 @@
 /**
  * 生涯海报（M4 建 · M5 · 2026-10-02 由「分享」改为「生成海报」）
  * ===============================================================
- * 把**一条档案记录**（`core/careers.js`）画成一张 **1080×1350** 的竖版 PNG
- * （朋友圈 / 推特的竖图尺寸）。纯 canvas，不碰 DOM 布局。
+ * 把**一条档案记录**（`core/careers.js`）画成一张 **1080×1620** 的竖版 PNG
+ * （2:3，朋友圈 / 推特的竖图尺寸）。纯 canvas，不碰 DOM 布局。
  *
  * ⚠️ **称号 / 徽章 / 结局名直接复用 `core/titles.js`** ⇒ 卡片上的字与档案页**永远同一套**，
  *    不会两处各写一份判断。
@@ -34,7 +34,9 @@ import { OVER } from '../core/engine.js';
 import { theme } from './chart.js';
 
 const W = 1080;
-const H = 1350;
+/* ⚠️ 2026-10-05：1350 → **1620**（4:5 → 2:3）。用户要求「文案完整显示 ＋ 再加几行内容」——
+   旧高度放不下「已实现盈亏 / 明细 / 足迹」与折成两行的完整评语。 */
+const H = 1620;
 const P = 84;                                   // 左右留白
 
 const SANS = '-apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif';
@@ -67,6 +69,41 @@ function fitFont(ctx, text, size, maxW, family, weight = 700) {
     if (s <= 20 || ctx.measureText(String(text)).width <= maxW) return s;
     s -= 2;
   }
+}
+
+/**
+ * 按宽度把一串中文折行（**逐字断行，不丢字**）。
+ * ⚠️ 尽量在最近的空格处断（免得把「强平 88 次」拆成「强平 8」/「8 次」）；找不到合适空格就按字断。
+ * ⚠️ 返回数组，调用方自己决定行距。调用前需先设好 `ctx.font`（本函数按当前字号量宽）。
+ */
+function wrapText(ctx, text, maxW) {
+  const s = String(text);
+  const out = [];
+  let cur = '';
+  for (const ch of s) {
+    if (cur && ctx.measureText(cur + ch).width > maxW) {
+      const sp = cur.lastIndexOf(' ');
+      if (sp > cur.length * 0.5) { out.push(cur.slice(0, sp)); cur = cur.slice(sp + 1) + ch; }
+      else { out.push(cur); cur = ch; }
+    } else cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/**
+ * 徽章在给定字号下会折**几行**（只量不画）—— 用来挑一档能塞进版面行数上限的字号。
+ * 折行规则与 `drawCard` 里的绘制循环**逐字一致**（否则「量出来的行数」与「画出来的行数」会漂）。
+ */
+function badgeRowCount(ctx, badges, size, maxW) {
+  ctx.font = `500 ${size}px ${SANS}`;
+  let rows = 1, bx = 0;
+  for (const b of badges) {
+    const bw = ctx.measureText(b).width + 44;
+    if (bx > 0 && bx + bw > maxW) { rows++; bx = 0; }
+    bx += bw + 14;
+  }
+  return rows;
 }
 
 /**
@@ -123,10 +160,17 @@ function drawCurve(ctx, x, y, w, h, eq, base, tone, t) {
  *
  * **版面（从上到下）**：
  *   ① DEGEN ＋ 副题 / ② 局名 ＋ **结局** / ③ **主称号 ＋ 风格称号** / ④ 徽章（自动折行）
- *   ⑤ **账本三格**（本金 · 峰值 · 最高杠杆）＋ **交易币种**一整行
- *   ⑥ 资金曲线 / ⑦ 终值 ＋ 倍数 / ⑧ 起止 ＋ 天数 / ⑨ **结局评语** / ⑩ **交易统计** / ⑪ 水印
+ *   ⑤ **账本四格**（本金 · 峰值 · 已实现盈亏 · 最高杠杆）＋ **交易币种**一整行
+ *   ⑥ 资金曲线（高度自适应）/ ⑦ 终值 ＋ 倍数 / ⑧ 起止 ＋ 天数
+ *   ⑨ **结局评语**（全版，最多折两行）/ ⑩ **交易明细**（两行）/ ⑪ **行为足迹**（可选）/ ⑫ 水印
  * ⚠️ ⑤ 与 ⑨ 是 2026-10-02 补的（用户圈定「必要内容」）：原来只有曲线和终值，
  *    看不出**怎么结束的 / 本钱多少 / 打得怎么样**。
+ * ⚠️ 2026-10-05（用户拍板「文案要完整显示 ＋ 再多加几行」，卡高 1350 → **1620**）：
+ *    · 结局评语改用 `epitaphOf(rec)` **全版**（不再取 `short` 丢补白句），只降字号 / 折行、绝不截断；
+ *    · 账本 3 格 → **4 格**（补「已实现盈亏」）；
+ *    · 新增**交易明细**（开仓 / 胜负 / 胜率 / 强平 ＋ 杠杆 / 合约产品线）与**行为足迹**
+ *      （加仓 / 保证金增减 / OTC / 分批 / 换所，**全 0 则整行不画**）；
+ *    · 底部各块的纵坐标**从画布底往上一格一格排**（不再写死），徽章折到 3 行也不会与底部撞车。
  */
 export function drawCard(rec) {
   const t = theme();
@@ -190,14 +234,20 @@ export function drawCard(rec) {
   fitFont(ctx, '· ' + styleOf(rec), 40, Math.max(96, cw - mainW - 56), SANS, 500);
   ctx.fillText('· ' + styleOf(rec), P + mainW + 32, 352);
 
-  /* 徽章 —— 按宽度**自动折行**（最多 2 行；池子扩到 20 枚后一行放不下）。
-     ⚠️ 分隔线与下面几块的位置**跟着最后一行徽章走**（徽章只有一行时版面与旧版逐位一致）。 */
-  let bx = P, by = 400, row = 0;
-  const bh = 46, gapX = 14, gapY = 8, ROW_MAX = 2;
-  ctx.font = `500 26px ${SANS}`;
-  for (const b of badgesOf(rec)) {
+  /* 徽章 —— 按宽度**自动折行**。
+     ⚠️ 2026-10-05 修溢出 bug：旧版把折行**硬上限设成两行**，第 3 行起不再折行、直接画出画布右缘。
+        现在改成「先按 26→24→22→20 挑一档能塞进 **≤3 行**的字号，再照实际宽度折行」，
+        折行不设硬上限 ⇒ 徽章再多也不会溢出。
+     ⚠️ 分隔线与下面几块的位置**跟着最后一行徽章走**。 */
+  const badges = badgesOf(rec);
+  let bSize = 20;
+  for (const s of [26, 24, 22, 20]) { bSize = s; if (badgeRowCount(ctx, badges, s, cw) <= 3) break; }
+  let bx = P, by = 400;
+  const bh = 46, gapX = 14, gapY = 8;
+  ctx.font = `500 ${bSize}px ${SANS}`;
+  for (const b of badges) {
     const bw = ctx.measureText(b).width + 44;
-    if (bx + bw > W - P && row < ROW_MAX - 1) { bx = P; by += bh + gapY; row++; }
+    if (bx > P && bx + bw > W - P) { bx = P; by += bh + gapY; }
     roundRect(ctx, bx, by, bw, bh, 12);
     ctx.strokeStyle = t.LINE || '#232b34';
     ctx.lineWidth = 2;
@@ -219,25 +269,34 @@ export function drawCard(rec) {
   ctx.lineTo(W - P, sepY);
   ctx.stroke();
 
-  /* 账本三格 —— 标签在上（小字灰）、数值在下（等宽大字）。
-     ⚠️ 三段纵坐标**全部相对 `sepY`**（`+56 / +112 / +182`）—— 徽章折行、分隔线下移时整段跟着走。 */
-  const colW = cw / 3;
+  /* 账本四格 —— 标签在上（小字灰）、数值在下（等宽大字）。
+     ⚠️ 四段纵坐标**全部相对 `sepY`**（`+56 / +112 / +182`）—— 徽章折行、分隔线下移时整段跟着走。 */
+  const colW = cw / 4;
   const yLbl = sepY + 56, yVal = sepY + 112, ySym = sepY + 182;
   const ledger = [
     ['本金', fmtMoneyShort(rec.cash0)],
     ['峰值', fmtMoneyShort(rec.peak)],
+    /* 已实现盈亏（2026-10-05 用户圈定）—— `s.realized` 是**已平仓回合净额**累计，
+       与「峰值」（含浮盈）不同：这一个才是真正落袋的数。老档案没有该字段时按 0 处理。 */
+    ['已实现盈亏', fmtMoneyShort(rec.realized || 0)],
     /* ⚠️ 2026-10-05 审计修：**一单没开就别报「1x」** —— `s.stat.maxLev` 初值就是 1（见 `state.js`），
        空仓局会把它原样带出来，海报上出现一个玩家从没用过的杠杆。与同页「交易币种」的空态写法
        （`'—'`）保持一致；开过仓（哪怕只开过 1x）才如实显示。 */
     ['最高杠杆', rec.open > 0 ? `${rec.maxLev}x` : '—'],
   ];
+  /* 四格**共用同一档字号**（取四者里最小的那一档）—— 免得一格大字、一格小字，看着参差。 */
+  let vSize = 44;
+  for (const [, v] of ledger) {
+    const s = fitFont(ctx, v, 44, colW - 16, MONO, 700);
+    if (s < vSize) vSize = s;
+  }
   ledger.forEach(([label, value], k) => {
     const x = P + k * colW;
     ctx.fillStyle = t.MUT2 || '#6b7480';
-    ctx.font = `400 26px ${SANS}`;
+    ctx.font = `400 24px ${SANS}`;
     ctx.fillText(label, x, yLbl);
     ctx.fillStyle = t.FG || '#dbe4f0';
-    fitFont(ctx, value, 46, colW - 16, MONO, 700);
+    ctx.font = `700 ${vSize}px ${MONO}`;
     ctx.fillText(value, x, yVal);
   });
 
@@ -252,8 +311,59 @@ export function drawCard(rec) {
   ctx.fillText(symTxt, W - P, ySym);
   ctx.textAlign = 'left';
 
-  /* 曲线 */
-  const cy = sepY + 240, chh = 290;
+  /* ── 底部区块：**从画布底往上一格一格排** ────────────────────────────────
+     自上而下：终值＋倍数 → 起止 → 结局评语（≤2 行）→ 交易明细（2 行）→ 行为足迹（可选）→ 水印。
+     先把下半段的高度算出来，再据此定曲线的可用高度（全部相对 `H`，不再写死坐标）。 */
+  const EPI_DY = 40;
+
+  /* 行为足迹（可选）—— 全是 0 就整行不画（不留一行空行）。 */
+  const marks = [];
+  if ((rec.addOn || 0) >= 1) marks.push(`加仓 ${rec.addOn}`);
+  if ((rec.mgUp || 0) >= 1) marks.push(`加保证金 ${rec.mgUp}`);
+  if ((rec.mgDown || 0) >= 1) marks.push(`减保证金 ${rec.mgDown}`);
+  if ((rec.otc || 0) >= 1) marks.push(`OTC ${rec.otc}`);
+  if ((rec.part || 0) >= 1) marks.push(`分批 ${rec.part}`);
+  if ((rec.move || 0) >= 1) marks.push(`换所 ${rec.move}`);
+  const markTxt = marks.join(' · ');
+
+  /* 交易明细（两行）：第一行胜负与强平，第二行产品线（杠杆 / 合约）。
+     ⚠️ `rec.liq` 是**强平笔数**（单笔被强制平仓，可多次）；「爆仓」只指账户归零的结局，别混用。
+     ⚠️ 胜率口径与 `titles.js` 一致：`closed = win + loss`，`win / closed`；一回合没平过就给「—」。 */
+  const closed = (rec.win || 0) + (rec.loss || 0);
+  const rate = closed > 0 ? Math.round(((rec.win || 0) / closed) * 100) : null;
+  const statA = `开仓 ${rec.open || 0} 笔 · 胜 ${rec.win || 0} · 负 ${rec.loss || 0}`
+    + ` · 胜率 ${rate == null ? '—' : rate + '%'} · 强平 ${rec.liq || 0} 次`;
+  const statB = `杠杆下单 ${rec.margin || 0} 笔 · 合约下单 ${rec.fut || 0} 笔`;
+
+  /* 结局评语 —— **全版**（`epitaphOf(rec)`，含补白句），与弹窗 / 档案页同一句话。
+     ⚠️ 只降字号 / 折行、**绝不截断**；最多折两行（最长组合约 60 余字，22px 两行必放得下）。 */
+  const ep = epitaphOf(rec);
+  let epSize = 28, epLines = [];
+  for (const s of [28, 26, 24, 22]) {
+    ctx.font = `400 ${s}px ${SANS}`;
+    epSize = s;
+    epLines = wrapText(ctx, ep, cw);
+    if (epLines.length <= 2) break;
+  }
+
+  /* 明细两行 / 足迹一行也自适应降字号（只降不截断），三行共用同一档字号。 */
+  let sSize = fitFont(ctx, statA, 26, cw, SANS, 400);
+  sSize = Math.min(sSize, fitFont(ctx, statB, 26, cw, SANS, 400));
+  if (markTxt) sSize = Math.min(sSize, fitFont(ctx, markTxt, 26, cw, SANS, 400));
+
+  /* 排基线（自下而上）：水印钉在底，往上依次是足迹 / 明细二 / 明细一 / 评语 / 起止 / 终值。 */
+  const wmY = H - 46;
+  const markY = H - 92;
+  const statBY = markY - (markTxt ? 46 : 0);
+  const statAY = statBY - 44;
+  const epiLast = statAY - 56;
+  const epiFirst = epiLast - (epLines.length - 1) * EPI_DY;
+  const rangeY = epiFirst - 56;
+  const finalY = rangeY - 58;
+
+  /* 曲线：从「交易币种」那行下面起，到「终值」上方留白为止 —— 高度自适应（徽章多折一行就矮一点）。 */
+  const cy = ySym + 86;
+  const chh = Math.max(150, Math.min(460, finalY - 46 - cy));
   const eq = Array.isArray(rec.eq) ? rec.eq : [];
   if (eq.length >= 2) {
     drawCurve(ctx, P, cy, cw, chh, eq, rec.cash0, tone, t);
@@ -268,37 +378,36 @@ export function drawCard(rec) {
   /* 终值 ＋ 倍数 */
   ctx.fillStyle = tone;
   ctx.font = `700 68px ${MONO}`;
-  ctx.fillText(fmtMoneyShort(rec.final), P, 1140);
+  ctx.fillText(fmtMoneyShort(rec.final), P, finalY);
   const m = multOf(rec);
   ctx.font = `700 46px ${MONO}`;
   ctx.textAlign = 'right';
-  ctx.fillText(`×${m.toFixed(m < 10 ? 2 : 1)}`, W - P, 1140);
+  ctx.fillText(`×${m.toFixed(m < 10 ? 2 : 1)}`, W - P, finalY);
   ctx.textAlign = 'left';
 
   /* 起止 ＋ 天数 */
   ctx.fillStyle = t.MUT2 || '#6b7480';
   ctx.font = `400 28px ${SANS}`;
-  ctx.fillText(`${fmtDate(rec.start, false)} → ${fmtDate(rec.end, false)} · ${rec.days} 天`, P, 1196);
+  ctx.fillText(`${fmtDate(rec.start, false)} → ${fmtDate(rec.end, false)} · ${rec.days} 天`, P, rangeY);
 
-  /* 结局评语（2026-10-05 用户拍板）—— 与弹窗 / 档案页**同一句话**（`titles.epitaphOf`）。
-     ⚠️ 取 `short`（只档位句）：补白句会让这一行放不下，而海报是单行版面。
-     ⚠️ `fitFont` 只降字号、不截断 ⇒ 无论多长都不会溢出画布（档位句最长约 33 字，降不到 20px 以下）。 */
-  const ep = epitaphOf(rec, { short: true });
+  /* 结局评语（全版，≤2 行） */
   ctx.fillStyle = t.MUT || '#8f9aa6';
-  fitFont(ctx, ep, 28, cw, SANS, 400);
-  ctx.fillText(ep, P, 1244);
+  ctx.font = `400 ${epSize}px ${SANS}`;
+  epLines.forEach((ln, k) => ctx.fillText(ln, P, epiFirst + k * EPI_DY));
 
-  /* 交易统计 —— 一局打得怎么样，一行说完。
-     ⚠️ `fitFont` 只改 `ctx.font`、不还原（它把 `ctx` 留在最后一档字号上）⇒ 这里必须**显式重设字号**，
-        否则本行会继承上一行评语被压缩后的字号（评语越长、统计越小）。
-     ⚠️ `rec.liq` 是**强平笔数**（单笔被强制平仓，可多次）；「爆仓」只指账户归零的结局，别混用。 */
-  ctx.font = `400 28px ${SANS}`;
-  ctx.fillText(`开仓 ${rec.open} 笔 · 胜 ${rec.win} · 负 ${rec.loss} · 强平 ${rec.liq} 次`, P, 1294);
+  /* 交易明细（两行） */
+  ctx.fillStyle = t.MUT2 || '#6b7480';
+  ctx.font = `400 ${sSize}px ${SANS}`;
+  ctx.fillText(statA, P, statAY);
+  ctx.fillText(statB, P, statBY);
+
+  /* 行为足迹（可选） */
+  if (markTxt) ctx.fillText(markTxt, P, markY);
 
   /* 水印 */
   ctx.textAlign = 'center';
   ctx.font = `400 26px ${SANS}`;
-  ctx.fillText('icr3am.com/degen', W / 2, 1338);
+  ctx.fillText('icr3am.com/degen', W / 2, wmY);
   ctx.textAlign = 'left';
 
   return cv;
