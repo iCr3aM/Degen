@@ -380,7 +380,8 @@ export function drawCard(rec) {
   const markTxt = marks.join(' · ');
 
   /* 交易明细（两行）：第一行胜负与强平，第二行产品线（杠杆 / 合约）。
-     ⚠️ `rec.liq` 是**强平笔数**（单笔被强制平仓，可多次）；「爆仓」只指账户归零的结局，别混用。
+     ⚠️ `rec.liq` 是**强平事件**次数（2026-10-07 改口径：**每一笔仓位最多 1 次**，不再按「被打了几档」
+        计）——「爆仓」只指账户归零的结局，别混用。ADL 不计入（业界与 liquidation 并列的另一套机制）。
      ⚠️ 胜率口径与 `titles.js` 一致：`closed = win + loss`，`win / closed`；一回合没平过就给「—」。 */
   const closed = (rec.win || 0) + (rec.loss || 0);
   const rate = closed > 0 ? Math.round(((rec.win || 0) / closed) * 100) : null;

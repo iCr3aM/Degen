@@ -1980,12 +1980,12 @@ function adlPlayerReduce(s, pos, take, price) {
   const closedSize = pos.size * f;
   const notional = closedSize * price;                 // 砸到市场上的那笔名义（真实成交口径）
   addPlayerVol(s, pos.sym, notional, pos.ex, isMargin(pos) ? 'margin' : 'fut');
-  /* 统计（2026-10-06 用户拍板 · 补漏）：ADL 是**被动减仓** —— 日志早就打 `'liq'` 标签
-     （玩家在日志里看到的就是「强平」那一类），但这里既没记 `stat.liq` 也没记 `liqNotional`
-     ⇒ 海报 / 档案里 ADL 完全无痕（连足迹行都没有它）。与 `forceLiquidate` / `partialLiquidate`
-     同一口径补上：一次 ADL 算**一笔**强平、名义计入 `liqNotional`。 */
-  s.stat.liq += 1;
-  s.stat.liqNotional += notional;
+  /* ⚠️ **ADL 不计入 `stat.liq` / `liqNotional`**（2026-10-07 用户拍板 · 回退 2026-10-06 的补计）。
+     业界口径：ADL 与 liquidation 是**两套机制**，交易所把它们分成两种订单类型上报 ——
+     Binance 用户数据流：`autoclose-` = 强平单、`adl_autoclose` = ADL 自动减仓单；
+     且 ADL 触发的条件（保险基金撑不住）与「保证金不足」完全无关，减的还是**盈利**仓位。
+     ⇒ 混进「强平」会让海报 / 档案的「强平 N 次」偏大，也让统计与 Coinglass 口径对不上。
+     日志照旧打 `'liq'` 芯片（`LOG_TAGS.liq` = 「被强制平仓」，ADL 确实是被动强制的减仓）。 */
   {
     const d = pos.side === 'long' ? -1 : 1;
     pushFlow(s, pos.sym, d, notional, SHOCK.closeGive, shockKindOf(isMargin(pos), pos.lev));
@@ -3321,7 +3321,10 @@ function forceLiquidate(s, pos, atPrice) {
         但仓位根本没有那么多钱可扣 ⇒ 这里是**把多扣的那部分还原**，让 `s.realized` 与
         「开仓扣保证金 ＋ 逐小时费用 ＋ 退回」这条真实现金流**对得上**。不是凭空加分。 */
   s.realized -= pos.margin - back;
-  s.stat.liq += 1;                                     // 统计（v21）：逐步强平与整条强平都各算一笔
+  /* 统计（2026-10-07 用户拍板 · 口径改为「强平事件」）：**同一笔仓位一局最多记 1 次**。
+     部分强平早就把它记过的话（`pos.liqCounted`），整条打掉这一次不再重复计数 ——
+     否则「缓跌十几档 → 最后整条爆掉」会变成十几笔，见 `state.js` 的 `stat.liq`。 */
+  if (!pos.liqCounted) s.stat.liq += 1;
   /* §17.3（2026-10-04 审计收口）：玩家**自己**被强平的名义也计入 `liqNotional` —— 原来只统计 NPC 侧，
      于是「24h 清算强度」在玩家爆仓的时刻反而漏掉了他那一笔（口径不完整）。强平潮的**事件阈值**仍只看
      NPC 侧（`stampede` 里那个局部量），因为「爆仓潮」是市场级事件、不该被玩家单人引爆。 */
@@ -4334,8 +4337,11 @@ function liquidateAll(s) {
  * 剩余部分继续持有。残余权益全部留在仓位里（见 `reducePosition`），于是强平价被推远。
  *
  * 与 `forceLiquidate` 共用全部副产物口径：**量柱**（真实成交 ⇒ 计入）、**订单冲击**
- * （平多打压 −1 / 平空推高 +1，同一公式、同样只回吐 `SHOCK.closeGive`）、**抛压折价刷新**。
- * 唯一的差别是：现金一分不动，只剩一笔已实现亏损记进 `s.realized`。
+ * （平多打压 −1 / 平空推高 +1，同一公式、同样只回吐 `SHOCK.closeGive`）、**抛压折价刷新**、
+ * **清算费**（2026-10-07 补齐 —— 按已平名义收费、从残仓保证金里扣）。
+ *
+ * ⚠️ 与 `forceLiquidate` 唯一的差别是**现金不动**：平掉的那一档不结算到账本，亏损记进
+ *    `s.realized`、钱仍押在仓位里（见 `reducePosition`）——「坚决不还给玩家」正是这个机制救人的原因。
  */
 function partialLiquidate(s, pos, frac, atPrice) {
   const r = reducePosition(pos, frac, atPrice);
@@ -4347,8 +4353,32 @@ function partialLiquidate(s, pos, frac, atPrice) {
     consumePool(s, pos.sym, notional);    // 瞬时深度池（L1）：部分强平也是真实成交 ⇒ 也吃深度
   }
   s.realized += r.pnl;                     // 亏损已实现（钱还押在仓位里，见 `reducePosition`）
-  s.stat.liq += 1;                         // 统计（2026-10-02 审计修）：逐步强平同样计入 —— 与 `forceLiquidate` 同口径
+  /* 统计（2026-10-07 用户拍板 · 口径改为「强平事件」）—— 见 `state.js` 的 `stat.liq`：
+     **同一笔仓位无论被打多少档，一局之内只记 1 次**（第一次打就记，之后每一档都不再计）。
+     现实依据：交易所一次爆仓会连下十几张 IOC 单，而聚合口径把它当**同一次强平**报出去
+     （Binance 官方文档：每个交易对每 1000ms 只推送其中最大的一笔清算单）。
+     ⚠️ `liqNotional` 仍是**逐档累计**的成交名义 —— 那是美元口径，与笔数无关，别一起改。 */
+  if (!pos.liqCounted) s.stat.liq += 1;
+  r.pos.liqCounted = true;                 // 落在这笔仓位身上 ⇒ `{...pos}` 会一路带着它
   s.stat.liqNotional += notional;          // §17.3（2026-10-04）：部分强平的成交名义同口径计入（与 `forceLiquidate` 一致）
+  /* 清算费（2026-10-07 用户拍板 · 补漏）：**部分强平同样按「已平名义」收费**。
+     现实里交易所对部分强平也照收 liquidation fee（与整条强平同一张费率表）；旧实现只有
+     `forceLiquidate` 扣费 ⇒ 「被削十几档」这条最惨的路反而一分不罚（实测累计 0.2%~0.5% 原始名义）。
+     口径与 `forceLiquidate` 逐字对齐：
+       · 费率走 `borrowedOf` 分档（永续 0.5% / 杠杆 1.25%，见 `config.LIQ`）；
+       · 只从**这一笔仓位的保证金**里扣、**扣到 0 为止** —— 绝不向玩家追缴、不产生负债
+         （同 `forceLiquidate` 那句「清算费最多把残余权益吃到 0」）；
+       · 「没退回去的那份」进保险基金 —— 与 `forceLiquidate` 的 `s.fund += remain − back` 同一语义。
+     ⚠️ 保底：保证金被扣低后**强平价会被重新算近**（`liquidationPrice`），这正是「罚了要更早爆」的
+        真实后果，不要再去补偿它。 */
+  const fee = notional * (borrowedOf(pos) > 0 ? LIQ.feeMargin : LIQ.fee);
+  const paid = Math.min(r.pos.margin, fee);
+  if (paid > 0) {
+    seedFund(s, pos.sym);
+    r.pos.margin -= paid;
+    s.realized -= paid;
+    s.fund += paid;
+  }
   s.positions[pos.sym] = r.pos;
   pushLog(s, `部分强平 ${pos.sym} ${lvTagOf(pos)}｜平仓 ${fmtRate(frac, 1)}｜保证金 ${fmtMoneyShort(pos.margin)} → ${fmtMoneyShort(r.pos.margin)} @ ${fmtLogPrice(atPrice)}`, 'bad', 'liq');
   refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：部分强平也是卖出 ⇒ 折价同比例释放
