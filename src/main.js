@@ -1422,7 +1422,7 @@ function onGodGo() {
  * @param {number} target 目标小时序号（未夹取）
  * @param {string} label  日志里的日期文案（`fmtDate` 的结果）
  */
-function godJump(target, label) {
+async function godJump(target, label) {
   /* 年代开局（M1）：**跳不到本局开局之前** —— `day0` / `cash0` 都是按开局那一天定的，
      时钟落回 2013 年之后，资金曲线与涨跌着色的基准全部错位（M1 之前不存在这种目标，
      因为开局恒在全程第 0 根）。这里明说一句而不是静默夹取：玩家选的日期与真正跳到的日期
@@ -1443,14 +1443,51 @@ function godJump(target, label) {
   }
   if (to < s.i) return godRewind(to, label);
 
+  /* 遮罩（2026-10-07 用户报「跳转时间的时候会卡一下」）—— 逐小时循环是**同步**的
+     （2013-01 → 2024-12 全程 10.5 万小时 ≈ 0.4 秒），不先铺一层全屏遮罩就整段卡在旧画面上。
+     ⚠️ 必须**先让出一帧**再跑循环：插入 DOM 是同步的，而**绘制**要等本任务让出 ——
+        直接开跑 ⇒ 遮罩一帧都没画出来，卡顿照旧（`maskReload` 踩过同一个坑）。
+     ⚠️ 用**双 `rAF`**（这一帧的 rAF → 下一帧的 rAF）而不是那里的 `rAF → setTimeout`：
+        `setTimeout(0)` 只保证排在宏任务队尾，**不保证**浏览器在它之前完成绘制；
+        双 rAF 的第二帧回调一定发生在第一帧的绘制之后，遮罩必然已经上屏。
+     复用 `.boot` 那层遮罩（`z-index: 100`，压得住结算遮罩 `10` 与弹层 `20`）——
+     它就是本项目的「全屏过渡遮罩」，与 `maskReload` 同一写法。
+     ⚠️ **短跳不铺遮罩**：循环本身只要几毫秒，而遮罩为了上屏必须先让出**两帧（≈33ms）** ——
+        那等于拿 33ms 的暗屏去盖 3ms 的计算，反倒凭空造出一次闪屏。一个月（720 小时 ≈ 3ms）以下不铺。
+     ⚠️ 铺了遮罩就必须在 `finally` 里摘掉（下面那支），否则异常会让整屏僵住。 */
+  const span = to - s.i;
+  const needMask = span >= 24 * 30;
+  if (needMask) {
+    renderBoot(`正在推进到 ${label}…`);
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  }
+
   /* 同步循环 ⇒ `createClock` 的 `setInterval` 不可能插进来。三种情况都要停：
        ① 到目标日期  ② 到 2024-12-31 收盘（`s.over`）
        ③ **中途账户归零、弹出救济金遮罩**（`s.pending`）—— 少了第三个判据这里会**死循环**：
           `advanceOneHour` 在 `pending` 下会立刻 return（`s.i` 永远不前进），
           而 `!s.over` 一直为真，浏览器就卡死了（2026-09-29 离线断言逮到）。
-     ⚠️ 时长实测：2013-01 → 2024-12 全程 10.5 万小时 ≈ 0.4 秒（长局抽检 2026-09-30），
-        所以这里不需要分片或进度提示。 */
-  while (s.i < to && !s.over && !s.pending) advanceOneHour(s);
+     ⚠️ 「不被打断」不是靠去掉 `!s.pending`，而是靠**内层退出来后清掉预警再继续**（见下）。
+     原「0.4 秒，不需要进度提示」的判断已于 2026-10-07 由用户实测推翻：0.4 秒的**僵死画面**
+     手感上是明显的卡顿 ⇒ 现在一律先铺遮罩。 */
+  const wasPaused = s.paused;
+  try {
+    while (s.i < to && !s.over) {
+      while (s.i < to && !s.over && !s.pending) advanceOneHour(s);
+      /* 破产预警（新手提示）**不打断跳转**：跳日期是玩家主动快进，一记「7 天后有大事」的遮罩
+         在这里没有意义（人已经在那一刻或之后了），而它会把面板顶掉、把跳转截停在半路。
+         ⚠️ 正常情况下走不到这里 —— `enableGod` 已把上帝模式的 `hintOn` 关掉（`core/god.js`）；
+            这一支是**兜底**：玩家在设置页把「新手提示」重新打开之后，跳日期仍不该被打断。
+         ⚠️ `s.paused` 还原成**跳转前**的值：预警把它置成了 `true`，不理它会让跳完之后
+            时钟莫名其妙停住（玩家没按过暂停）。 */
+      if (s.pending === 'warn') { s.warnAt = null; s.pending = null; s.paused = wasPaused; continue; }
+      break;   // 待领救济金（`'loan'`）等**必须**停：那是玩家要拍板的决策点，不是提示
+    }
+  } finally {
+    /* 遮罩必须在 `after()` 之前摘掉 —— 结算 / 救济金遮罩（`z-index: 10`）在 `.boot`（100）之下，
+       先画再摘会让它被盖住一帧。 */
+    if (needMask) hideBoot();
+  }
   /* 停在救济金遮罩上时**不要**再开上帝面板 —— `draw()` 刚把遮罩铺上，压一张面板上去只会打架 */
   if (!s.over && !s.pending) showGod();
   after();
@@ -1463,7 +1500,12 @@ function godJump(target, label) {
  * 记一条日志、重开面板、必要时把回落到的币的行情拉进来。
  */
 function godRewind(to, label) {
+  /* ⚠️ `rewindTo` 是「复活」——它会把 `s.paused / s.pending / s.over` 一并复位（core 侧口径）。
+     其中 `s.paused = false` 会**替玩家按下「继续」**：暂停着跳回过去，回来时游戏自己跑起来了。
+     暂停是玩家的显式选择，跳日期不该动它 ⇒ 这里按跳转前的值还原（与 `godJump` 同一纪律）。 */
+  const wasPaused = s.paused;
   const cash = rewindTo(s, to);
+  s.paused = wasPaused;
   pushLog(s, `回到 ${label} ｜ 资金已保留（${fmtMoney(cash)}），持仓已清空`, 'ok');
   showGod();
   after();
