@@ -1980,6 +1980,12 @@ function adlPlayerReduce(s, pos, take, price) {
   const closedSize = pos.size * f;
   const notional = closedSize * price;                 // 砸到市场上的那笔名义（真实成交口径）
   addPlayerVol(s, pos.sym, notional, pos.ex, isMargin(pos) ? 'margin' : 'fut');
+  /* 统计（2026-10-06 用户拍板 · 补漏）：ADL 是**被动减仓** —— 日志早就打 `'liq'` 标签
+     （玩家在日志里看到的就是「强平」那一类），但这里既没记 `stat.liq` 也没记 `liqNotional`
+     ⇒ 海报 / 档案里 ADL 完全无痕（连足迹行都没有它）。与 `forceLiquidate` / `partialLiquidate`
+     同一口径补上：一次 ADL 算**一笔**强平、名义计入 `liqNotional`。 */
+  s.stat.liq += 1;
+  s.stat.liqNotional += notional;
   {
     const d = pos.side === 'long' ? -1 : 1;
     pushFlow(s, pos.sym, d, notional, SHOCK.closeGive, shockKindOf(isMargin(pos), pos.lev));
@@ -3359,6 +3365,54 @@ export function careerOf(s, reason) {
 }
 
 /**
+ * **结算平仓**（2026-10-06 用户拍板）—— 走到终点 / 主动收摊时，把**所有**未平仓按标记价一并平掉。
+ *
+ * 为什么要这一步（用户原话：「游戏结束是否应该算平仓？如果玩家不操作直到时间结束，
+ * 那么海报没有显示平仓次数」）：
+ *   · 改动前 `endGame` 三条路径**都不动持仓**，而 `final`（`equity`）**把未平仓按标记价折算进去**
+ *     ⇒ 那笔仓位「钱进了终值、却从没被平掉」：海报印「开仓 1 笔 · 平仓 0 笔」，统计里凭空消失。
+ *   · 现实对齐：本作是**有时间终点的比赛**（`s.endI`）—— 交割合约到期按**结算价**强制平仓，
+ *     交易比赛 / 模拟赛也在收官时**一律平掉所有持仓定榜**（永续那种「永远挂着」不是这个场景）。
+ *
+ * 口径（**刻意与玩家手动 `closeTrade` 不同**）：
+ *   · 成交价取**标记价**（`exMarkPrice`，与 `equity` 同一个价）⇒ `final` 只会比改动前少一笔平仓费，
+ *     不再引入滑点 / 冲击（局已结束，砸自己的盘口没有意义）；
+ *   · **不计** `part` / `otc`（这不是玩家主动的分批 / 通道成交）；**要计** `win` / `loss`
+ *     —— 这一回合确实以盈亏收尾，计上它，海报的「平仓 M 笔 / 胜率」才与「开仓 N 笔」自洽；
+ *   · 平仓费照收（与手动平仓同一张表 `feeRateOf`）。
+ *
+ * ⚠️ 必须在 `recordCareer` **之前**调用：档案里的 `final` / `win` / `loss` 要吃到这一步的结果。
+ * @param {string} why 日志前缀用的中文动作名（`结算平仓` / `收摊平仓`）
+ * @returns {number} 实际平掉的仓位数
+ */
+function settleCloseAll(s, why) {
+  let n = 0;
+  for (const sym of heldSyms(s)) {
+    const pos = s.positions[sym];
+    if (!pos) continue;
+    const p = exMarkPrice(s, sym, pos.ex);
+    /* 取不到标记价时说不了盈亏 —— 按均价结算（零盈亏、零费），与 `equity` 取不到价时退回保证金的兜底同源。 */
+    const fill = p == null ? pos.entry : p;
+    const sign = pos.side === 'long' ? 1 : -1;
+    const pnl = (fill - pos.entry) * pos.size * sign;
+    const pk = isMargin(pos) ? 'margin' : 'fut';
+    const fee = p == null ? 0
+      : pos.size * fill * feeRateOf(pos.ex, timeOf(s), pk, vol30Of(s, pos.ex, s.i, pk));
+    credit(s, pos.ex, pos.margin + pnl - fee, { usd: pos.mix.usd, usdt: pos.mix.usdt });
+    settlePlayerPnl(s, sym, pnl);
+    s.realized += pnl - fee;
+    /* 胜负口径与 `closeTrade` 逐字一致：回合净额（毛盈亏 − 开仓费 − 平仓费）> 0 记胜。 */
+    const netRound = pnl - (pos.openFee ?? 0) - fee;
+    if (netRound > 0) s.stat.win += 1; else s.stat.loss += 1;
+    pushLog(s, `${why} ${sym} ${lvTagOf(pos)}｜${netRound >= 0 ? '盈利 ▲' : '亏损 ▼'} ${fmtMoneyShort(netRound)}`,
+      netRound >= 0 ? 'ok' : 'bad', 'trade');
+    delete s.positions[sym];
+    n += 1;
+  }
+  return n;
+}
+
+/**
  * 把这一局写进**交易档案**（M2 · 2026-10-01）。
  *
  * ⚠️ **幂等**：由 `endGame` 用 `!s.over` 把门 —— 本局只写一条。`rewindTo`（上帝跳日期）
@@ -3370,6 +3424,11 @@ function recordCareer(s, reason) {
 }
 
 function endGame(s, reason) {
+  /* **结算平仓**（2026-10-06 用户拍板）：把还没平的仓位按标记价一并平掉 —— 见 `settleCloseAll`。
+     ⚠️ 必须排在 `recordCareer` **之前**：档案的 `final` / `win` / `loss` 要吃到这一步的结果。
+     ⚠️ 三条结局都走这一步（`SETTLED` 走到终点、`GAVEUP` 主动收摊、`LIQUIDATED` 爆仓后可能残留的
+        尘埃仓）—— 对 `LIQUIDATED` 而言持仓多半已被强平打光，这里是个空循环，无害。 */
+  settleCloseAll(s, reason === OVER.GAVEUP ? '收摊平仓' : '结算平仓');
   /* 交易档案（M2）：**本局只写一条** —— `s.over` 空着的时候才写，写完它才有值。 */
   if (!s.over) recordCareer(s, reason);
   s.over = { reason, at: s.i };
@@ -3613,6 +3672,10 @@ function collapseExchange(s, ex) {
     if (pos.ex !== ex.id) continue;
     margin += pos.margin;
     delete s.positions[sym];
+    /* 统计（2026-10-06 用户拍板 · 补漏）：这家所把仓位一起带走了 —— 这一回合以**全损**收尾，
+       原来不记任何一笔 ⇒ 仓位在统计里凭空蒸发。记一笔 `loss`（与「平仓」口径对齐：
+       开仓计过一笔、终结就该计一笔），它让海报的「平仓 M 笔 / 胜率」与「开仓 N 笔」自洽。 */
+    s.stat.loss += 1;
     refreshOverhang(s, sym);        // v18：被这家所一起带走的杠杆实物多头，折价随之归零
   }
   if (margin) s.realized -= margin;

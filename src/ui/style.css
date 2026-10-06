@@ -1618,6 +1618,19 @@ button { user-select: none; -webkit-user-select: none; }
 /* 结局评语（2026-10-05）—— 档案卡里的一行故事，字号与 `.career-sub` 同档（11px），
    但用 `--mut` 而非 `--mut-2`：它是「评述」，比日期 / 天数那类元数据更该被读到。 */
 .career-ep { margin-top: 4px; font-size: calc(11px * var(--ui)); color: var(--mut); line-height: 1.6; }
+/* 交易明细（2026-10-06）—— 与海报同一份数（开仓 / 平仓 / 胜负 / 强平）＋ 与 `.career-ep` 同档 4 的段间距。
+   ⚠️ `nowrap` ＋ 10px（与 `.career-badges` 同档）：这一行是最长的一行（约 40 字），
+      必须在不折行的前提下放下 —— 「元素固定」与头行 / `.career-num` 同一条规矩；
+      `ellipsis` 只是极窄屏的兜底（`#app` 620px 上限、手机 375 ⇒ 可用约 331px，正常放得下）。 */
+.career-stat {
+  margin-top: 4px;
+  font-size: calc(10px * var(--ui));
+  color: var(--mut-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-feature-settings: "tnum";
+}
 /* 分享键（M4）—— 挂在 `career-head` 末位（`u` 的 `margin-left:auto` 把这两枚一起顶到最右）
    ⚠️ `flex:none`（2026-10-05）：头行不许挤窄这两枚键 —— 让位的只有称号 / 风格。 */
 .career-share {

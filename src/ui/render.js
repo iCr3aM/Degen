@@ -2793,6 +2793,16 @@ function careerRow(r) {
      都是同一句话。放在「终值 ＋ 倍数」之下、徽章之上：先给结论，再补细节。 */
   row.append(el('div', 'career-ep', epitaphOf(r)));
 
+  /* 交易明细（2026-10-06 用户拍板）—— 与海报同一份数，填上「档案页看得到海报看不到 / 反之」的缺口。
+     ⚠️ `closed = win + loss`（与 `titles.js` 胜率、海报 `segsA` 同源）；`open` 是开仓笔数（含加仓），
+        与 `closed` 本就不必相等 —— 与海报一样把两个口径摆明，不做「看上去该相等」的假设。
+     ⚠️ 一行 `nowrap`（元素固定）：字号收到 10px（与 `.career-badges` 同档）保证最长一档也放得下。 */
+  const closed = (r.win || 0) + (r.loss || 0);
+  const rate = closed > 0 ? Math.round(((r.win || 0) / closed) * 100) : null;
+  row.append(el('div', 'career-stat',
+    `开仓 ${r.open || 0} 笔 · 平仓 ${closed} 笔 · 胜 ${r.win || 0} · 负 ${r.loss || 0}`
+    + ` · 胜率 ${rate == null ? '—' : rate + '%'} · 强平 ${r.liq || 0} 次`));
+
   const badges = badgesOf(r);
   if (badges.length) {
     const bar = el('div', 'career-badges');

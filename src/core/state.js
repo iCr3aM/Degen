@@ -503,7 +503,12 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      *
      *   `open`   开仓笔数（含加仓那一笔，＝成功调用 `openTrade` 的次数）
      *   `win` / `loss` 平仓回合数，按**回合净额**（毛盈亏 − 开仓费 − 平仓费）的正负分桶
-     *   `liq`    被强平的笔数（逐步强平与整条强平都算一笔）
+     *     ⚠️ 2026-10-06 用户拍板：口径覆盖**所有让仓位终结的路径** —— 玩家手动平仓
+     *        （`closeTrade`）、**结算 / 收摊强制平仓**（`settleCloseAll`，按标记价）、
+     *        **交易所归零吞掉的仓位**（`collapseExchange`，恒记 `loss`）。
+     *        这样海报 / 档案的「平仓 M 笔」才与「开仓 N 笔」自洽（不许有仓位凭空消失）。
+     *   `liq`    被强平的笔数（逐步强平 / 整条强平 / **ADL 自动减仓** 各算一笔）
+     *     ⚠️ ADL 自 2026-10-06 起补计 —— 它日志早就打 `'liq'` 标签，却漏记了 `liq` 与 `liqNotional`。
      *   `margin` / `fut`  开仓笔数按产品线分桶（`引擎` 的 `isMarginOrder` 判据）
      *   `maxLev` 用过的最高杠杆（含 1x；开局就是 1）
      *   `syms`   交易过的币（`sym -> true`）—— 称号「单一信仰 / 五币全通」读它
