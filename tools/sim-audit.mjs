@@ -3584,8 +3584,9 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
         （fng 严格 < 22，越恐越接、上限 3%）；
      ② 接线：npcBuild 走 dipBuyOf（储备落账 ＋ dipGone 复位/告警）＋ settleFng 双调用点
         （都在 npcBuild 之前 ⇒ 散户层读的 fng 全币同相位）＋ 格子新键不升 STATE_VERSION；
-     ③ 做市相位：回撤加深 ×mmCut（先撤单）/ 收窄 ×mmBoost（V 型回补）/ 平时 ×1 —— 靶心乘子，
-        不加新状态（2025-10-10 实测锚：深度瞬间蒸发 → ≈35 分钟恢复九成）；
+     ③ 做市相位：回撤加深 →mmCut（先撤单）/ 收窄 →mmBoost（V 型回补）/ 平时 ×1 —— 靶心乘子、
+        不加新状态，且**倍率按回撤深度线性插值**（缺口 8：实测 −98% 的极端读数只在最深那一根）；
+        2025-10-10 实测锚：可见深度 $103.64M → $0.17M，≈35 分钟恢复九成；
      ④ 行为：3·12（COVID 崩盘）深跌段 ⇒ 机构储备耗尽（LFG 锚：护盘不是无限弹药）。 */
 section('9z · 深跌护盘三层 dipBuyOf ＋ 做市相位');
 {
@@ -3619,10 +3620,36 @@ section('9z · 深跌护盘三层 dipBuyOf ＋ 做市相位');
     && engSrc9z.includes('settleFng(s, sym, m, s.i);'));
   check('9z② 格子新键（不升 STATE_VERSION）：dipRes / dipPrev / dipGone 惰性播种＋防御读',
     engSrc9z.includes('dipRes: null, dipPrev: 0, dipGone: false'));
-  check('9z③ 做市相位：加深 ×mmCut / 收窄 ×mmBoost / 平时 ×1（靶心乘子，不加新状态）',
-    engSrc9z.includes('const mmMul = dip > 0 && dip >= dipPrev ? NPC.dip.mmCut')
-    && engSrc9z.includes(': (dipPrev > 0 && dip < dipPrev ? NPC.dip.mmBoost : 1);')
+  check('9z③ 做市相位：加深 ⇒ →mmCut / 收窄 ⇒ →mmBoost / 平时 ×1（靶心乘子，不加新状态）',
+    engSrc9z.includes('const cutT = dip / NPC.dip.cap;')
+    && engSrc9z.includes('const mmMul = dip > 0 && dip >= dipPrev ? 1 + (NPC.dip.mmCut - 1) * cutT')
+    && engSrc9z.includes(': (dipPrev > 0 && dip < dipPrev ? 1 + (NPC.dip.mmBoost - 1) * cutT : 1);')
     && engSrc9z.includes('-NPC.mm.absorb * mmMul * trendNet(m)'));
+  /* 倍率插值的行为锚（内联复刻 npcBuild 的那两行）—— 缺口 8 修正：原来 `mmCut` 是常量，
+     只要「回撤加深」就整档套用；现在按 `cutT = dip / cap` 线性插值，最深那一根才取满。 */
+  {
+    const CAP = god.NPC.dip.cap;
+    const mmOf = (dip, dipPrev) => {
+      const cutT = dip / CAP;
+      return dip > 0 && dip >= dipPrev ? 1 + (god.NPC.dip.mmCut - 1) * cutT
+        : (dipPrev > 0 && dip < dipPrev ? 1 + (god.NPC.dip.mmBoost - 1) * cutT : 1);
+    };
+    check('9z③ 加深腿端点：dip = cap（最深）⇒ 恰为 mmCut（承接只剩 3% ≈ −97% 真空）',
+      Math.abs(mmOf(CAP, CAP) - god.NPC.dip.mmCut) < 1e-12
+      && god.NPC.dip.mmCut === 0.03, `实得 ${f(mmOf(CAP, CAP), 6)}`);
+    check('9z③ 加深腿单调：跌得越深撤得越狠（dip 0.02 > 0.06 > cap 倍率严格递减）',
+      mmOf(0.02, 0.01) > mmOf(0.06, 0.01) && mmOf(0.06, 0.01) > mmOf(CAP, 0.01)
+      && mmOf(0.02, 0.01) < 1,
+      `${f(mmOf(0.02, 0.01), 4)} / ${f(mmOf(0.06, 0.01), 4)} / ${f(mmOf(CAP, 0.01), 4)}`);
+    check('9z③ 回补腿：同为 cap 深度时取满 mmBoost（×2.0）；无深跌 ⇒ 逐位 ×1（旧档同轨）',
+      Math.abs(mmOf(CAP * 0.5, CAP) - (1 + (god.NPC.dip.mmBoost - 1) * 0.5)) < 1e-12
+      && god.NPC.dip.mmBoost === 2 && mmOf(0, 0) === 1 && mmOf(0, 0.05) === 1,
+      `回补=${f(mmOf(CAP * 0.5, CAP), 4)} 平时=${mmOf(0, 0)}`);
+    check('9z③ 回补速度：撤单必须在一根内成型（mm.speed 0.5 → 0.8）',
+      god.NPC.mm.speed === 0.8, `实得 ${god.NPC.mm.speed}`);
+    check('9z③ 相位公式在端点与「深浅无关」两侧都连续（cutT → 0 ⇒ 倍率 → 1）',
+      Math.abs(mmOf(1e-9, 0) - 1) < 1e-6);
+  }
 
   /* ── ④ 行为：耗尽探针 ──
      ⚠️ dipOf 的回看窗只有 24 根**已收盘小时线** ⇒ 深跌是**阵发**的（一次暴跌后 ~24–36h 内

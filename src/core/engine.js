@@ -2430,6 +2430,8 @@ function npcBuild(s, sym, m, i) {
   const price = lastPrice(s, sym);
   /* 深跌护盘三层（2026-10-08）：本根回撤 `dip` 与上一根 `dipPrev` 的差给**做市相位**——
      回撤加深 ⇒ 撤单（×mmCut，承接缩）、收窄 ⇒ 回补（×mmBoost）、平时 ×1 与旧档同轨。
+     倍率按回撤深度线性插值（缺口 8）：`cutT` = 0（刚进跌区）→ 1（最深），最深那一根才取满
+     `mmCut`（−97%）/ `mmBoost` —— 免得把 2025-10-10 的极端读数摊到每一根「回撤还在加深」的小时上。
      `dip === 0` 时复位 `dipGone`（episode 结束，下一轮深跌还能再报一次「储备耗尽」）。 */
   const dip = dipOf(s, sym);
   const dipPrev = m.dipPrev ?? 0;
@@ -2442,8 +2444,9 @@ function npcBuild(s, sym, m, i) {
     pushLog(s, `机构护盘储备耗尽 ${sym} ｜ 护盘只剩涓流盘`, 'bad', 'mkt');
   }
   const dipBuy = d3.dipBuy;
-  const mmMul = dip > 0 && dip >= dipPrev ? NPC.dip.mmCut
-    : (dipPrev > 0 && dip < dipPrev ? NPC.dip.mmBoost : 1);
+  const cutT = dip / NPC.dip.cap;
+  const mmMul = dip > 0 && dip >= dipPrev ? 1 + (NPC.dip.mmCut - 1) * cutT
+    : (dipPrev > 0 && dip < dipPrev ? 1 + (NPC.dip.mmBoost - 1) * cutT : 1);
   const t = timeOf(s);
   let npcRealisedSum = 0;
   for (let k = 0; k < NPC.ladder.length; k++) {
