@@ -17,7 +17,7 @@ import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, ra
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_SPOOF_NUDGE, addFlow, exDevOf, npcLevOf, playerFactor, sbOf, shockParamsOf } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_SPOOF_NUDGE, addFlow, exDevOf, instSeedOf, npcLevOf, playerFactor, sbOf, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -2384,8 +2384,8 @@ export function dipOf(s, sym) {
  * 深跌护盘的**三层买盘合成**（纯函数 · 审计 9z 逐位锚定）—— `npcBuild` 每小时调一次，
  * 输入（日流动性 / 本根回撤 / 机构储备存量 / 恐惧贪婪读数）全由调用方给，这里零状态。
  *
- *   · **机构层**：先按 `instFlow` 涓流回补（封顶 `instSeed × liqDay`），再按需取用
- *     `min(储备, liqDay × dip)` —— 储备可耗尽（LFG 锚），耗尽后每小时只剩涓流盘（DCA 锚）；
+ *   · **机构层**：先按 `instFlow` 涓流回补（封顶 `seed × liqDay`），再按需取用
+ *     `min(储备, liqDay × dip × instRate)` —— 储备可耗尽（LFG 锚），耗尽后每小时只剩涓流盘；
  *   · **散户层**：`fng < retailFng`（极度恐惧区）才接盘，强度 = `retailCap × (1 − fng / retailFng)`
  *     —— 越恐越接，但上限小（实证散户深跌净卖出）；fng 缺失 / 中性 ⇒ 0；
  *   · `resAfter` 回写给调用方落账；`gone` = 储备本根见底（日志「机构护盘储备耗尽」的判据）。
@@ -2393,14 +2393,17 @@ export function dipOf(s, sym) {
  * @param {number} dip `dipOf` 的本根回撤强度 ∈ [0, cap]
  * @param {number|null} res 机构储备存量（旧档 / 新格子 ⇒ null，按满仓播种）
  * @param {number} fng 恐惧贪婪读数（0–100，`settleFng` 写入）
+ * @param {number} [seed] 储备上限（× 日流动性）—— 由调用方给 `instSeedOf(sym, t)`（**按币 × 年代**）。
+ *   缺省 `seedBase.BTC` 只作兜底（审计 / 直调），引擎侧**必须显式传**。
+ * @param {number} [rate] 回撤期的取用系数（× `liqDay × dip`）。缺省 `NPC.dip.instRate`。
  * @returns {{ instBuy:number, retailBuy:number, dipBuy:number, resAfter:number, gone:boolean }}
  */
-export function dipBuyOf(liqDay, dip, res, fng) {
-  const capRes = liqDay * NPC.dip.instSeed;
+export function dipBuyOf(liqDay, dip, res, fng, seed = NPC.dip.seedBase.BTC, rate = NPC.dip.instRate) {
+  const capRes = liqDay * seed;
   /* ⚠️ 播种判定必须用 `Number.isFinite`：`null >= 0` 在 JS 里是 **true**（null 关系比较转 0），
      裸写 `res >= 0` 会让新格子（null）永远播不上种、储备从 0 起步（9z 审计抓到的真 bug）。 */
   const filled = Math.min(capRes, (Number.isFinite(res) ? res : capRes) + liqDay * NPC.dip.instFlow);
-  const instBuy = Math.min(filled, liqDay * dip);
+  const instBuy = Math.min(filled, liqDay * dip * rate);
   const resAfter = filled - instBuy;
   const fv = Number.isFinite(fng) ? fng : 50;
   const retailBuy = fv < NPC.dip.retailFng
@@ -2428,6 +2431,7 @@ function npcBuild(s, sym, m, i) {
   if (!(liqDay > 0)) return;
   const target = sbOf(s).npc * NPC.mom * (m.heat - HEAT.base) * liqDay;
   const price = lastPrice(s, sym);
+  const t = timeOf(s);                 // 机构护盘的年代系数要读它（`instSeedOf`）
   /* 深跌护盘三层（2026-10-08）：本根回撤 `dip` 与上一根 `dipPrev` 的差给**做市相位**——
      回撤加深 ⇒ 撤单（×mmCut，承接缩）、收窄 ⇒ 回补（×mmBoost）、平时 ×1 与旧档同轨。
      倍率按回撤深度线性插值（缺口 8）：`cutT` = 0（刚进跌区）→ 1（最深），最深那一根才取满
@@ -2437,7 +2441,8 @@ function npcBuild(s, sym, m, i) {
   const dipPrev = m.dipPrev ?? 0;
   m.dipPrev = dip;
   if (dip === 0) m.dipGone = false;
-  const d3 = dipBuyOf(liqDay, dip, m.dipRes, m.fng);
+  /* 储备上限按**币 × 年代**给（缺口 3）：`instSeedOf` 是 `timeOf(s)` 的纯函数 ⇒ 不升存档版。 */
+  const d3 = dipBuyOf(liqDay, dip, m.dipRes, m.fng, instSeedOf(sym, t));
   m.dipRes = d3.resAfter;
   if (dip > 0 && d3.gone && !m.dipGone) {
     m.dipGone = true;
@@ -2447,7 +2452,6 @@ function npcBuild(s, sym, m, i) {
   const cutT = dip / NPC.dip.cap;
   const mmMul = dip > 0 && dip >= dipPrev ? 1 + (NPC.dip.mmCut - 1) * cutT
     : (dipPrev > 0 && dip < dipPrev ? 1 + (NPC.dip.mmBoost - 1) * cutT : 1);
-  const t = timeOf(s);
   let npcRealisedSum = 0;
   for (let k = 0; k < NPC.ladder.length; k++) {
     const w = NPC.ladder[k].w;

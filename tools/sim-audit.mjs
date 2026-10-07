@@ -3581,26 +3581,30 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
 /* ═══════════════════ 9z · 深跌护盘三层（2026-10-08 大改） ═══════════════════
    收口（用户拍板「机构护盘 / 散户护盘 / 做市商护盘」三层大改，调研锚见 god.NPC.dip 表头）：
      ① `dipBuyOf` 纯函数逐位锚定：机构储备（播种 / 封顶 / 涓流 / 耗尽）＋ 散户极恐接盘
-        （fng 严格 < 22，越恐越接、上限 3%）；
+        （fng 严格 < 22，越恐越接、上限 3%）；储备上限 = `seedBase[sym]`（现实量级：LFG 2022
+        持仓 0.13 × 日额）**× 年代系数**（缺口 3：早期机构护盘事实为零 ⇒ 1/10 起）；
      ② 接线：npcBuild 走 dipBuyOf（储备落账 ＋ dipGone 复位/告警）＋ settleFng 双调用点
         （都在 npcBuild 之前 ⇒ 散户层读的 fng 全币同相位）＋ 格子新键不升 STATE_VERSION；
      ③ 做市相位：回撤加深 →mmCut（先撤单）/ 收窄 →mmBoost（V 型回补）/ 平时 ×1 —— 靶心乘子、
         不加新状态，且**倍率按回撤深度线性插值**（缺口 8：实测 −98% 的极端读数只在最深那一根）；
         2025-10-10 实测锚：可见深度 $103.64M → $0.17M，≈35 分钟恢复九成；
-     ④ 行为：3·12（COVID 崩盘）深跌段 ⇒ 机构储备耗尽（LFG 锚：护盘不是无限弹药）。 */
+     ④ 行为：耗尽机制探针（现实量级下单次崩盘烧不光储备 ⇒ 合成「储备归零」探针验证
+        dipGone 翻真 ＋ 日志落账；LFG 锚：护盘不是无限弹药，但 33 亿美元也确实托不住）。 */
 section('9z · 深跌护盘三层 dipBuyOf ＋ 做市相位');
 {
-  /* ── ① dipBuyOf 逐位 ── */
+  /* ── ① dipBuyOf 逐位（缺口 3：存量上限 `seedBase.BTC = 0.15`／取用 0.005／涓流 0.0002）──
+     默认 seed = seedBase.BTC = 0.15 ⇒ capRes = 1e6×0.15 = 150000；want = 1e6×dip×0.005。 */
   const r1 = engine.dipBuyOf(1e6, 0.2, null, 50);   // 新格子：res=null ⇒ 按满仓播种
-  check('9z① 播种取用：res=null ⇒ 满仓 2×liqDay，instBuy = liqDay×dip，散户层不触发（fng=50）',
-    r1.instBuy === 2e5 && r1.resAfter === 1.8e6 && r1.dipBuy === 2e5 && !r1.gone && r1.retailBuy === 0,
+  check('9z① 播种取用：res=null ⇒ 满仓 0.15×liqDay，instBuy = min(储备, liqDay×dip×0.005)，散户层不触发（fng=50）',
+    r1.instBuy === 1000 && r1.resAfter === 149000 && r1.dipBuy === 1000 && !r1.gone && r1.retailBuy === 0,
     `inst=${r1.instBuy} res=${r1.resAfter}`);
-  const r2 = engine.dipBuyOf(1e6, 0.2, 1.99e6, 50); // 涓流回补：1.99M + 0.01M 恰到 capRes
-  check('9z① 涓流回补：res + instFlow×liqDay，封顶不越 2×liqDay',
-    r2.resAfter === 1.8e6, `res=${r2.resAfter}`);
-  const r3 = engine.dipBuyOf(1e6, 0.2, 5e3, 10);    // 耗尽：涓流 1e4 + 余 5e3 < want 2e5
-  check('9z① 储备耗尽：只剩涓流盘（resAfter = 0 ⇒ gone）＋ 散户层极恐补位（fng=10）',
-    r3.instBuy === 1.5e4 && r3.resAfter === 0 && r3.gone
+  const r2 = engine.dipBuyOf(1e6, 0, 1e5, 50);      // 涓流回补：dip=0 ⇒ 不取用，只 +200/h
+  check('9z① 涓流回补：res + instFlow×liqDay（每小时 +200），封顶不越 0.15×liqDay',
+    r2.resAfter === 100200 && r2.instBuy === 0
+    && engine.dipBuyOf(1e6, 0, 149900, 50).resAfter === 150000, `res=${r2.resAfter}`);
+  const r3 = engine.dipBuyOf(1e6, 0.2, 0, 10);      // 耗尽：储备 0，涓流 200 < want 1000 ⇒ 全花光
+  check('9z① 储备耗尽：只有涓流盘可花（200 < want 1000）⇒ resAfter = 0 ⇒ gone；散户层极恐补位（fng=10）',
+    r3.instBuy === 200 && r3.resAfter === 0 && r3.gone
     && Math.abs(r3.retailBuy - 1e6 * 0.03 * (1 - 10 / 22)) < 1e-9,
     `inst=${r3.instBuy} retail=${r3.retailBuy}`);
   check('9z① 散户层口径：fng=11 ⇒ retail = liqDay×0.03×0.5（逐位）；fng=22 ⇒ 0（严格 <）；NaN ⇒ 中性 50 ⇒ 0；dip=0 ⇒ 只有散户层',
@@ -3609,15 +3613,37 @@ section('9z · 深跌护盘三层 dipBuyOf ＋ 做市相位');
     && engine.dipBuyOf(1e6, 0.2, 1e6, NaN).retailBuy === 0
     && engine.dipBuyOf(1e6, 0, 1e6, 11).dipBuy === engine.dipBuyOf(1e6, 0, 1e6, 11).retailBuy);
 
+  /* ── ①′ instSeedOf 逐位（缺口 3：储备上限 = seedBase[sym] × 年代系数）──
+     现实锚（LFG 2022）：80,394 BTC ≈ $3.3B ÷ 当年 BTC 日成交额 ≈ $25B ⇒ 0.13 ⇒ `seedBase.BTC = 0.15`；
+     年代系数让早期（机构护盘事实为零）按 1/10 起，逐段抬到 1（MSTR 2020 首买 / LFG 2021 成形）。 */
+  check('9z①′ 年代系数：BTC 在 2013/2016 → ×0.10（0.015）；2018 → ×0.25（0.0375）；2021 → ×0.50（0.075）；2023 起 → ×1.00（0.15）',
+    Math.abs(god.instSeedOf('BTC', Date.UTC(2013, 0, 1)) - 0.015) < 1e-12
+    && Math.abs(god.instSeedOf('BTC', Date.UTC(2016, 5, 1)) - 0.015) < 1e-12
+    && Math.abs(god.instSeedOf('BTC', Date.UTC(2018, 5, 1)) - 0.0375) < 1e-12
+    && Math.abs(god.instSeedOf('BTC', Date.UTC(2021, 0, 1)) - 0.075) < 1e-12
+    && Math.abs(god.instSeedOf('BTC', Date.UTC(2024, 0, 1)) - 0.15) < 1e-12,
+    `2021=${god.instSeedOf('BTC', Date.UTC(2021, 0, 1))}`);
+  check('9z①′ 按币分档（同为 2024）：BTC 0.15 > ETH 0.10 > SOL 0.05 > XRP 0.03 > DOGE 0.02',
+    god.instSeedOf('BTC', Date.UTC(2024, 0, 1)) > god.instSeedOf('ETH', Date.UTC(2024, 0, 1))
+    && god.instSeedOf('ETH', Date.UTC(2024, 0, 1)) > god.instSeedOf('SOL', Date.UTC(2024, 0, 1))
+    && god.instSeedOf('SOL', Date.UTC(2024, 0, 1)) > god.instSeedOf('XRP', Date.UTC(2024, 0, 1))
+    && god.instSeedOf('XRP', Date.UTC(2024, 0, 1)) > god.instSeedOf('DOGE', Date.UTC(2024, 0, 1)));
+  check('9z①′ 未列出的币 ⇒ 0（无机构护盘）；年代系数只抬不降（逐段查表，缺省取首段）',
+    god.instSeedOf('LTC', Date.UTC(2024, 0, 1)) === 0
+    && god.instSeedOf('BTC', Date.UTC(2012, 0, 1)) === god.instSeedOf('BTC', Date.UTC(2013, 0, 1)));
+
   /* ── ②③ 接线 / 相位源锚 ── */
   const engSrc9z = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
-  check('9z② 接线：npcBuild 走 dipBuyOf（储备落账 ＋ dipGone 复位/告警）＋ settleFng 双调用点（npcBuild 之前）',
-    engSrc9z.includes('const d3 = dipBuyOf(liqDay, dip, m.dipRes, m.fng);')
+  check('9z② 接线：npcBuild 走 dipBuyOf（储备上限按币×年代 instSeedOf ＋ 储备落账 ＋ dipGone 复位/告警）＋ settleFng 双调用点（npcBuild 之前）',
+    engSrc9z.includes('const d3 = dipBuyOf(liqDay, dip, m.dipRes, m.fng, instSeedOf(sym, t));')
+    && engSrc9z.includes('const t = timeOf(s);')
     && engSrc9z.includes('m.dipRes = d3.resAfter;')
     && engSrc9z.includes('if (dip === 0) m.dipGone = false;')
     && engSrc9z.includes('机构护盘储备耗尽')
     && engSrc9z.indexOf('settleFng(s, sym, m, i);') < engSrc9z.indexOf('  npcBuild(s, sym, m, i);')
     && engSrc9z.includes('settleFng(s, sym, m, s.i);'));
+  check('9z② instSeedOf 自 god.js 导入（引擎侧必须显式传，不靠默认兜底）',
+    /import\s*\{[^}]*instSeedOf[^}]*\}\s*from\s*'\.\/god\.js'/.test(engSrc9z));
   check('9z② 格子新键（不升 STATE_VERSION）：dipRes / dipPrev / dipGone 惰性播种＋防御读',
     engSrc9z.includes('dipRes: null, dipPrev: 0, dipGone: false'));
   check('9z③ 做市相位：加深 ⇒ →mmCut / 收窄 ⇒ →mmBoost / 平时 ×1（靶心乘子，不加新状态）',
@@ -3653,17 +3679,22 @@ section('9z · 深跌护盘三层 dipBuyOf ＋ 做市相位');
 
   /* ── ④ 行为：耗尽探针 ──
      ⚠️ dipOf 的回看窗只有 24 根**已收盘小时线** ⇒ 深跌是**阵发**的（一次暴跌后 ~24–36h 内
-        dip > 0，随后高点滚出窗口）—— 不存在「连续 240 小时深跌」。所以耗尽行为不靠长跑，
-        而是：先扫到一根 dip ≥ 0.02 的深跌根，把储备直接置 0（等价「已耗尽」），重 tick 同一根
+        dip > 0，随后高点滚出窗口）—— 不存在「连续 240 小时深跌」。
+     ⚠️ **现实量级下，单次崩盘不足以烧光机构储备**（缺口 3 修正后的事实）：储备 = 0.15 × 日额，
+        最深回撤每根取用 0.12×0.005 = 0.0006 × 日额 ⇒ 要**连续 ~10 天**最深回撤才见底，
+        而 dip 阵发、且每小时 +0.0002 涓流回补 ⇒ 自然归零是**罕见**事件（LFG 花掉 33 亿美元仍崩盘）。
+        所以耗尽行为**不靠长跑**，而是合成探针：先扫到一根 dip ≥ 0.06 的深跌根（> 涓流 0.0002/取用
+        0.005 = 0.04 的门槛 ⇒ 该根涓流会被花光），把储备直接置 0（等价「已耗尽」），重 tick 同一根
         （dip 不变、want ≥ 涓流 ⇒ resAfter = 0）⇒ dipGone 翻真 ＋ 日志落账。 */
   const sZ = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2020, 2, 12, 0)) }); // at() 月 0 基 ⇒ 2020-03-12
   let deep = 0, dipZ = 0;
   for (let k = 0; k < 96; k++) {
     engine.advanceOneHour(sZ);
     dipZ = engine.dipOf(sZ, 'BTC');
-    if (dipZ >= 0.02) { deep = sZ.i; break; }
+    if (dipZ >= 0.06) { deep = sZ.i; break; }       // 需 dip·rate ≥ instFlow ⇒ dip ≥ 0.04，取 0.06 留余量
   }
-  check('9z④-a 前提：3·12 崩盘段 96 小时内出现 dip ≥ 0.02 的深跌根', deep > 0, `dip=${dipZ} @i=${deep}`);
+  check('9z④-a 前提：3·12 崩盘段 96 小时内出现 dip ≥ 0.06 的深跌根（> 涓流入不敷出的门槛 0.04）',
+    deep > 0, `dip=${dipZ} @i=${deep}`);
   if (deep > 0) {
     const mZ = sZ.mkt.BTC;
     mZ.dipRes = 0; mZ.dipGone = false;             // 等价「储备已耗尽」
