@@ -247,8 +247,20 @@ let godAlpha = (() => {
 })();
 let godFloatOn = true;      // 浮窗开关（上帝面板哨位行那枚），会话级，默认开
 let floatOpen = false;      // 面板是否展开
-let floatPage = 0;          // 面板页码：0 热力 / 1 巨鲸 / 2 深度
+let floatPage = 0;          // 面板页码：0 热力 / 1 巨鲸 / 2 深度 / 3 订单簿（随模式夹取）
 let floatPos = null;        // 圆钮视口坐标 {x,y}；null = 走 CSS 默认（右下角）
+
+/* ── 市场浮窗（2026-10-07 拍板）：普通 / 挑战局的盘口浮窗 ──────────────────────
+   浏览器偏好（独立 localStorage 键、默认**开**）—— 与 `degen_colors` 同一口径，不进存档。
+   普通局只开放**订单簿 ＋ 深度**两页：热力 / 巨鲸（含 NPC 仓位明细）保持上帝专属。 */
+const MKT_FLOAT_KEY = 'degen_mkt_float';
+let mktFloatOn = (() => {
+  try { return localStorage.getItem(MKT_FLOAT_KEY) !== '0'; }
+  catch { return true; }
+})();
+/** 浮窗页表：上帝局 4 页 / 普通局 2 页 —— `floatUi()` 按模式取，`updateFloat` 据此建页签。 */
+const GOD_FLOAT_PAGES = [[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单簿']];
+const MKT_FLOAT_PAGES = [[3, '订单簿'], [2, '深度']];
 const applyGodAlpha = () => document.documentElement.style.setProperty('--god-alpha', String(godAlpha));
 applyGodAlpha();
 
@@ -801,6 +813,8 @@ function buildView(cssW, cssH) {
     fx,
     /* 涨跌色偏好（B5）：同上，归那个独立 localStorage 键管 */
     redUp,
+    /* 市场浮窗偏好（2026-10-07）：普通 / 挑战局设置页那枚开关的高亮读它（上帝局该行整行隐藏） */
+    mktFloat: mktFloatOn,
     /* 新手分步引导正在走（本轮 ①/F）—— 引导期间 `s.paused` 恒为真，但**界面不该装成「暂停」**：
        它正高亮着「买入」按钮教玩家怎么用，把那一枚画成禁用灰会自相矛盾 ⇒ 渲染层靠这个豁免。
        （与 `tab` 同一类：纯界面状态，不进 `s`。） */
@@ -871,9 +885,9 @@ function draw(force = false, chartOnly = false) {
           那时 `#app` 里还挂着那张 `.over` —— 它是 `position:fixed`，不摘掉会直接盖住整页回顾。 */
     if (rv) { updateFloat(null, null); clearOver(root); renderReview(refs, rv, view); return; }
     update(refs, s, view);
-    /* 上帝浮窗（2026-10-07）：跟整屏帧走 —— 圆钮挂 / 摘、面板内容刷新都在这里。
+    /* 浮窗（2026-10-07）：跟整屏帧走 —— 圆钮挂 / 摘、面板内容刷新都在这里。
        手势快路（chartOnly）不进来：拖图几毫秒内数字旧一点无所谓，DOM 不跟着抖。 */
-    updateFloat(s, { on: godFloatOn, open: floatOpen, page: floatPage, pos: floatPos });
+    updateFloat(s, floatUi());
     /* ⚠️ 这里**不再需要** `&& !arch`（2026-10-02 修）：档案页在上面就 `return` 了，
        走不到这一行 —— 该防的那件事改成在它自己那一支里 `clearOver`（见上）。
        原来那句 `!arch` 是一处**永远为真**的死守卫，只会让人以为档案页的覆盖问题已解决。 */
@@ -1041,6 +1055,7 @@ function dispatch(node, ev) {
   if (d.vibtest !== undefined) return onVibTest();
   if (d.fx !== undefined) return onFx(Number(d.fx));
   if (d.colors !== undefined) return onColorToggle();
+  if (d.mktfloat !== undefined) return onMktFloat();
   if (d.reset !== undefined) return onReset(node);
   /* 设置页「返回主菜单」（2026-10-01 用户要求）：停钟 ＋ 弹菜单，本局状态一个字不动。 */
   if (d.home !== undefined) return onHome();
@@ -1444,6 +1459,23 @@ function onGodTab(node) {
 
 /* ── 上帝浮窗（2026-10-07 用户拍板）────────────────────────────────────────── */
 
+/** 浮窗的 `ui` 包（2026-10-07 起两模式共用）：页表随模式取、页码夹进表内、开关读各自的偏好
+ *  —— `draw()` 每帧与三处手势（拖钮 / 切页 / 收起后的立即跟随）都走它，不会各算各的。 */
+function floatUi() {
+  const pages = s.god ? GOD_FLOAT_PAGES : MKT_FLOAT_PAGES;
+  if (!pages.some(([p]) => p === floatPage)) floatPage = pages[0][0];
+  return { on: s.god ? godFloatOn : mktFloatOn, open: floatOpen, page: floatPage, pos: floatPos, pages, mkt: !s.god };
+}
+
+/** 市场浮窗开关（设置页 `data-mktfloat`）：翻偏好 ＋ 落盘；关掉的同时把展开的面板收起。
+ *  与 `onGodFloat` 同一套动作，只是这份偏好要过 localStorage（`degen_mkt_float`）。 */
+function onMktFloat() {
+  mktFloatOn = !mktFloatOn;
+  try { localStorage.setItem(MKT_FLOAT_KEY, mktFloatOn ? '1' : '0'); } catch { /* 隐私模式：本会话生效即可 */ }
+  if (!mktFloatOn && !s.god) floatOpen = false;
+  after();
+}
+
 /** 哨位行「浮窗 开/关」：翻会话开关；关的同时把展开的面板收起。下一帧 `updateFloat` 自动跟随。 */
 function onGodFloat() {
   godFloatOn = !godFloatOn;
@@ -1474,12 +1506,12 @@ function onGodFloatChip(ev) {
       x: Math.min(Math.max(4, e.clientX - ox), window.innerWidth - 44),
       y: Math.min(Math.max(4, e.clientY - oy), window.innerHeight - 44),
     };
-    updateFloat(s, { on: godFloatOn, open: floatOpen, page: floatPage, pos: floatPos });
+    updateFloat(s, floatUi());
   };
   const up = () => {
     window.removeEventListener('pointermove', move);
     if (!dragged) { floatOpen = !floatOpen; after(); }
-    else updateFloat(s, { on: godFloatOn, open: floatOpen, page: floatPage, pos: floatPos });
+    else updateFloat(s, floatUi());
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up, { once: true });

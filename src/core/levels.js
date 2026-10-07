@@ -41,6 +41,19 @@ const LEVELS = {
 };
 
 /**
+ * 压力位**墙名义**系数（2026-10-07 拍板：压力位并入订单簿）——
+ * 一条满权重（`w = 1`）压力位的名义挂单量 = `w × WALL_K × hourLiqOf(该小时流动性)`。
+ *
+ * 校准锚（合成取值，方向对、量级可读即可）：
+ *   - 满墙 = 5% 小时流动性 ≈ 基础簿（`walkBook` 的 cap = hourBase）的 ~20%，2021 年 BTC
+ *     折 $50–100M —— 与史实大挂单墙同量级；
+ *   - ROADMAP §27.5：BTC 现货 ±0.03% 深度 ≈ $435 万 / 永续 $2,103 万，Bitget ±0.05% ≈ $4,160 万；
+ *   - GDAX 2017-05-21 ETH 闪崩（`review.js` 同日史实条）：市价单吃穿整本订单簿后簿重填 ——
+ *     对应本模块「撞穿之后就没有阻力」的原有性质。
+ */
+export const WALL_K = 0.05;
+
+/**
  * **历史压力位**（纯核心）—— 从一段时间序列里堆出价位直方图，取峰。
  *
  * 两个来源按同一量纲相加：
@@ -144,15 +157,24 @@ function levelsFrom(closes, vols) {
  * @param {number} p      成交**前**的价（标记价，含玩家已造成的位移）
  * @param {number} dir    **+1 = 买**（推高）、**−1 = 卖**（压低）
  * @param {number} impact 本笔的原始冲击（`permImpactOf` 的结果，恒 ≥ 0）
+ * @param {Array<{p:number,w:number,frac:number}>} [eaten] 本笔走簿**已经吃掉的墙**
+ *   （`engine.walkFillFor` 的产出）—— **精确耦合**（2026-10-07 拍板）：本次成交吃掉多少墙，
+ *   这里的位移吸收就折掉多少。只折**位移路径范围内**的墙（范围外的墙本来就不会吸收这次
+ *   位移）；`E.p === L.p` 浮点相等安全 —— 两侧同源自 `levelsOf`，同源复制逐位相等。
  * @returns {number} 0.45 ~ 1 的乘数；没扫到位 / 参数不可用 ⇒ **恰好 1**（乘法恒等，逐位不变）
  */
-export function absorbOf(levels, p, dir, impact) {
+export function absorbOf(levels, p, dir, impact, eaten = null) {
   if (!(impact > 0) || !(p > 0) || !dir || !levels || !levels.length) return 1;
   const target = p * (1 + dir * impact);
   const lo = Math.min(p, target);
   const hi = Math.max(p, target);
+  const hit = (L) => {
+    let w = L.w;
+    if (eaten) for (const E of eaten) if (E.p === L.p) { w *= 1 - E.frac; break; }
+    return w;
+  };
   let sum = 0;
-  for (const L of levels) if (L.p > lo && L.p <= hi) sum += L.w;
+  for (const L of levels) if (L.p > lo && L.p <= hi) sum += hit(L);
   if (!(sum > 0)) return 1;
   return 1 - LEVELS.absorb * Math.min(1, sum);
 }
@@ -161,11 +183,17 @@ export function absorbOf(levels, p, dir, impact) {
  * 某个币**此刻**的历史压力位 —— 唯一的薄适配层：把近 `window` 根原始行情读成两个数组，
  * 交给纯核心 `levelsFrom`。
  *
- * ⚠️ 只在**成交那一刻**调用（一笔一次，约 720×2 次读取），不进任何每帧路径 ——
- *    与「不画线」是同一条考虑：它不该出现在热路径上。
+ * ⚠️ **单槽缓存**（2026-10-07）：走簿上线后 `canOpenAt` / `canCloseAt` 每帧都要经
+ *    `walkBook` 摸一遍压力位，本函数从「成交那一刻一次」变成了热路径 —— 720 根×2 的
+ *    扫描不能每帧重跑。`(sym, i)` 是纯函数（数据包只读、无前视），单槽足够：
+ *    同一根 K 上反复问的都是同一个币。调用方**只读不改**返回数组（`absorbOf` /
+ *    `walkFillFor` / 订单簿渲染均满足）。
  * @returns {{p:number,w:number}[]} 未加载 / 样本不足 ⇒ `[]`
  */
+let lcSym = '', lcI = -1, lcLevels = null;
+
 export function levelsOf(sym, i) {
+  if (sym === lcSym && i === lcI && lcLevels) return lcLevels;
   /* ⚠️ **不夹 0** —— 与 `engine.dailySigma` 同一条口径：BTC 的数据左端是 −2304（2012-09-27 起的
      96 天真实小时线回溯段，游戏开局那一屏 K 线上画的就是它），夹 0 会让「前面 30 天有哪些位」
      在开盘头一个月里凭空少掉一截。窗口外的根由 `rawCloseAt` 返回 null ⇒ 当**洞**处理，
@@ -177,5 +205,8 @@ export function levelsOf(sym, i) {
     closes[j] = rawCloseAt(sym, from + j) || 0;
     vols[j] = volumeAt(sym, from + j);
   }
-  return levelsFrom(closes, vols);
+  lcSym = sym;
+  lcI = i;
+  lcLevels = levelsFrom(closes, vols);
+  return lcLevels;
 }

@@ -156,37 +156,81 @@ export function fillPrice(price, dir, impact) {
   return dir > 0 ? price * (1 + impact) : price * (1 - impact);
 }
 
-/* ──────────────────── 合成盘口（C8-B1 · ROADMAP §二十六） ──────────────────── */
+/* ──────────────────── 合成订单簿 · 真走簿逐档撮合（2026-10-07 用户拍板） ──────────────────── */
 
 /**
- * 子单切分的两个常数（C8-B1 · 2026-09-29 拍板「按名义份额摊」）。
+ * **基础梯**的档数（每侧）。12 的来历：把 `cap`（普通 0.25）切成等名义带后，
+ * 近场（小 q）的离散误差仍 ≤0.5%；再密一档对显示没有增益（浮窗只放得下 8 档左右）。
  *
  * 真 L2 深度数据已被判死（`ROADMAP.MD` §24.10）⇒ 盘口**只能在内存里现算**
  * （红线 B：不改数据包、不加后端、不进存档）。
- *
- * ⚠️ **红线 A · 不双重计价**：这两个常数**只决定「报几笔」**，绝不参与任何价格计算 ——
- *    成交价仍然只由 `impactOf` ＋ `fillPrice` 一处算出，拆解结果不回头再改一次价。
  */
-export const BOOK = {
-  sliceShare: 0.03,   // 一张子单不超过「当时流动性」的 3%
-  maxTranches: 8,     // 一张市价单最多报成几笔
-};
+export const LADDER = { levels: 12 };
 
 /**
- * 这张市价单**相当于**被拆成了几笔。
+ * **基础梯**（纯函数）—— 一侧盘口的 12 档「等名义」报价。
  *
- * 为什么不用「代价 ÷ 一个 tick」来数：滑点的自变量是 `q = 名义 ÷ 当时流动性`，而 q 的可用区间
- * 被 `SLIP.threshold`（10%）与 `SLIP.cap`（25%）夹成一条窄带 ⇒ 按代价数出来的笔数
- * **恒等于上限**（实测最小冲击 1.27% ÷ 1bp = 127 档，永远顶格），那只是噪声而不是颗粒度。
- * 按名义份额数才有区分度：q = 0.10 ⇒ 4 笔、0.15 ⇒ 5 笔、0.24 ⇒ 8 笔。
+ *   · 每档名义（`nq`，q 单位）＝ `h = cap / 12` —— 等名义而非等价距：
+ *     近场档价距密、远场疏，正对着「越推越贵」的真实体感；
+ *   · 档价距（`d`）＝ 该名义带上的**积分平均深度** `2σ√h·(i^1.5 − (i−1)^1.5)`。
  *
- * @param {number} q    本次成交名义 ÷ 当时流动性（分母与 `impactFor` 同一处，见 `hourShareK`）
- * @param {number} cost 本次成交的代价（`impactOf` 的结果）—— 为 0 时没有笔数可报
- * @returns {number} 1 ~ `BOOK.maxTranches`
+ * ⚠️ **为什么不用外缘价 `3σ√(i·h)`**：那是右黎曼和，√ 的凹性让只吃到第一档的小额单
+ *    平均滑点高出连续式 **50%**。积分平均价让走簿与连续式 `2σ√q` 在**档边界逐位相等**
+ *    （Σd_i·h = ∫₀^cap 3σ√t dt）、档内误差 ≤0.5% —— 这是「走簿 ≡ impactCore 的离散实现」
+ *    这条恒等式的实现载体（审计 9v 逐年逐名义锚定 ≤1%）。
+ *
+ * @param {number} sigma 日收盘收益率标准差（`sigmaOf` 的结果；不可用回落 `SLIP.sigmaDefault`）
+ * @param {number} [cap] 梯的名义总深（q 单位；缺省 `SLIP.cap`，上帝局传 `MANIP_GOD_CAP`）
+ * @returns {{i:number,d:number,nq:number}[]} 按档序（价距升序）
  */
-export function bookFills(q, cost) {
-  if (!(cost > 0) || !(q > 0)) return 1;
-  return Math.min(BOOK.maxTranches, Math.ceil(q / BOOK.sliceShare));
+export function baseLadder(sigma, cap = SLIP.cap) {
+  const s = Number.isFinite(sigma) && sigma > 0 ? sigma : SLIP.sigmaDefault;
+  const h = cap / LADDER.levels;
+  const rows = [];
+  let prev = 0;
+  for (let i = 1; i <= LADDER.levels; i++) {
+    const c = Math.pow(i, 1.5);
+    rows.push({ i, d: 2 * s * Math.sqrt(h) * (c - prev), nq: h });
+    prev = c;
+  }
+  return rows;
+}
+
+/**
+ * **走簿撮合**（纯函数）—— 一张市价单沿着梯逐档吃过去，平均滑点 = 各档价距的加权平均。
+ *
+ *   · `q ≤ SLIP.threshold` ⇒ 记零（与 `impactOf` **同一条死区**：小额单按盘口价成交）；
+ *   · `q > cap` ⇒ 只走 `min(q, cap)`（「单笔顶格 · 超出部分无效」的走簿版，与 `impactOf`
+ *     在 cap 处饱和同一口径），末档之后的部分按末档价成交、不再更差；
+ *   · 结果再过 `SLIP.hard` 上夹 —— 与 `impactCore` 的数学天花板逐位一致。
+ *
+ * ⚠️ **红线 A · 不双重计价**：本函数**替代**玩家侧的 `impactOf` 成为成交价来源，
+ *    但它与 `impactOf` 被审计锚成同一条曲线（≤1%）⇒ 不是第二把尺子，是同一把尺子的离散实现。
+ * ⚠️ **压力位墙不进代价曲线**（只进显示与位移吸收耦合，见 `levels.WALL_K`）：墙的名义额是
+ *    历史成交量密集区的**合成读数**，混进代价会系统性压低玩家成本、破坏 Kaiko 锚
+ *    （$50M → 2~3%），且会让「滑点对名义单调不减」翻车（跨过近墙的边际成本低于当前均值）。
+ *    返回的 `reach`（本笔够到的价距 = 连续口径 `3σ√q_eff`）由调用侧去判定**吃到了哪些墙**。
+ *
+ * @returns {{impact:number, n:number, reach:number}}
+ *   `impact` 平均滑点（0 ~ `SLIP.hard`）；`n` 吃到的档数（≥1）；`reach` 本笔的连续价距（墙 eaten 判定用）
+ */
+export function walkBook({ sigma, cap = SLIP.cap, q }) {
+  if (!(q > SLIP.threshold)) return { impact: 0, n: 1, reach: 0 };
+  const s = Number.isFinite(sigma) && sigma > 0 ? sigma : SLIP.sigmaDefault;
+  const qEff = Math.min(q, cap);
+  let left = qEff, cost = 0, n = 0;
+  for (const r of baseLadder(s, cap)) {
+    if (!(left > 0)) break;
+    const take = Math.min(left, r.nq);
+    cost += r.d * take;
+    left -= take;
+    n++;
+  }
+  return {
+    impact: Math.min(cost / qEff, SLIP.hard),
+    n: Math.max(1, n),
+    reach: 3 * s * Math.sqrt(qEff),
+  };
 }
 
 /* ──────────────────── 瞬时深度池（L1 · ROADMAP §六十二） ──────────────────── */

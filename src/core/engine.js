@@ -16,9 +16,9 @@ import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MARGIN, MIN_NOTIONAL, minNotional
 import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCandleAt, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
-import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
+import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
 import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_SPOOF_NUDGE, addFlow, exDevOf, npcLevOf, playerFactor, sbOf, shockParamsOf } from './god.js';
-import { absorbOf, levelsOf } from './levels.js';
+import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
   equityOf, isLiquidatable, isMargin, liquidationPrice, maintRateOf, marginRateOf, openPosition, pnlOf,
@@ -135,9 +135,9 @@ export function lastPrice(s, sym = s.sym) {
   return closeAt(sym, s.i);
 }
 
-/* ── 上帝浮窗 · 只读快照（2026-10-07 用户拍板「浮窗：清算热力图 / 巨鲸 / 深度」） ── */
+/* ── 上帝浮窗 · 只读快照（2026-10-07 用户拍板「浮窗：清算热力图 / 巨鲸 / 深度」；同日加第 4 页订单簿） ── */
 /**
- * 上帝浮窗三个 tab 的**全部数字**都从这一个出口出 —— 纯派生：不写 `s`、不碰 DOM、不读时钟，
+ * 上帝浮窗**全部数字**都从这一个出口出 —— 纯派生：不写 `s`、不碰 DOM、不读时钟，
  * render 只管画，engine 是唯一的事实来源（审计 9u 逐位锚定）。
  *
  *   · `liqs`  清算热力图：NPC 六档 ＋ 做市盘每侧的**强平价位** —— 与 `flushSlot` **同一个公式**
@@ -146,7 +146,35 @@ export function lastPrice(s, sym = s.sym) {
  *   · `tiers` 巨鲸：六档明细（杠杆 / 权重 / 双侧名义与均价）＋ 做市盘行 ＋ `heat` / `mood` 读数。
  *   · `depth` 深度：日流动性、本小时基准深度、瞬时深度池（已消耗 / 容量 `POOL.capK × 基准`）、
  *             滑点死区线（`SLIP.threshold × liqDay`）与单笔饱和线（`SLIP.cap × liqDay`）。
+ *   · `book`  订单簿：基础 12 档 ＋ 压力位墙（`bookForWatch`，普通局浮窗也读这一份）。
  */
+/**
+ * 订单簿**合成视图**（浮窗第 4 页 · 2026-10-07 拍板「压力位挂单墙并入订单簿」）——
+ * 基础 12 档 ＝ `baseLadder(σ, cap)` 摊在中间价两侧（每档**等名义** `nq × liq`、档距取
+ * `d` 的积分平均价，见 `impact.js`）；墙 ＝ `levelsOf` 的压力位按 `WALL_K × liq` 折成名义，
+ * 只列**要被吃的那一侧**（买看上方卖墙、卖看下方买墙——反向的墙管不着这一笔）。
+ * ⚠️ 与 `walkFillFor` **同源**：同一 σ / cap / liq / levels —— 玩家在这页看到的墙，
+ *   就是下一笔成交真的会撞上的墙（审计 9v 逐位断言）。
+ * @returns {object|null} 行情不可用 ⇒ `null`（UI 显示「盘口暂不可用」）
+ */
+function bookForWatch(s, sym, price) {
+  const liq = hourLiqOf(s, sym, s.i);
+  if (!(liq > 0) || !(price > 0)) return null;
+  const sigma = dailySigma(sym, s.i);
+  const cap = godCapOf(s);
+  const side = (dir) => {
+    const rows = [];
+    for (const r of baseLadder(sigma, cap)) rows.push({ price: dir > 0 ? price * (1 + r.d) : price * (1 - r.d), d: r.d, notional: r.nq * liq, wall: false });
+    for (const L of levelsOf(sym, s.i)) {
+      if (!(L.w > 0) || (dir > 0 ? L.p <= price : L.p >= price)) continue;
+      rows.push({ price: L.p, d: Math.abs(L.p / price - 1), notional: L.w * WALL_K * liq, wall: true, w: L.w });
+    }
+    rows.sort((a, b) => a.d - b.d);
+    return rows;
+  };
+  return { mid: price, sigma, cap, liq, asks: side(1), bids: side(-1) };
+}
+
 export function godWatchOf(s, sym = s.sym) {
   const m = mktOf(s, sym);
   const t = timeOf(s);
@@ -164,8 +192,10 @@ export function godWatchOf(s, sym = s.sym) {
   }
   const liqDay = liqOf(sym, dayIndexOf(s.i)) || 0;
   const base = hourLiqBase(s, sym, s.i);
+  const price = lastPrice(s, sym);
   return {
-    price: lastPrice(s, sym), heat: m.heat || 0, mood: m.mood || 0, liqs, tiers,
+    price, heat: m.heat || 0, mood: m.mood || 0, liqs, tiers,
+    book: bookForWatch(s, sym, price),
     depth: {
       liqDay, hourBase: base,
       poolUsed: poolConsumedAt(s, sym, s.i), poolCap: POOL.capK * base,
@@ -943,20 +973,10 @@ function hourLiqOf(s, sym, i) {
 const godCapOf = s => (s.god ? MANIP_GOD_CAP : SLIP.cap);
 
 /**
- * 一次成交的冲击（0 = 不触发）。
- * ⚠️ **取不到当日流动性就不触发** —— 数据还没加载完 / 该币那天还没上线时，不凭空造一个冲击出来。
- */
-function impactFor(s, sym, i, notional) {
-  const liq = hourLiqOf(s, sym, i);
-  if (!(liq > 0) || !(notional > 0)) return 0;
-  return impactOf(notional / liq, dailySigma(sym, i), godCapOf(s));
-}
-
-/**
- * 一次成交的**行情位移量**（0 = 不触发）—— 与 `impactFor` 同形，但走**无死区**的 `permImpactOf`。
+ * 一次成交的**行情位移量**（0 = 不触发）—— 与代价入口同形，但走**无死区**的 `permImpactOf`。
  *
- * ⚠️ 为什么必须另开一个入口（这是「大额买入不影响 K 线」的病根）：`impactFor` 走 `impactOf`，
- *    它带 `threshold = 10%` 的**代价**死区 —— 单笔不到当日流动量的 10% 就返回 0。那个 0 若被
+ * ⚠️ 为什么必须另开一个入口（这是「大额买入不影响 K 线」的病根）：代价曲线（`impactOf` /
+ *    现在的 `walkBook` 走簿）带 `threshold = 10%` 的**代价**死区 —— 单笔不到当日流动量的 10% 就返回 0。那个 0 若被
  *    拿去当永久位移，`god.addFlow(…, 0)` 当场早退，`s.flow` 里**一个字节都写不进去**。实测
  *    2015 年后 BTC 单小时要 ≥ $8.5 万、2021 年要 ≥ $1.76 亿才触发 ⇒ 玩家的单子在图上毫无痕迹。
  *    位移是**市场影响**（任何成交都有），代价是**收费**（小额免收），两件事不该共用一条死区。
@@ -965,6 +985,38 @@ function permImpactFor(s, sym, i, notional) {
   const liq = hourLiqOf(s, sym, i);
   if (!(liq > 0) || !(notional > 0)) return 0;
   return permImpactOf(notional / liq, dailySigma(sym, i), godCapOf(s));
+}
+
+/**
+ * **玩家侧走簿撮合**（2026-10-07 拍板「滑点改成真走簿逐档撮合」）—— 一次市价单吃簿的全程：
+ *   · `cost`  加权平均滑点 —— `walkBook` 把 `impactOf(q, σ, cap)` 那条代价曲线摊开成 12 档
+ *             逐档吃（审计 9v：对连续式 ≤1%）；顶格饱和 / 死区 / `hard` 上夹与 `impactOf` 同口径；
+ *   · `n`     吃满用了几档（成交日志的「 · N 笔」）；
+ *   · `eaten` 本笔**吃掉的墙** `[{p, w, frac}]` —— 供 `pushFlow → absorbedImpact` 做**精确耦合**
+ *     （吃掉多少，位移吸收就折掉多少）。判定是**二值**的：本笔的触及距离
+ *     `reach = 3σ√q_eff` ≥ 墙距 ⇒ 整条吃掉（`frac = 1`），否则不碰。
+ *
+ * ⚠️ 分母 / σ / cap 与位移入口（`permImpactFor`）**同一套来源**（`hourLiqOf` / `dailySigma` / `godCapOf`）——
+ *    走簿不是第二套物理，只是同一条代价曲线的离散形态。
+ * ⚠️ NPC 三通道（`rawPermImpactFor` / `syncNpcDrift` / `stepAdvPush`）不经过这里，
+ *    市场物理零漂移（审计 9v 源码锚）。
+ */
+export function walkFillFor(s, sym, i, notional, dir, price) {
+  const liq = hourLiqOf(s, sym, i);
+  if (!(liq > 0) || !(notional > 0)) return { cost: 0, n: 1, eaten: [], q: 0, sigma: 0, cap: SLIP.cap, reach: 0 };
+  const q = notional / liq;
+  const sigma = dailySigma(sym, i);
+  const cap = godCapOf(s);
+  const r = walkBook({ sigma, cap, q });
+  const eaten = [];
+  if (price > 0 && r.reach > 0) {
+    for (const L of levelsOf(sym, i)) {
+      if (!(L.w > 0)) continue;
+      const d = dir > 0 ? L.p / price - 1 : 1 - L.p / price;
+      if (d > 0 && d <= r.reach) eaten.push({ p: L.p, w: L.w, frac: 1 });
+    }
+  }
+  return { cost: r.impact, n: r.n, eaten, q, sigma, cap, reach: r.reach };
 }
 
 /**
@@ -993,18 +1045,18 @@ function rawPermImpactFor(s, sym, i, notional) {
  * 被扫到的位 = 落在 `(现价, 成交后价]` 这一段里的那些（卖单镜像）。撞上去推不动，
  * 就是「那个价位真的堆着货」；权重和越大吸得越狠，上限 `LEVELS.absorb`。
  *
- * ⚠️ **只吸位移，不吸代价**（红线 A · 不双重计价）：`impactFor` 那条线一个字节都不动 ——
- *    这一笔该付多少滑点照付，这里只决定**成交之后价格停在哪**。
+ * ⚠️ **只吸位移，不吸代价**（红线 A · 不双重计价）：走簿代价（`walkFillFor` 的 `cost`）一个字节
+ *    不受这里影响 —— 这一笔该付多少滑点照付，这里只决定**成交之后价格停在哪**。
  * ⚠️ 现价取**标记价**（含玩家已造成的位移）而不是原始收盘：压力位是「相对当前价」的位置，
  *    玩家把价推上去之后再撞的应该是上面那一条。撞穿后位落到现价下方 ⇒ 自然不再被扫到。
  * ⚠️ 没扫到位时返回**恰好 `impact`**（乘 1，IEEE754 精确）⇒ 开局头两天、无行情、
  *    或价格在两条位之间的那些情况，与改动前**逐位相同**。
  */
-function absorbedImpact(s, sym, dir, impact) {
+function absorbedImpact(s, sym, dir, impact, eaten = null) {
   if (!(impact > 0)) return impact;
   const p = lastPrice(s, sym);
   if (!(p > 0)) return impact;
-  return impact * absorbOf(levelsOf(sym, s.i), p, dir, impact);
+  return impact * absorbOf(levelsOf(sym, s.i), p, dir, impact, eaten);
 }
 
 /**
@@ -1019,11 +1071,14 @@ function absorbedImpact(s, sym, dir, impact) {
  *   （1x 实物 perm 高、回补慢；有杠杆盘回补快）。缺省按合约。
  * @param {boolean} [player] 是不是**玩家自己的成交**（缺省是）。只有玩家的成交才给「热度」加料
  *   （§73.5 的 k3 项）—— NPC 自己写的那些不该再喂热度，否则热度会自激。
+ * @param {Array<{p:number,w:number,frac:number}>} [eaten] 本笔走簿**吃掉的墙**
+ *   （`walkFillFor` 的产出，缺省 null）—— 传给 `absorbedImpact` 做**精确耦合**；NPC 路径
+ *   不传 ⇒ `absorbOf` 走缺省，逐位等于改动前（市场物理零漂移）。
  */
-function pushFlow(s, sym, dir, notional, give = 1, kind = 'fut', player = true) {
+function pushFlow(s, sym, dir, notional, give = 1, kind = 'fut', player = true, eaten = null) {
   /* 沙盒「冲击强度」（2026-10-05）：整笔位移乘一枚倍率 —— 默认 1 ⇒ **逐位等于改动前**。
      它同时作用于玩家成交与 NPC 强平（都走这里），所以是「这个市场有多容易被推动」的总闸。 */
-  const v = sbOf(s).shock * dir * give * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
+  const v = sbOf(s).shock * dir * give * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional), eaten);
   /* ② **做市库存动态**（2026-10-03 拍板）：本笔相对**本小时基准深度**的占比越大 ⇒ 做市商吃下的
      库存越多 ⇒ 回补越急（`betaFast` 越快）。口径见 `god.INV`：
        `betaFast = 基准 × (1 + kInv × min(q, qCap))`，`q = 本笔名义 ÷ hourLiqRaw`
@@ -2826,12 +2881,16 @@ function openCheck(s, side, frac = 1) {
   if (otc && margin * lev < otcMin) return { ok: false, why: `OTC 单笔最少 ${fmtMoneyShort(otcMin)}` };
 
   /* 成交价（P2-B1 / P2-B3）：盘口价 ± 代价 —— 买抬、卖压，**永远对玩家不利**。
-     代价有两种，同一时刻只有一种成立：盘口是平方根冲击、OTC 是「基准点差 × 市况倍数」（不吃滑点）。
+     代价有两种，同一时刻只有一种成立：盘口是**走簿逐档撮合**（12 档吃簿，2026-10-07 拍板）、
+     OTC 是「基准点差 × 市况倍数」（不吃滑点）。
      ⚠️ 保证金与开仓费都不受它影响（那两项按名义价值算，与成交价无关），
         受影响的是 `size`：买贵了就拿到的币少一点，这才是代价的真实形态。 */
   const notional = margin * lev;
-  const cost = otc ? otcPremiumFor(s, s.sym, notional) : impactFor(s, s.sym, s.i, notional);
-  const fill = fillPrice(price, side === 'long' ? 1 : -1, cost);
+  const dir = side === 'long' ? 1 : -1;
+  /* ⚠️ `canOpenAt` 每帧都进这里 ⇒ 走簿必须轻：12 档循环 ＋ `levelsOf` 单槽缓存（levels.js）。 */
+  const walk = otc ? null : walkFillFor(s, s.sym, s.i, notional, dir, price);
+  const cost = otc ? otcPremiumFor(s, s.sym, notional) : walk.cost;
+  const fill = fillPrice(price, dir, cost);
 
   /* 借贷额度上限（B26 · 2026-10-03 拍板）：能借多少由资金市场的**深度**决定 ——
      `当日全市场流动性 × MARGIN.quota`（与滑点门槛同一把尺子，见 `config.MARGIN.quota` 注释）。
@@ -2874,7 +2933,7 @@ function openCheck(s, side, frac = 1) {
       return { ok: false, why: `${s.sym} 已触及供应量上限，无法继续买入` };
     }
 
-  return { ok: true, lev, kind, feeRate, mustUsdt, prev, otc, isMarginOrder, margin, fee, notional, cost, fill, tierCapped };
+  return { ok: true, lev, kind, feeRate, mustUsdt, prev, otc, isMarginOrder, margin, fee, notional, cost, fill, walk, tierCapped };
 }
 
 /**
@@ -2897,7 +2956,7 @@ export const canOpenAt = (s, side, frac = 1) => openCheck(s, side, frac).ok;
 export function openTrade(s, side, frac = 1) {
   const c = openCheck(s, side, frac);
   if (!c.ok) return { ok: false, why: c.why };
-  const { lev, kind, feeRate, mustUsdt, prev, otc, isMarginOrder, margin, fee, notional, cost, fill, tierCapped } = c;
+  const { lev, kind, feeRate, mustUsdt, prev, otc, isMarginOrder, margin, fee, notional, cost, fill, walk, tierCapped } = c;
 
   /* 扣账（v13）：`debit` **先扣 USDT、不足补 USD**（合约只认 USDT），并返回两格各扣了多少 ——
      那个 `mix` 就是「原路退回」的凭据，平仓时按同比例还回两格（见 `state.credit`）。
@@ -2916,8 +2975,8 @@ export function openTrade(s, side, frac = 1) {
     sym: s.sym, side, fill, margin, notional, lev, feeRate, marginMode, fee, mix, otc, retier: tierCapped,
   });
 
-  /* 笔数（C8-B1）：同一份代价，报出它相当于拆成了几笔。OTC 是私下一口价、不吃滑点 ⇒ 不报。 */
-  const fills = otc ? 1 : bookFills(notional / hourLiqOf(s, s.sym, s.i), cost);
+  /* 笔数（C8-B1）：走簿实际吃满用了几档（`walkFillFor` 的 `n`）。OTC 是私下一口价、不吃滑点 ⇒ 不报。 */
+  const fills = otc ? 1 : walk.n;
   const tag = otc ? `｜OTC 溢价 ${fmtRate(cost, 2)}` : slipTag(cost, fills);
   /* 字面跟着模式走（v9 · §15.6 N4「没有的选项不显示」的同一条口径）：杠杆模式的操作键是
      **买入 / 卖出**，日志若还写「做多 / 做空」，就与玩家刚按下的那枚键对不上了。 */
@@ -2959,7 +3018,9 @@ export function openTrade(s, side, frac = 1) {
         字段一并删掉 —— 它不再是选项，而是基础玩法的一部分。 */
   if (!otc) {
     const dir = side === 'long' ? 1 : -1;
-    pushFlow(s, s.sym, dir, notional, 1, shockKindOf(isMarginOrder, lev));
+    /* 第 8 参 `walk.eaten`：本笔走簿吃掉的墙 —— 位移吸收按剩余权重折减（精确耦合）。
+       加仓的 `dir` 与上面 openCheck 里那一个同值，就地重算（开仓之后价格已动，不缓存旧值）。 */
+    pushFlow(s, s.sym, dir, notional, 1, shockKindOf(isMarginOrder, lev), true, walk.eaten);
     /* 玩家自己的成交量（v17 · 2026-10-01）：这一笔从此在量柱上看得见，
        也进这家所**这条产品线**的 30 天量（v19 按所 / v20 按产品线 / v24 按币） */
     addPlayerVol(s, s.sym, notional, s.ex, kind);
@@ -3036,11 +3097,13 @@ function closeCheck(s, frac = 1) {
   }
 
   /* 成交价（P2-B1 / P2-B3）：**平多是卖、平空是买**，所以方向与开仓时相反 ——
-     代价永远对玩家不利：卖掉打点折、买回抬点价。 */
-  const cost = otc ? otcPremiumFor(s, sym, notional) : impactFor(s, sym, s.i, notional);
-  const fill = fillPrice(price, pos.side === 'long' ? -1 : 1, cost);
+     代价永远对玩家不利：卖掉打点折、买回抬点价。盘口侧走**走簿逐档撮合**（与开仓同源）。 */
+  const dir = pos.side === 'long' ? -1 : 1;
+  const walk = otc ? null : walkFillFor(s, sym, s.i, notional, dir, price);
+  const cost = otc ? otcPremiumFor(s, sym, notional) : walk.cost;
+  const fill = fillPrice(price, dir, cost);
 
-  return { ok: true, pos, otc, f, pk, feeRate, closeSize, notional, cost, fill };
+  return { ok: true, pos, otc, f, pk, feeRate, closeSize, notional, cost, fill, walk };
 }
 
 /** 渲染层用的**纯判据**：这一笔平得出来吗 —— 与 `closeTrade` 同源（金额档的置灰读它）。 */
@@ -3211,7 +3274,7 @@ export function adjustMargin(s, sym, delta) {
 export function closeTrade(s, why = '手动', frac = 1) {
   const c = closeCheck(s, frac);
   if (!c.ok) return { ok: false, why: c.why };
-  const { pos, otc, f, pk, feeRate, closeSize, notional, cost, fill } = c;
+  const { pos, otc, f, pk, feeRate, closeSize, notional, cost, fill, walk } = c;
   const sym = pos.sym;
 
   /* 这一笔自己的结算（比例口径）：
@@ -3238,7 +3301,7 @@ export function closeTrade(s, why = '手动', frac = 1) {
   if (pnl - openFee - fee > 0) s.stat.win += 1; else s.stat.loss += 1;
   if (otc) s.stat.otc += 1;               // v32：OTC 通道平仓 / 减仓同样计一笔 —— 称号「场外玩家」
   if (f < 1) s.stat.part += 1;            // v32：**分批**平仓（`frac < 1`）—— 称号「分批离场」
-  const fills = otc ? 1 : bookFills(notional / hourLiqOf(s, sym, s.i), cost);   // 笔数（C8-B1，同开仓口径）
+  const fills = otc ? 1 : walk.n;   // 笔数（C8-B1）：走簿实际吃满用了几档（同开仓口径）
   /* 玩家自己的成交量（v17 · 2026-10-01）：平仓同样是成交 ⇒ 记进当根 K 线的量柱。
      OTC 不落公开盘口（与「不写冲击池」同一先例）⇒ 不计。 */
   if (!otc) addPlayerVol(s, sym, notional, pos.ex, pk);
@@ -3288,7 +3351,8 @@ export function closeTrade(s, why = '手动', frac = 1) {
      ⚠️ 分批减仓时，这一笔写的仍是**本笔名义**该有的位移（冲击按成交额走，不按仓位的比例）。 */
   if (!otc) {
     const d = pos.side === 'long' ? -1 : 1;
-    pushFlow(s, sym, d, notional, SHOCK.closeGive, shockKindOf(isMargin(pos), pos.lev));
+    /* 第 8 参 `walk.eaten`：平仓这一笔走簿吃掉的墙 —— 与开仓同一条精确耦合（2026-10-07）。 */
+    pushFlow(s, sym, d, notional, SHOCK.closeGive, shockKindOf(isMargin(pos), pos.lev), true, walk.eaten);
     consumePool(s, sym, notional);        // 瞬时深度池（L1）：平仓同样是真实成交 ⇒ 也吃深度
   }
   /* 持仓抛压折价（v18 · 2026-10-01）：这一条仓位没了（`delete` 在上面）⇒ 折价随之释放。
@@ -3539,7 +3603,9 @@ export function godFillCash(s, amount) {
 /**
  * 操盘台**预览**：吃单 `notional`（方向 `dir`）的预计位移 ＋ 预计花费 —— **与实际写值同式同参**：
  *   位移 = `sbOf.shock × dir × SHOCK.share × absorbedImpact(permImpactFor(…))`（`pushFlow` 同式，
- *   含压力位吸收 —— 同一时刻同一单，预览即实值）；花费 = 手续费 ＋ 冲击成本（`impactFor` 同式）。
+ *   含压力位吸收 —— 同一时刻同一单，预览即实值）；花费 = 手续费 ＋ 冲击成本（`impactOf` 同式）。
+ * ⚠️ 操盘台**不走走簿**（2026-10-07 拍板范围外）：上帝吃单是「搬动市场」的上帝视角动作，
+ *    不是一笔挂在盘口上的市价单 —— 代价仍走连续式 `impactOf`。
  * 纯读：一个字节都不写（压力位 / 深度 / σ 都只读）。
  * @returns {{impact:number, cost:number, feeRate:number, sat:boolean}} `sat` = 本笔 `q` 已顶到深度上限
  */

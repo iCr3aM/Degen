@@ -35,6 +35,7 @@ const market = await import('../src/core/market.js');
 const god = await import('../src/core/god.js');
 const P = await import('../src/core/positions.js');
 const impact = await import('../src/core/impact.js');
+const levels = await import('../src/core/levels.js');
 const C = await import('../src/core/config.js');
 const roll = await import('../src/core/roll.js');
 const F = await import('../src/core/format.js');
@@ -2655,9 +2656,11 @@ section('9q · 上帝面板分页接线（data-godtab ⇄ ACTION_KEYS ⇄ onGodT
      且引擎/分派侧全绿也测不出来（按钮根本到不了 dispatch）。
      豁免名单 `STATE_MARKS`：**CSS 状态标记**（写在元素上给选择器/变量用，不是点击目标）——
        `pf`  = `--pf` 变量的镜像（锁定币进度环，带值比较守卫）；
-       `heat` = `.chart-heat[data-heat=…]` 的着色桶（greedy/panic/缺省三档）。
+       `heat` = `.chart-heat[data-heat=…]` 的着色桶（greedy/panic/缺省三档）；
+       `pages` = 浮窗页签骨架的键串（`fPanel` 上给 `updateFloat` 判断「页签要不要随模式重建」，
+       不是点击目标 —— 页签点击走 `goftab`，2026-10-07 市场浮窗复用骨架时新增）。
      新增状态标记要在这里补一行并说明用途；新增**按钮**漏注册则此断言当场咬死。 */
-  const STATE_MARKS = new Set(['pf', 'heat']);
+  const STATE_MARKS = new Set(['pf', 'heat', 'pages']);
   /* 只抓 `export const ACTION_KEYS = [ ... ];` **数组本体** —— 不扫全文：全文抓会把
      注释里提到的旧键 / 别的字符串也当「已注册」，护栏假绿。 */
   const arrBody = bindSrc.match(/export const ACTION_KEYS = \[([\s\S]*?)\];/);
@@ -2897,9 +2900,9 @@ section('9t · 爆仓潮解闸（stampede 不再看玩家形态）＋ 上帝局�
   /* ④ 预览提示 + cap 缺省参数锚点 */
   check('9t 预览行带「深度不足 · 超出部分无效」提示（render）',
     renderSrc.includes('深度不足 · 超出部分无效'));
-  check('9t impact.js 三个入口都带缺省 cap（不传逐位不变）',
-    (impactSrc.match(/cap = SLIP\.cap/g) || []).length === 3,
-    `实得 ${(impactSrc.match(/cap = SLIP\.cap/g) || []).length} 处`);
+  check('9t impact.js 五个入口都带缺省 cap（不传逐位不变）',
+    (impactSrc.match(/cap = SLIP\.cap/g) || []).length === 5,
+    `实得 ${(impactSrc.match(/cap = SLIP\.cap/g) || []).length} 处（2026-10-07 走簿新增 baseLadder / walkBook 两入口，同守「不传 = SLIP.cap」口径）`);
 }
 
 /* ═══════════════════ 9u · 上帝浮窗：godWatchOf 只读快照 ＋ 接线锚点（2026-10-07 用户拍板） ═══════════════════
@@ -2959,7 +2962,7 @@ section('9u · 上帝浮窗（godWatchOf 快照）＋ 接线锚点');
   check('9u main：alpha 独立键 ＋ 档位循环 ＋ 每帧接线 ＋ 拖拽处理',
     mainSrc.includes("GOD_ALPHA_KEY = 'degen_god_alpha'")
     && mainSrc.includes('[1, 0.8, 0.6, 0.4]')
-    && mainSrc.includes('updateFloat(s, { on: godFloatOn')
+    && mainSrc.includes('updateFloat(s, floatUi())')
     && mainSrc.includes('onGodFloatChip(ev)'));
   check('9u render：圆钮/面板/热力图类名 ＋ 导出 updateFloat',
     renderSrc.includes("'god-chip'") && renderSrc.includes("'god-float'")
@@ -2968,6 +2971,151 @@ section('9u · 上帝浮窗（godWatchOf 快照）＋ 接线锚点');
     (styleSrc.match(/--god-alpha/g) || []).length >= 2
     && styleSrc.includes('.god-chip') && styleSrc.includes('.god-float')
     && styleSrc.includes('.god-hm-now'));
+}
+
+/* ═══════════════════ 9v · 走簿逐档撮合 ＋ 订单簿页（2026-10-07 拍板四件套） ═══════════════════
+   用户原话：「把滑点改成真走簿逐档撮合 / 放浮窗第四页 / 压力位挂单墙并入订单簿 / 在簿上·深度页露出。
+   做完后要确认无玩家情况下数据自洽，和历史史实一样」。四组断言对应四条验收线：
+     ① 恒等：walkBook ≡ impactOf —— 不是第二把尺子，是同一把尺子的离散实现（档边界逐位相等，
+        档内黎曼误差有界）—— 这一条就是「数据自洽」在代价侧的落实；
+     ② 墙精确耦合：absorbOf 的 eaten 折减与「本次成交吃掉的墙」逐位对账（手算锚）；
+     ③ 同源：浮窗订单簿与玩家下一笔会撞的簿来自同一套 σ / cap / liq / levels —— 看到的就是会撞的；
+     ④ 零漂移：NPC 三通道不经过走簿（eaten 缺省 null ⇒ absorbOf 逐位不变），无玩家局史实不变。
+   ⚠️ 阈值 1% 是 `impact.js` baseLadder 头注的拍板锚（cap = SLIP.cap 玩家主口径，实测 0.261%）；
+      cap = 1.0（上帝宽梯）档内黎曼误差随 h 放大（实测 3.9%，落在 q 刚出死区处）—— 阶梯簿
+      部分档按全档均价成交的现实语义，不是 bug，单独放宽到 5% 并在此注明，勿混同主口径。 */
+section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源 / 零漂移）');
+{
+  /* ① 恒等网格：σ × cap × q 全扫（含超顶格与 hard 钳制区） */
+  {
+    let n1 = 0, worst25 = 0, worst10 = 0;
+    for (const sigma of [0.01, 0.05, 0.1, 0.15, 0.2, 0.3]) {
+      for (const cap of [impact.SLIP.cap, 1.0]) {
+        for (let q = impact.SLIP.threshold * 1.001; q <= cap * 1.4; q *= 1.37) {
+          const ref = impact.impactOf(q, sigma, cap);
+          if (!(ref > 0)) continue;                    // 死区两侧同记零，无可比偏差
+          const e = Math.abs(impact.walkBook({ sigma, cap, q }).impact - ref) / ref;
+          if (cap === impact.SLIP.cap) worst25 = Math.max(worst25, e);
+          else worst10 = Math.max(worst10, e);
+          n1++;
+        }
+      }
+    }
+    check('9v① 走簿 ≡ 连续式（cap=0.25 主口径，≤1%）',
+      worst25 <= 0.01, `网格 ${n1} 点 · 最大 ${(worst25 * 100).toFixed(3)}%`);
+    check('9v① 走簿 ≡ 连续式（cap=1.0 上帝宽梯，≤5% 离散取舍）',
+      worst10 <= 0.05, `最大 ${(worst10 * 100).toFixed(3)}%`);
+  }
+
+  /* ①b 引擎侧多年对照：真实 σ / 真实流动性 / 真实 cap（普通局 ⇒ cap = SLIP.cap） */
+  for (const [yy, big] of [[2013, 5e5], [2017, 5e6], [2021, 5e7], [2024, 5e8]]) {
+    const sA = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(yy, 5, 10)) });
+    let ok = true, det = '', hit = 0;
+    for (const notional of [big, big * 20]) {
+      const wfA = engine.walkFillFor(sA, 'BTC', sA.i, notional, 1, engine.lastPrice(sA, 'BTC'));
+      const refA = impact.impactOf(wfA.q, wfA.sigma, wfA.cap);
+      if (!(refA > 0)) continue;
+      const e = Math.abs(wfA.cost - refA) / refA;
+      if (e > 0.01) ok = false;
+      det += ` q=${f(wfA.q, 3)} err=${(e * 100).toFixed(2)}%`;
+      hit++;
+    }
+    check(`9v①b ${yy} 引擎侧走簿 ≡ impactOf（≤1%）`,
+      ok, det + (hit === 0 ? '（全死区，两侧同记零）' : ''));
+  }
+
+  /* ② 墙精确耦合手算（纯函数，不碰引擎）—— 期望值独立于实现 */
+  const lv2w = [{ p: 100, w: 0.5 }, { p: 103, w: 1 }, { p: 110, w: 0.8 }];
+  const noEat = levels.absorbOf(lv2w, 100, 1, 0.05);                                    // 撞 p=103 → 1−0.55
+  const fullEat = levels.absorbOf(lv2w, 100, 1, 0.05, [{ p: 103, w: 1, frac: 1 }]);     // 吃光 → 不吸收
+  const halfEat = levels.absorbOf(lv2w, 100, 1, 0.05, [{ p: 103, w: 1, frac: 0.5 }]);   // 吃半 → 1−0.55×0.5
+  const outEat = levels.absorbOf(lv2w, 100, 1, 0.02, [{ p: 110, w: 1, frac: 1 }]);      // 墙在位移范围外
+  check('9v② 墙吸收手算：不折减 = 0.45', Math.abs(noEat - 0.45) < 1e-12, f(noEat, 4));
+  check('9v② 墙吸收手算：全吃 → 1', fullEat === 1);
+  check('9v② 墙吸收手算：吃半 = 0.725', Math.abs(halfEat - 0.725) < 1e-12, f(halfEat, 4));
+  check('9v② 墙吸收手算：墙在位移范围外 → 不折减（=1）', outEat === 1);
+
+  /* ③ 同源：浮窗订单簿 = 玩家下一笔会撞的簿（同一 σ / cap / liq / levels） */
+  {
+    const sB = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+    const bk = engine.godWatchOf(sB, 'BTC').book;
+    check('9v③ 上帝视角带订单簿（中价 / σ / cap / liq ＋ 两侧 ≥12 行）',
+      !!bk && bk.mid > 0 && bk.sigma > 0 && bk.cap > 0 && bk.liq > 0
+      && bk.asks.length >= 12 && bk.bids.length >= 12);
+    if (bk) {
+      const lad = impact.baseLadder(bk.sigma, bk.cap);
+      const baseAsks = bk.asks.filter(r => !r.wall);
+      const baseBids = bk.bids.filter(r => !r.wall);
+      check('9v③ 基础档 = baseLadder 逐位复刻（asks 12 档价距与名义）',
+        baseAsks.length === 12
+        && lad.every((r, k) => Math.abs(baseAsks[k].price - bk.mid * (1 + r.d)) < 1e-9
+          && Math.abs(baseAsks[k].notional - r.nq * bk.liq) < 1e-6));
+      check('9v③ 基础档 = baseLadder 逐位复刻（bids 12 档镜像）',
+        baseBids.length === 12
+        && lad.every((r, k) => Math.abs(baseBids[k].price - bk.mid * (1 - r.d)) < 1e-9));
+      const lvB = levels.levelsOf('BTC', sB.i).filter(L => L.w > 0);
+      const wallAsks = bk.asks.filter(r => r.wall);
+      const wallBids = bk.bids.filter(r => r.wall);
+      const askWalls = lvB.filter(L => L.p > bk.mid);
+      const bidWalls = lvB.filter(L => L.p < bk.mid);
+      check('9v③ 墙行逐条对账（价严格同源 ＋ 名义 = w × WALL_K × liq）',
+        wallAsks.length === askWalls.length && wallBids.length === bidWalls.length
+        && askWalls.every(L => {
+          const r = wallAsks.find(x => x.price === L.p);
+          return !!r && Math.abs(r.notional - L.w * levels.WALL_K * bk.liq) < 1e-6;
+        })
+        && bidWalls.every(L => {
+          const r = wallBids.find(x => x.price === L.p);
+          return !!r && Math.abs(r.notional - L.w * levels.WALL_K * bk.liq) < 1e-6;
+        }),
+        `墙 asks ${wallAsks.length} / bids ${wallBids.length}`);
+      const wfB = engine.walkFillFor(sB, 'BTC', sB.i, bk.liq * 0.2, 1, bk.mid);
+      check('9v③ walkFillFor 与簿同源（σ / cap / q 逐位 ＋ cost = walkBook 同参）',
+        wfB.sigma === bk.sigma && wfB.cap === bk.cap
+        && Math.abs(wfB.q - 0.2) < 1e-12
+        && wfB.cost === impact.walkBook({ sigma: wfB.sigma, cap: wfB.cap, q: wfB.q }).impact);
+      check('9v③ eaten 只含方向价距 ≤ reach 的真实墙（frac=1）',
+        wfB.eaten.every(E => E.frac === 1
+          && lvB.some(L => L.p === E.p && L.w === E.w)
+          && Math.abs(E.p / bk.mid - 1) <= wfB.reach + 1e-12),
+        `eaten ${wfB.eaten.length} 条`);
+    }
+  }
+
+  /* ④ 零漂移（源码层）：NPC 三通道不经过走簿 —— 无玩家局逐位史实的结构性保证 */
+  const engSrc = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  const impSrc = fs.readFileSync(path.join(ROOT, 'src/core/impact.js'), 'utf8');
+  const levSrc = fs.readFileSync(path.join(ROOT, 'src/core/levels.js'), 'utf8');
+  check('9v④ 旧 bookFills 已退役（engine / impact 无残留）',
+    !engSrc.includes('bookFills') && !impSrc.includes('bookFills'));
+  check('9v④ walkFillFor 恰三处（定义 ＋ 开仓 ＋ 平仓；NPC 三通道不经它）',
+    (engSrc.match(/walkFillFor\(/g) || []).length === 3);
+  check('9v④ pushFlow 第 8 参 eaten 缺省 null（NPC 通道零漂移的载体）',
+    engSrc.includes('player = true, eaten = null'));
+  check('9v④ 成交路径恰两处透传 walk.eaten（开仓 ＋ 平仓）',
+    (engSrc.match(/walk\.eaten\)/g) || []).length === 2);
+  check('9v④ absorbedImpact 全量透传 eaten 到 absorbOf',
+    engSrc.includes('absorbOf(levelsOf(sym, s.i), p, dir, impact, eaten)'));
+  check('9v④ absorbOf 第 5 参缺省 null ＋ WALL_K 导出 ＋ levelsOf 单槽缓存',
+    levSrc.includes('export function absorbOf(levels, p, dir, impact, eaten = null)')
+    && levSrc.includes('export const WALL_K = 0.05')
+    && levSrc.includes('let lcSym') && levSrc.includes('lcSym = sym'));
+
+  /* ⑤ 浮窗接线锚：第 4 页订单簿 ＋ 普通 / 挑战局市场浮窗 */
+  const bindSrc9v = fs.readFileSync(path.join(ROOT, 'src/ui/bind.js'), 'utf8');
+  const mainSrc9v = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+  const rendSrc9v = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  const styleSrc9v = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
+  check('9v⑤ bind 注册 mktfloat 键', bindSrc9v.includes("'mktfloat'"));
+  check('9v⑤ main：市场浮窗开关（localStorage 持久化 ＋ 页表随模式）',
+    mainSrc9v.includes("MKT_FLOAT_KEY = 'degen_mkt_float'")
+    && mainSrc9v.includes('MKT_FLOAT_PAGES') && mainSrc9v.includes('mkt: !s.god'));
+  check('9v⑤ render：订单簿页（页 3）＋ 设置页开关 ＋ 深度页墙汇总',
+    rendSrc9v.includes('gb-row') && rendSrc9v.includes('gb-mid')
+    && rendSrc9v.includes('mktFloatBtn') && rendSrc9v.includes('压力位墙'));
+  check('9v⑤ style：订单簿行样式（9px 固定口径 ＋ 墙金色）',
+    styleSrc9v.includes('.gb-row') && styleSrc9v.includes('.gb-mid')
+    && styleSrc9v.includes('.gb-row.wall'));
 }
 
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════

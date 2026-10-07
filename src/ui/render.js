@@ -647,10 +647,17 @@ export function mount(root) {
   colBtn.dataset.colors = 'toggle';
   const colRow = el('div', 'set-row');
   colRow.append(el('i', null, '涨跌色'), colBtn);
+  /* 市场浮窗（2026-10-07 拍板）：普通 / 挑战局的盘口浮窗（订单簿 ＋ 深度两页）——
+     上帝局的「哨」浮窗恒开、不受它管。偏好归 `main.js`（独立 localStorage 键），
+     这里只负责显示，与「涨跌色」同一套接线。 */
+  const mktFloatBtn = el('button', 'set-btn on', '开');
+  mktFloatBtn.dataset.mktfloat = 'toggle';
+  const mktFloatRow = el('div', 'set-row');
+  mktFloatRow.append(el('i', null, '市场浮窗'), mktFloatBtn);
   const setCard = el('div', 'set-card');
   setCard.append(volRow, mktRow);
   if (vibRow) setCard.append(vibRow);
-  setCard.append(fxRow, hintRow, colRow);
+  setCard.append(fxRow, hintRow, colRow, mktFloatRow);
   const resetBtn = el('button', 'act flat', '重开本局');
   resetBtn.dataset.reset = '';
   /* 返回主菜单（2026-10-01 用户要求）：设置页原来是**没有出口**的 —— 底部 Tab 只在交易 /
@@ -810,7 +817,7 @@ export function mount(root) {
     chanBtn, buyBtn, sellBtn, longBtn, shortBtn, closeBtn,
     pages, tabBtns, asUsd, asUsdSub, asUsdt, asUsdtSub, asTotal, asNote, asNoteNum, asList,
     asCurve, asCurveCap, eqRangeBtns, asBusy, asOnway, uPrice, uCard, uFracBtns, uBuyBtn, asExName, asExNote,
-    volBtns, vibBtns, fxBtns, mktBtn, hintBtn, hintRow, colBtn,
+    volBtns, vibBtns, fxBtns, mktBtn, hintBtn, hintRow, colBtn, mktFloatBtn, mktFloatRow,
     /* 回顾页（需求 4 · 方案 §3） */
     rvTop, rvBar, rvAuto, rvDate, rvPauseBtn: rvPause, rvSpdBtns, rvSymBtns,
     rvWrap, rvCanvas, rvHead, rvSym, rvMcap, rvSupp, rvChg, rvModeBtn, rvLogs,
@@ -905,6 +912,10 @@ export function update(refs, s, view) {
   refs.hintBtn.classList.toggle('on', s.hintOn);
   refs.colBtn.textContent = view.redUp ? '红涨' : '绿涨';
   refs.colBtn.classList.toggle('on', view.redUp);
+  /* 市场浮窗开关：上帝局**整行不出现**（哨浮窗是上帝专属、恒开，这枚开关管不着它）。 */
+  refs.mktFloatRow.hidden = !!s.god;
+  refs.mktFloatBtn.textContent = view.mktFloat ? '开' : '关';
+  refs.mktFloatBtn.classList.toggle('on', view.mktFloat);
 
   /* 账户三格（R25：改用 `setText`/`setCls` 减写版，不再直写 `textContent`/`className`） */
   const eq = equity(s);
@@ -3236,7 +3247,8 @@ let fChip = null, fPanel = null;
 /** 面板内容（每帧重建）。页 0 热力图：纵轴 = 价格、条 = 各档强平价位（宽 ∝ 名义占比，
  *  多头强平在下方走跌色、空头强平在上方走涨色）＋ 当前价标线；
  *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ heat / mood；
- *  页 2 深度：日流动性 / 本时基准 / 深度池余量 / 免滑点线 / 单笔顶格线 —— 全是真状态。 */
+ *  页 2 深度：日流动性 / 本时基准 / 深度池余量 / 免滑点线 / 单笔顶格线 ＋ 压力位墙汇总 —— 全是真状态；
+ *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础 12 档 ＋ 压力位墙逐档列出。 */
 function floatBody(s, page) {
   const w = godWatchOf(s, s.sym);
   const box = el('div', 'god-fbody');
@@ -3271,6 +3283,37 @@ function floatBody(s, page) {
     }
     if (!w.tiers.some(tr => tr.long > 0 || tr.short > 0)) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
     box.append(el('div', 'god-frow2 mut', `热度 ${fmtPct(w.heat)} ｜ 情绪 ${w.mood >= 0 ? '+' : ''}${fmtPct(w.mood)}`));
+  } else if (page === 3) {
+    /* 订单簿：asks 反序（远档在上、最近的卖价贴中价）、bids 正序（最近的买价贴中价）——
+       与真实交易所的盘口同一副上下结构。每侧 8 根**基础档**预算：数到第 9 根非墙行截断，
+       墙在前 8 档带内照插（墙才是这页的主角 —— 它们就是下一笔成交真的会撞上的货）。 */
+    const b = w.book;
+    if (!b) { box.append(el('p', 'god-fnote', '盘口暂不可用')); return box; }
+    const cut = rows => {
+      const out = [];
+      let base = 0;
+      for (const r of rows) {
+        if (!r.wall && ++base > 8) break;
+        out.push(r);
+      }
+      return out;
+    };
+    const asks = cut(b.asks).reverse();
+    const bids = cut(b.bids);
+    const maxN = Math.max(1, ...asks.map(r => r.notional), ...bids.map(r => r.notional));
+    const gbRow = (r, cls) => {
+      const row = el('div', `gb-row ${cls}${r.wall ? ' wall' : ''}`);
+      row.append(el('i', null, (r.wall ? '墙 ' : '') + fmtLogPrice(r.price)));
+      const u = el('u');
+      u.style.width = `${Math.max(4, (r.notional / maxN) * 100)}%`;
+      const track = el('span', 'gb-track');
+      track.append(u);
+      row.append(track, el('b', null, fmtMoneyShort(r.notional)));
+      return row;
+    };
+    for (const r of asks) box.append(gbRow(r, 'gb-ask'));
+    box.append(el('div', 'gb-mid', fmtLogPrice(b.mid)));
+    for (const r of bids) box.append(gbRow(r, 'gb-bid'));
   } else {
     const d = w.depth;
     const row = (k, v) => { const r = el('div', 'god-frow2'); r.append(el('i', null, k), el('b', null, v)); return r; };
@@ -3279,17 +3322,25 @@ function floatBody(s, page) {
     box.append(row('深度池', `${fmtMoneyShort(Math.max(0, d.poolCap - d.poolUsed))} / ${fmtMoneyShort(d.poolCap)}`));
     box.append(row('免滑点 ≤', fmtMoneyShort(d.dead)));
     box.append(row('单笔顶格 ≥', fmtMoneyShort(d.sat)));
+    /* 压力位墙汇总（2026-10-07 拍板「在簿上/深度页露出」）：逐条在页 3，这里给一个总读数。 */
+    const walls = w.book ? w.book.asks.filter(r => r.wall).concat(w.book.bids.filter(r => r.wall)) : [];
+    box.append(row('压力位墙', walls.length
+      ? `${walls.length} 条 · 合计 ${fmtMoneyShort(walls.reduce((a, r) => a + r.notional, 0))}`
+      : '—'));
   }
   return box;
 }
 
 /**
  * 每帧调用（`main.js` 的 `draw()` 全量路径）：按 `ui` 挂 / 摘圆钮与面板。
- * @param {object|null} s  游戏状态；`null`（回顾 / 非上帝局 / 浮窗关）⇒ 全部摘除
- * @param {{on:boolean,open:boolean,page:number,pos:{x:number,y:number}|null}} ui main.js 持有的浮窗状态
+ * @param {object|null} s  游戏状态；`null`（回顾 / 浮窗关）⇒ 全部摘除
+ * @param {{on:boolean,open:boolean,page:number,pos:{x:number,y:number}|null,
+ *          pages:Array<[number,string]>,mkt:boolean}} ui main.js 持有的浮窗状态
+ *   —— `pages` 是**当前模式的页表**（上帝局 4 页 / 普通局订单簿＋深度 2 页），
+ *      `mkt` = 普通局标记（决定圆钮副色，页签与内容都随 `pages` 走）。
  */
 export function updateFloat(s, ui) {
-  if (!(s && s.god && ui && ui.on)) {
+  if (!(s && ui && ui.on && (s.god || ui.mkt))) {
     if (fChip) { fChip.remove(); fChip = null; }
     if (fPanel) { fPanel.remove(); fPanel = null; }
     return;
@@ -3307,18 +3358,22 @@ export function updateFloat(s, ui) {
   if (!ui.open) { if (fPanel) { fPanel.remove(); fPanel = null; } return; }
   if (!fPanel) {
     fPanel = el('div', 'god-float');
-    const tabs = el('div', 'god-ftabs');
-    for (const [i, label] of [[0, '热力'], [1, '巨鲸'], [2, '深度']]) {
-      const b = el('button', 'god-ftab', label);
-      b.dataset.goftab = String(i);
-      tabs.append(b);
-    }
     const x = el('button', 'god-fx', '✕');
     x.dataset.gofclose = '';
     const head = el('div', 'god-fhead');   // 页签 ＋ ✕ 同一行（骨架，只建一次）
-    head.append(tabs, x);
+    head.append(el('div', 'god-ftabs'), x);
     fPanel.append(head, el('div', 'god-fpage'));
     document.body.append(fPanel);
+  }
+  /* 页签随模式重建（2026-10-07）：上帝局 4 页 / 普通局 2 页 —— 页键串变了才重建，别的帧零开销。 */
+  const pkey = ui.pages.map(([p]) => p).join(',');
+  if (fPanel.dataset.pages !== pkey) {
+    fPanel.dataset.pages = pkey;
+    fPanel.querySelector('.god-ftabs').replaceChildren(...ui.pages.map(([i, label]) => {
+      const b = el('button', 'god-ftab', label);
+      b.dataset.goftab = String(i);
+      return b;
+    }));
   }
   for (const b of fPanel.querySelectorAll('[data-goftab]')) b.classList.toggle('on', Number(b.dataset.goftab) === ui.page);
   fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page));

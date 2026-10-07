@@ -103,6 +103,9 @@ export const ACTION_KEYS = [
      `goftab` ＝ 浮窗面板三枚页签（热力 / 巨鲸 / 深度）；`gofclose` ＝ 面板右上角「✕」。
      ⚠️ 与 `godtab`（上帝面板页签）是**两套**页签 —— 浮窗的用 `goftab`，别混。 */
   'godfloat', 'godalpha', 'gofloat', 'goftab', 'gofclose',
+  /* 市场浮窗开关（2026-10-07 拍板）：普通 / 挑战局设置页那枚「市场浮窗 开/关」——
+     哨浮窗本体（上帝局）与这枚开关是两回事；分派见 `main.js` 的 `onMktFloat`。 */
+  'mktfloat',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');

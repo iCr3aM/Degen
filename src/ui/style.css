@@ -2124,3 +2124,24 @@ button { user-select: none; -webkit-user-select: none; }
   text-align: right;
   padding: 0 2px;
 }
+/* 订单簿页（2026-10-07 拍板「压力位挂单墙并入订单簿」）：价 | 量条 | 名义 三列**固定列宽**
+   （用户红线：所有元素固定、不换行、列要对齐）—— 字号 9px 固定 px，不乘 --ui（浮窗同口径）。 */
+.gb-row { display: flex; align-items: center; gap: 4px; font-size: 9px; line-height: 13px; white-space: nowrap; }
+.gb-row i { font-style: normal; color: var(--mut); flex: 0 0 66px; overflow: hidden; }
+.gb-row b { font-weight: 600; flex: 0 0 56px; text-align: right; }
+.gb-row .gb-track { flex: 1 1 auto; min-width: 0; }
+.gb-row u { display: block; height: 10px; text-decoration: none; }
+.gb-ask b { color: var(--down); }
+.gb-ask u { margin-left: auto; background: color-mix(in srgb, var(--down) 26%, transparent); }
+.gb-bid b { color: var(--up); }
+.gb-bid u { margin-right: auto; background: color-mix(in srgb, var(--up) 26%, transparent); }
+.gb-row.wall i, .gb-row.wall b { color: var(--gold); }
+.gb-row.wall u { background: color-mix(in srgb, var(--gold) 32%, transparent); }
+.gb-mid {
+  border-top: 1px dashed var(--gold);
+  color: var(--gold);
+  font-size: 9px;
+  line-height: 13px;
+  text-align: right;
+  padding: 0 2px;
+}
