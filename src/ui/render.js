@@ -12,13 +12,13 @@
  */
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
-import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
+import { fmtCap, fmtDate, fmtFloatPrice, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
 import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
-import { tapeOf } from '../core/tape.js';
+import { tape24h } from '../core/tape.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
@@ -3253,7 +3253,8 @@ let fChip = null, fPanel = null;
  *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ 热度 / 恐惧贪婪；
  *  页 2 深度：日流动性 / 本时基准 / 深度池余量 / 免滑点线 / 单笔顶格线 ＋ 压力位墙汇总 —— 全是真状态；
  *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础 12 档 ＋ 压力位墙逐档列出。
- *  页 4 逐笔成交（2026-10-07 拍板）：本小时量的**代表性采样**（幂律 ＋ taker 偏斜，见 tape.js），
+ *  页 4 逐笔成交（2026-10-07 拍板）：本小时量的**代表性采样**（幂律 ＋ taker 偏斜，见 tape.js）
+ *       ＋ 已收盘前 23 小时的**逐时汇总**（近 24 小时记录，`tape24h`），
  *       列固定「时刻 价 数量 金额」最新在前 —— `prog` = 本小时已走的量占比（main.js 时钟）。 */
 function floatBody(s, page, prog) {
   const w = godWatchOf(s, s.sym);
@@ -3263,22 +3264,31 @@ function floatBody(s, page, prog) {
     const hi = w.price * (1 + BAND), lo = w.price * (1 - BAND);
     const yFrac = p => (hi - p) / (hi - lo);       // 0 = 视窗顶（高价）
     const vis = w.liqs.filter(l => l.price >= lo && l.price <= hi).sort((a, b) => b.price - a.price);
-    /* 自适应去重叠：14px 上限、条挤得下就压缩（14 条 × 12px 条高恰好铺满 180px 可用区） */
-    const gap = Math.max(0, Math.min(14, (HM_H - 24) / Math.max(1, vis.length - 1) - 12));
+    /* 像素级去重叠（2026-10-07 bug 修）：条与现价线**合并**进同一排序级联，任意两行中心距
+       恒 ≥ 12px（= .god-hm-bar 的行高，style.css 同源）。旧版 gap = (H−24)/(n−1)−12 随条数
+       变密反而缩水（n=10 时仅 5.3px），高杠杆档（20x/50x/100x 挤在现价 ±4.5% 内）相邻条
+       文字互相压字、100x 条压住现价线。级联最坏跨度 = (n−1)×12px，n 上限 = 6 档×2 侧＋做市
+       2 侧＋现价线 = 15 行 ⇒ 14×12 = 168px ≤ 180−2×6 可用区，数学上装得下。 */
+    const GAP = 12 / HM_H;
     const clampT = v => Math.min(1 - 6 / HM_H, Math.max(6 / HM_H, v));
-    const hm = el('div', 'god-hm');
+    const rows = vis.map(l => ({ y: yFrac(l.price), l }));
+    rows.push({ y: 0.5, now: true });              // 现价线恒在视窗正中（±35% 视窗的定义），参与同一场级联
+    rows.sort((a, b) => a.y - b.y);
     let prev = -1;
-    for (const l of vis) {
-      const top = clampT(Math.max(yFrac(l.price), prev + gap / HM_H));
-      prev = top;
-      const bar = el('div', `god-hm-bar ${l.side}`, `${fmtLogPrice(l.price)} ${fmtMoneyShort(l.notional)}·${l.name}`);
-      bar.style.top = `${top * 100}%`;
-      bar.style.width = `${Math.min(92, 10 + l.w * 82)}%`;
-      hm.append(bar);
+    for (const r of rows) { r.t = Math.max(r.y, prev + GAP); prev = r.t; }
+    const hm = el('div', 'god-hm');
+    for (const r of rows) {
+      if (r.now) {
+        const now = el('div', 'god-hm-now', fmtFloatPrice(w.price));
+        now.style.top = `${clampT(r.t) * 100}%`;
+        hm.append(now);
+      } else {
+        const bar = el('div', `god-hm-bar ${r.l.side}`, `${fmtFloatPrice(r.l.price)} ${fmtMoneyShort(r.l.notional)}·${r.l.name}`);
+        bar.style.top = `${clampT(r.t) * 100}%`;
+        bar.style.width = `${Math.min(92, 10 + r.l.w * 82)}%`;
+        hm.append(bar);
+      }
     }
-    const now = el('div', 'god-hm-now', fmtLogPrice(w.price));
-    now.style.top = `${clampT(yFrac(w.price)) * 100}%`;
-    hm.append(now);
     box.append(hm);
     if (!w.liqs.length) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
     else if (vis.length < w.liqs.length) box.append(el('p', 'god-fnote', `另有 ${w.liqs.length - vis.length} 条远档强平在 ±35% 视窗外`));
@@ -3288,7 +3298,7 @@ function floatBody(s, page, prog) {
       const drop = 1 / lev - GAME.maintRate;
       const lp = isLong ? avg * (1 - drop) : avg * (1 + drop);
       return el('div', 'god-frow2',
-        `${name} ${fmtMoneyShort(notional)}@${fmtLogPrice(avg)} ｜ 强平 ${fmtLogPrice(lp)} (${fmtPct(lp / t - 1)})`);
+        `${name} ${fmtMoneyShort(notional)}@${fmtFloatPrice(avg)} ｜ 强平 ${fmtFloatPrice(lp)} (${fmtPct(lp / t - 1)})`);
     };
     for (const tr of w.tiers) {
       if (tr.long > 0) box.append(sideRow(`${tr.name} 多`, true, tr.long, tr.longAvg, tr.lev));
@@ -3320,7 +3330,7 @@ function floatBody(s, page, prog) {
     const maxN = Math.max(1, ...asks.map(r => r.notional), ...bids.map(r => r.notional));
     const gbRow = (r, cls) => {
       const row = el('div', `gb-row ${cls}${r.wall ? ' wall' : ''}`);
-      row.append(el('i', null, (r.wall ? '墙 ' : '') + fmtLogPrice(r.price)));
+      row.append(el('i', null, (r.wall ? '墙 ' : '') + fmtFloatPrice(r.price)));
       const u = el('u');
       u.style.width = `${Math.max(4, (r.notional / maxN) * 100)}%`;
       const track = el('span', 'gb-track');
@@ -3329,26 +3339,31 @@ function floatBody(s, page, prog) {
       return row;
     };
     for (const r of asks) box.append(gbRow(r, 'gb-ask'));
-    box.append(el('div', 'gb-mid', fmtLogPrice(b.mid)));
+    box.append(el('div', 'gb-mid', fmtFloatPrice(b.mid)));
     for (const r of bids) box.append(gbRow(r, 'gb-bid'));
   } else if (page === 4) {
-    /* 逐笔成交：本小时真实成交量（hourLiqRaw，与滑点同一把尺子）按幂律 α=1.5 拆成 96 笔采样，
-       方向按 taker 偏斜（锚：中性买方份额 0.499、每 +1% 收益 +0.007）—— 见 tape.js 模块头注。
+    /* 逐笔成交（2026-10-07 拍板「保留 24 小时记录」）：本小时真实成交量（hourLiqRaw，与滑点
+       同一把尺子）按幂律 α=1.5 拆成 96 笔采样，方向按 taker 偏斜（锚：中性买方份额 0.499、
+       每 +1% 收益 +0.007）—— 见 tape.js 模块头注；已收盘的前 23 小时各压一行「逐时汇总」
+       （tape24h：收价 / 量额 / 该根 K 线涨跌着色），明细在前、汇总按小时倒序跟在后面。
        列固定不换行（用户红线）：时刻 | 价 | 数量(币) | 金额($)，最新在前。 */
-    const tp = tapeOf(s, s.sym, prog || 0);
+    const tp = tape24h(s, s.sym, prog || 0);
     if (!tp) { box.append(el('p', 'god-fnote', '行情暂不可用')); return box; }
     box.append(el('div', 'god-frow2 mut', `本时量 ${fmtMoneyShort(tp.vol)} ｜ 买占 ${(tp.pBuy * 100).toFixed(1)}%`));
-    if (!tp.prints.length) {
-      box.append(el('p', 'god-fnote', '本小时刚开始 · 暂无采样'));
-      return box;
-    }
+    if (!tp.prints.length) box.append(el('p', 'god-fnote', '本小时刚开始 · 以下为近 24 小时逐时'));
     const list = el('div', 'gd-list');
     for (const p of tp.prints) {
       const row = el('div', `gd-row ${p.side > 0 ? 'gd-buy' : 'gd-sell'}`);
-      row.append(el('i', null, p.t), el('em', null, fmtLogPrice(p.price)), el('span', null, fmtQty(p.qty)), el('b', null, fmtMoneyShort(p.usd)));
+      row.append(el('i', null, p.t), el('em', null, fmtFloatPrice(p.price)), el('span', null, fmtQty(p.qty)), el('b', null, fmtMoneyShort(p.usd)));
       list.append(row);
     }
-    box.append(list);
+    for (let k = tp.hours.length - 1; k >= 0; k--) {
+      const hh = tp.hours[k];
+      const row = el('div', `gd-row ${hh.side > 0 ? 'gd-buy' : 'gd-sell'}`);
+      row.append(el('i', null, fmtHour(GAME.start + hh.h * HOUR_MS)), el('em', null, fmtFloatPrice(hh.close)), el('span', null, fmtQty(hh.qty)), el('b', null, fmtMoneyShort(hh.usd)));
+      list.append(row);
+    }
+    if (list.children.length) box.append(list);
   } else {
     const d = w.depth;
     const row = (k, v) => { const r = el('div', 'god-frow2'); r.append(el('i', null, k), el('b', null, v)); return r; };

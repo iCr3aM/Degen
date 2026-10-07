@@ -2108,7 +2108,9 @@ button { user-select: none; -webkit-user-select: none; }
   font-size: 8.5px;
   line-height: 12px;
   white-space: nowrap;
-  overflow: hidden;
+  /* ⚠️ 不裁剪（2026-10-07）：`overflow: hidden` 会把窄条的「金额·倍数」整个啃掉
+     （$239.7K 的 100x 条只剩 26px，连价格都显示不全）。条宽保留 ∝ 名义的语义，
+     文字允许溢出色块延伸到面板底上——行距已由级联钉死 ≥12px，横向溢出无碰撞面。 */
 }
 .god-hm-bar.long { color: var(--down); background: color-mix(in srgb, var(--down) 22%, transparent); }
 .god-hm-bar.short { color: var(--up); background: color-mix(in srgb, var(--up) 22%, transparent); }

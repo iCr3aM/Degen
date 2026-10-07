@@ -95,3 +95,39 @@ export function tapeOf(s, sym, progress, n = 24) {
   prints.reverse();                                        // 最新在前（真实 tape 的读法）
   return { vol, pBuy, prints: prints.slice(0, n) };
 }
+
+/**
+ * 近 **24 小时**的成交记录（2026-10-07 用户拍板「成交保留 24 小时的记录」）。
+ *
+ * 当前小时照旧走 `tapeOf`（滚动窗明细）；**已收盘**的前 23 小时各压成一行「逐时汇总」——
+ * 收价 = `rawCloseAt`（原始行情，不含位移，与 K 线同一读数）、量额 = `hourLiqRaw`
+ * （与滑点 / 深度**同一把尺子**）、方向 = 该根 K 线自身的涨跌（taker 偏斜式子的读数：
+ * 涨 ⇒ 买占过半 ⇒ 走买色）。`qty = vol ÷ close`（币数量），与明细行同列。
+ *
+ * 为什么不逐笔保留 24h：96 笔 × 24 = 2304 行会把 `floatBody` 每帧重建（80ms 节流）的
+ * DOM 预算打死；逐时 23 行 ＋ 明细 ≤24 行 ≈ 40 行，与订单簿页同量级。明细行本来就是
+ * **代表性采样**（K=96），「逐时汇总 ＋ 本小时明细」是同一口径下信息密度最高的切法。
+ *
+ * ⚠️ **仍是零状态纯函数**：历史小时从数据包现算（`rawCloseAt` / `volumeAt`），不写 `s`、
+ * 不进存档 —— 切币 / 切页回来逐位一致，24 小时之前的「记录」天然不占内存。
+ * @param {object} s 游戏状态（只读）
+ * @param {string} sym 币种
+ * @param {number} progress 本小时已走的量占比 ∈ [0,1)
+ * @param {number} [n=24] 明细最多返回的笔数
+ * @returns {object|null} `tapeOf` 的结果 ＋ `hours:[{h, close, qty, usd, side}]`（h **升序**，
+ *   未上线 / 无量的历史小时跳过）；行情不可用 ⇒ null
+ */
+export function tape24h(s, sym, progress, n = 24) {
+  const cur = tapeOf(s, sym, progress, n);
+  if (!cur) return null;
+  const hours = [];
+  for (let back = 23; back >= 1; back--) {
+    const h = s.i - back;
+    const close = rawCloseAt(sym, h), prev = rawCloseAt(sym, h - 1);
+    if (!(close > 0)) continue;                            // 未上线 / 数据洞
+    const vol = hourLiqRaw(s, sym, h);
+    if (!(vol > 0)) continue;                              // 无量的小时（上线当天等）
+    hours.push({ h, close, qty: vol / close, usd: vol, side: prev > 0 && close < prev ? -1 : 1 });
+  }
+  return { ...cur, hours };
+}

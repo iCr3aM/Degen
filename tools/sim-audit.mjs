@@ -3257,13 +3257,104 @@ section('9w · tape 逐笔采样 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋
     mainSrc9w.includes("[[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单'], [4, '成交']]")
     && mainSrc9w.includes("[[3, '订单'], [2, '深度'], [4, '成交']]")
     && mainSrc9w.includes('prog: clock ? clock.progress() : 0'));
-  check('9w⑤ render：成交页走 tapeOf ＋ 圆钮「详」＋ gd 行结构',
-    rendSrc9w.includes('tapeOf(s, s.sym, prog || 0)')
+  check('9w⑤ render：成交页走 tape24h（9x 扩的 24h 记录）＋ 圆钮「详」＋ gd 行结构',
+    rendSrc9w.includes('tape24h(s, s.sym, prog || 0)')
     && rendSrc9w.includes("'详'") && rendSrc9w.includes('gd-row'));
   check('9w⑤ style：浮窗 272px / 热力图 180px ＋ 成交页固定列样式',
     /\.god-float \{[^}]*width: 272px/.test(styleSrc9w)
     && /\.god-hm \{[^}]*height: 180px/.test(styleSrc9w)
     && styleSrc9w.includes('.gd-row') && styleSrc9w.includes('.gd-buy') && styleSrc9w.includes('.gd-sell'));
+}
+
+/* ═══════════════════ 9x · 浮窗分档精度 ＋ 24h 成交记录 ＋ 热力图级联去重叠 ═══════════════════
+   本批收口（2026-10-07，9w 后续三问）：
+     ① `fmtFloatPrice`：浮窗价格读数按量级分档（≥$1,000 一位 / ≥$1 两位 / <$1 委托 fmtPrice）——
+        修「订单簿步进不随币价变化」：ETH 2016 在 $1.5 时档距只有 ~$0.04，旧 fmtLogPrice
+        一位小数把相邻档舍成同一个号（两档都显「1.5」），玩家看到的步进恒为零。
+        日志口径不动（fmtLogPrice 仍 1 位，2026-09-29 拍板）；
+     ② `tape24h`：拍板「成交保留 24 小时的记录」—— 本小时明细 ＋ 前 23 小时逐时汇总
+        （收价 / 量额 / 方向全部同源原始行情，仍是零状态纯函数，不进存档）；
+     ③ 热力图像素级去重叠：条与现价线合并进同一场排序级联（行距恒 12px）——
+        旧 gap 公式随条数变密反而缩水（n=10 时仅 5.3px），高杠杆档互相压字、100x 条压现价线；
+     ④ 热力图条不再裁剪：`overflow: hidden` 会把窄条（$239.7K 的 100x 条只剩 26px）的文字啃掉。 */
+section('9x · 浮窗分档精度 fmtFloatPrice ＋ 24h 成交记录 tape24h ＋ 热力图级联去重叠');
+{
+  const tape = await import('../src/core/tape.js');
+
+  /* ── ① fmtFloatPrice：量级分档（对照旧口径演示病根） ── */
+  check('9x① ≥$1,000 一位小数（千分位保留）：12,345.7',
+    F.fmtFloatPrice(12345.67) === '12,345.7', F.fmtFloatPrice(12345.67));
+  check('9x① 边界：$1,000 一位 / $1 两位',
+    F.fmtFloatPrice(1000) === '1,000.0' && F.fmtFloatPrice(1) === '1.00',
+    `${F.fmtFloatPrice(1000)} / ${F.fmtFloatPrice(1)}`);
+  check('9x① ≥$1 两位小数：$1.50 与 $1.54 可分（旧 fmtLogPrice 两档同显「1.5」＝ 病根复现）',
+    F.fmtFloatPrice(1.5) === '1.50' && F.fmtFloatPrice(1.54) === '1.54'
+    && F.fmtLogPrice(1.5) === F.fmtLogPrice(1.54), `旧口径 ${F.fmtLogPrice(1.54)} 不可分`);
+  check('9x① <$1 委托 fmtPrice：与 fmtLogPrice 同口径（DOGE 级 8 字符）',
+    F.fmtFloatPrice(0.000089) === F.fmtLogPrice(0.000089) && F.fmtFloatPrice(0.000089) === '0.000089'
+    && F.fmtFloatPrice(0.5) === F.fmtLogPrice(0.5), F.fmtFloatPrice(0.000089));
+  check('9x① 负价 ＋ 非有限值：-3.14 ＋ 非 finite ⇒ --',
+    F.fmtFloatPrice(-3.1416) === '-3.14'
+    && F.fmtFloatPrice(NaN) === '--' && F.fmtFloatPrice(Infinity) === '--');
+
+  /* ── ② tape24h：24 小时成交记录（零状态 ＋ 同源 ＋ 跳行） ── */
+  const sX = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2021, 5, 10)) });
+  const tX = tape.tape24h(sX, 'BTC', 0.5, 96);
+  check('9x② tape24h 确定性：同状态两次调用逐位同一条（零状态红线不破）',
+    !!tX && JSON.stringify(tX) === JSON.stringify(tape.tape24h(sX, 'BTC', 0.5, 96)));
+  check('9x② 本小时明细与 tapeOf 逐位一致（同一把尺，不加不减）',
+    !!tX && JSON.stringify(tX.prints) === JSON.stringify(tape.tapeOf(sX, 'BTC', 0.5, 96).prints));
+  check('9x② 汇总 ≤ 23 行 · h 严格升序 · 全部 < s.i（只收已收盘小时）',
+    !!tX && tX.hours.length <= 23
+    && tX.hours.every((r, k) => r.h < sX.i && (k === 0 || r.h > tX.hours[k - 1].h)),
+    `实得 ${tX ? tX.hours.length : 0} 行`);
+  check('9x② 逐时行同源：close == rawCloseAt · usd == hourLiqRaw · qty == usd/close',
+    !!tX && tX.hours.every(r => {
+      const close = market.rawCloseAt('BTC', r.h);
+      const vol = engine.hourLiqRaw(sX, 'BTC', r.h);
+      return r.close === close && r.usd === vol && r.qty === vol / close;
+    }));
+  check('9x② 方向 = 该根 K 线自身涨跌（taker 偏斜式子的读数：跌 ⇒ 卖色）',
+    !!tX && tX.hours.every(r => {
+      const prev = market.rawCloseAt('BTC', r.h - 1);
+      return r.side === (prev > 0 && r.close < prev ? -1 : 1);
+    }));
+  check('9x② 2021-06 的 BTC 前 23 行全满（流动性充足段无跳行）',
+    !!tX && tX.hours.length === 23, `实得 ${tX ? tX.hours.length : 0}`);
+  const tX0 = tape.tape24h(sX, 'BTC', 0, 96);
+  check('9x② 小时刚开始（progress=0）：明细空窗但逐时汇总仍在（render 有货可画）',
+    !!tX0 && tX0.prints.length === 0 && tX0.hours.length > 0);
+  /* 早期跳行用 SOL（其包 2020-08 才开始且起点处即有量）—— BTC 的包从 GAME.start 之前就开始
+     （r0 < 0，2012-09-27），负小时也有数据；DOGE / ETH / XRP 起点附近的小时量份额为 0
+     （真实数据的洞），当前小时取不到量 ⇒ tape24h 整体为 null，同样构造不出用例。 */
+  const r0 = market.rangeOf('SOL')[0];
+  const sE = await mk({ sym: 'SOL', cash: 1e6, i: r0 + 10 });
+  const tE = tape.tape24h(sE, 'SOL', 0.5, 96);
+  check('9x② 早期跳行：SOL 数据起点后 10 小时 ⇒ 汇总 ≤ 10 行且 h ≥ r0（越界小时被跳过）',
+    !!tE && tE.hours.length <= 10 && tE.hours.every(r => r.h >= r0),
+    `r0=${r0} · ${tE ? tE.hours.length : 'null'} 行`);
+
+  /* ── ③④ render / style 接线锚 ── */
+  const rendSrc9x = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  const styleSrc9x = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
+  check('9x③ render：成交页走 tape24h ＋ 逐时行时刻 = GAME.start + h×HOUR_MS',
+    rendSrc9x.includes('tape24h(s, s.sym, prog || 0)')
+    && rendSrc9x.includes('fmtHour(GAME.start + hh.h * HOUR_MS)'));
+  const fbody = rendSrc9x.slice(rendSrc9x.indexOf('function floatBody'),
+    rendSrc9x.indexOf('export function updateFloat'));
+  check('9x③ 浮窗五页价格读数全走 fmtFloatPrice（floatBody 区间内不再有 fmtLogPrice）',
+    fbody.includes('fmtFloatPrice') && (fbody.match(/fmtFloatPrice/g) || []).length >= 7
+    && !fbody.includes('fmtLogPrice'),
+    `floatBody 内 ${fbody ? (fbody.match(/fmtFloatPrice/g) || []).length : 0} 处`);
+  check('9x③ 热力图级联：条与现价线同一场排序 ＋ 行距恒 12px ＋ 旧 gap 公式已退役',
+    rendSrc9x.includes('rows.push({ y: 0.5, now: true })')
+    && rendSrc9x.includes('const GAP = 12 / HM_H')
+    && rendSrc9x.includes('rows.sort((a, b) => a.y - b.y)')
+    && !rendSrc9x.includes('Math.max(1, vis.length - 1) - 12'));
+  const styleNoCmt = styleSrc9x.replace(/\/\*[\s\S]*?\*\//g, '');
+  check('9x④ 热力图条不裁剪：.god-hm-bar 无 overflow:hidden（窄条文字完整）＋ 行高 12px 与 GAP 同源',
+    !/\.god-hm-bar \{[^}]*overflow\s*:\s*hidden/.test(styleNoCmt)
+    && /\.god-hm-bar \{[^}]*line-height: 12px/.test(styleNoCmt));
 }
 
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════
