@@ -21,13 +21,18 @@ export const ACTION_KEYS = [
      ⚠️ `settings` **保留**（§9 B8）：顶栏那枚「设置」按钮已随 A6 撤掉，但设置页里
         将来仍可能复用它做一个「关」的出口 —— 现在页的出口就是底部 Tab，所以没有任何 DOM 挂它。 */
   'tab',
-  /* 上帝模式：`god`（顶栏标题连点 5 次的隐藏入口）
-     / `godcash` `godyear` `godmon` `godday` `godgo` `godoff`（上帝面板内的各枚按钮）
-     / `godtab`（2026-10-05 分页后新增：面板顶部的两枚页签「资金·时间」/「沙盒」）
+  /* 上帝模式：`god` ＝ 上帝入口 —— **主菜单图标连点 5 次**直接进局（2026-10-07 入口改型）；
+        顶栏标题挂着同一枚键但只作「已解锁时单击重开面板」（不再是解锁入口）。
+     / `godcash` `godyear` `godmon` `godday` `godgo`（上帝面板内的各枚按钮）
+     / `godtab`（2026-10-05 分页：页签「资金·时间」/「沙盒」/「操盘」）
+     / `godpush` `godwash` `godspoof`（2026-10-07 操盘台：吃单拉砸 / 洗售 / 幌骗）
      ⚠️ 原来的 `godmult` `godscale` `godreset` 三枚已随上帝模式瘦身整体删除（2026-09-29）；
         `goddate` 随原生日期框一起删除，日期改由 `godyear` / `godmon` / `godday` 三排档位选择、
-        `godgo` 才真正跳（2026-09-30）。 */
-  'god', 'godcash', 'godyear', 'godmon', 'godday', 'godgo', 'godoff', 'godtab',
+        `godgo` 才真正跳（2026-09-30）；
+        `godoff`（「关闭上帝模式」）已随 2026-10-07 的入口改型删除 —— 上帝模式进局后随存档
+        永久有效，面板底部只剩「关闭」（关的是面板，不是模式）。 */
+  'god', 'godcash', 'godyear', 'godmon', 'godday', 'godgo', 'godtab',
+  'godpush', 'godwash', 'godspoof',
   /* U1（ROADMAP §21.4）：`mode2`（2026-10-04 起是操作区顶部「工具」行里的两枚段控
      「杠杆」/「合约」—— `data-mode2="margin"` / `"fut"`，取代旧那枚「金额」行末尾的切换键）。
      ⚠️ 用 `mode2` 而不是 `mode` —— `mode` 已被 K 线左上角那枚**粒度**小字占用（`main.js` 的 `d.mode`）。

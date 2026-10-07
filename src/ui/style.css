@@ -1272,6 +1272,9 @@ canvas.curve {
 .god-sbrow .god-presets { grid-template-columns: repeat(4, 1fr); }
 .god-sbrow .set-btn { padding: 0 4px; }   /* 5 列并排时给「0.15×」这类稍长的字留余地 */
 
+/* 操盘台每行动作下面那行预览（2026-10-07）：小字弱色，随输入即时重算 */
+.god-prev { margin: 0; font-size: calc(11px * var(--ui)); color: var(--mut); }
+
 /* ══════════════ 开场叙事（Batch 4 · B19） ══════════════
    复用 `.confirm` 的盒子，**不铺暗底**（不是「点外面就能关掉」的菜单，是这一局的入口）。
    `white-space: pre-line`：文案里的 `\n` 直接当成换行，不在 JS 里塞 `<br>`。 */

@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, manipPreview, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -23,7 +23,7 @@ import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
 import { badgesOf, epitaphOf, multShown, overLabelOf, styleOf, titleOf } from '../core/titles.js';
-import { SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
+import { MANIP_MIN, SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
 import { drawChart, drawEquityCurve, curveWindow } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 import { vibSupported } from './sound.js';
@@ -52,6 +52,11 @@ function logoEl() {
   const svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('viewBox', '0 0 64 64');
   svg.setAttribute('class', 'menu-logo');
+  /* 上帝模式的**入口**挂在这里（2026-10-07 入口改型：顶栏标题的连点入口移到主菜单图标）——
+     主菜单里连点 5 次（1.5s 内）直接进入上帝模式的这一局（main.js 的 `onGodLogo`）。
+     它挂 `data-god` 不为别的：`bind.js` 只派发带 `data-*` 的元素，没有它就无从接住点击
+     （SVG 元素同样有 `dataset`，`closest()` 也认）。 */
+  svg.dataset.god = 'logo';
   const rect = (x, y, w, h, c, rx = 0) => {
     const r = document.createElementNS(NS, 'rect');
     r.setAttribute('x', x);
@@ -253,8 +258,8 @@ export function mount(root) {
   const dateEl = el('span');
   const top = el('div', 'top');
   const who = el('div', 'who');
-  /* 顶栏标题**同时是上帝模式的隐藏入口**（方案 §2.1）：连点 5 次解锁；
-     解锁之后（`s.god` 非空）**单击即可重开面板**（2026-10-01）。
+  /* 顶栏标题是上帝面板的**重开入口**（2026-10-07 入口改型后仅此一职）：已解锁（`s.god` 非空）
+     时单击重开面板；解锁本身走主菜单图标的连点（`logoEl` 的 `data-god="logo"`）。
      它挂 `data-god` 不为别的：`bind.js` 只派发带 `data-*` 的元素，没有它就无从接住点击。
      计数与超时状态机在 `main.js`（与「重开本局」的双重确认同一个理由 —— 这里是静态 DOM）。 */
   const titleEl = el('b', null, 'Degen');
@@ -2266,7 +2271,8 @@ export function openMenu({ canLoad = false } = {}) {
   /* 图标在最上面（本轮 ①）：与 favicon 同一副图案，内联 SVG（见 `logoEl`）。 */
   box.append(logoEl());
   box.append(el('h3', null, 'Degen · 加密交易员'));
-  box.append(el('p', null,
+  /* 副标题挂 `.menu-sub`：上帝入口连点命中但「没局可进」时（本局已结束），`menuNote` 在这里给一句提示。 */
+  box.append(el('p', 'menu-sub',
     '2013 年 1 月 → 2024 年 12 月。\n'
     + '行情就是真实历史，没人替你兜底。'));
 
@@ -2311,6 +2317,16 @@ export function openMenu({ canLoad = false } = {}) {
   ov.append(back, box);
   ov.hidden = false;
   picker = ov;
+}
+
+/**
+ * 主菜单副标题的**一次性提示**（2026-10-07）：上帝入口连点命中但当前没局可进（本局已结束）时，
+ * 在菜单上说明为什么没反应 —— 比「点了五次什么都没发生」体面。
+ * ⚠️ 只改字不重建：`openMenu` 每次都会重建整盒，下一次打开自然还原。
+ * @param {string} text
+ */
+export function menuNote(text) {
+  document.querySelector('.menu-box .menu-sub')?.replaceChildren(text);
 }
 
 /**
@@ -2938,38 +2954,34 @@ export function openYearPick(curYear) {
  * ⚠️ 这个页**没有「关闭」出口** —— 底部 Tab 就是出口（切回交易 / 资产）。
  */
 
-/* ═════════════════════════ 上帝模式面板（隐藏入口 · 方案 §2） ═════════════════════════ */
+/* ═════════════════════════ 上帝模式面板（主菜单图标连点入口） ═════════════════════════ */
 
 /**
- * 上帝面板。入口是**连点顶栏「Degen」5 次**解锁；解锁之后（`s.god` 非空）点一下标题就能重开
+ * 上帝面板。**入口是主菜单图标连点 5 次**（2026-10-07 入口改型，`logoEl` 的 `data-god="logo"`）
+ * —— 命中即直接进入上帝模式的这一局并弹出本面板；解锁之后（`s.god` 非空）点一下顶栏标题就能重开
  * （计数与超时状态机在 `main.js`，与「重开本局」的双重确认同一个理由：这里是静态 DOM、不参与每帧重绘）。
  *
- * **只剩三件事**（2026-09-29 瘦身）：填入资金 / 跳到日期 / 关闭上帝模式。
- * ⚠️ 上帝模式与普通模式的全部差别就是这三条 ＋ `engine.checkRuin` 的归零不退出 ——
- *    原来那两套价格能力（「冲击倍率」`s.god.mult`、「手动砸盘 / 复位」`s.god.scale`）
- *    已整体删除：普通模式里看不到的暴涨暴跌全都出自它们，与「上帝模式只负责选时间、填资金」这条口径相悖。
- *
- * ⚠️ **日期控件是「年 / 月 / 日 三段档排」**（2026-09-30 裁决）—— 原生 `<input type="date">`
- *    已否决（手机上「点不准、也看不出要跳到哪天」）。三排按钮 ＋ 一行「当前 / 目标」读数 ＋
- *    一枚「跳到」，与杠杆 / 速度那套档位按钮同一设计语言。
- *    ⚠️ **点年 / 月 / 日只改「目标」，真正动状态的是「跳到」** —— 否则在 2 月与 3 月之间来回点时，
- *       每一下都会触发一次「回到过去」的状态重置（见 `main.js` 的 `godJump`）。
- *    ⚠️ 选中态由 `sel` 传入（`main.js` 的 `godSel` 暂存），本函数**自己无状态**。
- * ⚠️ **自 2026-10-05 起分两页 tab**（用户拍板）：第 1 页「资金·时间」= ①填入资金 ＋ ②跳到日期；
- *    第 2 页「沙盒」= ③沙盒旋钮 / 预设 / 种子。切页走 `data-godtab`（`main.js` 把页码存进 `godPage`
- *    再重开本层）—— 面板本是**无状态**的静态 DOM，页签同样由 `page` 入参决定高亮。
+ * **三页 tab**（2026-10-05 起分页，2026-10-07 增第 3 页）：第 1 页「资金·时间」= ①填入资金 ＋ ②跳到日期；
+ * 第 2 页「沙盒」= ③沙盒旋钮 / 预设 / 种子；第 3 页「操盘」= ④吃单拉砸 / 洗售 / 幌骗（走既有市场
+ * 物理，见 `engine.godManipPush` / `godManipWash` / `godManipSpoof` 的头注）。
+ * ⚠️ **「关闭上帝模式」已删除**（2026-10-07 用户拍板）：上帝模式进局后随存档永久有效，
+ *    底部只剩「关闭」（关的是面板，不是模式）。
+ * ⚠️ 切页走 `data-godtab`（`main.js` 把页码存进 `godPage` 再重开本层）—— 面板本是**无状态**的
+ *    静态 DOM，页签同样由 `page` 入参决定高亮。
  *    页内容用 inline `style.display` 互斥显隐（`.godp .confirm-rows { display: grid }` 特异度高于
- *    UA 的 `[hidden] { display: none }`，写 `hidden` 不生效）；「关闭」常驻两页之外。
+ *    UA 的 `[hidden] { display: none }`，写 `hidden` 不生效）；「关闭」常驻三页之外。
  * ⚠️ **资金框不能挂 `data-*`**：`bind.js` 拦的是 `[data-*]` 的 `pointerdown` 并会 `preventDefault`，
  *    挂上去就打不了字了。所以值由动作处理函数从同一个面板里按类名读（`god-cash`）。
  *    ⚠️ 档排上那些是**按钮**、不是输入框，照旧挂 `data-*`（`godyear` / `godmon` / `godday`）。
+ *    ⚠️ 操盘台的两个输入框同理（`god-manip` / `god-wash`）；预览行随 `input` 事件即时重算
+ *       （`input` 不走 `bind.js`，不受拦）。
  * ⚠️ **「无限」开关（2026-10-07 用户拍板）与资金输入框同处一行**：它翻的是 `s.god.inf`，
  *    开启后归零**自动补满**到输入框那个数（`engine.js` 的 `checkRuin`）——
  *    与「填入」（当下填一次）语义不重叠，故并排而不是各占一行。
  *
  * @param {object} s
  * @param {{y:number,m:number,d:number}|null} sel 日期选择器的**暂存目标**；`null` = 跟随当前游戏日期
- * @param {number} page 当前页（0 = 资金·时间，1 = 沙盒）
+ * @param {number} page 当前页（0 = 资金·时间，1 = 沙盒，2 = 操盘）
  */
 export function openGod(s, sel = null, page = 0) {
   closePicker();
@@ -2980,12 +2992,12 @@ export function openGod(s, sel = null, page = 0) {
   const box = el('div', 'confirm godp');
   box.append(el('h3', null, '上帝模式'));
 
-  /* 页签行（2026-10-05）：两列各占一半宽的 `.set-btn`，当前页挂 `.on`。
-     用 `.god-pick` 的两列网格 ＋ 行内列模板 —— 复用现有类，不动 `style.css`。 */
+  /* 页签行（2026-10-05 分两页；2026-10-07 增「操盘」）：三列各占三分之一宽的 `.set-btn`，当前页挂 `.on`。
+     用 `.god-pick` 的网格 ＋ 行内列模板 —— 复用现有类，不动 `style.css`。 */
   const tabs = el('div', 'god-pick');
-  tabs.style.gridTemplateColumns = 'repeat(2, 1fr)';
+  tabs.style.gridTemplateColumns = 'repeat(3, 1fr)';
   tabs.style.marginTop = '12px';
-  for (const [i, label] of [[0, '资金·时间'], [1, '沙盒']]) {
+  for (const [i, label] of [[0, '资金·时间'], [1, '沙盒'], [2, '操盘']]) {
     const b = el('button', i === page ? 'set-btn on' : 'set-btn', label);
     b.dataset.godtab = String(i);
     tabs.append(b);
@@ -3112,17 +3124,80 @@ export function openGod(s, sel = null, page = 0) {
   seedRow.append(el('i', null, '种子'), seedIn, seedBtn, seedRoll);
   rowsB.append(seedRow);
 
-  /* 互斥显隐：改 `.confirm-rows`（`display:grid`）的 inline `display` —— 见本函数头注。 */
-  rowsA.style.display = page === 1 ? 'none' : '';
-  rowsB.style.display = page === 1 ? '' : 'none';
-  box.append(rowsA, rowsB);
+  /* ④ 操盘（2026-10-07 用户拍板「上帝模式可以操纵市场，但要真实化」）——
+     三枚动作全部走既有市场物理（`engine.godManipPush` / `godManipWash` / `godManipSpoof`），
+     作用对象 = **当前查看的币**；执行前给预览（吃单：位移 ＋ 花费；洗售：双边费），预览与实值同式同参。
+     ⚠️ 输入框照旧不挂 `data-*`（`bind.js` preventDefault）；预览随 `input` 事件即时重算。 */
+  const rowsC = el('div', 'confirm-rows');
 
-  const off = el('button', 'act flat', '关闭上帝模式');
-  off.dataset.godoff = '';
+  /* ⚠️ 局部变量用 `mn*` 前缀 —— 页签 1 的月份选择器已经占了 `mRow`（2026-10-07 构建撞名修正）。 */
+  const mnRow = el('div', 'set-row');
+  const manipIn = el('input', 'god-in god-manip');
+  manipIn.type = 'number';
+  manipIn.inputMode = 'decimal';
+  manipIn.min = String(MANIP_MIN);
+  manipIn.step = '10000';
+  manipIn.value = String(s.god.lastFill);
+  const mnUp = el('button', 'set-btn on', '拉');
+  mnUp.dataset.godpush = '1';
+  const mnDn = el('button', 'set-btn on', '砸');
+  mnDn.dataset.godpush = '-1';
+  mnRow.append(el('i', null, '吃单'), manipIn, mnUp, mnDn);
+  rowsC.append(mnRow);
+  const mnPrev = el('p', 'god-prev', '');
+  rowsC.append(mnPrev);
+
+  const wRow = el('div', 'set-row');
+  const washIn = el('input', 'god-in god-wash');
+  washIn.type = 'number';
+  washIn.inputMode = 'decimal';
+  washIn.min = String(MANIP_MIN);
+  washIn.step = '10000';
+  washIn.value = String(s.god.lastFill);
+  const wBtn = el('button', 'set-btn on', '执行');
+  wBtn.dataset.godwash = '';
+  wRow.append(el('i', null, '洗售'), washIn, wBtn);
+  rowsC.append(wRow);
+  const wPrev = el('p', 'god-prev', '');
+  rowsC.append(wPrev);
+
+  const sRow = el('div', 'set-row');
+  const sUp = el('button', 'set-btn on', '拉情绪');
+  sUp.dataset.godspoof = '1';
+  const sDn = el('button', 'set-btn on', '砸情绪');
+  sDn.dataset.godspoof = '-1';
+  sRow.append(el('i', null, '幌骗'), sUp, sDn);
+  rowsC.append(sRow);
+  rowsC.append(el('p', 'god-prev', '假单挪情绪：零成交零费用，几小时后自然消散'));
+
+  /* 预览：与 `engine.manipPreview` 同式同参（同一时刻同一单，预览即实值）；
+     洗售不碰价 ⇒ 预览只报双边费。输入非法 / 不足下限时留空（执行时引擎还会再拦一道）。 */
+  const updPrev = () => {
+    const n = Number(manipIn.value);
+    mnPrev.textContent = Number.isFinite(n) && n >= MANIP_MIN
+      ? `预计位移 ${fmtPct(manipPreview(s, s.sym, 1, n).impact)} ｜ 花费 ${fmtMoneyShort(manipPreview(s, s.sym, 1, n).cost)}`
+      : '';
+    const wn = Number(washIn.value);
+    wPrev.textContent = Number.isFinite(wn) && wn >= MANIP_MIN
+      ? `假量 ${fmtMoneyShort(wn)} ｜ 双边费 ${fmtMoneyShort(wn * feeRateOf(s.ex, timeOf(s), 'fut', vol30Of(s, s.ex, s.i, 'fut')) * 2)} ｜ 位移 0`
+      : '';
+  };
+  manipIn.addEventListener('input', updPrev);
+  washIn.addEventListener('input', updPrev);
+  updPrev();
+
+  /* 互斥显隐：改 `.confirm-rows`（`display:grid`）的 inline `display` —— 见本函数头注。 */
+  rowsA.style.display = page === 1 || page === 2 ? 'none' : '';
+  rowsB.style.display = page === 1 ? '' : 'none';
+  rowsC.style.display = page === 2 ? '' : 'none';
+  box.append(rowsA, rowsB, rowsC);
+
+  /* 「关闭上帝模式」已删除（2026-10-07 用户拍板）—— 上帝模式进局后随存档永久有效，
+     这里只剩「关闭」（关的是面板，不是模式）。 */
   const close = el('button', 'act flat', '关闭');
   close.dataset.sclose = '';
   const btns = el('div', 'confirm-btns');
-  btns.append(off, close);
+  btns.append(close);
   box.append(btns);
 
   back.addEventListener('pointerdown', closePicker);

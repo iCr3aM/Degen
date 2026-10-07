@@ -11,16 +11,16 @@ import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, exchangeOf, hasFinancingAt
 import { anyHeld, createState, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash } from './core/engine.js';
+import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godManipPush, godManipSpoof, godManipWash } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
-import { SB_DEFAULT, SB_KEYS, SB_PRESETS, enableGod, factorFor, sbOf } from './core/god.js';
-import { fmtDate, fmtMoney, fmtMoneyShort } from './core/format.js';
+import { MANIP_SPOOF_NUDGE, SB_DEFAULT, SB_KEYS, SB_PRESETS, enableGod, factorFor, sbOf } from './core/god.js';
+import { fmtDate, fmtMoney, fmtMoneyShort, fmtPct } from './core/format.js';
 import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
-  pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog,
+  pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog, menuNote,
   renderReview, openNodeCard, openYearPick, openGuide, renderCareers, openPoster,
   isStandalone, toggleInstallGuide, menuRemoveInstall, closeMenuDlg, openSavePick, openScenPick,
   openAbout, redrawChart, openMarginDlg,
@@ -998,14 +998,14 @@ function dispatch(node) {
   if (d.sclose !== undefined) return onClosePanel();
 
   /* ── 上帝模式（隐藏入口 · 方案 §2）──
-     `god` 是标题上的连点入口，其余几枚在上帝面板里（`data-god*`）。
-     ⚠️ 上帝模式**只有「跳日期 / 填资金 / 关掉」三件事**（2026-09-29 瘦身）：原来那两套价格能力
-        （倍率 `godmult`、手动砸盘 `godscale` / 复位 `godreset`）已整体删除。
-        （2026-10-07 补了一枚「无限」开关 —— 归零自动补满，见 `onGodInf`。）
+     `god` ＝ **主菜单图标连点 5 次直接进局**（2026-10-07 入口改型）；顶栏标题挂着同一枚键，
+     但只作「已解锁时单击重开面板」—— 解锁只发生在主菜单。
+     ⚠️ `godoff`（「关闭上帝模式」）已随入口改型删除：上帝模式进局后随存档永久有效，
+        面板底部只剩「关闭」（`data-sclose`，关的是面板、不是模式）。
      ⚠️ 设置页那枚「订单冲击」开关已于 2026-10-01 随 `s.impactOn` 字段一起删除 —— 冲击永远是开的。 */
-  if (d.god !== undefined) return onGodTap();
+  if (d.god !== undefined) return onGodTap(node);
   if (d.godcash !== undefined || d.godyear !== undefined || d.godmon !== undefined
-    || d.godday !== undefined || d.godgo !== undefined || d.godoff !== undefined
+    || d.godday !== undefined || d.godgo !== undefined
     || d.godtab !== undefined || d.godinf !== undefined) {
     /* 这几枚只可能出现在上帝面板里，而面板只在 `s.god` 非空时打开。这一行是**状态机不靠 DOM 兜底**：
        万一面板被别的路径留下来（比如读到一份 `god: null` 的档），这里不能抛异常。 */
@@ -1016,8 +1016,15 @@ function dispatch(node) {
     if (d.godyear !== undefined) return onGodPick('y', Number(d.godyear));
     if (d.godmon !== undefined) return onGodPick('m', Number(d.godmon));
     if (d.godday !== undefined) return onGodPick('d', Number(d.godday));
-    if (d.godgo !== undefined) return onGodGo();
-    return onGodOff();
+    return onGodGo();
+  }
+  /* ── 上帝操盘台（2026-10-07）── 与上面几枚同一处境：只出现在上帝面板里，
+     同样以 `s.god` 非空兜底（状态机不靠 DOM）。 */
+  if (d.godpush !== undefined || d.godwash !== undefined || d.godspoof !== undefined) {
+    if (!s.god) return;
+    if (d.godpush !== undefined) return onGodPush(node);
+    if (d.godwash !== undefined) return onGodWash(node);
+    return onGodSpoof(node);
   }
   /* ── 上帝沙盒（2026-10-05）── 与上面几枚同一处境：只出现在上帝面板里，
      同样以 `s.god` 非空兜底（状态机不靠 DOM）。 */
@@ -1303,44 +1310,61 @@ function onMarginAdjust(s, val) {
 }
 
 /* ── 上帝模式 ＋ 订单冲击（隐藏入口 · 方案 §2）─────────────────────
-   一个隐藏入口（连点标题）、一个玩法开关（设置面板）、一张面板（资金 / 跳日期 / 关闭）。
+   入口 ＝ **主菜单图标连点 5 次直接进局**（2026-10-07 用户拍板：不做「标记就绪再选档」的两步）；
+   顶栏标题挂着同一枚键，但只作「已解锁时单击重开面板」。一张面板（资金·时间 / 沙盒 / 操盘）。
    ⚠️ 面板是**静态 DOM**，所以「填入」要从它内部读输入框的值 —— 输入框不能挂 `data-*`
       （`bind.js` 会 `preventDefault` 掉 `pointerdown`，挂上去就打不了字）。
       ⚠️ 跳日期那三排档位是**按钮**、不是输入框，照旧走 `data-godyear` / `godmon` / `godday`。 */
 
 /**
- * 标题点击。两条路径（2026-10-01）：
- *   · **已解锁**（`s.god` 非空）⇒ 单击直接重开面板，不必再连点；
- *   · **未解锁** ⇒ 走连点计数：**1.5 秒内 5 次**才触发，间隔超时就从 1 数起。
- * 关掉上帝模式（`onGodOff` 把 `s.god` 置空）等于回到未解锁 ⇒ 下次仍要连点 5 次，
- * 「隐藏入口」这层语义因此没有被削弱。
+ * 上帝入口点击（`data-god`）。两条路径（2026-10-07 入口改型）：
+ *   · **主菜单图标**（`render.js` 给菜单 logo 挂了同一枚键）⇒ 转发 `onGodLogo` 连点进局；
+ *   · **顶栏标题** ⇒ 仅在已解锁时单击重开面板 —— 解锁只发生在主菜单，
+ *     「未解锁点标题」直接不理（连点计数整体搬进了 `onGodLogo`）。
  */
-function onGodTap() {
-  /* ⚠️ **挑战模式没有上帝模式**（2026-10-01 用户拍板）：挑战是「速通」，填资金 / 跳日期都会
-     把难度归零。连点入口直接吞掉，连计数都不起 —— 免得玩家点了五次以为坏了。
-     与「新手提示整行不出现」同一条口径：挑战局是**有限制**的，限制在状态机里拦，不靠 UI。 */
+function onGodTap(node) {
+  if (node && node.dataset.god === 'logo') return onGodLogo();
+  if (!s.god || s.over || s.pending) return;   // 未解锁 / 本局已结束 / 停在救济金遮罩：不理
+  godSel = null;                      // 重新打开 ⇒ 选择器回到「当前日期」起手
+  godPage = 0;                        // 页签同样回到第 1 页
+  showGod();
+  after();
+}
+
+/**
+ * 主菜单图标**连点 5 次 ⇒ 直接进局**（2026-10-07 用户拍板）。
+ *
+ * 菜单只在「开机 / 本局结束后回菜单 / 设置页回菜单」三个时刻出现，而这三个时刻 `s`
+ * 都已经是**当前这一局**（或全新一局）⇒ 第 5 击当场 `enableGod` ＋ 开盘 ＋ 弹面板，
+ * 不需要 reload、也不需要玩家再点「读取存档 / 开始游戏」任何东西。
+ *
+ * ⚠️ **挑战模式没有上帝模式**（2026-10-01 用户拍板）：挑战是「速通」，填资金 / 跳日期都会
+ *    把难度归零。连点直接吞掉，连计数都不起 —— 免得玩家点了五次以为坏了。
+ */
+function onGodLogo() {
   if (isChallenge(s.scen)) return;
-  if (s.god) {
-    /* 与下面那条同一个理由：本局已结束 / 正停在救济金遮罩上，时间不再前进，开面板没有意义 */
-    if (s.over || s.pending) return;
-    godSel = null;                      // 重新打开 ⇒ 选择器回到「当前日期」起手
-    godPage = 0;                        // 页签同样回到第 1 页
-    showGod();
-    after();
-    return;
-  }
   const now = performance.now();
   godTaps = now - godTapAt > GOD_TAP_MS ? 1 : godTaps + 1;
   godTapAt = now;
   if (godTaps < GOD_TAPS) return;
   godTaps = 0;
-  /* 本局已结束 / 正停在救济金遮罩上：时间不再前进，开这张面板没有意义（而且 `s.over` 下评论区那些
-     动作本来就被别处挡掉了，这里先拦一次更干净）。 */
-  if (s.over || s.pending) return;
+  /* 本局已结束：对局进不去（结算 / 菜单都一样），给一句提示而不是无声失败 */
+  if (s.over) { menuNote('本局已结束，没有可以进入的对局'); snd.deny(); return; }
   enableGod(s);
-  godSel = null;                        // 重新打开 ⇒ 选择器回到「当前日期」起手
-  godPage = 0;                          // 页签同样回到第 1 页
-  showGod();
+  closePicker();                      // 收掉主菜单（顺带任何残留弹层）
+  tab = 'trade';                      // 进局落在交易页（与 `onSlot` 同槽分支同一条）
+  if (isNewGame) pushLog(s, openLogText(), 'info');   // 全新一局补开局日志（`beginGame` 同款）
+  pushLog(s, '上帝模式已开启 ｜ 资金归零自动补满，操盘台在面板第 3 页', 'ok');
+  snd.begin();
+  godSel = null;                      // 面板选择器回到「当前日期」起手
+  godPage = 0;                        // 页签回到第 1 页
+  /* 待决态（救济金遮罩）不续跑也不弹面板 —— 遮罩接管；其余场合当场开盘 ＋ 弹上帝面板。 */
+  if (!s.pending) {
+    s.paused = false;
+    s.speed = 1;
+    clock.start();
+    showGod();
+  }
   after();
 }
 
@@ -1520,16 +1544,58 @@ function godRewind(to, label) {
   if (!isLoaded(s.sym)) ensureCoin(s.sym).then(() => draw(true));
 }
 
-/**
- * 「关闭上帝模式」：退出 `s.god`（⇒ 停止归零保护）。
- * ⚠️ **行情位移不还原**：订单冲击池 `s.flow` 留着（那是已发生的历史）。
- *    上帝模式本来也不再持有任何价格状态（2026-09-29 瘦身），所以关掉只是关掉保护。
- */
-function onGodOff() {
-  s.god = null;
-  godSel = null;                       // 关掉 => 选择器的暂存目标一并丢掉
-  pushLog(s, '上帝模式已关闭 ｜ 订单冲击保留', 'info');
-  closePicker();
+/* ── 上帝操盘台（2026-10-07）──────────────────────────────────────
+   三枚动作都只做「调 engine ＋ 记日志 ＋ 重开面板 ＋ 落盘」—— 状态变换整块在 core
+   （可离线断言），与 `godRewind` / `onSb` 同一条纪律；动作全部走既有市场物理，
+   真实化依据见 `engine.godManip*` 的头注。
+   ⚠️ 「关闭上帝模式」已随入口改型删除：进局后随存档永久有效，没有退出的路。 */
+
+/** 吃单拉砸（`data-godpush="1|-1"`）：单小时满额吃单，位移走既有冲击管线，付手续费＋冲击成本。 */
+function onGodPush(node) {
+  const dir = Number(node.dataset.godpush);
+  const v = readGodInput(node, '.god-manip');
+  const num = v === null ? NaN : Number(v);
+  if (v === null || v.trim() === '' || !Number.isFinite(num)) {
+    pushLog(s, '操盘失败 · 先填名义额', 'bad');
+    snd.deny();
+    return;
+  }
+  const r = godManipPush(s, s.sym, dir, num);
+  pushLog(s, r.ok
+    ? `操盘 · 吃单${dir > 0 ? '拉' : '砸'} ${fmtMoneyShort(num)} ｜ 位移 ${fmtPct(r.impact)} ｜ 花费 ${fmtMoneyShort(r.cost)}`
+    : `操盘失败 · ${r.why}`, r.ok ? 'ok' : 'bad');
+  if (!r.ok) snd.deny();
+  showGod();
+  after();
+}
+
+/** 洗售（`data-godwash`）：同额对倒 —— 放量不推价，付双边手续费（顺带刷低费率阶梯）。 */
+function onGodWash(node) {
+  const v = readGodInput(node, '.god-wash');
+  const num = v === null ? NaN : Number(v);
+  if (v === null || v.trim() === '' || !Number.isFinite(num)) {
+    pushLog(s, '操盘失败 · 先填名义额', 'bad');
+    snd.deny();
+    return;
+  }
+  const r = godManipWash(s, s.sym, num);
+  pushLog(s, r.ok
+    ? `操盘 · 洗售 ${fmtMoneyShort(num)} ｜ 双边手续费 ${fmtMoneyShort(r.fee)} ｜ 位移 0（放量不推价）`
+    : `操盘失败 · ${r.why}`, r.ok ? 'ok' : 'bad');
+  if (!r.ok) snd.deny();
+  showGod();
+  after();
+}
+
+/** 幌骗（`data-godspoof="1|-1"`）：零成交零费用，只给该币热度一脚偏置，随时间自然消散。 */
+function onGodSpoof(node) {
+  const dir = Number(node.dataset.godspoof);
+  const r = godManipSpoof(s, s.sym, dir);
+  pushLog(s, r.ok
+    ? `操盘 · ${dir > 0 ? '拉' : '砸'}情绪 ｜ 热度瞬时偏移 ${fmtPct(MANIP_SPOOF_NUDGE)}，几小时后自然消散`
+    : `操盘失败 · ${r.why}`, r.ok ? 'ok' : 'bad');
+  if (!r.ok) snd.deny();
+  showGod();
   after();
 }
 

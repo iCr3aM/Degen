@@ -17,7 +17,7 @@ import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, raw
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, addFlow, exDevOf, npcLevOf, playerFactor, sbOf, shockParamsOf } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_MIN, MANIP_SPOOF_NUDGE, addFlow, exDevOf, npcLevOf, playerFactor, sbOf, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -3472,6 +3472,88 @@ export function godFillCash(s, amount) {
   ensureBook(s)[cashCurAt(timeOf(s))] = amount;
   s.god.lastFill = amount;
   s.godRuined = false;        // 补上钱之后，下一次归零要能再提示一遍
+}
+
+/* ── 上帝操盘台（2026-10-07 用户拍板「上帝模式可以操纵市场，但要真实化」）────────────
+ * 三枚动作全部走**既有市场物理**，没有「直接设价」通道（2026-09-29 删掉的 `scale`/`mult`
+ * 不复活）—— 这就是「真实化」的落点：操纵服从市场物理，花钱、看深度、被硬夹。
+ * 常数（`MANIP_MIN` / `MANIP_SPOOF_NUDGE`）在 `god.js`，动作在这里 —— 只有 engine 摸得到
+ * `pushFlow` / 流动性 / 账本 / 热度这些内部件。
+ * ⚠️ 调用点（main.js）负责 `s.god` 非空兜底；这里再拦一道（状态机不靠 DOM）。
+ * ⚠️ 全部是**当前小时**的一次性动作：不新增任何逐小时状态、不升 `STATE_VERSION`。
+ */
+
+/**
+ * 操盘台**预览**：吃单 `notional`（方向 `dir`）的预计位移 ＋ 预计花费 —— **与实际写值同式同参**：
+ *   位移 = `sbOf.shock × dir × SHOCK.share × absorbedImpact(permImpactFor(…))`（`pushFlow` 同式，
+ *   含压力位吸收 —— 同一时刻同一单，预览即实值）；花费 = 手续费 ＋ 冲击成本（`impactFor` 同式）。
+ * 纯读：一个字节都不写（压力位 / 深度 / σ 都只读）。
+ * @returns {{impact:number, cost:number, feeRate:number}}
+ */
+export function manipPreview(s, sym, dir, notional) {
+  const impact = sbOf(s).shock * dir * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
+  const liq = hourLiqOf(s, sym, s.i);
+  const q = liq > 0 ? notional / liq : 0;
+  const feeRate = feeRateOf(s.ex, timeOf(s), 'fut', vol30Of(s, s.ex, s.i, 'fut'));
+  return { impact, feeRate, cost: notional * (feeRate + impactOf(q, dailySigma(sym, s.i))) };
+}
+
+/**
+ * 操盘台「**吃单**」—— 一次真实的单向大单（真实 P&D 的推动阶段；实测平均 8 分钟拉完，
+ * 小于本作一根小时线 ⇒ 单小时一次推完比「摊开 N 小时」更贴现实）。
+ *
+ * ⚠️ **不持仓**：纯花钱挪价 —— `pushFlow(…, give=1, 'fut', player=true)` 满额写位移
+ *    （喂热度、吃硬夹、按幂律回吐，与真实成交完全同一条管线）；代价（双边中的一边手续费
+ *    ＋ 冲击成本）从账本扣（`debit` 两格通道，与交易同一把尺子）。
+ * @param {number} dir +1 拉 / −1 砸
+ * @returns {{ok:true, impact:number, cost:number}|{ok:false, why:string}}
+ */
+export function godManipPush(s, sym, dir, notional) {
+  if (!s.god) return { ok: false, why: '非上帝模式' };
+  if (dir !== 1 && dir !== -1) return { ok: false, why: '方向非法' };
+  if (!(Number.isFinite(notional) && notional >= MANIP_MIN)) {
+    return { ok: false, why: `名义额至少 ${MANIP_MIN}` };
+  }
+  const p = manipPreview(s, sym, dir, notional);
+  if (!debit(s, p.cost)) return { ok: false, why: '资金不足（吃单要付手续费＋冲击成本）' };
+  pushFlow(s, sym, dir, notional, 1, 'fut', true);
+  return { ok: true, impact: p.impact, cost: p.cost };
+}
+
+/**
+ * 操盘台「**洗售**」—— 等额对敲刷假量：**位移恒 0**（真实洗售「放量不推价」；引擎侧连
+ * `s.flow` 都不写 —— 写两笔等额反向再归并成 0 纯属噪音），代价是**双边**手续费。
+ * 收益是三样「假象」：量柱爆量（`addPlayerVol`，顺带费率阶梯 —— 现实刷量党的收益来源）、
+ * 假量喂热度（`m.pv`，走既有 `HEAT.k3` —— 假量引散户跟风）。
+ * @returns {{ok:true, fee:number}|{ok:false, why:string}}
+ */
+export function godManipWash(s, sym, notional) {
+  if (!s.god) return { ok: false, why: '非上帝模式' };
+  if (!(Number.isFinite(notional) && notional >= MANIP_MIN)) {
+    return { ok: false, why: `名义额至少 ${MANIP_MIN}` };
+  }
+  const feeRate = feeRateOf(s.ex, timeOf(s), 'fut', vol30Of(s, s.ex, s.i, 'fut'));
+  const fee = notional * feeRate * 2;
+  if (!debit(s, fee)) return { ok: false, why: '资金不足（洗售要付双边手续费）' };
+  addPlayerVol(s, sym, notional, s.ex, 'fut');
+  /* 与 `pushFlow` 的 P1-2 同一条口径：假量只喂**当前币**的热度（`m.pv` 的结算在 tickMarket）。 */
+  if (sym === s.sym) mktOf(s, sym).pv += notional;
+  return { ok: true, fee };
+}
+
+/**
+ * 操盘台「**幌骗**」—— 零成交、零手续费、零位移：只给该币热度一脚偏置
+ * （真实幌骗「挂大假单伪造供需，成交前撤单」；游戏无订单簿 ⇒ 情绪层是最贴的代理）。
+ * 消散不靠新状态：`HEAT.k2` 的均值回复把这一脚按热度自身记忆（≈14h）拉回靶心。
+ * @param {number} dir +1 拉情绪 / −1 砸情绪
+ * @returns {{ok:true}|{ok:false, why:string}}
+ */
+export function godManipSpoof(s, sym, dir) {
+  if (!s.god) return { ok: false, why: '非上帝模式' };
+  if (dir !== 1 && dir !== -1) return { ok: false, why: '方向非法' };
+  const m = mktOf(s, sym);
+  m.heat = clamp01(m.heat + dir * MANIP_SPOOF_NUDGE);
+  return { ok: true };
 }
 
 /**

@@ -2624,6 +2624,116 @@ section('9q · 上帝面板分页接线（data-godtab ⇄ ACTION_KEYS ⇄ onGodT
     /function onGodTab\(/.test(mainSrc) && /openGod\(s, godSel, godPage\)/.test(mainSrc));
 }
 
+/* ═══════════════════ 9r · 上帝操盘台（2026-10-07 · 吃单 / 洗售 / 幌骗） ═══════════════════
+   三枚动作全部复用既有市场物理（`pushFlow` / `addPlayerVol` / heat）—— 这里咬的是操盘台自己的不变量：
+     ① 吃单：实际位移 == 预览公式（净池、远离硬夹时精确相等）；实际花费 == 预览花费；
+     ② 洗售：零位移（放量不推价）＋ 双边费如实落账 ＋ 假量进量柱与热度；
+     ③ 幌骗：只动热度（即时 ±NUDGE、零成交零费用），随后随 `HEAT.k2` 均值回复自然消散；
+     ④ 闸门：非上帝档 / 挑战局 / 名义额下限 / 非法方向 / 资金不足 一律 ok:false。
+   挑战局的入口闸在 main 层（连点直接吞，无 DOM 不跑）；core 层的闸就是「没有 `s.god`」—— 两层都要咬住。 */
+section('9r · 上帝操盘台：吃单位移=预览 · 洗售零位移 · 幌骗热度 · 闸门');
+{
+  const T = idx(at(2021, 5, 10));
+  const NU = 1e-9;
+  const clean = (s) => {           // 清掉 mk 首次 tick 可能留下的 NPC 残渣 ⇒ 净池起点（factor 恒 1）
+    s.mkt.BTC.npcShock = { at: [], v: [] };
+    s.mkt.BTC.npcDrift = { at: [], v: [] };
+    s.overhang.BTC = { at: [], v: [], scar: [] };
+  };
+
+  /* ① 吃单：$20M @ 2021-05 BTC ⇒ 位移约 1.5%（远离 ±20% 硬夹），净池 ⇒ 预览即实值 */
+  const sP = await mk({ sym: 'BTC', i: T, mode: 'fut', cash: 1e9 });
+  god.enableGod(sP);
+  clean(sP);
+  const pvP = engine.manipPreview(sP, 'BTC', 1, 2e7);
+  const c0 = market.closeAt('BTC', sP.i);
+  const eq0 = engine.equity(sP);
+  const rP = engine.godManipPush(sP, 'BTC', 1, 2e7);
+  check('9r 吃单 ok · 实际位移 == 预览（净池 · 远离硬夹）',
+    rP.ok && Math.abs(market.closeAt('BTC', sP.i) / c0 - 1 - pvP.impact) < NU,
+    `实际 ${f(market.closeAt('BTC', sP.i) / c0 - 1, 6)} 预览 ${f(pvP.impact, 6)}`);
+  check('9r 吃单花费 == 预览（手续费＋冲击成本，两格通道扣款）',
+    Math.abs(eq0 - engine.equity(sP) - pvP.cost) < NU && Math.abs(rP.cost - pvP.cost) < NU,
+    `花费 ${f(rP.cost, 2)}`);
+  check('9r 吃单喂了热度（玩家成交 → m.pv，与真实成交同一口径）',
+    Math.abs(sP.mkt.BTC.pv - 2e7) < NU, `pv ${f(sP.mkt.BTC.pv, 0)}`);
+
+  /* ② 洗售：同额对倒 ⇒ 位移恒 0，付双边手续费，假量进量柱＋热度 */
+  const sW = await mk({ sym: 'BTC', i: T, mode: 'fut', cash: 1e9 });
+  god.enableGod(sW);
+  const cW = market.closeAt('BTC', sW.i);
+  const fW = god.factorFor(sW, 'BTC', sW.i);
+  const eqW = engine.equity(sW);
+  const pvW0 = sW.mkt.BTC.pv;
+  const rW = engine.godManipWash(sW, 'BTC', 2e7);
+  check('9r 洗售 ok · 零位移（放量不推价）',
+    rW.ok && god.factorFor(sW, 'BTC', sW.i) === fW && market.closeAt('BTC', sW.i) === cW,
+    `因子 ${f(god.factorFor(sW, 'BTC', sW.i), 9)}`);
+  check('9r 洗售双边费如实落账', Math.abs(eqW - engine.equity(sW) - rW.fee) < NU, `双边费 ${f(rW.fee, 2)}`);
+  check('9r 洗售假量进量柱＋热度（与真实成交同一口径）',
+    Math.abs((sW.pvol.BTC[sW.i][sW.ex].fut?.u ?? 0) - 2e7) < NU
+    && Math.abs(sW.mkt.BTC.pv - pvW0 - 2e7) < NU, '');
+
+  /* ③ 幌骗：热度瞬时 ±NUDGE、零费用；随后随 `HEAT.k2` 均值回复自然消散。
+     ⚠️ 消散**不咬「回到基点」**—— 真实行情本身就在推热度（实测平静窗口一周也能漂 ±0.1），
+        那不是幌骗的锅。咬**双胞胎对照**：同一时刻、同一种子、同一行情的两份状态，
+        唯一差别是 spoof 那一脚 ⇒ 两份的热度差只被 k2 衰减，168h（≈12 倍记忆时长）后必须几乎归零。
+     ⚠️ 冻结 NPC（`speed = 0` ＋ 清空建仓梯队，9p③ 同款）：不冻结的话 NPC 顺着被抬的热度建仓
+        会把「幌骗的影响」通过级联固化成真实价格路径，消散就无从谈起。 */
+  const freezeNpc = (s) => {
+    for (let k = 0; k < s.mkt.BTC.npc.length; k++) {
+      const o = s.mkt.BTC.npc[k];
+      o.long = 0; o.longAvg = 0; o.short = 0; o.shortAvg = 0;
+      o.longStopped = false; o.shortStopped = false; o.longTp = false; o.shortTp = false;
+    }
+    if (s.mkt.BTC.mm) {
+      const o = s.mkt.BTC.mm;
+      o.long = 0; o.longAvg = 0; o.short = 0; o.shortAvg = 0;
+      o.longStopped = false; o.shortStopped = false; o.longTp = false; o.shortTp = false;
+    }
+  };
+  const spNPC = god.NPC.speed, spMM = god.NPC.mm.speed;
+  /* 两份都先在 NPC 活跃时建好（初始 tick 的随机流逐位一致），再一起冻结 ＋ 清残渣。 */
+  const sA = await mk({ sym: 'BTC', i: T, mode: 'fut', cash: 1e9 });
+  god.enableGod(sA);
+  const sB = await mk({ sym: 'BTC', i: T, mode: 'fut', cash: 1e9 });
+  god.enableGod(sB);
+  god.NPC.speed = 0; god.NPC.mm.speed = 0;
+  try {
+    clean(sA); freezeNpc(sA);
+    clean(sB); freezeNpc(sB);
+    sA.mkt.BTC.heat = god.HEAT.base;
+    sB.mkt.BTC.heat = god.HEAT.base;
+    const eqS = engine.equity(sA);
+    const rS = engine.godManipSpoof(sA, 'BTC', 1);
+    check('9r 幌骗拉情绪即时 +NUDGE（零成交零费用）',
+      rS.ok && Math.abs(sA.mkt.BTC.heat - (god.HEAT.base + god.MANIP_SPOOF_NUDGE)) < NU
+      && engine.equity(sA) === eqS,
+      `heat ${f(sA.mkt.BTC.heat, 4)}`);
+    for (let k = 0; k < 168; k++) { engine.advanceOneHour(sA); engine.advanceOneHour(sB); }
+    check('9r 幌骗热度 168h 后消散（双胞胎差 < 2 个百分点）',
+      Math.abs(sA.mkt.BTC.heat - sB.mkt.BTC.heat) < 0.02,
+      `A ${f(sA.mkt.BTC.heat, 4)} B ${f(sB.mkt.BTC.heat, 4)} 差 ${f(Math.abs(sA.mkt.BTC.heat - sB.mkt.BTC.heat), 5)}`);
+  } finally { god.NPC.speed = spNPC; god.NPC.mm.speed = spMM; }
+
+  /* ④ 闸门：五条全都要拦得住 */
+  const sN = await mk({ sym: 'BTC', i: T, mode: 'fut' });          // 没开上帝
+  check('9r 非上帝档 ⇒ 三动作全被闸',
+    engine.godManipPush(sN, 'BTC', 1, 2e7).ok === false
+    && engine.godManipWash(sN, 'BTC', 2e7).ok === false
+    && engine.godManipSpoof(sN, 'BTC', 1).ok === false, '');
+  const sC = createState('luna');                                  // 挑战局：core 层同样没有 god 可借
+  check('9r 挑战局（无 god）⇒ ok:false', engine.godManipPush(sC, 'BTC', 1, 2e7).ok === false, '');
+  const sLow = await mk({ sym: 'BTC', i: T, mode: 'fut', cash: 100 });
+  god.enableGod(sLow);
+  const fLow = god.factorFor(sLow, 'BTC', sLow.i);
+  check('9r 名义额下限 · 非法方向 · 资金不足 ⇒ 全被闸且不写任何位移',
+    engine.godManipPush(sLow, 'BTC', 1, 999).ok === false
+    && engine.godManipPush(sLow, 'BTC', 0, 2e7).ok === false
+    && engine.godManipPush(sLow, 'BTC', 1, 2e7).ok === false
+    && god.factorFor(sLow, 'BTC', sLow.i) === fLow, '');
+}
+
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════
    这一节**不跑引擎**，只对上一轮修好的几处做**源码 / 数据面**的固化断言 —— 谁把修复删回去，这里立刻红。
    目标五件事：
