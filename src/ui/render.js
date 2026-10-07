@@ -3328,9 +3328,14 @@ function floatBody(s, page, prog) {
     const asks = cut(b.asks).reverse();
     const bids = cut(b.bids);
     const maxN = Math.max(1, ...asks.map(r => r.notional), ...bids.map(r => r.notional));
+    /* 档距 = 基础档（非墙）前两行的价格差 —— `bookForWatch` 的基础阶梯是比例式的（price×(1±d)），
+       第一段最细、取它作 step 最保守。传给 `fmtFloatPrice` 后价格被砸到 <$0.01、档距 <$1e-6
+       （护盘/深跌沙盒的极端场景）相邻档也不会同显（2026-10-07 · 「y 轴步进同步检查详情浮窗」）。 */
+    const baseAsks = b.asks.filter(r => !r.wall);
+    const tick = baseAsks.length > 1 ? Math.abs(baseAsks[1].price - baseAsks[0].price) : 0;
     const gbRow = (r, cls) => {
       const row = el('div', `gb-row ${cls}${r.wall ? ' wall' : ''}`);
-      row.append(el('i', null, (r.wall ? '墙 ' : '') + fmtFloatPrice(r.price)));
+      row.append(el('i', null, (r.wall ? '墙 ' : '') + fmtFloatPrice(r.price, tick)));
       const u = el('u');
       u.style.width = `${Math.max(4, (r.notional / maxN) * 100)}%`;
       const track = el('span', 'gb-track');
@@ -3339,7 +3344,7 @@ function floatBody(s, page, prog) {
       return row;
     };
     for (const r of asks) box.append(gbRow(r, 'gb-ask'));
-    box.append(el('div', 'gb-mid', fmtFloatPrice(b.mid)));
+    box.append(el('div', 'gb-mid', fmtFloatPrice(b.mid, tick)));
     for (const r of bids) box.append(gbRow(r, 'gb-bid'));
   } else if (page === 4) {
     /* 逐笔成交（2026-10-07 拍板「保留 24 小时记录」）：本小时真实成交量（hourLiqRaw，与滑点

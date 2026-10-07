@@ -20,7 +20,7 @@
  *    保证它不侵入 K 线的躯干密集区。柱高只服务观感，不参与任何玩法。
  */
 
-import { fmtMoneyShort } from '../core/format.js';
+import { fmtAxisPrice, fmtMoneyShort } from '../core/format.js';
 
 /* 右侧价格标签宽（`view.js` 算单根 K 线宽度时要用同一份，故导出）。
  * ⚠️ 2026-10-05 由 52 → **56**：标签位原来只够 12px 等宽 6 字符（`0.0001` 级），
@@ -99,16 +99,10 @@ export function resetTheme() { themeCache = null; }
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
-/** 价格轴的小数位：跟 `format.fmtPrice` 同一套口径，但更短（标签位只有 50px） */
-function axisLabel(p) {
-  const a = Math.abs(p);
-  if (a >= 10000) return (p / 1000).toFixed(1) + 'k';
-  if (a >= 1000) return p.toFixed(0);
-  if (a >= 100) return p.toFixed(1);
-  if (a >= 1) return p.toFixed(2);
-  if (a >= 0.01) return p.toFixed(4);
-  return p.toFixed(6);
-}
+/** 价格轴标签（2026-10-07 · 用户拍板「y 轴步进随币种价格自适应」）：委托 `fmtAxisPrice` ——
+ *  小数位 = max(量级档位, ⌈−log₁₀(step)⌉)，任何视野下相邻刻度必可分；不传 step 时与旧口径
+ *  逐位相同（entry/强平/mark 单值标签无步进语义，不传）。实现与口径真源在 format.js。 */
+const axisLabel = fmtAxisPrice;
 
 /**
  * @param {HTMLCanvasElement} canvas
@@ -252,7 +246,7 @@ export function drawChart(canvas, o) {
     ctx.lineTo(plotW, y);
     ctx.stroke();
     ctx.fillStyle = T.MUT;
-    ctx.fillText(axisLabel(p), plotW + 6, y);
+    ctx.fillText(axisLabel(p, span / 3), plotW + 6, y);   // step = 刻度间隔：任意视野相邻刻度可分
   }
 
   // ── 成交量柱（图层一：**先画、垫在 K 线之下**，2026-10-04 由「盖在之上」翻转） ──

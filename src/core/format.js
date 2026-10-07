@@ -58,6 +58,35 @@ export function fmtLogPrice(p) {
 }
 
 /**
+ * 步进 → 需要的小数位（`⌈−log₁₀(step)⌉`）：相邻两值相差 ≥ step 时，toFixed(dec) 后**必可分**
+ * （步进 ≥ 10⁻ᵈᵉᶜ ⇒ 至少末位差 1）。cap 8 位（标签 56px ≈ 9–10 字符的硬边界）。
+ * ⚠️ 未传 / 0 / 非正数 ⇒ 0（不提位）—— 「没给步进」必须与旧口径逐位相同，不能当成 step→0。
+ */
+function needDec(step) {
+  if (!(step > 0)) return 0;
+  return Math.min(8, Math.max(0, Math.ceil(-Math.log10(step))));
+}
+
+/**
+ * K 线图 **y 轴刻度**的价格标签（2026-10-07 · 用户拍板「y 轴步进随币种价格自适应」）：
+ * 步进 = 视野跨度/3（chart.js 3 等分网格），本函数保证**任意视野下相邻刻度可分** ——
+ * 小数位 = max(量级档位, needDec(step))。
+ *
+ * 分档（chart.js 旧 `axisLabel` 的口径原样收编，短标签 50px 友好）：
+ * ≥$10k 用 k 单位（`108.0k`；step 也 ÷1000 同规则提位）；≥$1,000 整数；≥$100 一位；
+ * ≥$1 两位；≥$0.01 四位；<$0.01 六位（fmtPrice 同款）。极端窄视野再按 need 提位，cap 8。
+ *
+ * ⚠️ k 单位风格是**轴**的口径（紧凑）；浮窗档位仍走 `fmtFloatPrice` 的千分位风格，别混。
+ */
+export function fmtAxisPrice(p, step) {
+  if (!Number.isFinite(p)) return '--';
+  const a = Math.abs(p);
+  if (a >= 10000) return (p / 1000).toFixed(Math.max(1, needDec(step / 1000))) + 'k';
+  const base = a >= 1000 ? 0 : a >= 100 ? 1 : a >= 1 ? 2 : a >= 0.01 ? 4 : 6;
+  return p.toFixed(Math.min(8, Math.max(base, needDec(step))));
+}
+
+/**
  * 上帝浮窗的价格读数（2026-10-07）：精度按**价格量级**自适应 —— 修「订单簿步进不随币价变化」。
  *
  * 病根：`fmtLogPrice` 对 ≥$1 固定 1 位小数，那是**日志**的口径；浮窗各页（订单簿 12 档 /
@@ -66,13 +95,22 @@ export function fmtLogPrice(p) {
  * 分档：≥$1,000 一位（BTC 的档距是十位数，第二位没有决策价值）；≥$1 两位（$0.01 分辨率，
  * 覆盖 $3 档距 ≈$0.02 的下限）；<$1 交 `fmtPrice`（与日志同口径，5–6 位足够）。
  *
+ * `step`（可选，2026-10-07）：传**档距**则按 `needDec` 再提位（与 y 轴 `fmtAxisPrice` 同一
+ * 自适应规则，千分位风格不变）—— 订单簿页把基础档第一段价格差传进来，价格被砸到 <$0.01、
+ * 档距 <$1e-6 时相邻档也不会同显（护盘 / 深跌沙盒的极端场景）。不传 step 时行为与旧档逐位相同。
+ *
  * ⚠️ 只给浮窗用。日志仍走 `fmtLogPrice`（1 位小数是 2026-09-29 的拍板，别把日志撑长）。
  */
-export function fmtFloatPrice(p) {
+export function fmtFloatPrice(p, step) {
   if (!Number.isFinite(p)) return '--';
   const a = Math.abs(p);
-  if (a < 1) return fmtPrice(p);
-  const dec = a >= 1000 ? 1 : 2;
+  const need = needDec(step);
+  if (a < 1) {
+    if (!need) return fmtPrice(p);
+    const dec = Math.min(8, Math.max(need, a < 0.01 ? 6 : 5));
+    return (p < 0 ? '-' : '') + a.toFixed(dec);
+  }
+  const dec = Math.min(8, Math.max(a >= 1000 ? 1 : 2, need));
   const [ip, fp] = a.toFixed(dec).split('.');
   return (p < 0 ? '-' : '') + group(ip) + '.' + fp;
 }

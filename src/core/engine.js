@@ -13,7 +13,7 @@
  */
 
 import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MARGIN, MIN_NOTIONAL, minNotionalAt, notionalMaxLevAt, openNeedAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, BAND, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
-import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCandleAt, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
+import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCandleAt, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
@@ -2331,11 +2331,36 @@ function crossHeat(s, sym, m) {
 }
 
 /**
+ * **深跌护盘强度**（`NPC.dip` · 2026-10-07 用户拍板「特别低的价格肯定是有人护盘的」）：
+ * 当前标记价（`lastPrice` —— 护盘读的是**盘面实际可见的价**，含位移层 ⇒ 玩家砸出来的跌幅
+ * 真实触发护盘）相对近 24 根**已收盘** K 线高点（`candleAt` 含位移、不前视本根）的回撤深度
+ * `dd` → 抄底盘强度 ∈ [0, `NPC.dip.cap`]，线性 ramp。纯函数零状态（审计可测）；
+ * 高点 / 现价任一无效 ⇒ 0；`dd ≤ ref` ⇒ 0（浅跌与旧档**逐位同轨**）。
+ * 自稳定性：护盘买盘推价回升 ⇒ 回撤收窄 ⇒ 护盘减弱 —— 负反馈，不自激发散。
+ */
+export function dipOf(s, sym) {
+  const cur = lastPrice(s, sym);
+  if (!(cur > 0)) return 0;
+  let hi = 0;
+  for (let back = 1; back <= 24; back++) {
+    const c = candleAt(sym, s.i - back);
+    if (c && c.h > hi) hi = c.h;
+  }
+  if (!(hi > 0)) return 0;
+  const dd = 1 - cur / hi;
+  if (dd <= NPC.dip.ref) return 0;
+  return Math.min(NPC.dip.cap, NPC.dip.cap * (dd - NPC.dip.ref) / (NPC.dip.full - NPC.dip.ref));
+}
+
+/**
  * NPC 仓位刻度（tickMarket ③ ＋ ③′ 的抽身）：顺势靶心 ＋ **双侧背景仓**（`NPC.base`）＋ 做市盘镜像。
  *
  * ⚠️ 双侧基底的构造（2026-10-07）：`long 靶心 = base×w×liqDay + max(0, t×w)`、
  *    `short 靶心 = base×w×liqDay + max(0, −t×w)` ⇒ **净敞口 = t×w 与无基底逐位相同**
  *    （两侧都是线性收敛、且基底 > 0 使 `max(0,·)` 永不夹到 0），变的只有总名义（OI 地板）。
+ * ⚠️ 深跌护盘（`NPC.dip` · 2026-10-07）：`dipBuy` **只加长侧**（方向性买盘，短侧不动）——
+ *    净敞口恒等式对**基底**部分仍成立，护盘是有意的方向性偏移（不进恒等式）。
+ *    只给生效杠杆 ≤ 10x 的档（与基底同一判据：50x/100x 止损带太窄，接刀会持续摩擦止损线）。
  * ⚠️ 基底只给**生效杠杆 ≤ 10x** 的档（`npcLevOf` 年代封顶后的值）：50x/100x 的止损带太窄，
  *    常驻基底会在止损线上持续摩擦（见 `NPC.base` 注）。
  * ⚠️ 方案 A ②：减仓的已实现盈亏累加后一次性入池（`settlePool` 只在池余额内兑付）。
@@ -2345,13 +2370,16 @@ function npcBuild(s, sym, m, i) {
   if (!(liqDay > 0)) return;
   const target = sbOf(s).npc * NPC.mom * (m.heat - HEAT.base) * liqDay;
   const price = lastPrice(s, sym);
+  const dipBuy = liqDay * dipOf(s, sym);
   const t = timeOf(s);
   let npcRealisedSum = 0;
   for (let k = 0; k < NPC.ladder.length; k++) {
     const w = NPC.ladder[k].w;
     const floor = liqDay * NPC.floor * w;
-    const b = npcLevOf(t, NPC.ladder[k].lev) <= 10 ? liqDay * NPC.base * w : 0;
-    npcRealisedSum += stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor);
+    const low = npcLevOf(t, NPC.ladder[k].lev) <= 10;
+    const b = low ? liqDay * NPC.base * w : 0;
+    const dLow = low ? dipBuy * w : 0;
+    npcRealisedSum += stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow, price, floor);
     npcRealisedSum += stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor);
   }
   /* ③′ **做市盘**（缺口 6-A）：站到趋势盘**对面**；靶心取趋势盘六档的**实际净持仓**。

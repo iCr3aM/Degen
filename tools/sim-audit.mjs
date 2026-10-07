@@ -3186,9 +3186,10 @@ section('9w · tape 逐笔采样 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋
   }
   const engSrc9w = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 只给生效杠杆 ≤ 10x 档（恒等式前提）',
-    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor)")
+    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow, price, floor)")
     && engSrc9w.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor)")
-    && engSrc9w.includes('npcLevOf(t, NPC.ladder[k].lev) <= 10 ? liqDay * NPC.base * w : 0'));
+    && engSrc9w.includes('const b = low ? liqDay * NPC.base * w : 0')
+    && engSrc9w.includes('const dLow = low ? dipBuy * w : 0'));
 
   /* ②′ 全币两侧常在（「怎么会无 NPC 持仓」的行为面）：72 小时烧入后逐币断言。
      地板 = 2 × base × Σw(生效≤10x) × 日流动性（×0.5 = 收敛 / 止损摩擦余量）。
@@ -3355,6 +3356,97 @@ section('9x · 浮窗分档精度 fmtFloatPrice ＋ 24h 成交记录 tape24h ＋
   check('9x④ 热力图条不裁剪：.god-hm-bar 无 overflow:hidden（窄条文字完整）＋ 行高 12px 与 GAP 同源',
     !/\.god-hm-bar \{[^}]*overflow\s*:\s*hidden/.test(styleNoCmt)
     && /\.god-hm-bar \{[^}]*line-height: 12px/.test(styleNoCmt));
+}
+
+/* ═══════════════════ 9y · 深跌护盘买盘 ＋ y 轴/浮窗步进自适应 ═══════════════════
+   本批收口（2026-10-07，9x 后续三问）：
+     ① 护盘（用户拍板「特别低的价格肯定是有人护盘的」）：`NPC.dip` —— 回撤越深 NPC 抄底盘
+        越大（涌现式，**不恢复位移硬夹**，「去掉封顶封底」拍板保持）。护盘读**盘面价**
+        （lastPrice 含位移）⇒ 玩家砸盘真实触发；买盘推价回升 ⇒ 回撤收窄 ⇒ 护盘减弱
+        （负反馈自稳定，不自激发散、也不把价托回原价 —— cap 有界，现实里抄底盘会被埋）。
+        方向性买盘只加**长侧**、只给生效杠杆 ≤10x 档（与基底同判据）。
+     ② y 轴步进自适应（用户拍板）：`fmtAxisPrice(p, step)` —— 小数位 = max(量级档位,
+        ⌈−log₁₀(step)⌉)，步进 = 视野跨度/3（chart.js 3 等分网格）；被砸盘砸出的极窄视野
+        相邻刻度不再同显同一个数。
+     ③ 浮窗同步（用户拍板「y 轴步进同步检查详情浮窗」）：订单簿页把**档距**（基础档前两行
+        价差，比例阶梯第一段最细、取它最保守）传给 `fmtFloatPrice(p, step)` —— 千分位风格
+        不变，价格被砸到 <$0.01、档距 <$1e-6 时相邻档也不会同显。 */
+section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice');
+{
+  const godSrc9y = fs.readFileSync(path.join(ROOT, 'src/core/god.js'), 'utf8');
+
+  /* ── ① dipOf：常数 ＋ 公式逐位复刻 ＋ 有界性 ── */
+  check('9y① dip 常数：ref 0.15 / full 0.5 / cap 0.12（cap 与 NPC.base 同量级，护盘显著不夺主）',
+    godSrc9y.includes('dip: {') && godSrc9y.includes('ref: 0.15,')
+    && godSrc9y.includes('full: 0.5,') && godSrc9y.includes('cap: 0.12,'));
+  const sD = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2021, 4, 20)) });
+  const ddD = engine.dipOf(sD, 'BTC');
+  check('9y① 2021-05-20（5·19 暴跌次日）护盘触发：dipOf > 0',
+    ddD > 0 && ddD <= god.NPC.dip.cap, `dip=${ddD.toFixed(4)}`);
+  const curD = engine.lastPrice(sD, 'BTC');
+  let hiD = 0;
+  for (let back = 1; back <= 24; back++) { const c = market.candleAt('BTC', sD.i - back); if (c && c.h > hiD) hiD = c.h; }
+  const ddRaw = 1 - curD / hiD;
+  const expD = ddRaw <= god.NPC.dip.ref ? 0
+    : Math.min(god.NPC.dip.cap, god.NPC.dip.cap * (ddRaw - god.NPC.dip.ref) / (god.NPC.dip.full - god.NPC.dip.ref));
+  check('9y① dipOf 与公式逐位一致（cur = lastPrice · hi = 近 24 根已收盘 K 线高点，接线没错位）',
+    Math.abs(ddD - expD) < 1e-15, `dip=${ddD} · expect=${expD}`);
+  const sSh = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2019, 5, 1)) });
+  check('9y① 浅跌恒零：2019-06 横盘段 dipOf == 0（回撤 ≤ ref ⇒ 与旧档逐位同轨）',
+    engine.dipOf(sSh, 'BTC') === 0);
+  let okBound = true;
+  for (const [y, m, d] of [[2017, 8, 1], [2020, 2, 15], [2021, 4, 20], [2022, 4, 30], [2024, 7, 5]]) {
+    const sX = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(y, m, d)) });
+    const dv = engine.dipOf(sX, 'BTC');
+    if (!(dv >= 0 && dv <= god.NPC.dip.cap)) okBound = false;
+  }
+  check('9y① 有界性：任意历史日期 dipOf ∈ [0, cap]（5 个采样点，含 2017-09 / 2020-03 极端段）', okBound);
+
+  /* ── ② 接线：方向性（只长侧）＋ 低杠杆判据 ＋ 全币覆盖 ── */
+  const engSrc9y = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('9y② 接线：dipOf 导出 ＋ npcBuild 长侧 dipBuy（短侧不动）＋ npcOtherTick 复用（护盘覆盖全币）',
+    engSrc9y.includes('export function dipOf')
+    && engSrc9y.includes('const dipBuy = liqDay * dipOf(s, sym);')
+    && engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow, price, floor)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor)")
+    && engSrc9y.includes('npcBuild(s, sym, m, s.i);')
+    && engSrc9y.includes('import { candleAt, closeAt, dayIndexOf'));
+
+  /* ── ③ fmtAxisPrice：y 轴刻度 ── */
+  check('9y③ 不传 step 与旧轴口径逐位相同（k 单位 / 整数 / 一位 / 两位 / 四位 / 六位）',
+    F.fmtAxisPrice(108000) === '108.0k' && F.fmtAxisPrice(1234.56) === '1235'
+    && F.fmtAxisPrice(105.25) === '105.3' && F.fmtAxisPrice(1.54) === '1.54'
+    && F.fmtAxisPrice(0.052) === '0.0520' && F.fmtAxisPrice(0.000089) === '0.000089');
+  check('9y③ k 档按 step/1000 提位：step=$50 ⇒ 108.00k（相邻刻度 $50 可分）',
+    F.fmtAxisPrice(108000, 50) === '108.00k', F.fmtAxisPrice(108000, 50));
+  check('9y③ 病根回归：窄视野 span=$0.02 ⇒ 步进 $0.0067 三根刻度互异（旧口径后两根同显 1.51）',
+    F.fmtAxisPrice(1.5, 0.02 / 3) === '1.500'
+    && F.fmtAxisPrice(1.5067, 0.02 / 3) === '1.507'
+    && F.fmtAxisPrice(1.5133, 0.02 / 3) === '1.513');
+  check('9y③ DOGE 级窄视野：step=$1.7e-6 ⇒ 6 位相邻可分',
+    F.fmtAxisPrice(0.000089, 1.7e-6) === '0.000089'
+    && F.fmtAxisPrice(0.0000907, 1.7e-6) === '0.000091');
+  check('9y③ 非有限 ⇒ -- ＋ 负价直显（步进提位负号不丢）',
+    F.fmtAxisPrice(NaN) === '--' && F.fmtAxisPrice(-3.1416, 0.005) === '-3.142');
+
+  /* ── ④ fmtFloatPrice 的 step：浮窗档位（千分位风格不变） ── */
+  check('9y④ 浮窗 step 提位：$1.5 档距 $0.004 ⇒ 1.500 ＋ BTC 档距 $0.5 不提位（12,345.7）',
+    F.fmtFloatPrice(1.5, 0.004) === '1.500' && F.fmtFloatPrice(12345.67, 0.5) === '12,345.7');
+  check('9y④ 极端档距（护盘砸穿后的沙盒）：价 $0.000108 档距 $1e-6 ⇒ 6 位相邻可分 ＋ $1e-8 ⇒ 提到 8 位',
+    F.fmtFloatPrice(0.000108, 1e-6) === '0.000108' && F.fmtFloatPrice(0.000109, 1e-6) === '0.000109'
+    && F.fmtFloatPrice(0.000108, 1e-8) === '0.00010800');
+
+  /* ── ⑤ render / chart 源码锚 ── */
+  const chartSrc9y = fs.readFileSync(path.join(ROOT, 'src/ui/chart.js'), 'utf8');
+  const rendSrc9y = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  check('9y⑤ chart：axisLabel 委托 fmtAxisPrice ＋ 网格刻度传 span/3（entry/强平/mark 单值标签不传）',
+    chartSrc9y.includes('import { fmtAxisPrice, fmtMoneyShort }')
+    && chartSrc9y.includes('const axisLabel = fmtAxisPrice;')
+    && chartSrc9y.includes('axisLabel(p, span / 3)'));
+  check('9y⑤ render：订单簿档位 / mid 传 tick（基础档非墙前两行价差），热力图/巨鲸/成交页仍量级口径',
+    rendSrc9y.includes('fmtFloatPrice(r.price, tick)')
+    && rendSrc9y.includes('fmtFloatPrice(b.mid, tick)')
+    && rendSrc9y.includes('Math.abs(baseAsks[1].price - baseAsks[0].price)'));
 }
 
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════
