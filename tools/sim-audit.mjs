@@ -3357,6 +3357,60 @@ section('9x · 浮窗分档精度 fmtFloatPrice ＋ 24h 成交记录 tape24h ＋
   check('9x④ 热力图条不裁剪：.god-hm-bar 无 overflow:hidden（窄条文字完整）＋ 行高 12px 与 GAP 同源',
     !/\.god-hm-bar \{[^}]*overflow\s*:\s*hidden/.test(styleNoCmt)
     && /\.god-hm-bar \{[^}]*line-height: 12px/.test(styleNoCmt));
+
+  /* ── ⑤ 热力图级联双向化（2026-10-08 bug 修：「左下角又堆在了一起」＝ 4f92f43 级联的回归） ──
+     旧版只做**正向**（自顶向下推）：底部密集条目（长侧强平挤在下方）越界后被 `clampT` 夹到同一
+     `top` ⇒ 左下角堆叠；左上角因上侧条目少、未越界而正常。修法：正向推 ＋ 反向回推 ＋ 整体
+     平移入界；总跨度超可用区（n 大且分布极散）时压自然位置再叠加 rank×GAP 兜底（行距恒 ≥ GAP）。 */
+  check('9x⑤ 热力图级联双向化：正向推 ＋ 反向回推 ＋ 基准先取出 ＋ 兜底保留行距（源码锚）',
+    rendSrc9x.includes('rows[i].t = i ? Math.max(rows[i].y, rows[i - 1].t + GAP) : rows[i].y')
+    && rendSrc9x.includes('rows[i].t = Math.min(rows[i].t, rows[i + 1].t - GAP)')
+    && rendSrc9x.includes('const o0 = rows[0].t') && rendSrc9x.includes('const span = rows[n - 1].t - o0')
+    && rendSrc9x.includes('1 - MARGIN - (ySpan * k + (n - 1) * GAP)'));
+  {
+    /* 行为断言（不只锚源码）：逐字复刻 render.js 页 0 级联，跑密集数据集统计「同行重叠/越界」。
+       回归场景（底部密集）旧正向级联最小行距 0px、21 对重叠；新布局四组数据集零问题。 */
+    const HM = 260, GP = 12 / HM, MG = 6 / HM, AV = 1 - 2 * MG;
+    const layout = ys => {
+      const r = ys.map(y => ({ y })).sort((a, b) => a.y - b.y);
+      for (let i = 0; i < r.length; i++) r[i].t = i ? Math.max(r[i].y, r[i - 1].t + GP) : r[i].y;
+      for (let i = r.length - 2; i >= 0; i--) r[i].t = Math.min(r[i].t, r[i + 1].t - GP);
+      const o0 = r[0].t, n = r.length, sp = r[n - 1].t - o0;
+      if (sp <= AV) { const b = Math.min(Math.max(o0, MG), 1 - MG - sp); for (const x of r) x.t += b - o0; }
+      else {
+        const free = AV - (n - 1) * GP, ysp = r[n - 1].y - r[0].y;
+        const k = ysp > 0 ? Math.max(0, Math.min(1, free / ysp)) : 1;
+        const b = Math.min(Math.max(r[0].y, MG), 1 - MG - (ysp * k + (n - 1) * GP));
+        for (let i = 0; i < n; i++) r[i].t = b + (r[i].y - r[0].y) * k + i * GP;
+      }
+      return r;
+    };
+    const scan = r => {
+      let stack = 0, oob = 0, minSep = Infinity;
+      for (let i = 0; i < r.length; i++) {
+        if (r[i].t < MG - 1e-9 || r[i].t > 1 - MG + 1e-9) oob++;
+        for (let j = i + 1; j < r.length; j++) {
+          const d = Math.abs(r[j].t - r[i].t);
+          if (d < minSep) minSep = d;
+          if (d < GP - 1e-9) stack++;
+        }
+      }
+      return { stack, oob, minSep: minSep === Infinity ? GP : minSep };
+    };
+    const yf = p => (135 - p) / 70;               // price=100、视窗 ±35% → yFrac
+    const sets = [
+      [...[66, 66.5, 67, 67.5, 68, 68.5, 69].map(yf), ...[120, 124, 128].map(yf), 0.5],  // 底部密集（回归场景）
+      [[66, 67, 68, 69.5].map(yf), [118, 122, 126, 130].map(yf), 0.5].flat(),            // 双侧密集 ＋ 现价线
+      [...[65.2, 70, 78, 86, 94, 102, 110, 118, 126, 133].map(yf), 0.5],                 // 极散铺满 ±35%
+      [0.5],                                                                             // 仅现价线（n=1 边界）
+    ];
+    const res = sets.map(layout).map(scan);
+    const bad = res.reduce((a, s) => a + s.stack + s.oob, 0);
+    check('9x⑤ 布局行为：底部密集/双侧密集/极散/单行四组数据集「零同行重叠 ＋ 零越界」',
+      bad === 0, `问题数 ${bad}（旧正向级联此四组为 27）`);
+    check('9x⑤ 回归复现：底部密集组最小行距 ≥ 12px（旧正向级联此组被夹成 0px 同行堆叠）',
+      res[0].minSep * HM >= 12 - 1e-6, `${(res[0].minSep * HM).toFixed(2)}px`);
+  }
 }
 
 /* ═══════════════════ 9y · 深跌护盘买盘 ＋ y 轴/浮窗步进自适应 ═══════════════════

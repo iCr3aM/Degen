@@ -3270,12 +3270,36 @@ function floatBody(s, page, prog) {
        文字互相压字、100x 条压住现价线。级联最坏跨度 = (n−1)×12px，n 上限 = 6 档×2 侧＋做市
        2 侧＋现价线 = 15 行 ⇒ 14×12 = 168px ≤ 260−2×6 可用区（2026-10-08 扩容 260 后余量更足）。 */
     const GAP = 12 / HM_H;
-    const clampT = v => Math.min(1 - 6 / HM_H, Math.max(6 / HM_H, v));
+    const MARGIN = 6 / HM_H;                        // 上下各留 6px，条不贴边
+    const avail = 1 - 2 * MARGIN;
+    const clampT = v => Math.min(1 - MARGIN, Math.max(MARGIN, v));
     const rows = vis.map(l => ({ y: yFrac(l.price), l }));
     rows.push({ y: 0.5, now: true });              // 现价线恒在视窗正中（±35% 视窗的定义），参与同一场级联
     rows.sort((a, b) => a.y - b.y);
-    let prev = -1;
-    for (const r of rows) { r.t = Math.max(r.y, prev + GAP); prev = r.t; }
+    /* 双向级联（2026-10-08 bug 修）：旧版只做**正向**（自顶向下推），底部密集条目（多头强平
+       挤在下方）被推到越界后，`clampT` 把多行夹到同一值 ⇒ 左下角堆叠（左上角因上侧条目少、
+       未越界而正常）。现改为**正向推 ＋ 反向回推**，再整体平移入界；总跨度仍超出可用区的极端
+       情形（n 过大且分布极散）按比例压缩兜底 —— 正常 15 行 × 12px = 168px ≪ 248px 不触发。 */
+    for (let i = 0; i < rows.length; i++) {
+      rows[i].t = i ? Math.max(rows[i].y, rows[i - 1].t + GAP) : rows[i].y;
+    }
+    for (let i = rows.length - 2; i >= 0; i--) {
+      rows[i].t = Math.min(rows[i].t, rows[i + 1].t - GAP);
+    }
+    const o0 = rows[0].t;                          // 基准先取出：下面的循环会改写 r.t，不能边写边读 rows[0]
+    const n = rows.length;
+    const span = rows[n - 1].t - o0;
+    if (span <= avail) {
+      const base = Math.min(Math.max(o0, MARGIN), 1 - MARGIN - span);
+      for (const r of rows) r.t += base - o0;
+    } else {
+      /* 兜底（正常不触发）：自然位置跨度本身已超出可用区 ⇒ 按系数压自然位置，再叠加 rank×GAP
+         —— 行距恒 ≥ GAP，绝不出现两行同一 top。 */
+      const free = avail - (n - 1) * GAP, ySpan = rows[n - 1].y - rows[0].y;
+      const k = ySpan > 0 ? Math.max(0, Math.min(1, free / ySpan)) : 1;
+      const base = Math.min(Math.max(rows[0].y, MARGIN), 1 - MARGIN - (ySpan * k + (n - 1) * GAP));
+      for (let i = 0; i < n; i++) rows[i].t = base + (rows[i].y - rows[0].y) * k + i * GAP;
+    }
     const hm = el('div', 'god-hm');
     for (const r of rows) {
       if (r.now) {
