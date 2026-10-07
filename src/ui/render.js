@@ -3247,6 +3247,29 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
    ⚠️ 透明度走全局 `--god-alpha`（main.js 写、style.css 读）：面板 / 浮窗 / 圆钮同一份。 */
 let fChip = null, fPanel = null;
 
+/* 浮窗几何（2026-10-08 桌面端分档）：宽 / 高 / 热力图高由 style.css 的 `:root` 变量给
+   （`--float-w` / `--float-h` / `--hm-h`，见文件末尾那两档媒体查询）。手机端未定义 ⇒ 走兜底值,
+   与旧硬编码（340px / 72dvh / 260px）逐位一致。读**同一份**变量 ⇒ 拖拽夹取与热力图级联不会
+   各说各话（改档只改 style.css 一处）。
+   ⚠️ 带缓存：只在视口尺寸变化时重读，避免每帧 `getComputedStyle`（跳时间性能红线）。 */
+let geoKey = '', geoVal = null;
+function floatGeo() {
+  const cw = document.documentElement.clientWidth, ch = document.documentElement.clientHeight;
+  const key = `${cw}x${ch}`;
+  if (key === geoKey && geoVal) return geoVal;
+  const cs = getComputedStyle(document.documentElement);
+  /* 变量值可以是 px，也可以是 vh / dvh（`--float-h` 用视口比写更好读）—— 两种写法都认。 */
+  const px = (name, dflt) => {
+    const v = cs.getPropertyValue(name).trim();
+    const n = parseFloat(v);
+    if (!v || !Number.isFinite(n)) return dflt;
+    return /v[hd]$/.test(v) ? (n / 100) * ch : n;
+  };
+  geoVal = { cw, ch, w: px('--float-w', 340), h: px('--float-h', ch * 0.72), hm: px('--hm-h', 260) };
+  geoKey = key;
+  return geoVal;
+}
+
 /** 面板内容（每帧重建）。页 0 热力图：纵轴 = 价格、条 = 各档强平价位（宽 ∝ 名义占比，
  *  多头强平在下方走跌色、空头强平在上方走涨色）＋ 当前价标线 —— 视窗夹在现价 ±35%
  *  （3x 年代封顶的最大强平距离 32.83% ＋ 余量），远档强平不进来把轴压扁（2026-10-07 bug 修）；
@@ -3260,7 +3283,7 @@ function floatBody(s, page, prog) {
   const w = godWatchOf(s, s.sym);
   const box = el('div', 'god-fbody');
   if (page === 0) {
-    const BAND = 0.35, HM_H = 260;                 // HM_H 与 style.css 的 .god-hm 高度同源（2026-10-08 扩容 260）
+    const BAND = 0.35, HM_H = floatGeo().hm;       // 与 style.css 的 .god-hm 同源（`--hm-h`，桌面端分档抬高）
     const hi = w.price * (1 + BAND), lo = w.price * (1 - BAND);
     const yFrac = p => (hi - p) / (hi - lo);       // 0 = 视窗顶（高价）
     const vis = w.liqs.filter(l => l.price >= lo && l.price <= hi).sort((a, b) => b.price - a.price);
@@ -3268,7 +3291,7 @@ function floatBody(s, page, prog) {
        恒 ≥ 12px（= .god-hm-bar 的行高，style.css 同源）。旧版 gap = (H−24)/(n−1)−12 随条数
        变密反而缩水（n=10 时仅 5.3px），高杠杆档（20x/50x/100x 挤在现价 ±4.5% 内）相邻条
        文字互相压字、100x 条压住现价线。级联最坏跨度 = (n−1)×12px，n 上限 = 6 档×2 侧＋做市
-       2 侧＋现价线 = 15 行 ⇒ 14×12 = 168px ≤ 260−2×6 可用区（2026-10-08 扩容 260 后余量更足）。 */
+       2 侧＋现价线 = 15 行 ⇒ 14×12 = 168px ≤ 可用区（HM_H−2×6：手机端 248px，桌面端更高）。 */
     const GAP = 12 / HM_H;
     const MARGIN = 6 / HM_H;                        // 上下各留 6px，条不贴边
     const avail = 1 - 2 * MARGIN;
@@ -3455,13 +3478,14 @@ export function updateFloat(s, ui) {
   }
   for (const b of fPanel.querySelectorAll('[data-goftab]')) b.classList.toggle('on', Number(b.dataset.goftab) === ui.page);
   fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page, ui.prog));
-  /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽 340px ＋ 8px 余量）。
-     高度固定 72dvh（style.css 同源）⇒ 上弹时 top 还要夹进「视口高 − 面板高 − 余量」，
+  /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽由 `--float-w` 给，＋8px 余量）。
+     高度由 `--float-h` 给（手机端 72dvh）⇒ 上弹时 top 还要夹进「视口高 − 面板高 − 余量」，
      否则矮视口下面板底边会探出屏幕外（2026-10-08 扩容后尤其明显）。 */
-  const cw = document.documentElement.clientWidth, ch = document.documentElement.clientHeight;
+  const geo = floatGeo();
+  const cw = geo.cw, ch = geo.ch;
   if (ui.pos) {
-    const fh = ch * 0.72;
-    fPanel.style.left = `${Math.min(Math.max(4, ui.pos.x), cw - 348)}px`;
+    const fh = geo.h;
+    fPanel.style.left = `${Math.min(Math.max(4, ui.pos.x), cw - geo.w - 8)}px`;
     fPanel.style.top = `${ui.pos.y > ch * 0.55
       ? Math.max(4, Math.min(ui.pos.y - 320, ch - fh - 4))
       : ui.pos.y + 46}px`;

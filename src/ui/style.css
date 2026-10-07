@@ -2061,8 +2061,10 @@ button { user-select: none; -webkit-user-select: none; }
 }
 .god-float {
   position: fixed;
-  width: 340px;
-  height: 72dvh;                /* 固定高（2026-10-08 拍板）：不随内容收缩，矮视口靠滚动 */
+  /* 宽 / 高走 `:root` 变量（2026-10-08 桌面端分档）：手机端未定义 ⇒ 340px × 72dvh 不变；
+     桌面端由文件末尾那两档媒体查询抬高，`render.js` 的拖拽夹取读同一份。 */
+  width: var(--float-w, 340px);
+  height: var(--float-h, 72dvh); /* 固定高（2026-10-08 拍板）：不随内容收缩，矮视口靠滚动 */
   overflow-y: auto;
   border: 1px solid var(--line);
   padding: 8px;
@@ -2098,7 +2100,12 @@ button { user-select: none; -webkit-user-select: none; }
 .god-fnote { margin: 4px 0 0; font-size: 10px; color: var(--mut); }
 /* 清算热力图：纵轴 = 价格（上高下低），条 = 某档某侧的强平价位（宽 ∝ 名义占比，
    多头强平 = 跌侧红、空头强平 = 涨侧绿 —— 与 K 线涨跌色同一对变量），金虚线 = 当前价。 */
-.god-hm { position: relative; height: 260px; margin-top: 2px; border: 1px solid var(--line); }
+.god-hm {
+  position: relative;
+  height: var(--hm-h, 260px);   /* 桌面端分档抬高（2026-10-08）；级联算 GAP 时读同一份 */
+  margin-top: 2px;
+  border: 1px solid var(--line);
+}
 .god-hm-bar {
   position: absolute;
   left: 0;
@@ -2158,3 +2165,22 @@ button { user-select: none; -webkit-user-select: none; }
 .gd-row b { font-weight: 600; flex: 1 1 auto; text-align: right; overflow: hidden; }
 .gd-buy em, .gd-buy b { color: var(--up); }
 .gd-sell em, .gd-sell b { color: var(--down); }
+
+/* ══════════════ 桌面端分档：详情浮窗扩大 ＋ 容器再放宽（2026-10-08 用户拍板）══════════════
+   用户原话「做桌面端（桌面网页版）适配，详细适配，比如详情浮窗可以扩大」。浮窗那三档尺寸改由
+   `:root` 变量给（`--float-w` / `--float-h` / `--hm-h`），基础规则里的 `var()` 兜底值就是手机端的
+   340px × 72dvh × 热力图 260px ⇒ **<1280px 一条规则都不写，手机端与平板端逐位不变**（T-1 红线）。
+   加宽 ⇒ 订单簿量条 / 热力图条更长、逐笔「金额」列更宽；加高 ⇒ 订单簿 18 档 / 成交页一屏容纳
+   更多行（面板自带 `overflow-y: auto` 托底）；热力图变高 ⇒ 条与条之间更松，读数不挤。
+   ⚠️ 浮窗字号仍是**固定 px、不乘 `--ui`**（2026-10-07 拍板「尽量小，缩到可视大小」保持）——
+      加宽加高只换「容量」，不放大字；`render.js` 的拖拽夹取与热力图级联读同一份变量。
+   ⚠️ 必须是文件**最后**的规则：`.god-float` / `.god-hm` 的基座写在上面，同优先级靠后取胜。 */
+@media (min-width: 1280px) {
+  :root { --float-w: 420px; --float-h: 78dvh; --hm-h: 320px; }
+}
+@media (min-width: 1680px) {
+  :root { --float-w: 480px; --float-h: 82dvh; --hm-h: 380px; }
+  /* 容器跟着再放宽一档（与 1440px 档同一套手法）：`--ui` 早就在 1385px 封顶 1.35，
+     剩下的宽度只喂给 K 线左列。1360 → 1520 多出来的 160px 全给左列（约 999px）。 */
+  #app { max-width: 1520px; }
+}

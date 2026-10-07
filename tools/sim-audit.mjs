@@ -3261,11 +3261,34 @@ section('9w · tape 逐笔采样 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋
   check('9w⑤ render：成交页走 tape24h（9x 扩的 24h 记录）＋ 圆钮「详」＋ gd 行结构',
     rendSrc9w.includes('tape24h(s, s.sym, prog || 0)')
     && rendSrc9w.includes("'详'") && rendSrc9w.includes('gd-row'));
-  check('9w⑤ style：浮窗 340px×72dvh 固定 / 热力图 260px ＋ 成交页固定列样式（2026-10-08 扩容）',
-    /\.god-float \{[^}]*width: 340px/.test(styleSrc9w)
-    && /\.god-float \{[^}]*height: 72dvh/.test(styleSrc9w)
-    && /\.god-hm \{[^}]*height: 260px/.test(styleSrc9w)
+  check('9w⑤ style：浮窗尺寸走 :root 变量（兜底值即手机端 340px×72dvh / 热力图 260px）＋ 成交页固定列样式',
+    /\.god-float \{[^}]*width: var\(--float-w, 340px\)/.test(styleSrc9w)
+    && /\.god-float \{[^}]*height: var\(--float-h, 72dvh\)/.test(styleSrc9w)
+    && /\.god-hm \{[^}]*height: var\(--hm-h, 260px\)/.test(styleSrc9w)
     && styleSrc9w.includes('.gd-row') && styleSrc9w.includes('.gd-buy') && styleSrc9w.includes('.gd-sell'));
+  /* 9w⑥（2026-10-08 桌面端适配）：浮窗按视口宽度分两档放大（手机端兜底值不变），
+     `render.js` 的拖拽夹取与热力图级联读**同一份** CSS 变量 ⇒ 三处不会各说各话。 */
+  check('9w⑥ 桌面端浮窗分档（1280px / 1680px）＋ 超宽容器 1520px ＋ render.js 读同一份变量',
+    styleSrc9w.includes('--float-w: 420px; --float-h: 78dvh; --hm-h: 320px')
+    && styleSrc9w.includes('--float-w: 480px; --float-h: 82dvh; --hm-h: 380px')
+    && styleSrc9w.includes('@media (min-width: 1280px)') && styleSrc9w.includes('@media (min-width: 1680px)')
+    && styleSrc9w.includes('#app { max-width: 1520px; }')
+    && rendSrc9w.includes("px('--float-w', 340)") && rendSrc9w.includes("px('--float-h', ch * 0.72)")
+    && rendSrc9w.includes("px('--hm-h', 260)") && rendSrc9w.includes('cw - geo.w - 8')
+    && rendSrc9w.includes('const BAND = 0.35, HM_H = floatGeo().hm'));
+  {
+    /* `floatGeo` 里 px() 的行为复刻：px 直取、vh/dvh 按视口比换算、空值/垃圾值走兜底。
+       （改档只写 CSS 变量，若解析写错就会静默退回手机端尺寸 ⇒ 这条把它钉住。） */
+    const ch = 800;
+    const px = (v, dflt) => {
+      const n = parseFloat(v);
+      if (!v || !Number.isFinite(n)) return dflt;
+      return /v[hd]$/.test(v) ? (n / 100) * ch : n;
+    };
+    check('9w⑥ 浮窗变量解析：420px→420 ／ 78dvh→624 ／ 空值与垃圾值→兜底',
+      px('420px', 340) === 420 && px('78dvh', 0) === 624
+      && px('', 340) === 340 && px('abc', 340) === 340);
+  }
 }
 
 /* ═══════════════════ 9x · 浮窗分档精度 ＋ 24h 成交记录 ＋ 热力图级联去重叠 ═══════════════════
