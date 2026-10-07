@@ -75,6 +75,25 @@ function stashSlot(slot) {
   try { localStorage.setItem(SLOT_KEY, slot); } catch { /* 隐私模式：存不下就退回 load() */ }
 }
 
+/* ── 上帝信箱（2026-10-07 用户拍板「重开本局 = 重开上帝模式」）──────────────
+   「下一局是否继续上帝模式」的一次性信箱，与上面两枚同一副骨架。
+   ⚠️ 为什么必须有它：上帝状态 `s.god` 不进存档（`save.js` 落盘剔除），而「重开本局」
+      走的是投信箱 ＋ reload —— reload 必然把内存里的 `s.god` 冲掉，不投信箱的话
+      上帝局一重开就**无声掉回普通局**，玩家会以为上帝还在。 */
+const GOD_KEY = 'degen_next_god';
+
+function takePendingGod() {
+  try {
+    const v = localStorage.getItem(GOD_KEY);
+    if (v !== null) localStorage.removeItem(GOD_KEY);
+    return v;
+  } catch { return null; }
+}
+
+function stashGod() {
+  try { localStorage.setItem(GOD_KEY, '1'); } catch { /* 隐私模式：重开掉回普通局，可接受 */ }
+}
+
 /* 这一趟开机是**开新局**（信箱里有年代）还是**读档**（信箱里有槽 / 缺省读）：
    ⚠️ 有年代信箱 ⇒ 一律开新局，**不读档** —— 否则「挑战档还在时想开一局普通」会被它捞回去。
    ⚠️ `loadSlot(slot)` / `load()` 返回 null 就是**全新一局** —— 开场叙事弹窗只在这一次出现
@@ -83,8 +102,14 @@ function stashSlot(slot) {
       原地换对象会让时钟继续推那份旧状态 —— 重开 / 删档本来也一直是 reload，同一条路。 */
 const pendingScen = takePendingScen();
 const pendingSlot = takePendingSlot();
+const pendingGod = takePendingGod();
 const saved = pendingScen ? null : (pendingSlot ? loadSlot(pendingSlot) : load());
 let s = saved || createState(pendingScen || DEFAULT_SCENARIO);
+/* 上帝重开（2026-10-07）：信箱有货 ⇒ 这一局**从第一根 K 线起就是上帝局** ——
+   开局第一件事 `enableGod`（顺带把新手提示压掉，见 `god.js`）。
+   ⚠️ 挑战没有上帝（与 `onGodLogo` 第一行同一条封锁）：信箱与挑战局凑上（不该发生）直接吞。 */
+const bootGod = !!pendingGod && !isChallenge(s.scen);
+if (bootGod) enableGod(s);
 const isNewGame = !saved;
 /* 刚在主菜单挑完年代（或点「开始游戏」）⇒ 这一趟开机**跳过主菜单**，直接进开场白
    （否则会弹回菜单，等于白点）。 */
@@ -399,7 +424,10 @@ async function boot() {
      ⚠️ 菜单**只吃一个布尔**（`canLoad`，2026-10-02）：两段摊开的列表已收进弹窗，
         菜单不再需要那份槽位清单 —— 真正的清单在**点「读取存档」那一刻**才现算。 */
   if (fromScenarioPick) {
-    if (isChallenge(s.scen)) beginGame();
+    /* 上帝重开（2026-10-07）：上帝局**不走开场白** —— 与主菜单连点进局（`onGodLogo`）同一条：
+       玩家点的是「重开」，不是「从零再看一遍叙事」；直接开盘（`beginGame` 认 `bootGod`
+       补上帝日志 ＋ 当场弹面板）。挑战局不走开场白是既有规则（下面那行注释）。 */
+    if (bootGod || isChallenge(s.scen)) beginGame();
     else openIntro(s.scen);
   } else if (fromSlotPick) {
     /* 跨槽读档：**跳过菜单直接续玩**加载进来的那一局 —— 走法与 `onSlot` 的同槽分支一字不差
@@ -2362,6 +2390,12 @@ function onIntro(kind) {
 function beginGame() {
   closePicker();
   pushLog(s, openLogText(), 'info');
+  /* 上帝重开（2026-10-07）：信箱带来的这一局开局即上帝 —— 补一条与 `onGodLogo`
+     同款的日志 ＋ 当场弹面板。`enableGod` 已把 `hintOn` 压掉 ⇒ 下面的引导天然不会起。 */
+  if (bootGod) {
+    pushLog(s, '上帝模式已开启 ｜ 仅本局有效（存档不记），操盘台在面板第 3 页', 'ok');
+    showGod();
+  }
   clock.start();
   snd.begin();
   /* 新手 ＋ 新局 ⇒ 接一段分步引导（本轮 ④）。⚠️ 排在 `clock.start()` 之后、`after()` 之前：
@@ -2707,7 +2741,11 @@ function doRestart() {
      走 `startNewGame()` 这条统一的路（投年代信箱 ＋ 清对应槽 ＋ reload），另半边的档一个字不动。
      原来「经典全程重开完先回菜单」那条分叉一并取消：一是那条路上 reload 后 `load()` 缺省
      会掉进**挑战档**（普通槽刚被清空），反而把玩家带到另一局去；二是「重开本局」本来就该
-     直接开这一局新的（开场白或直接开盘），弹回菜单等于让玩家再点一次。 */
+     直接开这一局新的（开场白或直接开盘），弹回菜单等于让玩家再点一次。
+     ⚠️ **上帝局的重开 = 重开上帝模式**（2026-10-07 用户拍板）：先投上帝信箱再 reload ——
+        `s.god` 不进存档（`save.js` 落盘剔除），不投信箱 reload 回来就是普通局，玩家会以为
+        上帝还在。设置页「重开本局」与结束遮罩「重新开始」两枚入口都走这里，一并覆盖。 */
+  if (s.god) stashGod();
   startNewGame(s.scen);
 }
 

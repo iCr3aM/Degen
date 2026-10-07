@@ -2815,6 +2815,33 @@ section('9r · 上帝操盘台：吃单位移=预览 · 洗售零位移 · 幌�
     `push=${sInf.god.lastPush} wash=${sInf.god.lastWash}`);
 }
 
+/* ═══════════════════ 9s · 上帝局重开保上帝（2026-10-07 · 上帝信箱） ═══════════════════
+   「重开本局」走投信箱 ＋ reload（M1 统一路），而 `s.god` 不进存档 ⇒ 不补一枚**一次性信箱**
+   的话，上帝局一重开就无声掉回普通局。这一节对 main.js 做**源码锚点**断言（Node 无 DOM）：
+     · `doRestart` 上帝局先投信箱（设置页「重开本局」＋ 结束遮罩「重新开始」两枚入口共用）；
+     · 开机消费信箱 ＋ `enableGod` 落在开局对象建立**之后**（源序）；
+     · 挑战局封锁（与 `onGodLogo` 第一行同一条）；
+     · 上帝重开**不走开场白**、开局补日志 ＋ 当场弹面板（与 `onGodLogo` 进局同款）。 */
+section('9s · 上帝局重开保上帝（doRestart 投信箱 → 开机 bootGod 落位）');
+{
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+  check('9s `doRestart` 上帝局先投信箱（`if (s.god) stashGod()`）',
+    /if \(s\.god\) stashGod\(\);/.test(mainSrc));
+  check('9s 开机消费信箱 ＋ 挑战局封锁（bootGod = pendingGod && !isChallenge）',
+    /const bootGod = !!pendingGod && !isChallenge\(s\.scen\);/.test(mainSrc));
+  /* 源序：`enableGod` 必须作用在**开局那一份** `s` 上 —— 写在 createState / 读档之前就是空放。 */
+  const iCreate = mainSrc.indexOf('createState(pendingScen || DEFAULT_SCENARIO)');
+  const iEnable = mainSrc.indexOf('if (bootGod) enableGod(s);');
+  check('9s `enableGod` 落在开局对象建立之后（源序）',
+    iCreate >= 0 && iEnable > iCreate, `createState@${iCreate} enableGod@${iEnable}`);
+  check('9s 上帝重开不走开场白（fromScenarioPick 分支认 bootGod，直接 beginGame）',
+    /if \(bootGod \|\| isChallenge\(s\.scen\)\) beginGame\(\);/.test(mainSrc));
+  const bg = mainSrc.match(/function beginGame\(\) \{[\s\S]*?\n\}/);
+  check('9s beginGame 内补上帝日志 ＋ 当场弹面板（bootGod → showGod）',
+    !!bg && /bootGod/.test(bg[0]) && /showGod\(\)/.test(bg[0]),
+    bg ? 'beginGame 已接线' : 'beginGame 未找到');
+}
+
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════
    这一节**不跑引擎**，只对上一轮修好的几处做**源码 / 数据面**的固化断言 —— 谁把修复删回去，这里立刻红。
    目标五件事：
