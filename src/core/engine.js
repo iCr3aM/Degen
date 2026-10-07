@@ -3515,7 +3515,15 @@ export function godManipPush(s, sym, dir, notional) {
     return { ok: false, why: `名义额至少 ${MANIP_MIN}` };
   }
   const p = manipPreview(s, sym, dir, notional);
-  if (!debit(s, p.cost)) return { ok: false, why: '资金不足（吃单要付手续费＋冲击成本）' };
+  /* 「无限资金」开着 ⇒ 钱不够就**先补满再扣**（2026-10-07 用户报「按钮无效」的根因：
+     操盘台的 `debit` 完全没理 `s.god.inf`，开着无限照样报资金不足）。
+     补款额取 `max(lastFill, cost)` —— 账上可能填过比 lastFill 更大的数，往小补等于倒扣；
+     `godFillCash` 会顺带把 lastFill 抬到补款额：无限资金下「补满目标」本就只是下限，无妨。 */
+  if (!debit(s, p.cost)) {
+    if (!(s.god.inf && s.god.lastFill > 0)) return { ok: false, why: '资金不足（吃单要付手续费＋冲击成本）' };
+    godFillCash(s, Math.max(s.god.lastFill, p.cost));
+    debit(s, p.cost);           // 补款额 ≥ cost ⇒ 必成功
+  }
   pushFlow(s, sym, dir, notional, 1, 'fut', true);
   return { ok: true, impact: p.impact, cost: p.cost };
 }
@@ -3534,7 +3542,12 @@ export function godManipWash(s, sym, notional) {
   }
   const feeRate = feeRateOf(s.ex, timeOf(s), 'fut', vol30Of(s, s.ex, s.i, 'fut'));
   const fee = notional * feeRate * 2;
-  if (!debit(s, fee)) return { ok: false, why: '资金不足（洗售要付双边手续费）' };
+  /* 「无限资金」同吃单：钱不够先补满再扣（补款额 ≥ fee ⇒ 必成功），语义见 `godManipPush`。 */
+  if (!debit(s, fee)) {
+    if (!(s.god.inf && s.god.lastFill > 0)) return { ok: false, why: '资金不足（洗售要付双边手续费）' };
+    godFillCash(s, Math.max(s.god.lastFill, fee));
+    debit(s, fee);
+  }
   addPlayerVol(s, sym, notional, s.ex, 'fut');
   /* 与 `pushFlow` 的 P1-2 同一条口径：假量只喂**当前币**的热度（`m.pv` 的结算在 tickMarket）。 */
   if (sym === s.sym) mktOf(s, sym).pv += notional;

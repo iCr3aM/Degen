@@ -955,7 +955,7 @@ function npcShockAt(s, sym, j) {
  *    NPC 自己的连续偏移要剔除（否则会自激）。
  */
 export function playerFactor(s, sym, j) {
-  return shockFactorOf(residualAt(s, sym, j) + overhangAt(s, sym, j));
+  return shockFactorOf(residualAt(s, sym, j) + overhangAt(s, sym, j), !!s.god);
 }
 
 /**
@@ -969,15 +969,20 @@ export function playerFactor(s, sym, j) {
  *    热度的价格输入若含 NPC 自己的位移，就会自激（§73.5）。
  *
  * **两侧同时夹**（B1，2026-09-29；2026-10-02 收紧为 `SHOCK.fallMax` / `SHOCK.riseMax`）。
+ * ⚠️ **夹子只属于普通局**（2026-10-07 用户拍板「上帝模式去掉封顶封底」）：`s.god` 非空时
+ *    原样放行、不夹 —— 想拉多少拉多少（`1e-9` 下界仍保留：价格不能为 0）。
+ *    挑战局 `s.god` 恒空 ⇒ 与普通局同一条夹子，行为与改动前逐位相同。
  */
 export function factorFor(s, sym, j) {
-  return shockFactorOf(residualAt(s, sym, j) + overhangAt(s, sym, j) + npcDriftAt(s, sym, j) + npcShockAt(s, sym, j));
+  return shockFactorOf(residualAt(s, sym, j) + overhangAt(s, sym, j) + npcDriftAt(s, sym, j) + npcShockAt(s, sym, j), !!s.god);
 }
 
-/** 把一份「位移总量」夹进 `fallMax ~ riseMax` 并转成乘数（两个入口共用，保证同形） */
-function shockFactorOf(r) {
+/** 把一份「位移总量」夹进 `fallMax ~ riseMax` 并转成乘数（两个入口共用，保证同形）；
+ *  `uncapped` = 上帝局不夹（见 `factorFor` 头注）。 */
+function shockFactorOf(r, uncapped) {
   if (!r) return 1;
-  const f = 1 + Math.min(SHOCK.riseMax, Math.max(SHOCK.fallMax, r));
+  const c = uncapped ? r : Math.min(SHOCK.riseMax, Math.max(SHOCK.fallMax, r));
+  const f = 1 + c;
   return f > 1e-9 ? f : 1e-9;
 }
 
@@ -1179,7 +1184,9 @@ export function sbOf(s) {
  * 常数在这里、动作在 engine —— 那里才有 `pushFlow` / 流动性 / 账本这些内部件）：
  * 没有「直接设价」通道，2026-09-29 删掉的 `scale` / `mult` 不复活。真实化依据（调研结论）：
  *   · 吃单 = 真实 P&D 的推动阶段：冲击 √(Q/深度)（引擎现模型实测 $66M → 2.79%，与 Kaiko
- *     实测 $50M → 2~3% 同量级），付手续费 ＋ 冲击成本，停手按幂律回吐，±20%/−45% 硬夹封顶；
+ *     实测 $50M → 2~3% 同量级），付手续费 ＋ 冲击成本，停手按幂律回吐；
+ *     ⚠️ 普通局的 ±20%/−45% 硬夹**不约束上帝局**（2026-10-07 用户拍板「去掉封顶封底」）——
+ *        夹子只在 `s.god` 为空时生效，见 `factorFor` 头注；
  *   · 洗售 = 对敲刷量：**不动价**（无监管交易所 70%+ 成交量是假的 —— Bitwise/NBER），
  *     烧双边手续费，假量上量柱（顺带费率阶梯 —— 现实刷量党的收益来源），假量喂热度引散户；
  *   · 幌骗 = 挂假单挪情绪：零成交零手续费（CFTC 2021 起诉操纵 BTC 期货的真实手法），

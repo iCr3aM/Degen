@@ -1412,7 +1412,7 @@ function onGodCash(node) {
 function onGodInf() {
   s.god.inf = !s.god.inf;
   pushLog(s, s.god.inf
-    ? `上帝模式 ｜ 无限资金已开启（归零补满 ${fmtMoney(s.god.lastFill)}）`
+    ? `上帝模式 ｜ 无限资金已开启（操盘 · 归零自动补满 ${fmtMoney(s.god.lastFill)}）`
     : '上帝模式 ｜ 无限资金已关闭', 'ok');
   showGod();
   after();

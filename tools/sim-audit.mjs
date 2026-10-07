@@ -2759,6 +2759,39 @@ section('9r · 上帝操盘台：吃单位移=预览 · 洗售零位移 · 幌�
     && engine.godManipPush(sLow, 'BTC', 0, 2e7).ok === false
     && engine.godManipPush(sLow, 'BTC', 1, 2e7).ok === false
     && god.factorFor(sLow, 'BTC', sLow.i) === fLow, '');
+
+  /* ⑤ 封顶封底只属于普通局（2026-10-07 用户拍板「上帝模式去掉封顶封底」）：
+     `shockFactorOf` 的 ±20%/−45% 夹子只在 `s.god` 为空时生效 —— 同一份手工位移，
+     普通局被夹、上帝局原样放行；挑战局 `s.god` 恒空 ⇒ 与普通局同一条（无需单测）。 */
+  const sCap = await mk({ sym: 'BTC', i: T, mode: 'fut', cash: 1e9 });
+  clean(sCap);
+  sCap.flow.BTC = [{ at: T, v: 0.5 }];            // 位移 +50%：普通局夹到 +20%
+  check('9r 普通局封顶（+50% ⇒ 因子 1.2）· 上帝局不封顶（⇒ 1.5）',
+    Math.abs(god.factorFor(sCap, 'BTC', T) - 1.2) < NU, `普通 factor=${f(god.factorFor(sCap, 'BTC', T), 6)}`);
+  god.enableGod(sCap);
+  check('9r 上帝局不封顶（同一位移 ⇒ 1.5）· playerFactor 同步放行',
+    Math.abs(god.factorFor(sCap, 'BTC', T) - 1.5) < NU
+    && Math.abs(god.playerFactor(sCap, 'BTC', T) - 1.5) < NU,
+    `god factor=${f(god.factorFor(sCap, 'BTC', T), 6)} player=${f(god.playerFactor(sCap, 'BTC', T), 6)}`);
+  sCap.flow.BTC = [{ at: T, v: -0.8 }];           // −80%：普通局本该夹到 −45%
+  check('9r 上帝局不封底（−80% ⇒ 因子 0.2）',
+    Math.abs(god.factorFor(sCap, 'BTC', T) - 0.2) < NU, `god factor=${f(god.factorFor(sCap, 'BTC', T), 6)}`);
+  delete sCap.god;                                // 回到普通局对照封底
+  check('9r 普通局封底（−80% ⇒ 因子 0.55）',
+    Math.abs(god.factorFor(sCap, 'BTC', T) - 0.55) < NU, `普通 factor=${f(god.factorFor(sCap, 'BTC', T), 6)}`);
+
+  /* ⑥ 无限资金贯通操盘台（2026-10-07 用户报「按钮无效」的根因修复）：
+     `s.god.inf` 开着 ⇒ debit 失败先补满（`godFillCash`，补款额 = max(lastFill, 代价)）再扣。 */
+  const sInf = await mk({ sym: 'BTC', i: T, mode: 'fut', cash: 100 });
+  god.enableGod(sInf);
+  sInf.god.inf = true;
+  const pvI = engine.manipPreview(sInf, 'BTC', 1, 2e7);
+  const rI = engine.godManipPush(sInf, 'BTC', 1, 2e7);
+  check('9r 无限资金贯通吃单（$100 现金也拉得动 $20M，扣完 = 补款额 − 代价）',
+    rI.ok && Math.abs(engine.equity(sInf) - (Math.max(sInf.god.lastFill, pvI.cost) - pvI.cost)) < NU,
+    `补款 ${f(Math.max(sInf.god.lastFill, pvI.cost), 0)} 花费 ${f(pvI.cost, 0)} 余 ${f(engine.equity(sInf), 2)}`);
+  const rIw = engine.godManipWash(sInf, 'BTC', 2e7);
+  check('9r 无限资金贯通洗售（双边费同样先补后扣）', rIw.ok, `fee ${f(rIw.fee || 0, 0)}`);
 }
 
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════
