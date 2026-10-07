@@ -1362,6 +1362,33 @@ section('10 · 存档往返（JSON 序列化 ⇒ 逐位可复现 · 两槽互不
     check('10 两槽各自内容不同（scen 不同）', !!ln && !!lc && ln.scen !== lc.scen, `normal=${ln && ln.scen} / challenge=${lc && lc.scen}`);
     check('10 开局缺省先读 normal 槽（普通优先于挑战）', save.load().scen === 'classic');
 
+    /* ── 上帝状态不进存档（2026-10-07 用户拍板「一次性游戏」）──
+       落盘的永远是普通局：save 剔除 god / godRuined（`save.js` 的 EPHEMERAL）；
+       「这局用过上帝」由 `stat.god` 作证（结算 / 生涯档案要认得出它）。
+       旧档兼容：历史版本落过 god 的档，读侧剥掉、不弃档（不升 STATE_VERSION）。 */
+    const sG = await mk({ scen: 'classic', sym: 'BTC', cash: 50000, i: idx(at(2020, 5)) });
+    god.enableGod(sG);
+    engine.godFillCash(sG, 123456);
+    check('10 前置：内存里 god 在且 stat.god 已置位', !!sG.god && sG.stat.god === true);
+    check('10 上帝局落盘成功', save.save(sG) === true);
+    const objG = JSON.parse(mem.get('degen_save_normal'));
+    check('10 档文顶层没有 god / godRuined 键（不进存档）',
+      !('god' in objG) && !('godRuined' in objG),
+      `残留 ${['god', 'godRuined'].filter(k => k in objG).join('/') || '无'}`);
+    check('10 stat.god 作证保留（结算 / 生涯认得出这局用过上帝）',
+      objG.stat && objG.stat.god === true);
+    const backG = save.loadSlot('normal');
+    check('10 读回来是普通局且进度还在',
+      !!backG && backG.god === undefined && backG.godRuined === undefined
+      && Math.abs(engine.equity(backG) - 123456) < 1e-6,
+      backG ? `equity=${f(engine.equity(backG), 2)}` : 'null');
+    /* 旧档兼容：手工回写一份带 god 的档（历史版本形态），读回来被剥掉且不弃档 */
+    mem.set('degen_save_normal', JSON.stringify(
+      { ...objG, god: { lastFill: 9, inf: true, sb: { ...god.SB_DEFAULT } }, godRuined: true }));
+    const backL = save.loadSlot('normal');
+    check('10 旧档带 god 也读得出且被剥掉（不弃档）',
+      !!backL && backL.god === undefined && backL.godRuined === undefined, '');
+
     save.wipe('normal');
     check('10 wipe(normal) 后该槽 hasSave 为假', save.hasSave('normal') === false);
     check('10 wipe 只动本槽（challenge 仍可用）', save.hasSave('challenge') === true);

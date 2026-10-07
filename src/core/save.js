@@ -13,10 +13,18 @@
  *    原来那条 `migrate()` 迁移链已整条删除（少一层要维护的冗余代码；正式版以后再补）。
  *
  * ⚠️ 一个闸门：`disabled`。删档时必须先关闸，否则 `beforeunload` 会把刚删掉的档原样写回来。
+ *
+ * ⚠️ **上帝状态不进存档**（2026-10-07 用户拍板「一次性游戏」）：`s.god` / `s.godRuined`
+ *    在序列化时整对剔除 —— 落盘的永远是普通局，读档回来上帝模式就没有了（要再来一回，
+ *    得去主菜单再连点 5 次）。本局会话内上帝照常有效、打完照常结算；
+ *    「这局用过上帝」由 `s.stat.god`（统计布尔）落盘作证，结算 / 生涯档案认得出它。
  */
 
 import { STATE_VERSION } from './state.js';
 import { isChallenge } from './config.js';
+
+/** 不落盘的**会话级**键：上帝本体 ＋ 归零补满的提示闩锁（后者离开 god 就没有意义）。 */
+const EPHEMERAL = ['god', 'godRuined'];
 
 const KEY_OF = {
   normal: 'degen_save_normal',
@@ -46,7 +54,11 @@ export function save(s) {
      `rewindTo`（上帝跳日期）把 `s.over` 清回 null 之后，写盘自然恢复。 */
   if (s.over) return false;
   try {
-    localStorage.setItem(KEY_OF[saveSlotOf(s.scen)], JSON.stringify(s));
+    /* **浅拷贝后剔除会话级键**再落盘 —— 顶层整对消失，嵌套的 `stat.god`（统计布尔，
+       「这局用过上帝」的作证）原样保留。不深拷贝：JSON.stringify 只读，浅拷贝够用。 */
+    const flat = { ...s };
+    for (const k of EPHEMERAL) delete flat[k];
+    localStorage.setItem(KEY_OF[saveSlotOf(s.scen)], JSON.stringify(flat));
     return true;
   } catch {
     return false;               // 隐私模式 / 配额满：玩得下去，只是不落盘
@@ -88,6 +100,10 @@ function parse(slot) {
     if (!raw) return null;
     const s = JSON.parse(raw);
     if (!s || typeof s !== 'object' || s.v !== STATE_VERSION || !shaped(s) || s.over) return null;
+    /* 旧档兼容（2026-10-07 上帝状态改为不进存档）：历史版本落过 `god` / `godRuined` 的档，
+       读回来一律剥掉 —— 普通进度原样保留、不因此弃档（所以不升 `STATE_VERSION`）。 */
+    delete s.god;
+    delete s.godRuined;
     return s;
   } catch {
     return null;

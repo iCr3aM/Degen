@@ -2964,7 +2964,8 @@ export function openYearPick(curYear) {
  * **三页 tab**（2026-10-05 起分页，2026-10-07 增第 3 页）：第 1 页「资金·时间」= ①填入资金 ＋ ②跳到日期；
  * 第 2 页「沙盒」= ③沙盒旋钮 / 预设 / 种子；第 3 页「操盘」= ④吃单拉砸 / 洗售 / 幌骗（走既有市场
  * 物理，见 `engine.godManipPush` / `godManipWash` / `godManipSpoof` 的头注）。
- * ⚠️ **「关闭上帝模式」已删除**（2026-10-07 用户拍板）：上帝模式进局后随存档永久有效，
+ * ⚠️ **「关闭上帝模式」已删除**（2026-10-07 用户拍板）：上帝模式是**会话级一次性**状态
+ *    （`save.js` 落盘时剔除 `s.god`，读档回来就是普通局），没有「退出」一说；
  *    底部只剩「关闭」（关的是面板，不是模式）。
  * ⚠️ 切页走 `data-godtab`（`main.js` 把页码存进 `godPage` 再重开本层）—— 面板本是**无状态**的
  *    静态 DOM，页签同样由 `page` 入参决定高亮。
@@ -3192,7 +3193,7 @@ export function openGod(s, sel = null, page = 0) {
   rowsC.style.display = page === 2 ? '' : 'none';
   box.append(rowsA, rowsB, rowsC);
 
-  /* 「关闭上帝模式」已删除（2026-10-07 用户拍板）—— 上帝模式进局后随存档永久有效，
+  /* 「关闭上帝模式」已删除（2026-10-07 用户拍板）—— 上帝模式不进存档（会话级一次性），
      这里只剩「关闭」（关的是面板，不是模式）。 */
   const close = el('button', 'act flat', '关闭');
   close.dataset.sclose = '';

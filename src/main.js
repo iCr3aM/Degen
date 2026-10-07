@@ -1000,8 +1000,9 @@ function dispatch(node) {
   /* ── 上帝模式（隐藏入口 · 方案 §2）──
      `god` ＝ **主菜单图标连点 5 次直接进局**（2026-10-07 入口改型）；顶栏标题挂着同一枚键，
      但只作「已解锁时单击重开面板」—— 解锁只发生在主菜单。
-     ⚠️ `godoff`（「关闭上帝模式」）已随入口改型删除：上帝模式进局后随存档永久有效，
-        面板底部只剩「关闭」（`data-sclose`，关的是面板、不是模式）。
+     ⚠️ `godoff`（「关闭上帝模式」）已随入口改型删除：上帝模式是**会话级一次性**状态
+        （`save.js` 落盘剔除 `s.god`，读档回来就是普通局），面板底部只剩「关闭」
+        （`data-sclose`，关的是面板、不是模式）。
      ⚠️ 设置页那枚「订单冲击」开关已于 2026-10-01 随 `s.impactOn` 字段一起删除 —— 冲击永远是开的。 */
   if (d.god !== undefined) return onGodTap(node);
   if (d.godcash !== undefined || d.godyear !== undefined || d.godmon !== undefined
@@ -1354,7 +1355,7 @@ function onGodLogo() {
   closePicker();                      // 收掉主菜单（顺带任何残留弹层）
   tab = 'trade';                      // 进局落在交易页（与 `onSlot` 同槽分支同一条）
   if (isNewGame) pushLog(s, openLogText(), 'info');   // 全新一局补开局日志（`beginGame` 同款）
-  pushLog(s, '上帝模式已开启 ｜ 资金归零自动补满，操盘台在面板第 3 页', 'ok');
+  pushLog(s, '上帝模式已开启 ｜ 仅本局有效（存档不记），操盘台在面板第 3 页', 'ok');
   snd.begin();
   godSel = null;                      // 面板选择器回到「当前日期」起手
   godPage = 0;                        // 页签回到第 1 页
@@ -1548,7 +1549,7 @@ function godRewind(to, label) {
    三枚动作都只做「调 engine ＋ 记日志 ＋ 重开面板 ＋ 落盘」—— 状态变换整块在 core
    （可离线断言），与 `godRewind` / `onSb` 同一条纪律；动作全部走既有市场物理，
    真实化依据见 `engine.godManip*` 的头注。
-   ⚠️ 「关闭上帝模式」已随入口改型删除：进局后随存档永久有效，没有退出的路。 */
+   ⚠️ 「关闭上帝模式」已随入口改型删除：上帝模式不进存档（会话级一次性），没有退出的路。 */
 
 /** 吃单拉砸（`data-godpush="1|-1"`）：单小时满额吃单，位移走既有冲击管线，付手续费＋冲击成本。 */
 function onGodPush(node) {
