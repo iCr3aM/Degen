@@ -146,11 +146,11 @@ export function lastPrice(s, sym = s.sym) {
  *   · `tiers` 巨鲸：六档明细（杠杆 / 权重 / 双侧名义与均价）＋ 做市盘行 ＋ `heat` / `mood` 读数。
  *   · `depth` 深度：日流动性、本小时基准深度、瞬时深度池（已消耗 / 容量 `POOL.capK × 基准`）、
  *             滑点死区线（`SLIP.threshold × liqDay`）与单笔饱和线（`SLIP.cap × liqDay`）。
- *   · `book`  订单簿：基础 12 档 ＋ 压力位墙（`bookForWatch`，普通局浮窗也读这一份）。
+ *   · `book`  订单簿：基础 18 档 ＋ 压力位墙（`bookForWatch`，普通局浮窗也读这一份）。
  */
 /**
  * 订单簿**合成视图**（浮窗第 4 页 · 2026-10-07 拍板「压力位挂单墙并入订单簿」）——
- * 基础 12 档 ＝ `baseLadder(σ, cap)` 摊在中间价两侧（每档**等名义** `nq × liq`、档距取
+ * 基础 18 档 ＝ `baseLadder(σ, cap)` 摊在中间价两侧（每档**等名义** `nq × liq`、档距取
  * `d` 的积分平均价，见 `impact.js`）；墙 ＝ `levelsOf` 的压力位按 `WALL_K × liq` 折成名义，
  * 只列**要被吃的那一侧**（买看上方卖墙、卖看下方买墙——反向的墙管不着这一笔）。
  * ⚠️ 与 `walkFillFor` **同源**：同一 σ / cap / liq / levels —— 玩家在这页看到的墙，
@@ -201,9 +201,9 @@ export function godWatchOf(s, sym = s.sym) {
   const price = lastPrice(s, sym);
   return {
     price, heat: m.heat || 0,
-    /* 情绪读数 = 恐惧贪婪指数（0–100 · 只读显示轨，`tickMarket` ⑤ 写入）——
-       旧字段 `mood` 从未被任何写路径赋值 ⇒ 恒 0（2026-10-07 用户抓到的「情绪恒为 0%」）。
-       未结算过任何一天的格子（fngDay 缺）⇒ 中性 50。 */
+    /* 情绪读数 = 恐惧贪婪指数（0–100 · 日频轨，`settleFng` 写入；2026-10-08 起 `npcBuild`
+       的散户接盘层也读它触发 —— 不再是纯显示）。旧字段 `mood` 从未被任何写路径赋值 ⇒ 恒 0
+       （2026-10-07 用户抓到的「情绪恒为 0%」）。未结算过任何一天的格子（fngDay 缺）⇒ 中性 50。 */
     fng: Number.isFinite(m.fng) ? m.fng : 50,
     liqs, tiers,
     book: bookForWatch(s, sym, price),
@@ -1000,7 +1000,7 @@ function permImpactFor(s, sym, i, notional) {
 
 /**
  * **玩家侧走簿撮合**（2026-10-07 拍板「滑点改成真走簿逐档撮合」）—— 一次市价单吃簿的全程：
- *   · `cost`  加权平均滑点 —— `walkBook` 把 `impactOf(q, σ, cap)` 那条代价曲线摊开成 12 档
+ *   · `cost`  加权平均滑点 —— `walkBook` 把 `impactOf(q, σ, cap)` 那条代价曲线摊开成 18 档
  *             逐档吃（审计 9v：对连续式 ≤1%）；顶格饱和 / 死区 / `hard` 上夹与 `impactOf` 同口径；
  *   · `n`     吃满用了几档（成交日志的「 · N 笔」）；
  *   · `eaten` 本笔**吃掉的墙** `[{p, w, frac}]` —— 供 `pushFlow → absorbedImpact` 做**精确耦合**
@@ -1403,8 +1403,11 @@ function mktOf(s, sym) {
     },
     npcDrift: null, npcShock: null, npcFund: 0, advPush: 0, pv: 0,
     /* 恐惧贪婪**显示轨**（2026-10-04）：旧档缺这三个键 ⇒ 由 `fngDay === null` 触发首次结算
-       （首日直接吸附到原始读数），行为自洽 ⇒ **不升 `STATE_VERSION`**（同 `m.heat` 先例）。 */
+       （首日直接吸附到原始读数），行为自洽 ⇒ **不升 `STATE_VERSION`**（同 `m.heat` 先例）。
+       深跌护盘三层的新键（2026-10-08）：旧档缺键由 `??` / `>= 0` 防御读兜住（`dipPrev ?? 0`、
+       `dipRes >= 0` 不成立 ⇒ 按满仓播种），同样**不升 `STATE_VERSION`**。 */
     fng: 50, fngDay: null, fngBand: 'mid',
+    dipRes: null, dipPrev: 0, dipGone: false,     // 机构储备存量 / 上一根回撤 / 耗尽已报旗
   });
 }
 
@@ -2334,22 +2337,75 @@ function crossHeat(s, sym, m) {
  * **深跌护盘强度**（`NPC.dip` · 2026-10-07 用户拍板「特别低的价格肯定是有人护盘的」）：
  * 当前标记价（`lastPrice` —— 护盘读的是**盘面实际可见的价**，含位移层 ⇒ 玩家砸出来的跌幅
  * 真实触发护盘）相对近 24 根**已收盘** K 线高点（`candleAt` 含位移、不前视本根）的回撤深度
- * `dd` → 抄底盘强度 ∈ [0, `NPC.dip.cap`]，线性 ramp。纯函数零状态（审计可测）；
+ * `dd` → 抄底盘强度 ∈ [0, `NPC.dip.cap`]，线性 ramp。
  * 高点 / 现价任一无效 ⇒ 0；`dd ≤ ref` ⇒ 0（浅跌与旧档**逐位同轨**）。
  * 自稳定性：护盘买盘推价回升 ⇒ 回撤收窄 ⇒ 护盘减弱 —— 负反馈，不自激发散。
+ *
+ * ⚠️ **滑窗缓存**（2026-10-08 · 上帝模式跳时间卡死修复）：旧版每小时×8 币×24 次 `candleAt`
+ *    ≈192 次对象分配，全程 10 万+ 小时就是千万级 —— 跳时间肉眼可见地卡。改为每币缓存
+ *    「近 24 根已收盘 K 线高点」的 `Float64Array(24)`：窗口只随 `s.i` 右移一根 ⇒ 热路径
+ *    **一次** `candleAt` ＋ `copyWithin` 左移补尾；冷路径（新局 / 跨多根跳变 / 回退后）直扫
+ *    24 根填窗，**逐位同旧版**。正确性根基与 σ 缓存同一条：位移四分量全是「逐根台阶表、
+ *    `j ≥ at` 生效」⇒ **已收盘 K 线的高点不可变**，缓存值永不腐烂；`rewindTo` 里显式
+ *    `resetDipCache()` 双保险（拨小 `s.i` 后连续性检查本就会冷启动）。
  */
+let dipCache = null;               // { s, per: Map<sym, { i, buf: Float64Array(24) }> } —— buf[23] 最新
+export function resetDipCache() { dipCache = null; }
+
 export function dipOf(s, sym) {
   const cur = lastPrice(s, sym);
   if (!(cur > 0)) return 0;
-  let hi = 0;
-  for (let back = 1; back <= 24; back++) {
-    const c = candleAt(sym, s.i - back);
-    if (c && c.h > hi) hi = c.h;
+  let e = dipCache && dipCache.s === s ? dipCache.per.get(sym) : undefined;
+  if (!e || !(e.i === s.i || e.i === s.i - 1)) {
+    /* 冷路径：直扫 24 根填窗（缺根补 0 —— 与旧版「无效 K 不参与 max」逐位同轨）。 */
+    const buf = new Float64Array(24);
+    for (let back = 1; back <= 24; back++) {
+      const c = candleAt(sym, s.i - back);
+      buf[24 - back] = c ? c.h : 0;
+    }
+    if (!dipCache || dipCache.s !== s) dipCache = { s, per: new Map() };
+    dipCache.per.set(sym, e = { i: s.i, buf });
+  } else if (e.i === s.i - 1) {
+    /* 热路径：窗口整体右移一根 —— 丢最老、补最新，只需一次 `candleAt`。 */
+    const c = candleAt(sym, s.i - 1);
+    e.buf.copyWithin(0, 1);
+    e.buf[23] = c ? c.h : 0;
+    e.i = s.i;
   }
+  let hi = 0;
+  for (let k = 0; k < 24; k++) if (e.buf[k] > hi) hi = e.buf[k];
   if (!(hi > 0)) return 0;
   const dd = 1 - cur / hi;
   if (dd <= NPC.dip.ref) return 0;
   return Math.min(NPC.dip.cap, NPC.dip.cap * (dd - NPC.dip.ref) / (NPC.dip.full - NPC.dip.ref));
+}
+
+/**
+ * 深跌护盘的**三层买盘合成**（纯函数 · 审计 9z 逐位锚定）—— `npcBuild` 每小时调一次，
+ * 输入（日流动性 / 本根回撤 / 机构储备存量 / 恐惧贪婪读数）全由调用方给，这里零状态。
+ *
+ *   · **机构层**：先按 `instFlow` 涓流回补（封顶 `instSeed × liqDay`），再按需取用
+ *     `min(储备, liqDay × dip)` —— 储备可耗尽（LFG 锚），耗尽后每小时只剩涓流盘（DCA 锚）；
+ *   · **散户层**：`fng < retailFng`（极度恐惧区）才接盘，强度 = `retailCap × (1 − fng / retailFng)`
+ *     —— 越恐越接，但上限小（实证散户深跌净卖出）；fng 缺失 / 中性 ⇒ 0；
+ *   · `resAfter` 回写给调用方落账；`gone` = 储备本根见底（日志「机构护盘储备耗尽」的判据）。
+ * @param {number} liqDay 日流动性（$）
+ * @param {number} dip `dipOf` 的本根回撤强度 ∈ [0, cap]
+ * @param {number|null} res 机构储备存量（旧档 / 新格子 ⇒ null，按满仓播种）
+ * @param {number} fng 恐惧贪婪读数（0–100，`settleFng` 写入）
+ * @returns {{ instBuy:number, retailBuy:number, dipBuy:number, resAfter:number, gone:boolean }}
+ */
+export function dipBuyOf(liqDay, dip, res, fng) {
+  const capRes = liqDay * NPC.dip.instSeed;
+  /* ⚠️ 播种判定必须用 `Number.isFinite`：`null >= 0` 在 JS 里是 **true**（null 关系比较转 0），
+     裸写 `res >= 0` 会让新格子（null）永远播不上种、储备从 0 起步（9z 审计抓到的真 bug）。 */
+  const filled = Math.min(capRes, (Number.isFinite(res) ? res : capRes) + liqDay * NPC.dip.instFlow);
+  const instBuy = Math.min(filled, liqDay * dip);
+  const resAfter = filled - instBuy;
+  const fv = Number.isFinite(fng) ? fng : 50;
+  const retailBuy = fv < NPC.dip.retailFng
+    ? liqDay * NPC.dip.retailCap * (1 - fv / NPC.dip.retailFng) : 0;
+  return { instBuy, retailBuy, dipBuy: instBuy + retailBuy, resAfter, gone: resAfter <= 0 };
 }
 
 /**
@@ -2358,9 +2414,11 @@ export function dipOf(s, sym) {
  * ⚠️ 双侧基底的构造（2026-10-07）：`long 靶心 = base×w×liqDay + max(0, t×w)`、
  *    `short 靶心 = base×w×liqDay + max(0, −t×w)` ⇒ **净敞口 = t×w 与无基底逐位相同**
  *    （两侧都是线性收敛、且基底 > 0 使 `max(0,·)` 永不夹到 0），变的只有总名义（OI 地板）。
- * ⚠️ 深跌护盘（`NPC.dip` · 2026-10-07）：`dipBuy` **只加长侧**（方向性买盘，短侧不动）——
+ * ⚠️ 深跌护盘（`NPC.dip` · 2026-10-08 **三层**）：`dipBuy` **只加长侧**（方向性买盘，短侧不动）——
  *    净敞口恒等式对**基底**部分仍成立，护盘是有意的方向性偏移（不进恒等式）。
  *    只给生效杠杆 ≤ 10x 的档（与基底同一判据：50x/100x 止损带太窄，接刀会持续摩擦止损线）。
+ *    三层合成走 `dipBuyOf`（纯函数，审计 9z 逐位锚定）：机构储备（可耗尽＋涓流回补）＋
+ *    散户极恐接盘（`settleFng` 的 fng < 22 触发）。
  * ⚠️ 基底只给**生效杠杆 ≤ 10x** 的档（`npcLevOf` 年代封顶后的值）：50x/100x 的止损带太窄，
  *    常驻基底会在止损线上持续摩擦（见 `NPC.base` 注）。
  * ⚠️ 方案 A ②：减仓的已实现盈亏累加后一次性入池（`settlePool` 只在池余额内兑付）。
@@ -2370,7 +2428,22 @@ function npcBuild(s, sym, m, i) {
   if (!(liqDay > 0)) return;
   const target = sbOf(s).npc * NPC.mom * (m.heat - HEAT.base) * liqDay;
   const price = lastPrice(s, sym);
-  const dipBuy = liqDay * dipOf(s, sym);
+  /* 深跌护盘三层（2026-10-08）：本根回撤 `dip` 与上一根 `dipPrev` 的差给**做市相位**——
+     回撤加深 ⇒ 撤单（×mmCut，承接缩）、收窄 ⇒ 回补（×mmBoost）、平时 ×1 与旧档同轨。
+     `dip === 0` 时复位 `dipGone`（episode 结束，下一轮深跌还能再报一次「储备耗尽」）。 */
+  const dip = dipOf(s, sym);
+  const dipPrev = m.dipPrev ?? 0;
+  m.dipPrev = dip;
+  if (dip === 0) m.dipGone = false;
+  const d3 = dipBuyOf(liqDay, dip, m.dipRes, m.fng);
+  m.dipRes = d3.resAfter;
+  if (dip > 0 && d3.gone && !m.dipGone) {
+    m.dipGone = true;
+    pushLog(s, `机构护盘储备耗尽 ${sym} ｜ 护盘只剩涓流盘`, 'bad', 'mkt');
+  }
+  const dipBuy = d3.dipBuy;
+  const mmMul = dip > 0 && dip >= dipPrev ? NPC.dip.mmCut
+    : (dipPrev > 0 && dip < dipPrev ? NPC.dip.mmBoost : 1);
   const t = timeOf(s);
   let npcRealisedSum = 0;
   for (let k = 0; k < NPC.ladder.length; k++) {
@@ -2383,9 +2456,11 @@ function npcBuild(s, sym, m, i) {
     npcRealisedSum += stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor);
   }
   /* ③′ **做市盘**（缺口 6-A）：站到趋势盘**对面**；靶心取趋势盘六档的**实际净持仓**。
-     ⚠️ 残尾阈值不乘权重（单个格子）；`speed` 用 `NPC.mm.speed`（更快）。 */
+     ⚠️ 残尾阈值不乘权重（单个格子）；`speed` 用 `NPC.mm.speed`（更快）。
+     ⚠️ 深跌相位乘子 `mmMul`（2026-10-08）：先撤单后回补 —— 靶心缩/放 ⇒ `stepNpc` 逐小时
+        把镜像仓推离/推回，涌现出「深度真空 → V 型回补」的节奏，不加新状态。 */
   if (m.mm) {
-    const targetMM = -NPC.mm.absorb * trendNet(m);
+    const targetMM = -NPC.mm.absorb * mmMul * trendNet(m);
     const floorMM = liqDay * NPC.floor;
     npcRealisedSum += stepNpc(m.mm, 'long', targetMM, price, floorMM, NPC.mm.speed);
     npcRealisedSum += stepNpc(m.mm, 'short', -targetMM, price, floorMM, NPC.mm.speed);
@@ -2417,6 +2492,7 @@ function npcOtherTick(s) {
     const sym = c.sym;
     if (sym === s.sym || !isLoaded(sym)) continue;
     const m = mktOf(s, sym);
+    settleFng(s, sym, m, s.i);   // 散户接盘层读 fng ⇒ 其他币也要先日频结算（与 tickMarket 同相位）
     npcBuild(s, sym, m, s.i);
     if (!(heldSyms(s).includes(sym) || adv[sym])) syncNpcDrift(s, sym, s.i, rawDailySigma(sym, s.i));
     stampede(s, sym, m, lastPrice(s, sym));
@@ -2488,6 +2564,9 @@ export function tickMarket(s, sym) {
      ⚠️ **按档分配**（§4.2）：同一个靶心按 `NPC.ladder[k].w` 分给六档，`Σw = 1` ⇒
         六档名义之和 == 改动前的单值（**总敞口守恒**），只是摊到了六条不同的强平线上。
         残尾阈值同理按档缩放（`× w`）—— 否则低权重的 100x 尾巴会被同一个绝对阈值整条抹掉。 */
+  /* ②″ 恐惧贪婪日频结算（2026-10-08 从原 ⑤ **前移**）：`npcBuild` 的散户接盘层要读 `m.fng`，
+     放在 ③ 之前 ⇒ 当前币与其他币（`npcOtherTick` 同序）相位一致。 */
+  settleFng(s, sym, m, i);
   npcBuild(s, sym, m, i);
   /* ⚠️ 2026-10-04：这里传的是**原始行情 σ**（`rawDailySigma`），不是上面那个给热度用的
      `sig`（`dailySigma`，含位移）。理由见 `rawDailySigma` 表头 —— 净持仓折价位、以及推价的
@@ -2495,15 +2574,22 @@ export function tickMarket(s, sym) {
   syncNpcDrift(s, sym, i, rawDailySigma(sym, i));
   /* ④ 踩踏级联。 */
   stampede(s, sym, m, lastPrice(s, sym));
-  /* ⑤ 恐惧贪婪**显示轨**（2026-10-04 · 日频 · 只读）：每个新的一天把当日原始读数经一阶低通
-     写进 `m.fng`（0–100）。⚠️ 它**不参与任何玩法判定**（NPC / 点差 / 踩踏一条都不读它）——
-     与上面的 `heat` 完全解耦，只是 UI 那枚浮字的读数来源（见 `god.FNG`）。 */
+}
+
+/**
+ * 恐惧贪婪**显示轨**的日频结算（2026-10-08 从 `tickMarket` ⑤ 抽身）：每个新的一天把当日
+ * 原始读数经一阶低通写进 `m.fng`（0–100）。⚠️ 2026-10-08 起它**不再只是显示轨**：
+ * `npcBuild` 的散户接盘层（`NPC.dip.retailFng`）读它触发 —— 与 `heat` 仍然解耦（各用各的口径）。
+ * ⚠️ P1-6（2026-10-04 审计）：只结算**已经收盘**的那一天（`day − 1`）。
+ *    病根：`fngRawWith(…, day)` 读的是**当天最后一根小时**（`day×24+23`）—— 而这里是在
+ *    当天**第一根**（`m.fngDay !== day` 恰好在这一根成立）就把整个当天的收盘行情读进来
+ *    ⇒ 前视。改成传 `day − 1`（刚收盘的那一天）；`day < 1` 时（本局头一天还没走完）不结算，
+ *    保持中性 50，等第二天再起算。
+ * ⚠️ 调用点：`tickMarket`（当前币，②″ 位）＋ `npcOtherTick`（其他已加载币，npcBuild 之前）
+ *    —— 两处都先于 `npcBuild` ⇒ 散户层读到的 fng 相位全币一致。
+ */
+function settleFng(s, sym, m, i) {
   const day = dayIndexOf(i);
-  /* ⚠️ P1-6（2026-10-04 审计）：只结算**已经收盘**的那一天（`day − 1`）。
-     病根：`fngRawWith(…, day)` 读的是**当天最后一根小时**（`day×24+23`）—— 而这里是在
-     当天**第一根**（`m.fngDay !== day` 恰好在这一根成立）就把整个当天的收盘行情读进来
-     ⇒ 前视。改成传 `day − 1`（刚收盘的那一天）；`day < 1` 时（本局头一天还没走完）不结算，
-     保持中性 50，等第二天再起算。 */
   if (m.fngDay !== day && day >= 1) {
     const raw = fngRawWith(j => heatPriceAt(s, sym, j), sym, day - 1);
     m.fng = m.fngDay == null ? raw : m.fng + FNG.alpha * (raw - m.fng);
@@ -2957,13 +3043,14 @@ function openCheck(s, side, frac = 1) {
   if (otc && margin * lev < otcMin) return { ok: false, why: `OTC 单笔最少 ${fmtMoneyShort(otcMin)}` };
 
   /* 成交价（P2-B1 / P2-B3）：盘口价 ± 代价 —— 买抬、卖压，**永远对玩家不利**。
-     代价有两种，同一时刻只有一种成立：盘口是**走簿逐档撮合**（12 档吃簿，2026-10-07 拍板）、
+     代价有两种，同一时刻只有一种成立：盘口是**走簿逐档撮合**（18 档吃簿，2026-10-07 拍板、
+     2026-10-08 浮窗扩容同升 18）、
      OTC 是「基准点差 × 市况倍数」（不吃滑点）。
      ⚠️ 保证金与开仓费都不受它影响（那两项按名义价值算，与成交价无关），
         受影响的是 `size`：买贵了就拿到的币少一点，这才是代价的真实形态。 */
   const notional = margin * lev;
   const dir = side === 'long' ? 1 : -1;
-  /* ⚠️ `canOpenAt` 每帧都进这里 ⇒ 走簿必须轻：12 档循环 ＋ `levelsOf` 单槽缓存（levels.js）。 */
+  /* ⚠️ `canOpenAt` 每帧都进这里 ⇒ 走簿必须轻：18 档循环 ＋ `levelsOf` 单槽缓存（levels.js）。 */
   const walk = otc ? null : walkFillFor(s, s.sym, s.i, notional, dir, price);
   const cost = otc ? otcPremiumFor(s, s.sym, notional) : walk.cost;
   const fill = fillPrice(price, dir, cost);
@@ -4375,6 +4462,9 @@ export function rewindTo(s, to) {
      实际位移归零，而缓存里还留着「带位移」的旧 σ —— 不回退这一步，回退后头几帧的
      σ / 滑点 / NPC 热度全按**已经不存在的位移史**算，自相矛盾。 */
   invalidateSigma();
+  /* dipOf 滑窗缓存同样立在「已收盘 K 线不可变」上 —— 回退动了 `s.i` 与冲击池，
+     整表作废最稳（拨小 `s.i` 后连续性检查本就会冷启动，这里是显式双保险）。 */
+  resetDipCache();
 
   return usd + usdt;
 }

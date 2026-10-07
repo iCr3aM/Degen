@@ -2061,8 +2061,8 @@ button { user-select: none; -webkit-user-select: none; }
 }
 .god-float {
   position: fixed;
-  width: 272px;
-  max-height: 58dvh;
+  width: 340px;
+  height: 72dvh;                /* 固定高（2026-10-08 拍板）：不随内容收缩，矮视口靠滚动 */
   overflow-y: auto;
   border: 1px solid var(--line);
   padding: 8px;
@@ -2098,7 +2098,7 @@ button { user-select: none; -webkit-user-select: none; }
 .god-fnote { margin: 4px 0 0; font-size: 10px; color: var(--mut); }
 /* 清算热力图：纵轴 = 价格（上高下低），条 = 某档某侧的强平价位（宽 ∝ 名义占比，
    多头强平 = 跌侧红、空头强平 = 涨侧绿 —— 与 K 线涨跌色同一对变量），金虚线 = 当前价。 */
-.god-hm { position: relative; height: 180px; margin-top: 2px; border: 1px solid var(--line); }
+.god-hm { position: relative; height: 260px; margin-top: 2px; border: 1px solid var(--line); }
 .god-hm-bar {
   position: absolute;
   left: 0;

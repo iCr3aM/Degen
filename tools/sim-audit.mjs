@@ -3040,19 +3040,19 @@ section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源
   {
     const sB = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
     const bk = engine.godWatchOf(sB, 'BTC').book;
-    check('9v③ 上帝视角带订单簿（中价 / σ / cap / liq ＋ 两侧 ≥12 行）',
+    check('9v③ 上帝视角带订单簿（中价 / σ / cap / liq ＋ 两侧 ≥18 行）',
       !!bk && bk.mid > 0 && bk.sigma > 0 && bk.cap > 0 && bk.liq > 0
-      && bk.asks.length >= 12 && bk.bids.length >= 12);
+      && bk.asks.length >= 18 && bk.bids.length >= 18);
     if (bk) {
       const lad = impact.baseLadder(bk.sigma, bk.cap);
       const baseAsks = bk.asks.filter(r => !r.wall);
       const baseBids = bk.bids.filter(r => !r.wall);
-      check('9v③ 基础档 = baseLadder 逐位复刻（asks 12 档价距与名义）',
-        baseAsks.length === 12
+      check('9v③ 基础档 = baseLadder 逐位复刻（asks 18 档价距与名义）',
+        baseAsks.length === 18
         && lad.every((r, k) => Math.abs(baseAsks[k].price - bk.mid * (1 + r.d)) < 1e-9
           && Math.abs(baseAsks[k].notional - r.nq * bk.liq) < 1e-6));
-      check('9v③ 基础档 = baseLadder 逐位复刻（bids 12 档镜像）',
-        baseBids.length === 12
+      check('9v③ 基础档 = baseLadder 逐位复刻（bids 18 档镜像）',
+        baseBids.length === 18
         && lad.every((r, k) => Math.abs(baseBids[k].price - bk.mid * (1 - r.d)) < 1e-9));
       const lvB = levels.levelsOf('BTC', sB.i).filter(L => L.w > 0);
       const wallAsks = bk.asks.filter(r => r.wall);
@@ -3261,9 +3261,10 @@ section('9w · tape 逐笔采样 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋
   check('9w⑤ render：成交页走 tape24h（9x 扩的 24h 记录）＋ 圆钮「详」＋ gd 行结构',
     rendSrc9w.includes('tape24h(s, s.sym, prog || 0)')
     && rendSrc9w.includes("'详'") && rendSrc9w.includes('gd-row'));
-  check('9w⑤ style：浮窗 272px / 热力图 180px ＋ 成交页固定列样式',
-    /\.god-float \{[^}]*width: 272px/.test(styleSrc9w)
-    && /\.god-hm \{[^}]*height: 180px/.test(styleSrc9w)
+  check('9w⑤ style：浮窗 340px×72dvh 固定 / 热力图 260px ＋ 成交页固定列样式（2026-10-08 扩容）',
+    /\.god-float \{[^}]*width: 340px/.test(styleSrc9w)
+    && /\.god-float \{[^}]*height: 72dvh/.test(styleSrc9w)
+    && /\.god-hm \{[^}]*height: 260px/.test(styleSrc9w)
     && styleSrc9w.includes('.gd-row') && styleSrc9w.includes('.gd-buy') && styleSrc9w.includes('.gd-sell'));
 }
 
@@ -3402,11 +3403,33 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
   }
   check('9y① 有界性：任意历史日期 dipOf ∈ [0, cap]（5 个采样点，含 2017-09 / 2020-03 极端段）', okBound);
 
+  /* ── ①′ 滑窗缓存等价（2026-10-08 · 跳时间卡死修复）：热路径右移 ＋ 回退作废，均与直扫逐位一致 ── */
+  const sW = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2021, 4, 20)) });
+  for (let k = 0; k < 50; k++) engine.advanceOneHour(sW);      // 连续 50 根热路径（copyWithin 右移）
+  const dipW = engine.dipOf(sW, 'BTC');
+  let hiW = 0;
+  for (let back = 1; back <= 24; back++) { const c = market.candleAt('BTC', sW.i - back); if (c && c.h > hiW) hiW = c.h; }
+  const ddW = 1 - engine.lastPrice(sW, 'BTC') / hiW;
+  const expW = ddW <= god.NPC.dip.ref ? 0
+    : Math.min(god.NPC.dip.cap, god.NPC.dip.cap * (ddW - god.NPC.dip.ref) / (god.NPC.dip.full - god.NPC.dip.ref));
+  check('9y①′ 滑窗缓存：连续推进 50 根后 dipOf 与直扫逐位一致（copyWithin 右移没丢根/错位）',
+    Math.abs(dipW - expW) < 1e-15, `dip=${dipW} · expect=${expW}`);
+  const iBack = idx(at(2021, 4, 20));
+  engine.rewindTo(sW, iBack);                                   // 回退 → 缓存整表作废 → 冷路径重建
+  const dipB = engine.dipOf(sW, 'BTC');
+  let hiB = 0;
+  for (let back = 1; back <= 24; back++) { const c = market.candleAt('BTC', sW.i - back); if (c && c.h > hiB) hiB = c.h; }
+  const ddB = 1 - engine.lastPrice(sW, 'BTC') / hiB;
+  const expB = ddB <= god.NPC.dip.ref ? 0
+    : Math.min(god.NPC.dip.cap, god.NPC.dip.cap * (ddB - god.NPC.dip.ref) / (god.NPC.dip.full - god.NPC.dip.ref));
+  check('9y①′ 回退后 dipOf 与直扫仍逐位一致（rewindTo resetDipCache ＋ 连续性冷启动双保险）',
+    Math.abs(dipB - expB) < 1e-15, `dip=${dipB} · expect=${expB}`);
+
   /* ── ② 接线：方向性（只长侧）＋ 低杠杆判据 ＋ 全币覆盖 ── */
   const engSrc9y = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   check('9y② 接线：dipOf 导出 ＋ npcBuild 长侧 dipBuy（短侧不动）＋ npcOtherTick 复用（护盘覆盖全币）',
     engSrc9y.includes('export function dipOf')
-    && engSrc9y.includes('const dipBuy = liqDay * dipOf(s, sym);')
+    && engSrc9y.includes('const dipBuy = d3.dipBuy;')
     && engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow, price, floor)")
     && engSrc9y.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor)")
     && engSrc9y.includes('npcBuild(s, sym, m, s.i);')
@@ -3447,6 +3470,75 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
     rendSrc9y.includes('fmtFloatPrice(r.price, tick)')
     && rendSrc9y.includes('fmtFloatPrice(b.mid, tick)')
     && rendSrc9y.includes('Math.abs(baseAsks[1].price - baseAsks[0].price)'));
+}
+
+/* ═══════════════════ 9z · 深跌护盘三层（2026-10-08 大改） ═══════════════════
+   收口（用户拍板「机构护盘 / 散户护盘 / 做市商护盘」三层大改，调研锚见 god.NPC.dip 表头）：
+     ① `dipBuyOf` 纯函数逐位锚定：机构储备（播种 / 封顶 / 涓流 / 耗尽）＋ 散户极恐接盘
+        （fng 严格 < 22，越恐越接、上限 3%）；
+     ② 接线：npcBuild 走 dipBuyOf（储备落账 ＋ dipGone 复位/告警）＋ settleFng 双调用点
+        （都在 npcBuild 之前 ⇒ 散户层读的 fng 全币同相位）＋ 格子新键不升 STATE_VERSION；
+     ③ 做市相位：回撤加深 ×mmCut（先撤单）/ 收窄 ×mmBoost（V 型回补）/ 平时 ×1 —— 靶心乘子，
+        不加新状态（2025-10-10 实测锚：深度瞬间蒸发 → ≈35 分钟恢复九成）；
+     ④ 行为：3·12（COVID 崩盘）深跌段 ⇒ 机构储备耗尽（LFG 锚：护盘不是无限弹药）。 */
+section('9z · 深跌护盘三层 dipBuyOf ＋ 做市相位');
+{
+  /* ── ① dipBuyOf 逐位 ── */
+  const r1 = engine.dipBuyOf(1e6, 0.2, null, 50);   // 新格子：res=null ⇒ 按满仓播种
+  check('9z① 播种取用：res=null ⇒ 满仓 2×liqDay，instBuy = liqDay×dip，散户层不触发（fng=50）',
+    r1.instBuy === 2e5 && r1.resAfter === 1.8e6 && r1.dipBuy === 2e5 && !r1.gone && r1.retailBuy === 0,
+    `inst=${r1.instBuy} res=${r1.resAfter}`);
+  const r2 = engine.dipBuyOf(1e6, 0.2, 1.99e6, 50); // 涓流回补：1.99M + 0.01M 恰到 capRes
+  check('9z① 涓流回补：res + instFlow×liqDay，封顶不越 2×liqDay',
+    r2.resAfter === 1.8e6, `res=${r2.resAfter}`);
+  const r3 = engine.dipBuyOf(1e6, 0.2, 5e3, 10);    // 耗尽：涓流 1e4 + 余 5e3 < want 2e5
+  check('9z① 储备耗尽：只剩涓流盘（resAfter = 0 ⇒ gone）＋ 散户层极恐补位（fng=10）',
+    r3.instBuy === 1.5e4 && r3.resAfter === 0 && r3.gone
+    && Math.abs(r3.retailBuy - 1e6 * 0.03 * (1 - 10 / 22)) < 1e-9,
+    `inst=${r3.instBuy} retail=${r3.retailBuy}`);
+  check('9z① 散户层口径：fng=11 ⇒ retail = liqDay×0.03×0.5（逐位）；fng=22 ⇒ 0（严格 <）；NaN ⇒ 中性 50 ⇒ 0；dip=0 ⇒ 只有散户层',
+    engine.dipBuyOf(1e6, 0.2, 1e6, 11).retailBuy === 15000
+    && engine.dipBuyOf(1e6, 0.2, 1e6, 22).retailBuy === 0
+    && engine.dipBuyOf(1e6, 0.2, 1e6, NaN).retailBuy === 0
+    && engine.dipBuyOf(1e6, 0, 1e6, 11).dipBuy === engine.dipBuyOf(1e6, 0, 1e6, 11).retailBuy);
+
+  /* ── ②③ 接线 / 相位源锚 ── */
+  const engSrc9z = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('9z② 接线：npcBuild 走 dipBuyOf（储备落账 ＋ dipGone 复位/告警）＋ settleFng 双调用点（npcBuild 之前）',
+    engSrc9z.includes('const d3 = dipBuyOf(liqDay, dip, m.dipRes, m.fng);')
+    && engSrc9z.includes('m.dipRes = d3.resAfter;')
+    && engSrc9z.includes('if (dip === 0) m.dipGone = false;')
+    && engSrc9z.includes('机构护盘储备耗尽')
+    && engSrc9z.indexOf('settleFng(s, sym, m, i);') < engSrc9z.indexOf('  npcBuild(s, sym, m, i);')
+    && engSrc9z.includes('settleFng(s, sym, m, s.i);'));
+  check('9z② 格子新键（不升 STATE_VERSION）：dipRes / dipPrev / dipGone 惰性播种＋防御读',
+    engSrc9z.includes('dipRes: null, dipPrev: 0, dipGone: false'));
+  check('9z③ 做市相位：加深 ×mmCut / 收窄 ×mmBoost / 平时 ×1（靶心乘子，不加新状态）',
+    engSrc9z.includes('const mmMul = dip > 0 && dip >= dipPrev ? NPC.dip.mmCut')
+    && engSrc9z.includes(': (dipPrev > 0 && dip < dipPrev ? NPC.dip.mmBoost : 1);')
+    && engSrc9z.includes('-NPC.mm.absorb * mmMul * trendNet(m)'));
+
+  /* ── ④ 行为：耗尽探针 ──
+     ⚠️ dipOf 的回看窗只有 24 根**已收盘小时线** ⇒ 深跌是**阵发**的（一次暴跌后 ~24–36h 内
+        dip > 0，随后高点滚出窗口）—— 不存在「连续 240 小时深跌」。所以耗尽行为不靠长跑，
+        而是：先扫到一根 dip ≥ 0.02 的深跌根，把储备直接置 0（等价「已耗尽」），重 tick 同一根
+        （dip 不变、want ≥ 涓流 ⇒ resAfter = 0）⇒ dipGone 翻真 ＋ 日志落账。 */
+  const sZ = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2020, 2, 12, 0)) }); // at() 月 0 基 ⇒ 2020-03-12
+  let deep = 0, dipZ = 0;
+  for (let k = 0; k < 96; k++) {
+    engine.advanceOneHour(sZ);
+    dipZ = engine.dipOf(sZ, 'BTC');
+    if (dipZ >= 0.02) { deep = sZ.i; break; }
+  }
+  check('9z④-a 前提：3·12 崩盘段 96 小时内出现 dip ≥ 0.02 的深跌根', deep > 0, `dip=${dipZ} @i=${deep}`);
+  if (deep > 0) {
+    const mZ = sZ.mkt.BTC;
+    mZ.dipRes = 0; mZ.dipGone = false;             // 等价「储备已耗尽」
+    engine.tickMarket(sZ, 'BTC');                   // 同一根重跑（探针）：dip 同、储备只剩涓流
+    check('9z④ 耗尽行为：储备归零 ⇒ dipGone 翻真 ＋「储备耗尽」日志落账（只剩涓流盘）',
+      mZ.dipGone === true && sZ.log.some(e => e.text.includes('机构护盘储备耗尽')),
+      `dip=${dipZ}`);
+  }
 }
 
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════

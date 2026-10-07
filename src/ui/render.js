@@ -3250,9 +3250,9 @@ let fChip = null, fPanel = null;
 /** 面板内容（每帧重建）。页 0 热力图：纵轴 = 价格、条 = 各档强平价位（宽 ∝ 名义占比，
  *  多头强平在下方走跌色、空头强平在上方走涨色）＋ 当前价标线 —— 视窗夹在现价 ±35%
  *  （3x 年代封顶的最大强平距离 32.83% ＋ 余量），远档强平不进来把轴压扁（2026-10-07 bug 修）；
- *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ 热度 / 恐惧贪婪；
+ *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ 热度（恐惧贪婪只在交易页）；
  *  页 2 深度：日流动性 / 本时基准 / 深度池余量 / 免滑点线 / 单笔顶格线 ＋ 压力位墙汇总 —— 全是真状态；
- *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础 12 档 ＋ 压力位墙逐档列出。
+ *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础 18 档 ＋ 压力位墙逐档列出。
  *  页 4 逐笔成交（2026-10-07 拍板）：本小时量的**代表性采样**（幂律 ＋ taker 偏斜，见 tape.js）
  *       ＋ 已收盘前 23 小时的**逐时汇总**（近 24 小时记录，`tape24h`），
  *       列固定「时刻 价 数量 金额」最新在前 —— `prog` = 本小时已走的量占比（main.js 时钟）。 */
@@ -3260,7 +3260,7 @@ function floatBody(s, page, prog) {
   const w = godWatchOf(s, s.sym);
   const box = el('div', 'god-fbody');
   if (page === 0) {
-    const BAND = 0.35, HM_H = 180;                 // HM_H 与 style.css 的 .god-hm 高度同源
+    const BAND = 0.35, HM_H = 260;                 // HM_H 与 style.css 的 .god-hm 高度同源（2026-10-08 扩容 260）
     const hi = w.price * (1 + BAND), lo = w.price * (1 - BAND);
     const yFrac = p => (hi - p) / (hi - lo);       // 0 = 视窗顶（高价）
     const vis = w.liqs.filter(l => l.price >= lo && l.price <= hi).sort((a, b) => b.price - a.price);
@@ -3268,7 +3268,7 @@ function floatBody(s, page, prog) {
        恒 ≥ 12px（= .god-hm-bar 的行高，style.css 同源）。旧版 gap = (H−24)/(n−1)−12 随条数
        变密反而缩水（n=10 时仅 5.3px），高杠杆档（20x/50x/100x 挤在现价 ±4.5% 内）相邻条
        文字互相压字、100x 条压住现价线。级联最坏跨度 = (n−1)×12px，n 上限 = 6 档×2 侧＋做市
-       2 侧＋现价线 = 15 行 ⇒ 14×12 = 168px ≤ 180−2×6 可用区，数学上装得下。 */
+       2 侧＋现价线 = 15 行 ⇒ 14×12 = 168px ≤ 260−2×6 可用区（2026-10-08 扩容 260 后余量更足）。 */
     const GAP = 12 / HM_H;
     const clampT = v => Math.min(1 - 6 / HM_H, Math.max(6 / HM_H, v));
     const rows = vis.map(l => ({ y: yFrac(l.price), l }));
@@ -3305,22 +3305,21 @@ function floatBody(s, page, prog) {
       if (tr.short > 0) box.append(sideRow(`${tr.name} 空`, false, tr.short, tr.shortAvg, tr.lev));
     }
     if (!w.tiers.some(tr => tr.long > 0 || tr.short > 0)) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
-    /* 情绪读数 = 恐惧贪婪指数（alternative.me 口径：0–24 极度恐惧 / 25–44 恐惧 / 45–55 中性 /
-       56–75 贪婪 / 76–100 极度贪婪）。旧 `mood` 字段从未被写路径赋值 ⇒ 恒 0（2026-10-07 修）。 */
-    const fg = w.fng;
-    const word = fg <= 24 ? '极度恐惧' : fg <= 44 ? '恐惧' : fg <= 55 ? '中性' : fg <= 75 ? '贪婪' : '极度贪婪';
-    box.append(el('div', 'god-frow2 mut', `热度 ${fmtPct(w.heat)} ｜ 恐惧贪婪 ${Math.round(fg)} ${word}`));
+    /* 情绪读数只留**热度**（2026-10-08 拍板）：恐惧贪婪指数与交易页 K 线左下角那份重复，
+       浮窗巨鲸页不再显示（`w.fng` 数据轨保留 —— 审计 9x 仍锚定 godWatchOf 的读数域）。 */
+    box.append(el('div', 'god-frow2 mut', `热度 ${fmtPct(w.heat)}`));
   } else if (page === 3) {
     /* 订单簿：asks 反序（远档在上、最近的卖价贴中价）、bids 正序（最近的买价贴中价）——
-       与真实交易所的盘口同一副上下结构。每侧 8 根**基础档**预算：数到第 9 根非墙行截断，
-       墙在前 8 档带内照插（墙才是这页的主角 —— 它们就是下一笔成交真的会撞上的货）。 */
+       与真实交易所的盘口同一副上下结构。每侧 18 根**基础档**全列（2026-10-08 浮窗扩容
+       340×72dvh 后放得下整侧）：数到第 19 根非墙行截断（兜底），墙照插
+       （墙才是这页的主角 —— 它们就是下一笔成交真的会撞上的货）。 */
     const b = w.book;
     if (!b) { box.append(el('p', 'god-fnote', '盘口暂不可用')); return box; }
     const cut = rows => {
       const out = [];
       let base = 0;
       for (const r of rows) {
-        if (!r.wall && ++base > 8) break;
+        if (!r.wall && ++base > 18) break;
         out.push(r);
       }
       return out;
@@ -3432,11 +3431,16 @@ export function updateFloat(s, ui) {
   }
   for (const b of fPanel.querySelectorAll('[data-goftab]')) b.classList.toggle('on', Number(b.dataset.goftab) === ui.page);
   fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page, ui.prog));
-  /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽 272px ＋ 8px 余量）。 */
+  /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽 340px ＋ 8px 余量）。
+     高度固定 72dvh（style.css 同源）⇒ 上弹时 top 还要夹进「视口高 − 面板高 − 余量」，
+     否则矮视口下面板底边会探出屏幕外（2026-10-08 扩容后尤其明显）。 */
   const cw = document.documentElement.clientWidth, ch = document.documentElement.clientHeight;
   if (ui.pos) {
-    fPanel.style.left = `${Math.min(Math.max(4, ui.pos.x), cw - 280)}px`;
-    fPanel.style.top = `${ui.pos.y > ch * 0.55 ? Math.max(4, ui.pos.y - 320) : ui.pos.y + 46}px`;
+    const fh = ch * 0.72;
+    fPanel.style.left = `${Math.min(Math.max(4, ui.pos.x), cw - 348)}px`;
+    fPanel.style.top = `${ui.pos.y > ch * 0.55
+      ? Math.max(4, Math.min(ui.pos.y - 320, ch - fh - 4))
+      : ui.pos.y + 46}px`;
     fPanel.style.right = 'auto'; fPanel.style.bottom = 'auto';
   } else {
     fPanel.style.left = 'auto'; fPanel.style.top = 'auto';
