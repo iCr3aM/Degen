@@ -102,10 +102,13 @@ export function sigmaOf(closes) {
   return Math.sqrt(va);
 }
 
-/** 冲击的核心式 `A × σ × sqrt(min(q, cap))` ＋ `hard` 上夹。两个入口共用，保证同形。 */
-function impactCore(q, sigma) {
+/** 冲击的核心式 `A × σ × sqrt(min(q, cap))` ＋ `hard` 上夹。两个入口共用，保证同形。
+ *  ⚠️ `cap` 可选（2026-10-07 用户拍板「两者都做」）：缺省 `SLIP.cap`（0.25，Kaiko 标定）
+ *     ⇒ 不传时**逐位等于改动前**；上帝局操盘传 `MANIP_GOD_CAP`（1.0，见 `god.js`）。
+ *     只有玩家侧入口传它 —— NPC 侧三条合成通道（级联 / 净持仓 / ADV）一律缺省（红线 A）。 */
+function impactCore(q, sigma, cap = SLIP.cap) {
   const s = Number.isFinite(sigma) && sigma > 0 ? sigma : SLIP.sigmaDefault;
-  const raw = SLIP.A * s * Math.sqrt(Math.min(q, SLIP.cap));
+  const raw = SLIP.A * s * Math.sqrt(Math.min(q, cap));
   return Math.max(0, Math.min(SLIP.hard, raw));
 }
 
@@ -116,11 +119,12 @@ function impactCore(q, sigma) {
  *    这条死区**只属于「代价」**，别拿去算行情位移 —— 见下面的 `permImpactOf`。
  * @param {number} q     本次成交名义价值 ÷ 当日流动性
  * @param {number} sigma 日收盘收益率标准差（`sigmaOf` 的结果）
+ * @param {number} [cap] `q` 的封顶（缺省 `SLIP.cap`；上帝局操盘传 `MANIP_GOD_CAP`）
  * @returns {number} 0 ~ `SLIP.hard`
  */
-export function impactOf(q, sigma) {
+export function impactOf(q, sigma, cap = SLIP.cap) {
   if (!(q > SLIP.threshold)) return 0;           // 含 NaN / 0 / 负值
-  return impactCore(q, sigma);
+  return impactCore(q, sigma, cap);
 }
 
 /**
@@ -135,10 +139,11 @@ export function impactOf(q, sigma) {
  *
  * ⚠️ 与 `impactOf` 一起构成「红线 A · 不双重计价」的两半：`impactOf` 只决定**这次成交付多贵**
  *    （`fillPrice`），`permImpactOf` 只决定**成交之后价格停在哪**（`SHOCK.share ×` 它）。
+ * @param {number} [cap] `q` 的封顶（缺省 `SLIP.cap`；上帝局操盘传 `MANIP_GOD_CAP`）
  */
-export function permImpactOf(q, sigma) {
+export function permImpactOf(q, sigma, cap = SLIP.cap) {
   if (!(q > 0)) return 0;                        // 含 NaN / 0 / 负值
-  return impactCore(q, sigma);
+  return impactCore(q, sigma, cap);
 }
 
 /**

@@ -17,7 +17,7 @@ import { closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, raw
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, bookFills, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_MIN, MANIP_SPOOF_NUDGE, addFlow, exDevOf, npcLevOf, playerFactor, sbOf, shockParamsOf } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_SPOOF_NUDGE, addFlow, exDevOf, npcLevOf, playerFactor, sbOf, shockParamsOf } from './god.js';
 import { absorbOf, levelsOf } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -896,13 +896,21 @@ function hourLiqOf(s, sym, i) {
 }
 
 /**
+ * 操盘深度的 `q` 封顶（2026-10-07 用户拍板「两者都做」）：普通局 = `SLIP.cap`（0.25），
+ * 上帝局放宽到 `MANIP_GOD_CAP`（1.0 ⇒ 单笔位移上限从 σ 提到 2σ）。**只传玩家侧**入口 ——
+ * NPC 侧三条合成通道（`rawPermImpactFor` / `syncNpcDrift` / `stepAdvPush`）一律缺省，
+ * 市场物理不因上帝变猛（红线 A · 不双重计价）。
+ */
+const godCapOf = s => (s.god ? MANIP_GOD_CAP : SLIP.cap);
+
+/**
  * 一次成交的冲击（0 = 不触发）。
  * ⚠️ **取不到当日流动性就不触发** —— 数据还没加载完 / 该币那天还没上线时，不凭空造一个冲击出来。
  */
 function impactFor(s, sym, i, notional) {
   const liq = hourLiqOf(s, sym, i);
   if (!(liq > 0) || !(notional > 0)) return 0;
-  return impactOf(notional / liq, dailySigma(sym, i));
+  return impactOf(notional / liq, dailySigma(sym, i), godCapOf(s));
 }
 
 /**
@@ -917,7 +925,7 @@ function impactFor(s, sym, i, notional) {
 function permImpactFor(s, sym, i, notional) {
   const liq = hourLiqOf(s, sym, i);
   if (!(liq > 0) || !(notional > 0)) return 0;
-  return permImpactOf(notional / liq, dailySigma(sym, i));
+  return permImpactOf(notional / liq, dailySigma(sym, i), godCapOf(s));
 }
 
 /**
@@ -1525,9 +1533,11 @@ export function cdriOf(s, sym = s.sym) {
 }
 
 /**
- * **实物换手不参与级联**（§73.6）—— 玩家这一单给热度加料的倍率。
- * 杠杆 1x（含 OTC 1x）是实物换手，没有杠杆盘、也就没有「散户追高被强平」那一环 ⇒ 倍率 0；
- * 合约 / 杠杆 > 1 按 `min(lev/5, 3)` 放大（5x 起跳，15x 及更高级顶格 3 倍）。
+ * **玩家这一单给热度加料的倍率**（§73.6）—— 杠杆 1x（含 OTC 1x）是实物换手，没有杠杆盘、
+ * 也就没有「散户追高被强平」那一环 ⇒ 倍率 0；合约 / 杠杆 > 1 按 `min(lev/5, 3)` 放大
+ * （5x 起跳，15x 及更高级顶格 3 倍）。
+ * ⚠️ 2026-10-07 起它**不再**门控 `stampede`（市场级联与玩家形态解耦，用户拍板，见那边头注）
+ *    —— 只剩这一处逐笔用途：实物玩家的单不给级联热度加料。
  */
 function cascadeMulOf(s) {
   const otc = chanOf(s) === 'otc';
@@ -2031,8 +2041,12 @@ function adlPlayerReduce(s, pos, take, price) {
  *    用户拍板）：全额反向（`give = 1`）在一根内是一笔向下的位移、级联在图上「砸一波再修复」，
  *    但不再像写 `s.flow` 那样留下 40% 的永久台阶、无界累积（那会把报价顶死在 `riseMax`）。
  *    详见 `pushNpcShock` 与 `god.NPC.shockHalf`。
- * ⚠️ **按模式门控**（§73.6 · 2026-10-02 审计修）：级联的燃料是**杠杆盘**，实物换手（杠杆 1x）
- *    没有被强制平仓的对手方 ⇒ `cascadeMulOf` 为 0 时整条不跑。
+ * ⚠️ **按模式门控已拆除**（2026-10-07 用户拍板「不仅上帝模式，就算普通模式也需要能够让玩家
+ *    查看爆仓潮」）：级联是 **NPC 杠杆盘自己的生态** —— 玩家当前停在实物 1x（`cascadeMulOf`
+ *    为 0）也拦不住市场自己爆仓。原来 `cascadeMulOf(s) <= 0` 整条早退（2026-10-02 引入），
+ *    后果是「没开过杠杆单的玩家永远看不到爆仓潮」—— 玩家的 UI 形态不该泄漏进市场物理。
+ *    `cascadeMulOf` 只剩一处调用：玩家单的热度加料权重（`tickMarket`）；冲击形态由
+ *    `shockKindOf`（`cascadeMulOf` 的内部实现，也被各 `pushFlow` 直接引用）独立承担。
  *
  * ⚠️ **v30（第 6 批）在两处强平分支上各挂了一笔账**（自愿止损波**不挂**，见下）：
  *    · **缺口 16**：`liqNotional`（只含强平）→ `s.stat.liqNotional`；达阈值播「爆仓潮」日志。
@@ -2046,7 +2060,7 @@ function adlPlayerReduce(s, pos, take, price) {
  *    现实里做市商仓位低、回补快，只有极端行情（−32.8%）才被击穿，故它是罕见事件。
  */
 function stampede(s, sym, m, price) {
-  if (cascadeMulOf(s) <= 0 || !(price > 0)) return;
+  if (!(price > 0)) return;
   const fund0 = s.fund;                             // 本小时级联**之前**的基金（量出这次穿仓了多少）
   let liqNotional = 0;                              // 本小时被**强平**的名义（缺口 16 口径：不含止损波）
   for (let k = 0; k < m.npc.length; k++) {
@@ -3488,14 +3502,17 @@ export function godFillCash(s, amount) {
  *   位移 = `sbOf.shock × dir × SHOCK.share × absorbedImpact(permImpactFor(…))`（`pushFlow` 同式，
  *   含压力位吸收 —— 同一时刻同一单，预览即实值）；花费 = 手续费 ＋ 冲击成本（`impactFor` 同式）。
  * 纯读：一个字节都不写（压力位 / 深度 / σ 都只读）。
- * @returns {{impact:number, cost:number, feeRate:number}}
+ * @returns {{impact:number, cost:number, feeRate:number, sat:boolean}} `sat` = 本笔 `q` 已顶到深度上限
  */
 export function manipPreview(s, sym, dir, notional) {
   const impact = sbOf(s).shock * dir * SHOCK.share * absorbedImpact(s, sym, dir, permImpactFor(s, sym, s.i, notional));
+  const cap = godCapOf(s);
   const liq = hourLiqOf(s, sym, s.i);
   const q = liq > 0 ? notional / liq : 0;
   const feeRate = feeRateOf(s.ex, timeOf(s), 'fut', vol30Of(s, s.ex, s.i, 'fut'));
-  return { impact, feeRate, cost: notional * (feeRate + impactOf(q, dailySigma(sym, s.i))) };
+  /* `sat`：本笔 `q` 已顶到深度上限 ⇒ 再加钱位移不再涨（预览据此提示「深度不足」）。
+     位移/花费两路传同一个 `cap`（普通 0.25 / 上帝 1.0）—— 与实际写值同式同参。 */
+  return { impact, feeRate, cost: notional * (feeRate + impactOf(q, dailySigma(sym, s.i), cap)), sat: q >= cap };
 }
 
 /**

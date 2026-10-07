@@ -3176,8 +3176,11 @@ export function openGod(s, sel = null, page = 0) {
      洗售不碰价 ⇒ 预览只报双边费。输入非法 / 不足下限时留空（执行时引擎还会再拦一道）。 */
   const updPrev = () => {
     const n = Number(manipIn.value);
-    mnPrev.textContent = Number.isFinite(n) && n >= MANIP_MIN
-      ? `预计位移 ${fmtPct(manipPreview(s, s.sym, 1, n).impact)} ｜ 花费 ${fmtMoneyShort(manipPreview(s, s.sym, 1, n).cost)}`
+    const pv = Number.isFinite(n) && n >= MANIP_MIN ? manipPreview(s, s.sym, 1, n) : null;
+    /* `sat`（2026-10-07 用户拍板「两者都做」）：本笔名义已顶到深度上限（普通 0.25 / 上帝 1.0
+       倍小时深度）⇒ 再加钱位移不再涨 —— 预览如实说，玩家自己决定少花冤枉钱。 */
+    mnPrev.textContent = pv
+      ? `预计位移 ${fmtPct(pv.impact)} ｜ 花费 ${fmtMoneyShort(pv.cost)}${pv.sat ? ' ｜ 深度不足 · 超出部分无效' : ''}`
       : '';
     const wn = Number(washIn.value);
     wPrev.textContent = Number.isFinite(wn) && wn >= MANIP_MIN

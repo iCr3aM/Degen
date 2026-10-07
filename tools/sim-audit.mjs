@@ -2842,6 +2842,65 @@ section('9s · 上帝局重开保上帝（doRestart 投信箱 → 开机 bootGod
     bg ? 'beginGame 已接线' : 'beginGame 未找到');
 }
 
+/* ═══════════════════ 9t · 爆仓潮解闸 ＋ 深度饱和放宽（2026-10-07 用户拍板） ═══════════════════
+   两件事：
+     ① **级联门控拆除**：`stampede` 原来被 `cascadeMulOf(s) <= 0`（玩家当前停在实物 1x）整条
+        闸死 ⇒ 没开过杠杆单的玩家永远看不到爆仓潮。拍板后级联是 NPC 杠杆盘自己的生态，
+        与玩家 UI 形态解耦；`cascadeMulOf` 只剩逐笔热度加料一处用途。
+     ② **深度饱和**（2014 年「几十亿只拉 3%」的三层天花板：q>0.25 单笔饱和 / 上限=σ / 压力位
+        吸收）：上帝局玩家侧 cap 放宽到 1.0（单笔上限 σ→2σ）；NPC 侧三通道不放宽（红线 A）；
+        预览在饱和时提示「深度不足 · 超出部分无效」。
+   ⚠️ 纯函数断言走 `impact.js`（无吸收、无状态）——`absorbedImpact` 非线性，含它的
+      `manipPreview` 位移只做**单调**对比，不咬精确倍数。 */
+section('9t · 爆仓潮解闸（stampede 不再看玩家形态）＋ 上帝局深度 cap 1.0 ＋ 预览饱和提示');
+{
+  const impactSrc = fs.readFileSync(path.join(ROOT, 'src/core/impact.js'), 'utf8');
+  const engineSrc = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  const renderSrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+
+  /* ① 源码锚点：stampede 函数体里不再有 cascadeMulOf */
+  const st = engineSrc.match(/function stampede\(\w+, \w+, \w+, \w+\) \{[\s\S]*?\n\}/);
+  check('9t `stampede` 不再被 cascadeMulOf 门控（级联与玩家形态解耦）',
+    !!st && !/cascadeMulOf/.test(st[0]), st ? '已解闸' : 'stampede 未找到');
+  /* 计数口径：定义 1 ＋ stampede 头注引用旧门控代码 1 ＋ 热度加料调用 1 ⇒ 3；再多 ⇒ 出现了新调用点 */
+  check('9t `cascadeMulOf` 只剩热度加料一处调用（定义＋头注引用＋调用 = 3）',
+    [...engineSrc.matchAll(/cascadeMulOf\(s\)/g)].length === 3,
+    `实得 ${[...engineSrc.matchAll(/cascadeMulOf\(s\)/g)].length} 处`);
+
+  /* ② 深度 cap：纯函数层 —— 缺省逐位回归 ＋ 上帝局恰好 2 倍（2σ·√1 vs 2σ·√0.25 = σ） */
+  const SIG = 0.03, BIG = 10;                       // BIG ≫ 任何 cap ⇒ 恒饱和
+  const sig = (q, cap) => impact.permImpactOf(q, SIG, cap);
+  check('9t 缺省 cap 逐位回归（不传 = SLIP.cap，普通局零差异）',
+    [0.05, 0.2, 0.25, 0.3, BIG].every(q => impact.permImpactOf(q, SIG) === impact.permImpactOf(q, SIG, impact.SLIP.cap))
+    && [0.2, 0.5, BIG].every(q => impact.impactOf(q, SIG) === impact.impactOf(q, SIG, impact.SLIP.cap)));
+  check('9t 上帝局饱和位移 = 2σ（普通 = σ）—— cap 1.0 vs 0.25',
+    Math.abs(sig(BIG, god.MANIP_GOD_CAP) - 2 * SIG) < 1e-9
+    && Math.abs(sig(BIG, impact.SLIP.cap) - SIG) < 1e-9
+    && Math.abs(sig(BIG, god.MANIP_GOD_CAP) / sig(BIG, impact.SLIP.cap) - 2) < 1e-9,
+    `god=${f(sig(BIG, god.MANIP_GOD_CAP), 4)} norm=${f(sig(BIG, impact.SLIP.cap), 4)}`);
+
+  /* ③ 行为层：同一局数据，普通局预览位移 < 上帝局（含压力位吸收仍单调）；sat 标志两端正确 */
+  const T14 = idx(at(2014, 5, 15));
+  const sN = await mk({ sym: 'BTC', mode: 'fut', cash: 1e12, i: T14 });
+  const sG = await mk({ sym: 'BTC', mode: 'fut', cash: 1e12, i: T14 });
+  god.enableGod(sG);
+  const pvN = engine.manipPreview(sN, 'BTC', 1, 1e12);
+  const pvG = engine.manipPreview(sG, 'BTC', 1, 1e12);
+  check('9t 2014 深度：上帝局预览位移 > 普通局（cap 放宽只动玩家侧）',
+    pvG.impact > pvN.impact, `god=${f(pvG.impact, 4)} norm=${f(pvN.impact, 4)}`);
+  check('9t 预览 sat 标志：大名义（q≫cap）= true',
+    pvN.sat === true && pvG.sat === true, `q ≫ 0.25`);
+  const pvSmall = engine.manipPreview(sN, 'BTC', 1, 1e4);
+  check('9t 预览 sat 标志：小额（q≪cap）= false', pvSmall.sat === false, `impact=${f(pvSmall.impact, 5)}`);
+
+  /* ④ 预览提示 + cap 缺省参数锚点 */
+  check('9t 预览行带「深度不足 · 超出部分无效」提示（render）',
+    renderSrc.includes('深度不足 · 超出部分无效'));
+  check('9t impact.js 三个入口都带缺省 cap（不传逐位不变）',
+    (impactSrc.match(/cap = SLIP\.cap/g) || []).length === 3,
+    `实得 ${(impactSrc.match(/cap = SLIP\.cap/g) || []).length} 处`);
+}
+
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════
    这一节**不跑引擎**，只对上一轮修好的几处做**源码 / 数据面**的固化断言 —— 谁把修复删回去，这里立刻红。
    目标五件事：
