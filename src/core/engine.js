@@ -1774,7 +1774,7 @@ function syncNpcDrift(s, sym, i, sig) {
  * NPC 级联的一笔冲击 —— 写进 `s.mkt[sym].npcShock`（**不写 `s.flow`**，见 `god.NPC.shockHalf`）。
  *
  * 为什么必须另开一条通道（2026-10-02 审计修，用户拍板「独立有界瞬时通道」）：级联原来和玩家共用
- * `pushFlow` ⇒ 每一笔都留下 `SHOCK_MODE.fut.perm = 0.40` 的永久台阶，而 `decay` 的慢分量按
+ * `pushFlow` ⇒ 每一笔都留下 `SHOCK_MODE.fut.perm = 0.18` 的永久台阶，而 `decay` 的慢分量按
  * `t^−0.3` 衰减、**积分发散** ⇒ 12 年里级联 2000+ 次，位移单向累积把报价顶死在 `riseMax` 夹子上
  * （实测全程 **97.67%** 的时间顶夹；旧单档模型也有同源性 **+16.7%** 的系统偏置）。
  * 本通道按 `0.5^(e / NPC.shockHalf)` 指数衰减 ⇒ 残存值上界 = 每小时注入量 × `1/(1−2^−1/24)` ≈ ×34，

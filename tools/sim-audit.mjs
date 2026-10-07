@@ -1043,6 +1043,35 @@ section('9 · 本批口径：逐小时计息 · 借贷额度 · 库存倍率 · 
   check('9d 库存倍率有上界（恒 ≤ 2× 基准）', okBoth && tB.betaFast <= coinBase * 2 + 1e-12, `实得 ${okBoth ? f(tB.betaFast, 4) : '—'}`);
 }
 
+/* ── 9d′ · 永久分量标定（缺口 9 · 2026-10-08 用户拍板「永久冲击偏高」） ──
+   文献（Bouchaud 2019 / Almgren–Chriss，实测 arXiv:1901.05332）里 metaorder 冲击结束后位移
+   **先回落到峰值的 2/3**、再幂律衰减收敛到**首日末的 1/2** ⇒ 永久/峰值 ≈ **1/3**。
+   旧代码把这两步乘漏了（直接把 1/2 当成相对峰值）⇒ 渐近线停在峰值的一半、系统性地「留痕过深」。 */
+{
+  check('9d′ 永久分量常量：coin 0.28 / fut 0.18 / 兜底 0.22（峰值的 ≈1/3 上沿）',
+    god.SHOCK_MODE.coin.perm === 0.28 && god.SHOCK_MODE.fut.perm === 0.18 && god.SHOCK.perm === 0.22,
+    `coin=${god.SHOCK_MODE.coin.perm} fut=${god.SHOCK_MODE.fut.perm} 兜底=${god.SHOCK.perm}`);
+  check('9d′ 三个永久分量都落在 0.15–0.34（贴近文献的 1/3，且仍高于高频小单样本）',
+    [god.SHOCK_MODE.coin.perm, god.SHOCK_MODE.fut.perm, god.SHOCK.perm].every(p => p >= 0.15 && p <= 0.34));
+  /* 行为锚：写一笔冲击后读**渐近线** —— 去掉 riseMax 夹子时 `playerFactor` = 1 + delta × decay(e)，
+     e = 0 恒为满额、e → ∞ 收敛到 perm ⇒ 长期残值 = delta × perm。 */
+  const sA = await mk({ sym: 'BTC', i: idx(at(2016, 1)), cash: 10000 });
+  sA.god = { on: true };
+  const PA = { perm: god.SHOCK_MODE.fut.perm, betaFast: god.SHOCK_MODE.fut.betaFast };
+  god.addFlow(sA, 'BTC', 0.1, PA);
+  const f0 = god.playerFactor(sA, 'BTC', sA.i);
+  const fInf = god.playerFactor(sA, 'BTC', sA.i + 1e7);
+  const fFar = god.playerFactor(sA, 'BTC', sA.i + 1e8);
+  const ratio = (fInf - 1) / (f0 - 1);            // 长期残值 ÷ 峰值
+  /* ⚠️ 不拿 perm 做逐位相等：慢幂律 `β = 0.3` 在 e = 1e7 时仍有 0.63% 的尾巴，
+     故断言「比值落在 [perm, perm + 1pp]」—— 上界就是「两步乘漏」的旧口径是否被真的压下去。 */
+  check('9d′ 长期残值 ÷ 峰值 = perm（10% 冲击 ⇒ ≈1.85%；旧口径 perm=0.40 ⇒ 4.1%）',
+    f0 === 1.1 && ratio >= PA.perm && ratio <= PA.perm + 0.01,
+    `e=0 ⇒ ${f(f0, 6)}；e=1e7 ⇒ ${f(fInf, 6)}；比值 ${f(ratio, 6)}（perm = ${PA.perm}）`);
+  check('9d′ 残值单调下行且已收敛（再走一个数量级的变化 < 0.1pp）',
+    fFar < fInf && fInf - fFar < 1e-3, `e=1e8 ⇒ ${f(fFar, 6)}`);
+}
+
 /* ── 9e · ③ 价格保护带（仅 Binance 永续 · 只拦开仓 · 锁 2h · 一个区间一条日志） ── */
 {
   const sym = 'BTC';
