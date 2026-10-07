@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, lastPrice, manipPreview, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -2983,8 +2983,10 @@ export function openYearPick(curYear) {
  * @param {object} s
  * @param {{y:number,m:number,d:number}|null} sel 日期选择器的**暂存目标**；`null` = 跟随当前游戏日期
  * @param {number} page 当前页（0 = 资金·时间，1 = 沙盒，2 = 操盘）
+ * @param {{on:boolean,alpha:number}} [fui] 浮窗的会话状态（开关 ＋ 透明档），由 `main.js` 持有；
+ *        缺省按「开 ＋ 100%」画（审计与旧调用零负担）。
  */
-export function openGod(s, sel = null, page = 0) {
+export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   closePicker();
   const ov = document.getElementById('overlay');
   if (!ov) return;
@@ -3197,6 +3199,18 @@ export function openGod(s, sel = null, page = 0) {
   rowsC.style.display = page === 2 ? '' : 'none';
   box.append(rowsA, rowsB, rowsC);
 
+  /* 哨位行（2026-10-07 用户拍板「浮窗＋透明度」）—— 挂在三页**之外**：它是界面偏好，哪页都改得到。
+     透明度是**档位按钮**不是滑杆（用户拍板「应为按钮，不需要自己拖动」）—— 循环
+     100 → 80 → 60 → 40 → 100，按钮上的字就是当前档；写 `--god-alpha` 全局变量，
+     上帝面板与浮窗**同一份**背景 alpha（文字不参与，保持锐利）。 */
+  const fRow = el('div', 'set-row god-frow');
+  const fBtn = el('button', fui.on ? 'set-btn on' : 'set-btn', fui.on ? '浮窗 开' : '浮窗 关');
+  fBtn.dataset.godfloat = '';
+  const aBtn = el('button', 'set-btn on', `透明 ${Math.round(fui.alpha * 100)}%`);
+  aBtn.dataset.godalpha = '';
+  fRow.append(el('i', null, '哨位'), fBtn, aBtn);
+  box.append(fRow);
+
   /* 「关闭上帝模式」已删除（2026-10-07 用户拍板）—— 上帝模式不进存档（会话级一次性），
      这里只剩「关闭」（关的是面板，不是模式）。 */
   const close = el('button', 'act flat', '关闭');
@@ -3209,6 +3223,115 @@ export function openGod(s, sel = null, page = 0) {
   ov.append(back, box);
   ov.hidden = false;
   picker = ov;
+}
+
+/* ══════════════ 上帝浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开，尽量小」） ══════════════
+   小圆钮「哨」挂在 document.body（**不进 #overlay**）：非模态、游戏运行中始终在场，
+   点开是一块三 tab 小面板（清算热力图 / 巨鲸 / 深度），数字全部来自 `engine.godWatchOf`。
+   ⚠️ 状态（开关 / 展开 / 页码 / 拖拽位置）全在 `main.js`；这里只画 —— 面板内容每帧全量重画
+      （与 `update()` 同一节奏，`draw()` 的 80ms 节流兜着），骨架只建一次。
+   ⚠️ 透明度走全局 `--god-alpha`（main.js 写、style.css 读）：面板 / 浮窗 / 圆钮同一份。 */
+let fChip = null, fPanel = null;
+
+/** 面板内容（每帧重建）。页 0 热力图：纵轴 = 价格、条 = 各档强平价位（宽 ∝ 名义占比，
+ *  多头强平在下方走跌色、空头强平在上方走涨色）＋ 当前价标线；
+ *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ heat / mood；
+ *  页 2 深度：日流动性 / 本时基准 / 深度池余量 / 免滑点线 / 单笔顶格线 —— 全是真状态。 */
+function floatBody(s, page) {
+  const w = godWatchOf(s, s.sym);
+  const box = el('div', 'god-fbody');
+  if (page === 0) {
+    const lo0 = Math.min(w.price, ...w.liqs.map(l => l.price));
+    const hi0 = Math.max(w.price, ...w.liqs.map(l => l.price));
+    const pad = (hi0 - lo0) * 0.08 || w.price * 0.01;
+    const y = p => `${((p - (lo0 - pad)) / (hi0 - lo0 + pad * 2)) * 100}%`;
+    const hm = el('div', 'god-hm');
+    for (const l of w.liqs) {
+      const bar = el('div', `god-hm-bar ${l.side}`, `${fmtMoneyShort(l.notional)}·${l.name}`);
+      bar.style.top = y(l.price);
+      bar.style.width = `${Math.min(92, 10 + l.w * 82)}%`;
+      hm.append(bar);
+    }
+    const now = el('div', 'god-hm-now', fmtLogPrice(w.price));
+    now.style.top = y(w.price);
+    hm.append(now);
+    box.append(hm);
+    if (!w.liqs.length) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
+  } else if (page === 1) {
+    const t = w.price;
+    const sideRow = (name, isLong, notional, avg, lev) => {
+      const drop = 1 / lev - GAME.maintRate;
+      const lp = isLong ? avg * (1 - drop) : avg * (1 + drop);
+      return el('div', 'god-frow2',
+        `${name} ${fmtMoneyShort(notional)}@${fmtLogPrice(avg)} ｜ 强平 ${fmtLogPrice(lp)} (${fmtPct(lp / t - 1)})`);
+    };
+    for (const tr of w.tiers) {
+      if (tr.long > 0) box.append(sideRow(`${tr.name} 多`, true, tr.long, tr.longAvg, tr.lev));
+      if (tr.short > 0) box.append(sideRow(`${tr.name} 空`, false, tr.short, tr.shortAvg, tr.lev));
+    }
+    if (!w.tiers.some(tr => tr.long > 0 || tr.short > 0)) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
+    box.append(el('div', 'god-frow2 mut', `热度 ${fmtPct(w.heat)} ｜ 情绪 ${w.mood >= 0 ? '+' : ''}${fmtPct(w.mood)}`));
+  } else {
+    const d = w.depth;
+    const row = (k, v) => { const r = el('div', 'god-frow2'); r.append(el('i', null, k), el('b', null, v)); return r; };
+    box.append(row('日流动性', fmtMoneyShort(d.liqDay)));
+    box.append(row('本时深度', fmtMoneyShort(d.hourBase)));
+    box.append(row('深度池', `${fmtMoneyShort(Math.max(0, d.poolCap - d.poolUsed))} / ${fmtMoneyShort(d.poolCap)}`));
+    box.append(row('免滑点 ≤', fmtMoneyShort(d.dead)));
+    box.append(row('单笔顶格 ≥', fmtMoneyShort(d.sat)));
+  }
+  return box;
+}
+
+/**
+ * 每帧调用（`main.js` 的 `draw()` 全量路径）：按 `ui` 挂 / 摘圆钮与面板。
+ * @param {object|null} s  游戏状态；`null`（回顾 / 非上帝局 / 浮窗关）⇒ 全部摘除
+ * @param {{on:boolean,open:boolean,page:number,pos:{x:number,y:number}|null}} ui main.js 持有的浮窗状态
+ */
+export function updateFloat(s, ui) {
+  if (!(s && s.god && ui && ui.on)) {
+    if (fChip) { fChip.remove(); fChip = null; }
+    if (fPanel) { fPanel.remove(); fPanel = null; }
+    return;
+  }
+  if (!fChip) {
+    fChip = el('button', 'god-chip', '哨');
+    fChip.dataset.gofloat = '';
+    document.body.append(fChip);
+  }
+  /* 位置：没拖过走 CSS 默认（右下角）；拖过用视口坐标 inline 覆盖（main.js 已夹回视口）。 */
+  if (ui.pos) {
+    fChip.style.left = `${ui.pos.x}px`; fChip.style.top = `${ui.pos.y}px`;
+    fChip.style.right = 'auto'; fChip.style.bottom = 'auto';
+  }
+  if (!ui.open) { if (fPanel) { fPanel.remove(); fPanel = null; } return; }
+  if (!fPanel) {
+    fPanel = el('div', 'god-float');
+    const tabs = el('div', 'god-ftabs');
+    for (const [i, label] of [[0, '热力'], [1, '巨鲸'], [2, '深度']]) {
+      const b = el('button', 'god-ftab', label);
+      b.dataset.goftab = String(i);
+      tabs.append(b);
+    }
+    const x = el('button', 'god-fx', '✕');
+    x.dataset.gofclose = '';
+    const head = el('div', 'god-fhead');   // 页签 ＋ ✕ 同一行（骨架，只建一次）
+    head.append(tabs, x);
+    fPanel.append(head, el('div', 'god-fpage'));
+    document.body.append(fPanel);
+  }
+  for (const b of fPanel.querySelectorAll('[data-goftab]')) b.classList.toggle('on', Number(b.dataset.goftab) === ui.page);
+  fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page));
+  /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽 238px）。 */
+  const cw = document.documentElement.clientWidth, ch = document.documentElement.clientHeight;
+  if (ui.pos) {
+    fPanel.style.left = `${Math.min(Math.max(4, ui.pos.x), cw - 246)}px`;
+    fPanel.style.top = `${ui.pos.y > ch * 0.55 ? Math.max(4, ui.pos.y - 250) : ui.pos.y + 46}px`;
+    fPanel.style.right = 'auto'; fPanel.style.bottom = 'auto';
+  } else {
+    fPanel.style.left = 'auto'; fPanel.style.top = 'auto';
+    fPanel.style.right = '12px'; fPanel.style.bottom = '118px';
+  }
 }
 
 /** 首屏加载 / 报错面板（独立于 #app 主结构，挂了也能显示） */

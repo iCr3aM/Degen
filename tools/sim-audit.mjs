@@ -2645,10 +2645,11 @@ section('9q · 上帝面板分页接线（data-godtab ⇄ ACTION_KEYS ⇄ onGodT
   check('9q 面板生成页签（`dataset.godtab`）＋ 两页 `.confirm-rows` 互斥显隐',
     /dataset\.godtab/.test(renderSrc)
     && /rowsA\.style\.display/.test(renderSrc) && /rowsB\.style\.display/.test(renderSrc));
-  check('9q `openGod` 收 `page` 入参（签名三参）',
-    /export function openGod\(s, sel = null, page = 0\)/.test(renderSrc));
-  check('9q 分派层有 `onGodTab`，且 `showGod` 把 `godPage` 传下去',
-    /function onGodTab\(/.test(mainSrc) && /openGod\(s, godSel, godPage\)/.test(mainSrc));
+  check('9q `openGod` 收 `page` 入参（签名四参：2026-10-07 起多浮窗状态 fui，缺省零负担）',
+    /export function openGod\(s, sel = null, page = 0, fui = \{ on: true, alpha: 1 \}\)/.test(renderSrc));
+  check('9q 分派层有 `onGodTab`，且 `showGod` 把 `godPage` ＋ 浮窗状态传下去',
+    /function onGodTab\(/.test(mainSrc)
+    && /openGod\(s, godSel, godPage, \{ on: godFloatOn, alpha: godAlpha \}\)/.test(mainSrc));
   /* ⚠️ **穷举护栏**（`chan` / `godinf` 两次实测踩坑的病根）：render.js 渲染出的**每一个**
      `data-*` 动作键都必须注册进 ACTION_KEYS —— 漏一条 = `findActionEl` 认不出 = 点了没反应，
      且引擎/分派侧全绿也测不出来（按钮根本到不了 dispatch）。
@@ -2899,6 +2900,74 @@ section('9t · 爆仓潮解闸（stampede 不再看玩家形态）＋ 上帝局�
   check('9t impact.js 三个入口都带缺省 cap（不传逐位不变）',
     (impactSrc.match(/cap = SLIP\.cap/g) || []).length === 3,
     `实得 ${(impactSrc.match(/cap = SLIP\.cap/g) || []).length} 处`);
+}
+
+/* ═══════════════════ 9u · 上帝浮窗：godWatchOf 只读快照 ＋ 接线锚点（2026-10-07 用户拍板） ═══════════════════
+   三层：
+     ① 数据层：`godWatchOf` 的强平价位与 `flushSlot` **同一个公式**（long = 均价×(1−drop)、
+        short = 均价×(1+drop)，drop = 1/lev − GAME.maintRate，lev 过 npcLevOf 年代封顶）——
+        audit 侧**独立复算**再对；深度阈值与 SLIP 常数逐位一致；池容量 = POOL.capK × 本时基准。
+     ② 接线层：bind 五枚新键 ＋ 转发原始事件；main 的 alpha 键 / 每帧接线 / 拖拽处理。
+     ③ 样式层：`--god-alpha` 双写兜底（先 var(--panel) 后 color-mix），浮窗类名齐全。 */
+section('9u · 上帝浮窗（godWatchOf 快照）＋ 接线锚点');
+{
+  const TU = idx(at(2021, 5, 10));
+  const sW = await mk({ sym: 'BTC', mode: 'fut', cash: 1e6, i: TU });
+  /* 清空 mk 首次 tick 可能留下的 NPC 残渣（与 9r 的 clean 同一理由），再手摆第 3 档（10x）两侧，
+     ⇒ 名义总数精确 = 1.5M，占比断言才咬得住 2/3。 */
+  for (const g of sW.mkt.BTC.npc) {
+    g.long = 0; g.short = 0; g.longAvg = 0; g.shortAvg = 0;
+    g.longStopped = false; g.shortStopped = false; g.longTp = false; g.shortTp = false;
+  }
+  const mmW = sW.mkt.BTC.mm;
+  mmW.long = 0; mmW.short = 0; mmW.longAvg = 0; mmW.shortAvg = 0;
+  const g2 = sW.mkt.BTC.npc[2];
+  g2.long = 1_000_000; g2.longAvg = 50000;
+  g2.short = 500_000; g2.shortAvg = 52000;
+  const w = engine.godWatchOf(sW, 'BTC');
+  const lev2 = god.npcLevOf(engine.timeOf(sW), god.NPC.ladder[2].lev);
+  const drop2 = 1 / lev2 - C.GAME.maintRate;
+  const nm2 = `${god.NPC.ladder[2].lev}x`;
+  const liqL = w.liqs.find(l => l.side === 'long' && l.name === nm2);
+  const liqS = w.liqs.find(l => l.side === 'short' && l.name === nm2);
+  check('9u 强平价位与 flushSlot 同式（long = 均价×(1−drop)）',
+    !!liqL && Math.abs(liqL.price - 50000 * (1 - drop2)) < 1e-6,
+    `lev=${f(lev2, 1)} drop=${f(drop2, 4)}`);
+  check('9u 强平价位与 flushSlot 同式（short = 均价×(1+drop)）',
+    !!liqS && Math.abs(liqS.price - 52000 * (1 + drop2)) < 1e-6);
+  check('9u 条宽权重 = 名义占比（1M / 1.5M = 2/3）',
+    !!liqL && Math.abs(liqL.w - 2 / 3) < 1e-9);
+  check('9u tiers 恒七行（六档 ＋ 做市盘）＋ heat/mood 在场',
+    w.tiers.length === 7 && w.tiers.some(t => t.name === '做市')
+    && w.heat >= 0 && w.heat <= 1 && Math.abs(w.mood) <= 0.5);
+  const liqDayW = market.liqOf('BTC', market.dayIndexOf(sW.i)) || 0;
+  check('9u 深度阈值 = SLIP 常数 × 日流动性（死区 10% / 顶格 25%）',
+    Math.abs(w.depth.dead - liqDayW * impact.SLIP.threshold) < 1e-6
+    && Math.abs(w.depth.sat - liqDayW * impact.SLIP.cap) < 1e-6,
+    `liqDay=${f(liqDayW, 0)}`);
+  check('9u 深度池容量 = POOL.capK × 本小时基准深度',
+    Math.abs(w.depth.poolCap - impact.POOL.capK * w.depth.hourBase) < 1e-6);
+
+  /* ② 接线锚点（源码层） */
+  const bindSrc = fs.readFileSync(path.join(ROOT, 'src/ui/bind.js'), 'utf8');
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+  const styleSrc = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
+  const renderSrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  check('9u bind 注册浮窗五键 ＋ 转发原始事件',
+    bindSrc.includes("'godfloat', 'godalpha', 'gofloat', 'goftab', 'gofclose'")
+    && bindSrc.includes('onAction(el, ev)'));
+  check('9u main：alpha 独立键 ＋ 档位循环 ＋ 每帧接线 ＋ 拖拽处理',
+    mainSrc.includes("GOD_ALPHA_KEY = 'degen_god_alpha'")
+    && mainSrc.includes('[1, 0.8, 0.6, 0.4]')
+    && mainSrc.includes('updateFloat(s, { on: godFloatOn')
+    && mainSrc.includes('onGodFloatChip(ev)'));
+  check('9u render：圆钮/面板/热力图类名 ＋ 导出 updateFloat',
+    renderSrc.includes("'god-chip'") && renderSrc.includes("'god-float'")
+    && renderSrc.includes('god-hm-bar') && renderSrc.includes('export function updateFloat'));
+  check('9u style：--god-alpha 双写兜底 ＋ 浮窗类名齐全',
+    (styleSrc.match(/--god-alpha/g) || []).length >= 2
+    && styleSrc.includes('.god-chip') && styleSrc.includes('.god-float')
+    && styleSrc.includes('.god-hm-now'));
 }
 
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════

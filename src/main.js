@@ -23,7 +23,7 @@ import {
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog, menuNote,
   renderReview, openNodeCard, openYearPick, openGuide, renderCareers, openPoster,
   isStandalone, toggleInstallGuide, menuRemoveInstall, closeMenuDlg, openSavePick, openScenPick,
-  openAbout, redrawChart, openMarginDlg,
+  openAbout, redrawChart, openMarginDlg, updateFloat,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -233,6 +233,24 @@ let godSel = null;
 /* 上帝面板当前页（2026-10-05 分页）—— `0` = 资金·时间、`1` = 沙盒。
    ⚠️ 与 `godSel` 同一个口径：纯界面状态，**不进 `s`**；每次重新打开面板归零（L1306/L1320）。 */
 let godPage = 0;
+
+/* ── 上帝浮窗（2026-10-07 用户拍板「浮窗＋透明度」）──────────────────────────
+   开关 / 展开 / 页码 / 拖拽位置都是**会话级界面状态**（与 `godPage` 同口径，不进 `s`）；
+   透明度是**浏览器偏好** —— 独立 localStorage 键（与 `degen_colors` 同一口径，不进存档），
+   档位按钮循环 100 → 80 → 60 → 40，写进 `<html>` 的 `--god-alpha`（style.css 读，
+   上帝面板与浮窗同一份背景 alpha；文字不参与，保持锐利）。 */
+const GOD_ALPHA_KEY = 'degen_god_alpha';
+const GOD_ALPHA_STEPS = [1, 0.8, 0.6, 0.4];
+let godAlpha = (() => {
+  try { const v = Number(localStorage.getItem(GOD_ALPHA_KEY)); return GOD_ALPHA_STEPS.includes(v) ? v : 1; }
+  catch { return 1; }
+})();
+let godFloatOn = true;      // 浮窗开关（上帝面板哨位行那枚），会话级，默认开
+let floatOpen = false;      // 面板是否展开
+let floatPage = 0;          // 面板页码：0 热力 / 1 巨鲸 / 2 深度
+let floatPos = null;        // 圆钮视口坐标 {x,y}；null = 走 CSS 默认（右下角）
+const applyGodAlpha = () => document.documentElement.style.setProperty('--god-alpha', String(godAlpha));
+applyGodAlpha();
 
 /* 当前页（A6 · 方案 §6.3）—— `'trade'|'assets'|'settings'`。
    ⚠️ **模块级变量，不进 `s`**（§9 B6 拍板）：它和 `godTaps` / `resetArmed` 一样只是**界面位置**，
@@ -851,8 +869,11 @@ function draw(force = false, chartOnly = false) {
     /* 回顾态走**另一条渲染线**：它只读 `rv`（模块级），一个字都不写 `s`，也绝不碰那几张遮罩。
        ⚠️ 进来先 `clearOver`（2026-10-02 审计修）：本局已结束时也能从结算遮罩「回主菜单」再进回顾，
           那时 `#app` 里还挂着那张 `.over` —— 它是 `position:fixed`，不摘掉会直接盖住整页回顾。 */
-    if (rv) { clearOver(root); renderReview(refs, rv, view); return; }
+    if (rv) { updateFloat(null, null); clearOver(root); renderReview(refs, rv, view); return; }
     update(refs, s, view);
+    /* 上帝浮窗（2026-10-07）：跟整屏帧走 —— 圆钮挂 / 摘、面板内容刷新都在这里。
+       手势快路（chartOnly）不进来：拖图几毫秒内数字旧一点无所谓，DOM 不跟着抖。 */
+    updateFloat(s, { on: godFloatOn, open: floatOpen, page: floatPage, pos: floatPos });
     /* ⚠️ 这里**不再需要** `&& !arch`（2026-10-02 修）：档案页在上面就 `return` 了，
        走不到这一行 —— 该防的那件事改成在它自己那一支里 `clearOver`（见上）。
        原来那句 `!arch` 是一处**永远为真**的死守卫，只会让人以为档案页的覆盖问题已解决。 */
@@ -888,7 +909,7 @@ function draw(force = false, chartOnly = false) {
 
 /* ───────────────────────────── 点击派发 ───────────────────────────── */
 
-function dispatch(node) {
+function dispatch(node, ev) {
   const d = node.dataset;
 
   /* 通用反馈（Batch 4 · B20；2026-10-03 分区）—— 除了**成交 / 重开**这两类有专属反馈的动作，
@@ -1067,6 +1088,17 @@ function dispatch(node) {
     if (d.sbpreset !== undefined) return onSbPreset(d.sbpreset);
     if (d.sbseed !== undefined) return onSbSeed(node);
     return onSbRoll();
+  }
+  /* ── 上帝浮窗（2026-10-07）── 圆钮可能不在上帝面板里（它浮在图上），`s.god` 非空兜底同上；
+     圆钮那一枚要**原始 pointer 事件**（bind.js 起转发）—— 拖拽的起点坐标。 */
+  if (d.godfloat !== undefined || d.godalpha !== undefined || d.gofloat !== undefined
+    || d.goftab !== undefined || d.gofclose !== undefined) {
+    if (!s.god) return;
+    if (d.godfloat !== undefined) return onGodFloat();
+    if (d.godalpha !== undefined) return onGodAlpha();
+    if (d.gofloat !== undefined) return onGodFloatChip(ev);
+    if (d.goftab !== undefined) return onGodFloatTab(node);
+    return onGodFloatClose();
   }
 
   if (d.sym !== undefined) return onSym(d.sym);
@@ -1398,7 +1430,7 @@ function onGodLogo() {
 }
 
 /** 面板的统一出口 —— 每次都把暂存的选择器 ＋ 当前页带上，点年 / 月 / 日或切页之后才不会跳回去 */
-const showGod = () => openGod(s, godSel, godPage);
+const showGod = () => openGod(s, godSel, godPage, { on: godFloatOn, alpha: godAlpha });
 
 /**
  * 上帝面板页签（`data-godtab="0|1"`，2026-10-05 分页）—— 只改界面页码，**不碰 `s`**。
@@ -1408,6 +1440,61 @@ const showGod = () => openGod(s, godSel, godPage);
 function onGodTab(node) {
   godPage = Number(node.dataset.godtab) || 0;
   showGod();
+}
+
+/* ── 上帝浮窗（2026-10-07 用户拍板）────────────────────────────────────────── */
+
+/** 哨位行「浮窗 开/关」：翻会话开关；关的同时把展开的面板收起。下一帧 `updateFloat` 自动跟随。 */
+function onGodFloat() {
+  godFloatOn = !godFloatOn;
+  if (!godFloatOn) floatOpen = false;
+  after();
+}
+
+/** 透明档位按钮（用户拍板「应为按钮，不需要自己拖动」）：循环 100 → 80 → 60 → 40 → 100，
+ *  存独立键（`degen_god_alpha`），写 `--god-alpha` 全局变量 —— 面板与浮窗同一份。 */
+function onGodAlpha() {
+  godAlpha = GOD_ALPHA_STEPS[(GOD_ALPHA_STEPS.indexOf(godAlpha) + 1) % GOD_ALPHA_STEPS.length];
+  try { localStorage.setItem(GOD_ALPHA_KEY, String(godAlpha)); } catch { /* 隐私模式：本会话生效即可 */ }
+  applyGodAlpha();
+  showGod();      // 重开面板：按钮上的档位字要跟着换（面板是静态 DOM，不参与每帧重绘）
+}
+
+/** 浮窗小圆钮（`data-gofloat`）：pointerdown 进来（`ev` = bind.js 转发的原始事件）——
+ *  位移 < 6px 判「点按」＝展开/收起，否则按拖拽走（拖完不触发点按）。
+ *  起点以「指针相对圆钮左上角的抓取偏移」记账：拖动时圆钮不跳位。 */
+function onGodFloatChip(ev) {
+  const rect = document.querySelector('.god-chip').getBoundingClientRect();
+  const ox = ev.clientX - rect.left, oy = ev.clientY - rect.top;
+  let dragged = false;
+  const move = e => {
+    if (!dragged && Math.hypot(e.clientX - ev.clientX, e.clientY - ev.clientY) < 6) return;
+    dragged = true;
+    floatPos = {
+      x: Math.min(Math.max(4, e.clientX - ox), window.innerWidth - 44),
+      y: Math.min(Math.max(4, e.clientY - oy), window.innerHeight - 44),
+    };
+    updateFloat(s, { on: godFloatOn, open: floatOpen, page: floatPage, pos: floatPos });
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    if (!dragged) { floatOpen = !floatOpen; after(); }
+    else updateFloat(s, { on: godFloatOn, open: floatOpen, page: floatPage, pos: floatPos });
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up, { once: true });
+}
+
+/** 浮窗面板页签（`data-goftab`，**与上帝面板的 `godtab` 是两套**）—— 只改页码。 */
+function onGodFloatTab(node) {
+  floatPage = Number(node.dataset.goftab) || 0;
+  after();
+}
+
+/** 浮窗面板右上角「✕」：只收起面板，不关浮窗本体。 */
+function onGodFloatClose() {
+  floatOpen = false;
+  after();
 }
 
 /**

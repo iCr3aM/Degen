@@ -97,6 +97,12 @@ export const ACTION_KEYS = [
      分派见 `main.js` 的 `onSb` / `onSbPreset` / `onSbSeed` / `onSbRoll`。
      ⚠️ 种子输入框本身**不挂 `data-*`**（同资金框：挂了会 `preventDefault` 打不了字）。 */
   'sb', 'sbpreset', 'sbseed', 'sbroll',
+  /* 上帝浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开」）：
+     `godfloat` ＝ 上帝面板哨位行那枚「浮窗 开/关」；`godalpha` ＝ 透明档位按钮（循环 100→80→60→40）；
+     `gofloat` ＝ 浮在图上的小圆钮本体（点按 = 展开/收起，拖拽逻辑在 `main.js` 的 onGodFloatChip）；
+     `goftab` ＝ 浮窗面板三枚页签（热力 / 巨鲸 / 深度）；`gofclose` ＝ 面板右上角「✕」。
+     ⚠️ 与 `godtab`（上帝面板页签）是**两套**页签 —— 浮窗的用 `goftab`，别混。 */
+  'godfloat', 'godalpha', 'gofloat', 'goftab', 'gofclose',
 ];
 
 export const ACTION_SELECTOR = ACTION_KEYS.map(k => `[data-${k}]`).join(',');
@@ -112,7 +118,8 @@ export function findActionEl(target) {
 
 /**
  * @param {HTMLElement} container  挂载容器（`#app`）
- * @param {(el:HTMLElement)=>void} onAction
+ * @param {(el:HTMLElement,ev:PointerEvent)=>void} onAction  第二参 = 原始 pointer 事件
+ *        （2026-10-07 起转发 —— 目前只有浮窗圆钮的「点按 vs 拖拽」需要指针起点；其余键忽略它）。
  */
 export function bindActions(container, onAction) {
   const handle = ev => {
@@ -120,7 +127,7 @@ export function bindActions(container, onAction) {
     if (!el || el.disabled) return;
     ev.stopPropagation();
     if (ev.cancelable !== false && ev.preventDefault) ev.preventDefault();
-    onAction(el);
+    onAction(el, ev);
   };
 
   const handleClick = ev => {

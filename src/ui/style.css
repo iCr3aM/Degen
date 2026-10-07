@@ -2031,3 +2031,96 @@ button { user-select: none; -webkit-user-select: none; }
      剩下的空间只应该喂给 K 线左列，而不是继续放大字号。1360 − 513（右列） − 8 ≈ 839px。 */
   #app { max-width: 1360px; }
 }
+
+/* ══════════════ 上帝浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开，尽量小」） ══════════════
+   圆钮 ＋ 三 tab 小面板都挂在 body 上（#overlay 之外）。z-index 15：盖过页面、
+   被 #overlay（20）与结束遮罩压住 —— 面板开着时圆钮让位。
+   ⚠️ 透明度：`.godp`（上帝面板）/ 圆钮 / 浮窗**同一份** `--god-alpha`（main.js 写，
+      档位按钮循环 100→80→60→40）。改的是**背景**的 alpha，文字不参与 —— 缩到多小都锐利。
+      color-mix 不认的旧浏览器回落到不透明 `var(--panel)`（先写一行兜底再写 color-mix）。 */
+.godp, .god-chip, .god-float {
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) calc(var(--god-alpha, 1) * 100%), transparent);
+}
+/* 圆钮「哨」：默认钉右下角（避开底部操作区）；拖过之后 main.js 写 inline left/top 接管。 */
+.god-chip {
+  position: fixed;
+  right: 12px;
+  bottom: 118px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--gold);
+  font-size: 13px;
+  font-weight: 600;
+  z-index: 15;
+  touch-action: none;           /* 拖拽不走浏览器手势 —— 与画布同一条理由 */
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.god-float {
+  position: fixed;
+  width: 238px;
+  max-height: 46dvh;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  padding: 8px;
+  z-index: 15;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+/* ⚠️ 浮窗字号**固定 px、不乘 `--ui`**（用户拍板「尽量小，缩到可视大小」）——
+   它是给上帝盯盘用的密集读数，跟着全局字号放大就失去「小窗」的意义了。 */
+.god-fhead { display: flex; align-items: center; justify-content: space-between; }
+.god-ftabs { display: flex; gap: 4px; }
+.god-ftab {
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  color: var(--mut);
+}
+.god-ftab.on { color: var(--accent); background: var(--accent-soft); }
+.god-fx { font-size: 10px; line-height: 1; padding: 4px 6px; color: var(--mut); }
+.god-fbody { margin-top: 6px; }
+.god-frow2 {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.god-frow2 i { font-style: normal; color: var(--mut); }
+.god-frow2 b { font-weight: 600; }
+.god-frow2.mut { color: var(--mut); }
+.god-fnote { margin: 4px 0 0; font-size: 10px; color: var(--mut); }
+/* 清算热力图：纵轴 = 价格（上高下低），条 = 某档某侧的强平价位（宽 ∝ 名义占比，
+   多头强平 = 跌侧红、空头强平 = 涨侧绿 —— 与 K 线涨跌色同一对变量），金虚线 = 当前价。 */
+.god-hm { position: relative; height: 120px; margin-top: 2px; border: 1px solid var(--line); }
+.god-hm-bar {
+  position: absolute;
+  left: 0;
+  height: 12px;
+  transform: translateY(-50%);
+  padding: 0 3px;
+  font-size: 8.5px;
+  line-height: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.god-hm-bar.long { color: var(--down); background: color-mix(in srgb, var(--down) 22%, transparent); }
+.god-hm-bar.short { color: var(--up); background: color-mix(in srgb, var(--up) 22%, transparent); }
+.god-hm-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  transform: translateY(-50%);
+  border-top: 1px dashed var(--gold);
+  color: var(--gold);
+  font-size: 9px;
+  line-height: 1;
+  text-align: right;
+  padding: 0 2px;
+}

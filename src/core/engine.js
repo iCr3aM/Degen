@@ -135,6 +135,45 @@ export function lastPrice(s, sym = s.sym) {
   return closeAt(sym, s.i);
 }
 
+/* ── 上帝浮窗 · 只读快照（2026-10-07 用户拍板「浮窗：清算热力图 / 巨鲸 / 深度」） ── */
+/**
+ * 上帝浮窗三个 tab 的**全部数字**都从这一个出口出 —— 纯派生：不写 `s`、不碰 DOM、不读时钟，
+ * render 只管画，engine 是唯一的事实来源（审计 9u 逐位锚定）。
+ *
+ *   · `liqs`  清算热力图：NPC 六档 ＋ 做市盘每侧的**强平价位** —— 与 `flushSlot` **同一个公式**
+ *             （long = 均价 × (1 − drop)、short = 均价 × (1 + drop)，`drop = 1/lev − GAME.maintRate`，
+ *              lev 过 `npcLevOf` 年代封顶）；名义为 0 的侧不列，`w` = 占全部 NPC 名义的比（条宽用）。
+ *   · `tiers` 巨鲸：六档明细（杠杆 / 权重 / 双侧名义与均价）＋ 做市盘行 ＋ `heat` / `mood` 读数。
+ *   · `depth` 深度：日流动性、本小时基准深度、瞬时深度池（已消耗 / 容量 `POOL.capK × 基准`）、
+ *             滑点死区线（`SLIP.threshold × liqDay`）与单笔饱和线（`SLIP.cap × liqDay`）。
+ */
+export function godWatchOf(s, sym = s.sym) {
+  const m = mktOf(s, sym);
+  const t = timeOf(s);
+  const rows = m.npc.map((g, k) => ({ g, name: `${NPC.ladder[k].lev}x`, lev: npcLevOf(t, NPC.ladder[k].lev) }))
+    .concat(m.mm ? [{ g: m.mm, name: '做市', lev: npcLevOf(t, NPC.mm.lev) }] : []);
+  let total = 0;
+  for (const r of rows) total += (r.g.long || 0) + (r.g.short || 0);
+  const liqs = [], tiers = [];
+  for (const r of rows) {
+    const { g } = r;
+    tiers.push({ name: r.name, lev: r.lev, long: g.long || 0, longAvg: g.longAvg || 0, short: g.short || 0, shortAvg: g.shortAvg || 0 });
+    const drop = 1 / r.lev - GAME.maintRate;
+    if (g.long > 0 && g.longAvg > 0) liqs.push({ side: 'long', name: r.name, price: g.longAvg * (1 - drop), notional: g.long, w: total > 0 ? g.long / total : 0 });
+    if (g.short > 0 && g.shortAvg > 0) liqs.push({ side: 'short', name: r.name, price: g.shortAvg * (1 + drop), notional: g.short, w: total > 0 ? g.short / total : 0 });
+  }
+  const liqDay = liqOf(sym, dayIndexOf(s.i)) || 0;
+  const base = hourLiqBase(s, sym, s.i);
+  return {
+    price: lastPrice(s, sym), heat: m.heat || 0, mood: m.mood || 0, liqs, tiers,
+    depth: {
+      liqDay, hourBase: base,
+      poolUsed: poolConsumedAt(s, sym, s.i), poolCap: POOL.capK * base,
+      dead: liqDay * SLIP.threshold, sat: liqDay * SLIP.cap,
+    },
+  };
+}
+
 /**
  * 某个币当前的**标记价基差**（EMA 后的 `last − index`）；旧存档没有这个键 ⇒ 0。
  *
