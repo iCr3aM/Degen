@@ -98,13 +98,13 @@ export const ACTION_KEYS = [
      ⚠️ 种子输入框本身**不挂 `data-*`**（同资金框：挂了会 `preventDefault` 打不了字）。 */
   'sb', 'sbpreset', 'sbseed', 'sbroll',
   /* 上帝浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开」）：
-     `godfloat` ＝ 上帝面板哨位行那枚「浮窗 开/关」；`godalpha` ＝ 透明档位按钮（循环 100→80→60→40）；
+     `godfloat` ＝ 上帝面板详情行那枚「浮窗 开/关」；`godalpha` ＝ 透明档位按钮（循环 100→80→60→40）；
      `gofloat` ＝ 浮在图上的小圆钮本体（点按 = 展开/收起，拖拽逻辑在 `main.js` 的 onGodFloatChip）；
-     `goftab` ＝ 浮窗面板三枚页签（热力 / 巨鲸 / 深度）；`gofclose` ＝ 面板右上角「✕」。
+     `goftab` ＝ 浮窗面板页签（热力 / 巨鲸 / 深度 / 订单 / 成交）；`gofclose` ＝ 面板右上角「✕」。
      ⚠️ 与 `godtab`（上帝面板页签）是**两套**页签 —— 浮窗的用 `goftab`，别混。 */
   'godfloat', 'godalpha', 'gofloat', 'goftab', 'gofclose',
   /* 市场浮窗开关（2026-10-07 拍板）：普通 / 挑战局设置页那枚「市场浮窗 开/关」——
-     哨浮窗本体（上帝局）与这枚开关是两回事；分派见 `main.js` 的 `onMktFloat`。 */
+     详浮窗本体（上帝局）与这枚开关是两回事；分派见 `main.js` 的 `onMktFloat`。 */
   'mktfloat',
 ];
 

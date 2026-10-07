@@ -2940,9 +2940,10 @@ section('9u · 上帝浮窗（godWatchOf 快照）＋ 接线锚点');
     !!liqS && Math.abs(liqS.price - 52000 * (1 + drop2)) < 1e-6);
   check('9u 条宽权重 = 名义占比（1M / 1.5M = 2/3）',
     !!liqL && Math.abs(liqL.w - 2 / 3) < 1e-9);
-  check('9u tiers 恒七行（六档 ＋ 做市盘）＋ heat/mood 在场',
+  check('9u tiers 恒七行（六档 ＋ 做市盘）＋ heat/fng 在场',
     w.tiers.length === 7 && w.tiers.some(t => t.name === '做市')
-    && w.heat >= 0 && w.heat <= 1 && Math.abs(w.mood) <= 0.5);
+    && w.heat >= 0 && w.heat <= 1
+    && Number.isFinite(w.fng) && w.fng >= 0 && w.fng <= 100);
   const liqDayW = market.liqOf('BTC', market.dayIndexOf(sW.i)) || 0;
   check('9u 深度阈值 = SLIP 常数 × 日流动性（死区 10% / 顶格 25%）',
     Math.abs(w.depth.dead - liqDayW * impact.SLIP.threshold) < 1e-6
@@ -3116,6 +3117,153 @@ section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源
   check('9v⑤ style：订单簿行样式（9px 固定口径 ＋ 墙金色）',
     styleSrc9v.includes('.gb-row') && styleSrc9v.includes('.gb-mid')
     && styleSrc9v.includes('.gb-row.wall'));
+}
+
+/* ═══════════════════ 9w · tape 逐笔 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 预算 ═══════════════════
+   本批收口（2026-10-07 用户七问）：
+     ① tape（浮窗「成交」页）：确定性 · 窗口过滤 · 方向有界 · 量守恒 · 不前视 · 零状态；
+     ② NPC 双侧基底（`NPC.base`）：净敞口恒等（代数镜像 ＋ 源码锚）· 全币两侧常在 · OI 地板 ——
+        「无玩家自洽」的仓位面收口；
+     ③ `godWatchOf` 档名带**生效杠杆**（2016-05-13 前封顶 ⇒「100x→3x」，名实同尺）；
+     ④ 50x 速度的单「游戏秒」成本预算：50 × advanceOneHour ＋ 60 × godWatchOf 计时；
+     ⑤ 浮窗「成交」页接线锚（页表 5/3 页 · prog · gd 样式）。 */
+section('9w · tape 逐笔采样 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
+{
+  const tape = await import('../src/core/tape.js');
+
+  /* ── ① tape：纯函数逐位确定 ＋ 窗口 / 方向 / 量守恒 ── */
+  const sT = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2021, 5, 10)) });
+  const tpA = tape.tapeOf(sT, 'BTC', 0.5);
+  check('9w① tape 确定性：同状态两次调用逐位同一条（零状态纯函数）',
+    !!tpA && JSON.stringify(tpA) === JSON.stringify(tape.tapeOf(sT, 'BTC', 0.5)));
+  check('9w① tape 方向有界：pBuy ∈ [0.35, 0.65]（taker 偏斜夹取）',
+    !!tpA && tpA.pBuy >= 0.35 && tpA.pBuy <= 0.65, `pBuy=${f(tpA.pBuy, 4)}`);
+  const tpW = tape.tapeOf(sT, 'BTC', 0.5, 96);            // n=K ⇒ 全窗，窗口过滤才验得住
+  const secOf = t0 => Number(t0.slice(0, 2)) * 60 + Number(t0.slice(3));
+  check('9w① tape 展示窗：progress=0.5 ⇒ 所有笔落在 (35%, 50%] 小时内',
+    !!tpW && tpW.prints.length > 0
+    && tpW.prints.every(p => { const q = secOf(p.t); return q > 0.35 * 3600 - 1 && q <= 0.5 * 3600 + 1; }),
+    `窗内 ${tpW ? tpW.prints.length : 0} 笔`);
+  const markT = engine.lastPrice(sT, 'BTC');
+  check('9w① tape 笔结构：side ∈ {±1} · 价 ∈ 标记价 ±2bp · qty == usd/价',
+    !!tpW && tpW.prints.every(p => (p.side === 1 || p.side === -1)
+      && Math.abs(p.price - markT) <= markT * 0.0002 + 1e-9
+      && p.usd > 0 && Math.abs(p.qty - p.usd / p.price) < 1e-9));
+  const usdSum = tpW ? tpW.prints.reduce((a, p) => a + p.usd, 0) : 0;
+  check('9w① tape 量守恒：窗内名义之和 ≤ 小时总量（与滑点同一把尺 hourLiqRaw）',
+    usdSum > 0 && usdSum <= tpW.vol, `窗内 $${f(usdSum, 0)} / 全时 $${f(tpW.vol, 0)}`);
+  check('9w① tape 单笔 ≤ 小时总量（无凭空量）', !!tpW && tpW.prints.every(p => p.usd <= tpW.vol));
+  const tpEarly = tape.tapeOf(sT, 'BTC', 0.15, 96);
+  const tSet = new Set(tpW.prints.map(p => p.t));
+  check('9w① tape 窗口随 progress 前移：0.15 窗与 0.5 窗时刻集合无交集',
+    tpEarly.prints.length > 0 && !tpEarly.prints.some(p => tSet.has(p.t)));
+  const tpZero = tape.tapeOf(sT, 'BTC', 0, 96);
+  check('9w① tape 小时刚开始：progress=0 ⇒ 空窗但 vol 可用（render 显「暂无采样」）',
+    !!tpZero && tpZero.vol > 0 && tpZero.prints.length === 0);
+  const sT2 = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2021, 5, 10)) + 1 });
+  check('9w① tape 按小时重播种：下一小时采样流与上一小时不同',
+    JSON.stringify(tape.tapeOf(sT2, 'BTC', 0.5, 96).prints) !== JSON.stringify(tpW.prints));
+  const tapeSrc = fs.readFileSync(path.join(ROOT, 'src/core/tape.js'), 'utf8');
+  check('9w① tape 不前视：只读已收盘 K 线（rawCloseAt s.i−1 / s.i−2），不读本根',
+    tapeSrc.includes('rawCloseAt(sym, s.i - 1)') && tapeSrc.includes('rawCloseAt(sym, s.i - 2)')
+    && !tapeSrc.includes('rawCloseAt(sym, s.i)'));
+  check('9w① tape 零状态红线：模块内不存在任何 `s.xxx =` 写路径',
+    !/s\.\w+\s*=[^=]/.test(tapeSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')));
+
+  /* ── ② NPC 双侧基底 ──
+     恒等式（代数镜像）：long 靶 = B + t⁺、short 靶 = B + t⁻（t = t⁺ − t⁻）⇒
+     净敞口递推 netₙ₊₁ = netₙ + (t − netₙ)·speed，与无基底**逐位同轨** —— 基底只抬 OI 地板。 */
+  {
+    const speed = god.NPC.speed, B = 1000, t = 2500;
+    let lonB = 0, shoB = 0, net0 = 0;
+    for (let n = 0; n < 40; n++) {
+      lonB += (B + Math.max(0, t) - lonB) * speed;
+      shoB += (B + Math.max(0, -t) - shoB) * speed;
+      net0 += (t - net0) * speed;
+    }
+    check('9w② 基底净敞口恒等：有基底 long−short == 无基底 net（40 步同轨）',
+      Math.abs(lonB - shoB - net0) < 1e-6, `差 ${f(lonB - shoB - net0, 12)}`);
+  }
+  const engSrc9w = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 只给生效杠杆 ≤ 10x 档（恒等式前提）',
+    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor)")
+    && engSrc9w.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor)")
+    && engSrc9w.includes('npcLevOf(t, NPC.ladder[k].lev) <= 10 ? liqDay * NPC.base * w : 0'));
+
+  /* ②′ 全币两侧常在（「怎么会无 NPC 持仓」的行为面）：72 小时烧入后逐币断言。
+     地板 = 2 × base × Σw(生效≤10x) × 日流动性（×0.5 = 收敛 / 止损摩擦余量）。
+     ⚠️ 做市盘**不**断言「至多一侧」：镜像靶心随趋势净仓翻号，旧侧残仓要按速度线性衰减
+     几小时才清零 —— 翻转后的暂态双侧是收敛动力学的固有现象，不是缺陷。 */
+  const SYMS9w = ['BTC', 'ETH', 'XRP', 'DOGE', 'SOL'];
+  for (const sy of SYMS9w) await market.loadCoin(sy);
+  const sB = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2019, 6, 1)) });
+  for (let n = 0; n < 72; n++) engine.advanceOneHour(sB);
+  const wLow = god.NPC.ladder.reduce((a, r) =>
+    a + (god.npcLevOf(engine.timeOf(sB), r.lev) <= 10 ? r.w : 0), 0);
+  let sideFail = '', oiFail = '', floorN = 0;
+  for (const sy of SYMS9w) {
+    const liqDay = market.liqOf(sy, market.dayIndexOf(sB.i)) || 0;
+    const m = sB.mkt[sy];
+    if (!(liqDay > 0) || !m) continue;                    // 流动性未覆盖 ⇒ npcBuild 合法早退
+    let lo = 0, sh = 0, tot = 0;
+    for (const g of m.npc) { lo += g.long || 0; sh += g.short || 0; tot += (g.long || 0) + (g.short || 0); }
+    if (!(lo > 0) || !(sh > 0)) sideFail += `${sy}:两侧 `;
+    if (m.mm && ((m.mm.long || 0) < 0 || (m.mm.short || 0) < 0)) sideFail += `${sy}:做市负仓 `;
+    floorN++;
+    const floor = 2 * god.NPC.base * wLow * liqDay * 0.5;
+    if (tot < floor) oiFail += `${sy}(${f(tot, 0)}<${f(floor, 0)}) `;
+  }
+  check('9w②′ 全币低杠杆档两侧常在（72h 烧入 · 无玩家）',
+    floorN > 0 && sideFail === '', sideFail || `${floorN} 币全过`);
+  check('9w②′ 全币 NPC OI ≥ 基底地板（2 × 0.12 × Σw低 × 日流动性 × 0.5）',
+    floorN > 0 && oiFail === '', oiFail || `${floorN} 币达标`);
+
+  /* ── ③ 档名带生效杠杆（「3 倍和 100 倍强平价一样」的口径修复） ── */
+  const sN = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2014, 6, 1)) });
+  const wN = engine.godWatchOf(sN, 'BTC');
+  const capRow = wN.tiers.find(t => t.name === '100x→3x');
+  check('9w③ 年代封顶档名：2014 年 100x 行显示「100x→3x」（lev = 生效 3）',
+    !!capRow && capRow.lev === 3);
+  check('9w③ 封顶年没有裸「100x / 50x / 20x」行（旧名 = 名实不符根源）',
+    !wN.tiers.some(t => t.name === '100x' || t.name === '50x' || t.name === '20x'));
+  check('9w③ 封顶行强平价按**生效杠杆**算（drop = 1/3 − MMR，与 9u 同式）',
+    capRow && capRow.long > 0 && capRow.longAvg > 0
+      ? wN.liqs.some(l => l.name === '100x→3x' && l.side === 'long'
+        && Math.abs(l.price - capRow.longAvg * (1 - (1 / 3 - C.GAME.maintRate))) < 1e-6)
+      : true,
+    `long=${f(capRow ? capRow.long : 0, 0)}`);
+  check('9w③ 未封顶年代档名全裸（含 100x，无「→」）',
+    engine.godWatchOf(sT, 'BTC').tiers.some(t => t.name === '100x')
+    && !engine.godWatchOf(sT, 'BTC').tiers.some(t => t.name.includes('→')));
+
+  /* ── ④ 50x 速度的单「游戏秒」预算：50 × advanceOneHour ＋ 60 × godWatchOf（每帧浮窗快照）
+         必须远低于 1s 墙钟 —— 实测打印；阈值 400ms 已留 4× 余量（手机 ≈ 慢 3–5×）。 ── */
+  {
+    const sP = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2021, 5, 10)) });
+    for (let n = 0; n < 5; n++) engine.advanceOneHour(sP);          // 预热（惰性加载 / 播种）
+    const t0 = process.hrtime.bigint();
+    for (let n = 0; n < 50; n++) engine.advanceOneHour(sP);
+    for (let n = 0; n < 60; n++) engine.godWatchOf(sP, 'BTC');
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    check('9w④ 50x 单游戏秒预算（50 小时步 ＋ 60 帧快照）< 400ms',
+      ms < 400, `实测 ${f(ms, 1)} ms`);
+  }
+
+  /* ── ⑤ 浮窗「成交」页接线锚 ── */
+  const mainSrc9w = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+  const rendSrc9w = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  const styleSrc9w = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
+  check('9w⑤ main：浮窗页表 5 页 / 3 页 ＋ prog 接线（clock.progress）',
+    mainSrc9w.includes("[[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单'], [4, '成交']]")
+    && mainSrc9w.includes("[[3, '订单'], [2, '深度'], [4, '成交']]")
+    && mainSrc9w.includes('prog: clock ? clock.progress() : 0'));
+  check('9w⑤ render：成交页走 tapeOf ＋ 圆钮「详」＋ gd 行结构',
+    rendSrc9w.includes('tapeOf(s, s.sym, prog || 0)')
+    && rendSrc9w.includes("'详'") && rendSrc9w.includes('gd-row'));
+  check('9w⑤ style：浮窗 272px / 热力图 180px ＋ 成交页固定列样式',
+    /\.god-float \{[^}]*width: 272px/.test(styleSrc9w)
+    && /\.god-hm \{[^}]*height: 180px/.test(styleSrc9w)
+    && styleSrc9w.includes('.gd-row') && styleSrc9w.includes('.gd-buy') && styleSrc9w.includes('.gd-sell'));
 }
 
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════

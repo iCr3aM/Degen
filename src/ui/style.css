@@ -2042,7 +2042,7 @@ button { user-select: none; -webkit-user-select: none; }
   background: var(--panel);
   background: color-mix(in srgb, var(--panel) calc(var(--god-alpha, 1) * 100%), transparent);
 }
-/* 圆钮「哨」：默认钉右下角（避开底部操作区）；拖过之后 main.js 写 inline left/top 接管。 */
+/* 圆钮「详」：默认钉右下角（避开底部操作区）；拖过之后 main.js 写 inline left/top 接管。 */
 .god-chip {
   position: fixed;
   right: 12px;
@@ -2061,8 +2061,8 @@ button { user-select: none; -webkit-user-select: none; }
 }
 .god-float {
   position: fixed;
-  width: 238px;
-  max-height: 46dvh;
+  width: 272px;
+  max-height: 58dvh;
   overflow-y: auto;
   border: 1px solid var(--line);
   padding: 8px;
@@ -2098,7 +2098,7 @@ button { user-select: none; -webkit-user-select: none; }
 .god-fnote { margin: 4px 0 0; font-size: 10px; color: var(--mut); }
 /* 清算热力图：纵轴 = 价格（上高下低），条 = 某档某侧的强平价位（宽 ∝ 名义占比，
    多头强平 = 跌侧红、空头强平 = 涨侧绿 —— 与 K 线涨跌色同一对变量），金虚线 = 当前价。 */
-.god-hm { position: relative; height: 120px; margin-top: 2px; border: 1px solid var(--line); }
+.god-hm { position: relative; height: 180px; margin-top: 2px; border: 1px solid var(--line); }
 .god-hm-bar {
   position: absolute;
   left: 0;
@@ -2145,3 +2145,14 @@ button { user-select: none; -webkit-user-select: none; }
   text-align: right;
   padding: 0 2px;
 }
+/* 成交页（逐笔采样，2026-10-07）：时刻 | 价 | 数量(币) | 金额($) 四列**固定列宽**
+   （同 gb-row 口径：用户红线「所有元素固定、不换行」）—— 买 = --up、卖 = --down，
+   与订单簿涨跌色同对；时刻列置灰作视觉锚。字号 9px 固定 px、不乘 --ui。 */
+.gd-list { margin-top: 2px; }
+.gd-row { display: flex; align-items: center; gap: 4px; font-size: 9px; line-height: 13px; white-space: nowrap; }
+.gd-row i { font-style: normal; color: var(--mut); flex: 0 0 30px; }
+.gd-row em { font-style: normal; flex: 0 0 62px; text-align: right; overflow: hidden; }
+.gd-row span { flex: 0 0 54px; text-align: right; overflow: hidden; }
+.gd-row b { font-weight: 600; flex: 1 1 auto; text-align: right; overflow: hidden; }
+.gd-buy em, .gd-buy b { color: var(--up); }
+.gd-sell em, .gd-sell b { color: var(--down); }

@@ -18,6 +18,7 @@ import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safet
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
+import { tapeOf } from '../core/tape.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
@@ -647,8 +648,8 @@ export function mount(root) {
   colBtn.dataset.colors = 'toggle';
   const colRow = el('div', 'set-row');
   colRow.append(el('i', null, '涨跌色'), colBtn);
-  /* 市场浮窗（2026-10-07 拍板）：普通 / 挑战局的盘口浮窗（订单簿 ＋ 深度两页）——
-     上帝局的「哨」浮窗恒开、不受它管。偏好归 `main.js`（独立 localStorage 键），
+  /* 市场浮窗（2026-10-07 拍板）：普通 / 挑战局的盘口浮窗（订单 ＋ 深度 ＋ 成交三页）——
+     上帝局的「详」浮窗恒开、不受它管。偏好归 `main.js`（独立 localStorage 键），
      这里只负责显示，与「涨跌色」同一套接线。 */
   const mktFloatBtn = el('button', 'set-btn on', '开');
   mktFloatBtn.dataset.mktfloat = 'toggle';
@@ -912,7 +913,7 @@ export function update(refs, s, view) {
   refs.hintBtn.classList.toggle('on', s.hintOn);
   refs.colBtn.textContent = view.redUp ? '红涨' : '绿涨';
   refs.colBtn.classList.toggle('on', view.redUp);
-  /* 市场浮窗开关：上帝局**整行不出现**（哨浮窗是上帝专属、恒开，这枚开关管不着它）。 */
+  /* 市场浮窗开关：上帝局**整行不出现**（详浮窗是上帝专属、恒开，这枚开关管不着它）。 */
   refs.mktFloatRow.hidden = !!s.god;
   refs.mktFloatBtn.textContent = view.mktFloat ? '开' : '关';
   refs.mktFloatBtn.classList.toggle('on', view.mktFloat);
@@ -3210,7 +3211,8 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   rowsC.style.display = page === 2 ? '' : 'none';
   box.append(rowsA, rowsB, rowsC);
 
-  /* 哨位行（2026-10-07 用户拍板「浮窗＋透明度」）—— 挂在三页**之外**：它是界面偏好，哪页都改得到。
+  /* 详情行（2026-10-07 用户拍板「浮窗＋透明度」；圆钮名 = 「详」，行标签与之同族）——
+     挂在三页**之外**：它是界面偏好，哪页都改得到。
      透明度是**档位按钮**不是滑杆（用户拍板「应为按钮，不需要自己拖动」）—— 循环
      100 → 80 → 60 → 40 → 100，按钮上的字就是当前档；写 `--god-alpha` 全局变量，
      上帝面板与浮窗**同一份**背景 alpha（文字不参与，保持锐利）。 */
@@ -3219,7 +3221,7 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   fBtn.dataset.godfloat = '';
   const aBtn = el('button', 'set-btn on', `透明 ${Math.round(fui.alpha * 100)}%`);
   aBtn.dataset.godalpha = '';
-  fRow.append(el('i', null, '哨位'), fBtn, aBtn);
+  fRow.append(el('i', null, '详情'), fBtn, aBtn);
   box.append(fRow);
 
   /* 「关闭上帝模式」已删除（2026-10-07 用户拍板）—— 上帝模式不进存档（会话级一次性），
@@ -3237,38 +3239,49 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
 }
 
 /* ══════════════ 上帝浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开，尽量小」） ══════════════
-   小圆钮「哨」挂在 document.body（**不进 #overlay**）：非模态、游戏运行中始终在场，
-   点开是一块三 tab 小面板（清算热力图 / 巨鲸 / 深度），数字全部来自 `engine.godWatchOf`。
+   小圆钮「详」（2026-10-07 用户拍板由「哨」更名：详情/明细）挂在 document.body（**不进 #overlay**）：
+   非模态、游戏运行中始终在场，点开是一块多 tab 小面板（清算热力图 / 巨鲸 / 深度 / 订单簿 / 成交），
+   数字全部来自 `engine.godWatchOf`。
    ⚠️ 状态（开关 / 展开 / 页码 / 拖拽位置）全在 `main.js`；这里只画 —— 面板内容每帧全量重画
       （与 `update()` 同一节奏，`draw()` 的 80ms 节流兜着），骨架只建一次。
    ⚠️ 透明度走全局 `--god-alpha`（main.js 写、style.css 读）：面板 / 浮窗 / 圆钮同一份。 */
 let fChip = null, fPanel = null;
 
 /** 面板内容（每帧重建）。页 0 热力图：纵轴 = 价格、条 = 各档强平价位（宽 ∝ 名义占比，
- *  多头强平在下方走跌色、空头强平在上方走涨色）＋ 当前价标线；
- *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ heat / mood；
+ *  多头强平在下方走跌色、空头强平在上方走涨色）＋ 当前价标线 —— 视窗夹在现价 ±35%
+ *  （3x 年代封顶的最大强平距离 32.83% ＋ 余量），远档强平不进来把轴压扁（2026-10-07 bug 修）；
+ *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ 热度 / 恐惧贪婪；
  *  页 2 深度：日流动性 / 本时基准 / 深度池余量 / 免滑点线 / 单笔顶格线 ＋ 压力位墙汇总 —— 全是真状态；
- *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础 12 档 ＋ 压力位墙逐档列出。 */
-function floatBody(s, page) {
+ *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础 12 档 ＋ 压力位墙逐档列出。
+ *  页 4 逐笔成交（2026-10-07 拍板）：本小时量的**代表性采样**（幂律 ＋ taker 偏斜，见 tape.js），
+ *       列固定「时刻 价 数量 金额」最新在前 —— `prog` = 本小时已走的量占比（main.js 时钟）。 */
+function floatBody(s, page, prog) {
   const w = godWatchOf(s, s.sym);
   const box = el('div', 'god-fbody');
   if (page === 0) {
-    const lo0 = Math.min(w.price, ...w.liqs.map(l => l.price));
-    const hi0 = Math.max(w.price, ...w.liqs.map(l => l.price));
-    const pad = (hi0 - lo0) * 0.08 || w.price * 0.01;
-    const y = p => `${((p - (lo0 - pad)) / (hi0 - lo0 + pad * 2)) * 100}%`;
+    const BAND = 0.35, HM_H = 180;                 // HM_H 与 style.css 的 .god-hm 高度同源
+    const hi = w.price * (1 + BAND), lo = w.price * (1 - BAND);
+    const yFrac = p => (hi - p) / (hi - lo);       // 0 = 视窗顶（高价）
+    const vis = w.liqs.filter(l => l.price >= lo && l.price <= hi).sort((a, b) => b.price - a.price);
+    /* 自适应去重叠：14px 上限、条挤得下就压缩（14 条 × 12px 条高恰好铺满 180px 可用区） */
+    const gap = Math.max(0, Math.min(14, (HM_H - 24) / Math.max(1, vis.length - 1) - 12));
+    const clampT = v => Math.min(1 - 6 / HM_H, Math.max(6 / HM_H, v));
     const hm = el('div', 'god-hm');
-    for (const l of w.liqs) {
-      const bar = el('div', `god-hm-bar ${l.side}`, `${fmtMoneyShort(l.notional)}·${l.name}`);
-      bar.style.top = y(l.price);
+    let prev = -1;
+    for (const l of vis) {
+      const top = clampT(Math.max(yFrac(l.price), prev + gap / HM_H));
+      prev = top;
+      const bar = el('div', `god-hm-bar ${l.side}`, `${fmtLogPrice(l.price)} ${fmtMoneyShort(l.notional)}·${l.name}`);
+      bar.style.top = `${top * 100}%`;
       bar.style.width = `${Math.min(92, 10 + l.w * 82)}%`;
       hm.append(bar);
     }
     const now = el('div', 'god-hm-now', fmtLogPrice(w.price));
-    now.style.top = y(w.price);
+    now.style.top = `${clampT(yFrac(w.price)) * 100}%`;
     hm.append(now);
     box.append(hm);
     if (!w.liqs.length) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
+    else if (vis.length < w.liqs.length) box.append(el('p', 'god-fnote', `另有 ${w.liqs.length - vis.length} 条远档强平在 ±35% 视窗外`));
   } else if (page === 1) {
     const t = w.price;
     const sideRow = (name, isLong, notional, avg, lev) => {
@@ -3282,7 +3295,11 @@ function floatBody(s, page) {
       if (tr.short > 0) box.append(sideRow(`${tr.name} 空`, false, tr.short, tr.shortAvg, tr.lev));
     }
     if (!w.tiers.some(tr => tr.long > 0 || tr.short > 0)) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
-    box.append(el('div', 'god-frow2 mut', `热度 ${fmtPct(w.heat)} ｜ 情绪 ${w.mood >= 0 ? '+' : ''}${fmtPct(w.mood)}`));
+    /* 情绪读数 = 恐惧贪婪指数（alternative.me 口径：0–24 极度恐惧 / 25–44 恐惧 / 45–55 中性 /
+       56–75 贪婪 / 76–100 极度贪婪）。旧 `mood` 字段从未被写路径赋值 ⇒ 恒 0（2026-10-07 修）。 */
+    const fg = w.fng;
+    const word = fg <= 24 ? '极度恐惧' : fg <= 44 ? '恐惧' : fg <= 55 ? '中性' : fg <= 75 ? '贪婪' : '极度贪婪';
+    box.append(el('div', 'god-frow2 mut', `热度 ${fmtPct(w.heat)} ｜ 恐惧贪婪 ${Math.round(fg)} ${word}`));
   } else if (page === 3) {
     /* 订单簿：asks 反序（远档在上、最近的卖价贴中价）、bids 正序（最近的买价贴中价）——
        与真实交易所的盘口同一副上下结构。每侧 8 根**基础档**预算：数到第 9 根非墙行截断，
@@ -3314,6 +3331,24 @@ function floatBody(s, page) {
     for (const r of asks) box.append(gbRow(r, 'gb-ask'));
     box.append(el('div', 'gb-mid', fmtLogPrice(b.mid)));
     for (const r of bids) box.append(gbRow(r, 'gb-bid'));
+  } else if (page === 4) {
+    /* 逐笔成交：本小时真实成交量（hourLiqRaw，与滑点同一把尺子）按幂律 α=1.5 拆成 96 笔采样，
+       方向按 taker 偏斜（锚：中性买方份额 0.499、每 +1% 收益 +0.007）—— 见 tape.js 模块头注。
+       列固定不换行（用户红线）：时刻 | 价 | 数量(币) | 金额($)，最新在前。 */
+    const tp = tapeOf(s, s.sym, prog || 0);
+    if (!tp) { box.append(el('p', 'god-fnote', '行情暂不可用')); return box; }
+    box.append(el('div', 'god-frow2 mut', `本时量 ${fmtMoneyShort(tp.vol)} ｜ 买占 ${(tp.pBuy * 100).toFixed(1)}%`));
+    if (!tp.prints.length) {
+      box.append(el('p', 'god-fnote', '本小时刚开始 · 暂无采样'));
+      return box;
+    }
+    const list = el('div', 'gd-list');
+    for (const p of tp.prints) {
+      const row = el('div', `gd-row ${p.side > 0 ? 'gd-buy' : 'gd-sell'}`);
+      row.append(el('i', null, p.t), el('em', null, fmtLogPrice(p.price)), el('span', null, fmtQty(p.qty)), el('b', null, fmtMoneyShort(p.usd)));
+      list.append(row);
+    }
+    box.append(list);
   } else {
     const d = w.depth;
     const row = (k, v) => { const r = el('div', 'god-frow2'); r.append(el('i', null, k), el('b', null, v)); return r; };
@@ -3346,7 +3381,7 @@ export function updateFloat(s, ui) {
     return;
   }
   if (!fChip) {
-    fChip = el('button', 'god-chip', '哨');
+    fChip = el('button', 'god-chip', '详');
     fChip.dataset.gofloat = '';
     document.body.append(fChip);
   }
@@ -3376,12 +3411,12 @@ export function updateFloat(s, ui) {
     }));
   }
   for (const b of fPanel.querySelectorAll('[data-goftab]')) b.classList.toggle('on', Number(b.dataset.goftab) === ui.page);
-  fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page));
-  /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽 238px）。 */
+  fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page, ui.prog));
+  /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽 272px ＋ 8px 余量）。 */
   const cw = document.documentElement.clientWidth, ch = document.documentElement.clientHeight;
   if (ui.pos) {
-    fPanel.style.left = `${Math.min(Math.max(4, ui.pos.x), cw - 246)}px`;
-    fPanel.style.top = `${ui.pos.y > ch * 0.55 ? Math.max(4, ui.pos.y - 250) : ui.pos.y + 46}px`;
+    fPanel.style.left = `${Math.min(Math.max(4, ui.pos.x), cw - 280)}px`;
+    fPanel.style.top = `${ui.pos.y > ch * 0.55 ? Math.max(4, ui.pos.y - 320) : ui.pos.y + 46}px`;
     fPanel.style.right = 'auto'; fPanel.style.bottom = 'auto';
   } else {
     fPanel.style.left = 'auto'; fPanel.style.top = 'auto';

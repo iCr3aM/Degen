@@ -178,7 +178,13 @@ function bookForWatch(s, sym, price) {
 export function godWatchOf(s, sym = s.sym) {
   const m = mktOf(s, sym);
   const t = timeOf(s);
-  const rows = m.npc.map((g, k) => ({ g, name: `${NPC.ladder[k].lev}x`, lev: npcLevOf(t, NPC.ladder[k].lev) }))
+  /* 档名带**生效杠杆**（2026-10-07 用户拍板「3 倍和 100 倍强平价一样？」的口径修正）：
+     2016-05-13（BitMEX 100x 上线）之前年代封顶把所有档夹到 3x，旧名却仍写基准值 ——
+     名字说 100x、强平价却按 3x 算，才是真正的 bug。封顶时显示「基准→生效」。 */
+  const rows = m.npc.map((g, k) => {
+    const base = NPC.ladder[k].lev, eff = npcLevOf(t, base);
+    return { g, name: eff < base ? `${base}x→${eff}x` : `${base}x`, lev: eff };
+  })
     .concat(m.mm ? [{ g: m.mm, name: '做市', lev: npcLevOf(t, NPC.mm.lev) }] : []);
   let total = 0;
   for (const r of rows) total += (r.g.long || 0) + (r.g.short || 0);
@@ -194,7 +200,12 @@ export function godWatchOf(s, sym = s.sym) {
   const base = hourLiqBase(s, sym, s.i);
   const price = lastPrice(s, sym);
   return {
-    price, heat: m.heat || 0, mood: m.mood || 0, liqs, tiers,
+    price, heat: m.heat || 0,
+    /* 情绪读数 = 恐惧贪婪指数（0–100 · 只读显示轨，`tickMarket` ⑤ 写入）——
+       旧字段 `mood` 从未被任何写路径赋值 ⇒ 恒 0（2026-10-07 用户抓到的「情绪恒为 0%」）。
+       未结算过任何一天的格子（fngDay 缺）⇒ 中性 50。 */
+    fng: Number.isFinite(m.fng) ? m.fng : 50,
+    liqs, tiers,
     book: bookForWatch(s, sym, price),
     depth: {
       liqDay, hourBase: base,
@@ -623,7 +634,7 @@ function floatShareOf(s, sym, i) {
  *
  * @returns {number} 分母；取不到当日流动性时返回 0
  */
-function hourLiqRaw(s, sym, i) {
+export function hourLiqRaw(s, sym, i) {
   const day = dayIndexOf(i);
   const liq = liqOf(sym, day);
   if (!(liq > 0)) return 0;
@@ -2320,15 +2331,79 @@ function crossHeat(s, sym, m) {
 }
 
 /**
+ * NPC 仓位刻度（tickMarket ③ ＋ ③′ 的抽身）：顺势靶心 ＋ **双侧背景仓**（`NPC.base`）＋ 做市盘镜像。
+ *
+ * ⚠️ 双侧基底的构造（2026-10-07）：`long 靶心 = base×w×liqDay + max(0, t×w)`、
+ *    `short 靶心 = base×w×liqDay + max(0, −t×w)` ⇒ **净敞口 = t×w 与无基底逐位相同**
+ *    （两侧都是线性收敛、且基底 > 0 使 `max(0,·)` 永不夹到 0），变的只有总名义（OI 地板）。
+ * ⚠️ 基底只给**生效杠杆 ≤ 10x** 的档（`npcLevOf` 年代封顶后的值）：50x/100x 的止损带太窄，
+ *    常驻基底会在止损线上持续摩擦（见 `NPC.base` 注）。
+ * ⚠️ 方案 A ②：减仓的已实现盈亏累加后一次性入池（`settlePool` 只在池余额内兑付）。
+ */
+function npcBuild(s, sym, m, i) {
+  const liqDay = liqOf(sym, dayIndexOf(i));
+  if (!(liqDay > 0)) return;
+  const target = sbOf(s).npc * NPC.mom * (m.heat - HEAT.base) * liqDay;
+  const price = lastPrice(s, sym);
+  const t = timeOf(s);
+  let npcRealisedSum = 0;
+  for (let k = 0; k < NPC.ladder.length; k++) {
+    const w = NPC.ladder[k].w;
+    const floor = liqDay * NPC.floor * w;
+    const b = npcLevOf(t, NPC.ladder[k].lev) <= 10 ? liqDay * NPC.base * w : 0;
+    npcRealisedSum += stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor);
+    npcRealisedSum += stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor);
+  }
+  /* ③′ **做市盘**（缺口 6-A）：站到趋势盘**对面**；靶心取趋势盘六档的**实际净持仓**。
+     ⚠️ 残尾阈值不乘权重（单个格子）；`speed` 用 `NPC.mm.speed`（更快）。 */
+  if (m.mm) {
+    const targetMM = -NPC.mm.absorb * trendNet(m);
+    const floorMM = liqDay * NPC.floor;
+    npcRealisedSum += stepNpc(m.mm, 'long', targetMM, price, floorMM, NPC.mm.speed);
+    npcRealisedSum += stepNpc(m.mm, 'short', -targetMM, price, floorMM, NPC.mm.speed);
+  }
+  settlePool(s, sym, npcRealisedSum, false);
+}
+
+/**
+ * **其余已加载币**的 NPC 刻度（2026-10-07 · 用户拍板「确认各币种数据自洽、一直有人在多空」）。
+ *
+ * 病根：`tickMarket` 只跑当前币 ⇒ 其余币的 NPC 六档**永远是空的** —— 切到 ETH 看「巨鲸」页
+ * 只会得到「NPC 各档暂无持仓」，且「砸崩 BTC → 切 ETH」时 ETH 的散户盘毫无反应（G2 的
+ * `crossHeat` 把邻币 heat 推过去了，却没有任何东西**读**它建仓）。
+ *
+ * ⚠️ 每小时对**所有已加载**（`market.isLoaded`）、非当前币的格子跑一遍 `npcBuild` ＋
+ *    `syncNpcDrift` ＋ `stampede`（与 `tickMarket` ③→sync→④ 同序）—— 强平线有人站岗、
+ *    级联在任何币上都可能发生，浮窗「巨鲸 / 热力」页在**每个币**上都是活数据。
+ * ⚠️ `syncNpcDrift` **跳过持有 / 疤痕币**（`heldSyms` ∪ `s.adv`）—— 它们由 `advTick` 负责推价，
+ *    这里再调一次就是一小时走两格（`stepAdvPush` 的缓动会被双步进，见 `advTick` 内注）。
+ * ⚠️ `m.heat` 仍按 G2 口径冻结（只有 `crossHeat` 的外溢会动它）—— 靶心读冻结热度是**有意的**：
+ *    背景人群不会因为玩家没盯着就消失。
+ * ⚠️ 成本：每币 ≈ 7 格 × 2 侧的线性趋近 ＋ 一次级联扫描，纯算术（不走簿、不建单），
+ *    8 币全程 < 1µs 量级 —— 50x 速度下每秒 50 次也无感。
+ */
+function npcOtherTick(s) {
+  if (!s.mkt) s.mkt = {};
+  const adv = s.adv || {};
+  for (const c of COINS) {
+    const sym = c.sym;
+    if (sym === s.sym || !isLoaded(sym)) continue;
+    const m = mktOf(s, sym);
+    npcBuild(s, sym, m, s.i);
+    if (!(heldSyms(s).includes(sym) || adv[sym])) syncNpcDrift(s, sym, s.i, rawDailySigma(sym, s.i));
+    stampede(s, sym, m, lastPrice(s, sym));
+  }
+}
+
+/**
  * 每根小时 K 线跑一次的市场情绪刻度（§73.5）—— 在 `advanceOneHour` 里、基础行情算完之后调用。
  *
  * ① 读**近 `HEAT.window` 小时的价格收益**（按日 σ 标准化）② 更新热度（收益 **被成交量有向放大** − 均值回复）
  * ③ NPC 顺势建仓（正反馈）③′ **做市盘**建到趋势盘对面（缺口 6-A）④ 踩踏级联（仅杠杆模式）。
- * ⚠️ 只对**当前币**跑（`s.sym`）：玩家只在这个币上下单，其余币的 NPC 状态冻结 ——
- *    省掉「每个币每小时各跑一次」的整表开销，也不影响玩法（持仓的其它币走行情本身）。
- *    **G2 例外（2026-10-05）**：其余币的 `m.heat` **不再完全冻结** —— `crossHeat` 会把当前币的
- *    情绪偏差外溢过去（跨币危机共振），故「其余币的 NPC 状态冻结」现在只对**持仓 / 台阶表**
- *    成立，`heat` 是唯一被跨币耦合的量。
+ * ⚠️ 只对**当前币**跑（`s.sym`）——但 2026-10-07 起「其余币冻结」只对**行情/K 线**成立：
+ *    NPC 仓位（③/③′ 抽身为 `npcBuild`）由 `npcOtherTick` 对**所有已加载币**每小时刻度，
+ *    强平线 / 级联在任何币上都是活数据（`advanceOneHour` 里紧跟本函数之后调用）。
+ *    G2 例外：其余币的 `m.heat` 仍被 `crossHeat` 跨币耦合（外溢），不是完全冻结。
  */
 export function tickMarket(s, sym) {
   const m = mktOf(s, sym);
@@ -2385,34 +2460,7 @@ export function tickMarket(s, sym) {
      ⚠️ **按档分配**（§4.2）：同一个靶心按 `NPC.ladder[k].w` 分给六档，`Σw = 1` ⇒
         六档名义之和 == 改动前的单值（**总敞口守恒**），只是摊到了六条不同的强平线上。
         残尾阈值同理按档缩放（`× w`）—— 否则低权重的 100x 尾巴会被同一个绝对阈值整条抹掉。 */
-  const liqDay = liqOf(sym, dayIndexOf(i));
-  if (liqDay > 0) {
-    /* 沙盒（2026-10-05）：`散户参与度 sb.npc` 放大 NPC 顺势建仓的**靶心**（总敞口）——
-       靶心变了 ⇒ 档位权重与残尾阈值照旧按比例摊，总敞口守恒的口径不受影响。 */
-    const target = sb.npc * NPC.mom * (m.heat - HEAT.base) * liqDay;
-    const price = lastPrice(s, sym);
-    /* 方案 A ②（2026-10-05）：本小时 NPC 减仓的**已实现盈亏累加后一次性入池** ——
-       `stepNpc` 只结算自己那个格子的减仓，不认识 `s` / `m`，故在这里汇总再写池
-       （避免 `stepNpc` 反向依赖 `mktOf`）。加仓返回 0，无需区分。 */
-    let npcRealisedSum = 0;
-    for (let k = 0; k < NPC.ladder.length; k++) {
-      const w = NPC.ladder[k].w;
-      const floor = liqDay * NPC.floor * w;
-      npcRealisedSum += stepNpc(m.npc[k], 'long', target * w, price, floor);
-      npcRealisedSum += stepNpc(m.npc[k], 'short', -target * w, price, floor);
-    }
-    /* ③′ **做市盘**（缺口 6-A · 2026-10-03）：站到趋势盘**对面**，库存回补更快。
-       ⚠️ 靶心取**趋势盘六档的实际净持仓**（而不是 `target` 这个稳态靶心）—— 做市盘吃的是
-          「已经挂出来的那部分仓」，两者在收敛途中并不相等；用实际值才自洽。
-       ⚠️ 残尾阈值不乘权重（做市盘是**单个**格子，不分档）；`speed` 用 `NPC.mm.speed`（更快）。 */
-    if (m.mm) {
-      const targetMM = -NPC.mm.absorb * trendNet(m);
-      const floorMM = liqDay * NPC.floor;
-      npcRealisedSum += stepNpc(m.mm, 'long', targetMM, price, floorMM, NPC.mm.speed);
-      npcRealisedSum += stepNpc(m.mm, 'short', -targetMM, price, floorMM, NPC.mm.speed);
-    }
-    settlePool(s, sym, npcRealisedSum, false);   // NPC：只在池余额内兑付（不碰保险基金）
-  }
+  npcBuild(s, sym, m, i);
   /* ⚠️ 2026-10-04：这里传的是**原始行情 σ**（`rawDailySigma`），不是上面那个给热度用的
      `sig`（`dailySigma`，含位移）。理由见 `rawDailySigma` 表头 —— 净持仓折价位、以及推价的
      距离参考，都必须用不含自身位移的 σ，否则「位移↑ ⇒ σ↑ ⇒ 位移↑」自激（画门根因）。 */
@@ -4154,6 +4202,11 @@ export function advanceOneHour(s) {
   /* NPC 情绪 / 踩踏级联（§73.5）：基础行情（这一根的 K 线）算完之后跑一次 ——
      它自己会往 `s.flow` 写 NPC 的成交，所以必须排在资金费 / 强平之前、玩家的流之后。 */
   tickMarket(s, s.sym);
+
+  /* 其余已加载币的 NPC 刻度（2026-10-07）：紧跟 `tickMarket` —— `crossHeat` 刚把当前币的情绪
+     外溢给邻币，邻币的建仓靶心这一拍就能读到（「砸崩 BTC → ETH 散户盘跟着撤」的落点）。
+     排在 `advTick` 之前：持有 / 疤痕币的 `syncNpcDrift` 仍由 `advTick` 独家负责（不双步进）。 */
+  npcOtherTick(s);
 
   /* 对抗性流动性（提案 B 档 1）：把本小时的 exposure 抬进峰值台阶 ＋ 该播预警就播。
      排在 `tickMarket` 之后 —— 玩家的 `pv` 刚被清掉、持仓也刚跟着这一根的行情更新过。 */
