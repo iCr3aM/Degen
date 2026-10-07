@@ -2963,6 +2963,9 @@ export function openYearPick(curYear) {
  * ⚠️ **资金框不能挂 `data-*`**：`bind.js` 拦的是 `[data-*]` 的 `pointerdown` 并会 `preventDefault`，
  *    挂上去就打不了字了。所以值由动作处理函数从同一个面板里按类名读（`god-cash`）。
  *    ⚠️ 档排上那些是**按钮**、不是输入框，照旧挂 `data-*`（`godyear` / `godmon` / `godday`）。
+ * ⚠️ **「无限」开关（2026-10-07 用户拍板）与资金输入框同处一行**：它翻的是 `s.god.inf`，
+ *    开启后归零**自动补满**到输入框那个数（`engine.js` 的 `checkRuin`）——
+ *    与「填入」（当下填一次）语义不重叠，故并排而不是各占一行。
  *
  * @param {object} s
  * @param {{y:number,m:number,d:number}|null} sel 日期选择器的**暂存目标**；`null` = 跟随当前游戏日期
@@ -2992,7 +2995,10 @@ export function openGod(s, sel = null, page = 0) {
   const rowsA = el('div', 'confirm-rows');   // ① 填入资金 ＋ ② 跳到日期
   const rowsB = el('div', 'confirm-rows');   // ③ 沙盒
 
-  /* ① 填入资金 —— 输入框**预填上次填的数**，于是归零之后点一下就补回来，不必再加第二枚按钮 */
+  /* ① 填入资金 —— 输入框**预填上次填的数**，于是归零之后点一下就补回来。
+     ⚠️「无限」（2026-10-07 用户拍板）开着时**归零自动补满**到输入框这个数（`engine.checkRuin`）——
+        与「填入」并排：一枚是**当下填一次**的动作，一枚是**往后一直补**的状态，语义不重叠。
+        文案走 `开 / 关` 两态（`.set-btn` 宽度锁死 64px，切字不抖，与设置页那几枚同一套）。 */
   const cRow = el('div', 'set-row');
   const cashIn = el('input', 'god-in god-cash');
   cashIn.type = 'number';
@@ -3002,7 +3008,9 @@ export function openGod(s, sel = null, page = 0) {
   cashIn.value = String(s.god.lastFill);
   const cBtn = el('button', 'set-btn on', '填入');
   cBtn.dataset.godcash = '';
-  cRow.append(el('i', null, '资金'), cashIn, cBtn);
+  const infBtn = el('button', s.god.inf ? 'set-btn on' : 'set-btn', s.god.inf ? '无限 开' : '无限 关');
+  infBtn.dataset.godinf = '';
+  cRow.append(el('i', null, '资金'), cashIn, cBtn, infBtn);
   rowsA.append(cRow);
 
   /* ② 跳到日期 —— 向前 = 时间自然流过（持仓保留）；向后 = 回到过去（保留资金、清空仓位）。

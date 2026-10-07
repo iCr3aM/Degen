@@ -3453,6 +3453,28 @@ function endGame(s, reason) {
 }
 
 /**
+ * 上帝模式「填入资金」的**记账部分** —— 把 `amount` **设定**为当前币种那一格的余额
+ * （不是往上加，见方案 §2.3），并顺手清掉归零时留下的负账本。
+ *
+ * ⚠️ 为什么要清负账本（2026-09-30 裁决）：逐仓的浮亏与「1x 杠杆空单」的亏损是**无上限**
+ *    写进账本的（`credit` 允许负额，见 `closeTrade`），普通玩法由 `isBankrupt` 终局接住，
+ *    而上帝模式「归零不退出」会把它原样留在资产页（长局抽检实测最坏 −$74 万一格）。
+ *    不清的话，玩家补完钱会发现净值仍是负的，且那一格**永远还不清**。
+ *
+ * ⚠️ 手动填入（面板那枚「填入」）与**自动补满**（`checkRuin` 的无限资金）**共用这一份** ——
+ *    两边各写一遍这套记账必然漂移。
+ */
+export function godFillCash(s, amount) {
+  for (const b of Object.values(s.books)) {
+    if (b.usd < 0) b.usd = 0;
+    if (b.usdt < 0) b.usdt = 0;
+  }
+  ensureBook(s)[cashCurAt(timeOf(s))] = amount;
+  s.god.lastFill = amount;
+  s.godRuined = false;        // 补上钱之后，下一次归零要能再提示一遍
+}
+
+/**
  * 「归零」的**唯一出口**（Batch 5 · B30）—— 原来有 4 处各自 `isBankrupt → endGame`，
  * 现在全部走这里。收成一个口的好处不只是少写几遍：**这条规则以后只会有一个地方要改**。
  *
@@ -3471,8 +3493,16 @@ function checkRuin(s) {
   if (!isBankrupt(s)) return false;
 
   /* 上帝模式：归零**不结束本局**（方案 §2.5）—— 时钟照走，玩家自己在面板里「填入资金」。
-     ⚠️ 提示只写一次（`s.godRuined`），否则每根 K 线都会刷一条一模一样的日志。 */
+     ⚠️ 提示只写一次（`s.godRuined`），否则每根 K 线都会刷一条一模一样的日志。
+     ⚠️「无限资金」（2026-10-07 用户拍板）开着就**当场补满**、不走上面那条提示 ——
+        补满后余额 > 0 ⇒ 下一小时的 `isBankrupt` 自然为假，不会连刷。
+        `lastFill ≤ 0`（玩家自己填过 0）时补满等于没补 ⇒ 退回普通提示，免得每小时刷一条。 */
   if (s.god) {
+    if (s.god.inf && s.god.lastFill > 0) {
+      godFillCash(s, s.god.lastFill);
+      pushLog(s, `上帝模式 ｜ 无限资金，已补满 ${fmtMoney(s.god.lastFill)}`, 'ok');
+      return false;
+    }
     if (!s.godRuined) {
       s.godRuined = true;
       pushLog(s, '上帝模式 ｜ 账户归零，不结束本局', 'bad');

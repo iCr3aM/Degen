@@ -1102,6 +1102,10 @@ export function enableGod(s) {
   /* 沙盒旋钮（2026-10-05）：缺就补一份**恒等**默认（见下方 `SB_DEFAULT`）—— 与 `lastFill`
      同一条「只补缺失的键」的规矩；已存在的旋钮一个不动。 */
   if (!s.god.sb) s.god.sb = { ...SB_DEFAULT };
+  /* 无限资金（2026-10-07 用户拍板）：**默认关** ⇒ 旧档 / 没开过的档一律与改动前逐位相同。
+     开启后归零**自动补满**到 `lastFill`（见 `engine.js` 的 `godFillCash` 与 `checkRuin`）。
+     ⚠️ 不进 `save.js` 的 `SHAPE`（那里只管数组 / 对象类型），缺键读侧一律当 `false`。 */
+  if (s.god.inf == null) s.god.inf = false;
   /* 统计（v21 · M1）：这一局**动过上帝模式**（称号「上帝之手」读它）。
      写在解锁那一刻而不是每次开面板：它要回答的是「这局的成绩干不干净」。 */
   s.stat.god = true;

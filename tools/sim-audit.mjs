@@ -574,6 +574,72 @@ section('2c · 结局状态机：checkRuin 的几条出口逐条走一遍');
     check('2c 上帝模式归零不结束本局（godRuined=true、over=null）',
       s.godRuined === true && s.over == null, `godRuined=${s.godRuined} over=${JSON.stringify(s.over)}`);
   }
+  // ⑦ 「无限资金」默认关 ⇒ `enableGod` 补出 `inf: false`，且归零行为与改动前逐位相同
+  {
+    const s = await mk({ cash: 1000 });
+    const g = god.enableGod(s);
+    check('2c 无限资金默认关（enableGod 补 inf=false）', g.inf === false, `inf=${JSON.stringify(g.inf)}`);
+    await ruin(s, '审计-无限资金-默认关');
+    check('2c 默认关：归零只提示、不补钱（与改动前一致）',
+      s.godRuined === true && engine.equity(s) <= 0 && s.over == null && s.pending == null,
+      `equity=${f(engine.equity(s), 2)} godRuined=${s.godRuined} over=${JSON.stringify(s.over)}`);
+  }
+  // ⑧ 无限资金开启 ⇒ 归零**当场补满**到 `lastFill`，负账本一并清零，且不再走「归零不结束本局」
+  {
+    const s = await mk({ cash: 1000 });
+    god.enableGod(s);
+    s.god.inf = true;
+    s.god.lastFill = 50000;
+    await ruin(s, '审计-无限资金-开启');
+    check('2c 无限资金：归零补满到 lastFill（设定，不是累加）',
+      Math.abs(engine.equity(s) - 50000) < 1e-6, `equity=${f(engine.equity(s), 2)} 应=50000`);
+    check('2c 无限资金：补满后本局未结束、未进待决',
+      s.over == null && s.pending == null, `over=${JSON.stringify(s.over)} pending=${s.pending}`);
+    check('2c 无限资金：godRuined 复位（下一次归零还能再补一遍）',
+      s.godRuined === false, `godRuined=${s.godRuined}`);
+    check('2c 无限资金：负账本一并清零（usd / usdt 都不为负）',
+      s.books[s.ex].usd >= 0 && s.books[s.ex].usdt >= 0,
+      `usd=${f(s.books[s.ex].usd, 2)} usdt=${f(s.books[s.ex].usdt, 2)}`);
+    /* 补满之后余额 > 0 ⇒ 已不再是破产态 ⇒ 后面几小时**不许**再补一次（否则日志会被刷屏）。 */
+    const n0 = s.log.filter(e => /无限资金，已补满/.test(e.text)).length;
+    for (let k = 0; k < 5; k++) engine.advanceOneHour(s);
+    const n1 = s.log.filter(e => /无限资金，已补满/.test(e.text)).length;
+    check('2c 无限资金：补满后 5 小时不再补（不是每小时刷一条）', n1 === n0, `补满日志 ${n0} → ${n1}`);
+  }
+  // ⑨ `lastFill ≤ 0`（玩家自己填过 0）⇒ 退回普通提示，免得「补 0 元」变成每小时一条死循环
+  {
+    const s = await mk({ cash: 1000 });
+    god.enableGod(s);
+    s.god.inf = true;
+    s.god.lastFill = 0;
+    await ruin(s, '审计-无限资金-零额');
+    check('2c 无限资金：lastFill=0 时退回普通提示（不补、不刷屏）',
+      s.godRuined === true && engine.equity(s) <= 0 && s.over == null,
+      `equity=${f(engine.equity(s), 2)} godRuined=${s.godRuined}`);
+  }
+  // ⑩ 旧档（有 god / 开过上帝模式，但**没有 inf 这个键**）⇒ 读侧一律当关
+  {
+    const s = await mk({ cash: 1000 });
+    s.god = { lastFill: 50000, sb: { ...god.SB_DEFAULT } };   // 模拟 v31 旧档：只缺 inf
+    await ruin(s, '审计-无限资金-旧档');
+    check('2c 旧档缺 inf 键 ⇒ 视为关闭、不补钱',
+      s.godRuined === true && engine.equity(s) <= 0 && s.over == null,
+      `equity=${f(engine.equity(s), 2)} godRuined=${s.godRuined}`);
+  }
+  // ⑪ `godFillCash` 是「设定余额」：面板的「填入」与自动补满共用这一份，两处口径必须一致
+  {
+    const s = await mk({ cash: 123456, i: idx(at(2013, 0)) });
+    god.enableGod(s);
+    engine.godFillCash(s, 50000);
+    check('2c godFillCash 是「设定」而不是「累加」',
+      Math.abs(engine.equity(s) - 50000) < 1e-6, `equity=${f(engine.equity(s), 2)} 应=50000`);
+    engine.godFillCash(s, 100);
+    check('2c godFillCash 二次设定覆盖前值', Math.abs(engine.equity(s) - 100) < 1e-6,
+      `equity=${f(engine.equity(s), 2)} 应=100`);
+    check('2c godFillCash 同步 lastFill ＋ 复位 godRuined',
+      s.god.lastFill === 100 && s.godRuined === false,
+      `lastFill=${s.god.lastFill} godRuined=${s.godRuined}`);
+  }
 }
 
 /* ═══════════════════ 3 · 资金守恒（开 → 平 / 开 → 走 N 小时） ═══════════════════ */

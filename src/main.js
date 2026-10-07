@@ -7,11 +7,11 @@
  *   main.js 是唯一把两边连起来的地方（也是唯一允许读时钟的地方）
  */
 
-import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, cashCurAt, exchangeOf, hasFinancingAt, isChallenge, maxLeverageAt, scenarioOf, scenarioStartIndex } from './core/config.js';
-import { anyHeld, createState, ensureBook, heldSyms, posOf, pushLog } from './core/state.js';
+import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, exchangeOf, hasFinancingAt, isChallenge, maxLeverageAt, scenarioOf, scenarioStartIndex } from './core/config.js';
+import { anyHeld, createState, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf } from './core/engine.js';
+import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
@@ -1001,16 +1001,18 @@ function dispatch(node) {
      `god` 是标题上的连点入口，其余几枚在上帝面板里（`data-god*`）。
      ⚠️ 上帝模式**只有「跳日期 / 填资金 / 关掉」三件事**（2026-09-29 瘦身）：原来那两套价格能力
         （倍率 `godmult`、手动砸盘 `godscale` / 复位 `godreset`）已整体删除。
+        （2026-10-07 补了一枚「无限」开关 —— 归零自动补满，见 `onGodInf`。）
      ⚠️ 设置页那枚「订单冲击」开关已于 2026-10-01 随 `s.impactOn` 字段一起删除 —— 冲击永远是开的。 */
   if (d.god !== undefined) return onGodTap();
   if (d.godcash !== undefined || d.godyear !== undefined || d.godmon !== undefined
     || d.godday !== undefined || d.godgo !== undefined || d.godoff !== undefined
-    || d.godtab !== undefined) {
+    || d.godtab !== undefined || d.godinf !== undefined) {
     /* 这几枚只可能出现在上帝面板里，而面板只在 `s.god` 非空时打开。这一行是**状态机不靠 DOM 兜底**：
        万一面板被别的路径留下来（比如读到一份 `god: null` 的档），这里不能抛异常。 */
     if (!s.god) return;
     if (d.godtab !== undefined) return onGodTab(node);
     if (d.godcash !== undefined) return onGodCash(node);
+    if (d.godinf !== undefined) return onGodInf();
     if (d.godyear !== undefined) return onGodPick('y', Number(d.godyear));
     if (d.godmon !== undefined) return onGodPick('m', Number(d.godmon));
     if (d.godday !== undefined) return onGodPick('d', Number(d.godday));
@@ -1370,19 +1372,24 @@ function onGodCash(node) {
     after();
     return;
   }
-  /* 归零后的**负账本一并清零**（2026-09-30 裁决）：逐仓的浮亏与「1x 杠杆空单」的亏损是
-     **无上限**写进账本的（`credit` 允许负额，见 `engine.closeTrade`），普通玩法由 `isBankrupt`
-     终局接住，而上帝模式「归零不退出」会把它原样留在资产页（长局抽检实测最坏 −$74 万一格）。
-     不清的话，玩家补完钱会发现净值仍是负的，且那一格**永远还不清**。 */
-  for (const b of Object.values(s.books)) {
-    if (b.usd < 0) b.usd = 0;
-    if (b.usdt < 0) b.usdt = 0;
-  }
-  ensureBook(s)[cashCurAt(timeOf(s))] = num;
-  s.god.lastFill = num;
-  s.godRuined = false;                 // 补上钱之后，下一次归零要能再提示一遍
+  /* 记账（设定余额 ＋ 清负账本）与「无限资金」的自动补满**共用一份** —— 见 `godFillCash`。 */
+  godFillCash(s, num);
   pushLog(s, `上帝模式 ｜ 资金已填入 ${fmtMoney(num)}`, 'ok');
   showGod();                           // 重开面板：输入框预填值跟着 `lastFill` 走
+  after();
+}
+
+/**
+ * 面板里那枚「无限」开关（2026-10-07 用户拍板）—— 开启后**归零自动补满**到输入框那个数，
+ * 不必再手点「填入」（实现在 `engine.js` 的 `checkRuin`）。
+ * ⚠️ 只翻一个布尔 ＋ 重开面板（与 `onGodTab` 同一处境：面板是静态 DOM、不参与每帧重绘）。
+ */
+function onGodInf() {
+  s.god.inf = !s.god.inf;
+  pushLog(s, s.god.inf
+    ? `上帝模式 ｜ 无限资金已开启（归零补满 ${fmtMoney(s.god.lastFill)}）`
+    : '上帝模式 ｜ 无限资金已关闭', 'ok');
+  showGod();
   after();
 }
 
