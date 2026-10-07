@@ -2649,6 +2649,24 @@ section('9q · 上帝面板分页接线（data-godtab ⇄ ACTION_KEYS ⇄ onGodT
     /export function openGod\(s, sel = null, page = 0\)/.test(renderSrc));
   check('9q 分派层有 `onGodTab`，且 `showGod` 把 `godPage` 传下去',
     /function onGodTab\(/.test(mainSrc) && /openGod\(s, godSel, godPage\)/.test(mainSrc));
+  /* ⚠️ **穷举护栏**（`chan` / `godinf` 两次实测踩坑的病根）：render.js 渲染出的**每一个**
+     `data-*` 动作键都必须注册进 ACTION_KEYS —— 漏一条 = `findActionEl` 认不出 = 点了没反应，
+     且引擎/分派侧全绿也测不出来（按钮根本到不了 dispatch）。
+     豁免名单 `STATE_MARKS`：**CSS 状态标记**（写在元素上给选择器/变量用，不是点击目标）——
+       `pf`  = `--pf` 变量的镜像（锁定币进度环，带值比较守卫）；
+       `heat` = `.chart-heat[data-heat=…]` 的着色桶（greedy/panic/缺省三档）。
+     新增状态标记要在这里补一行并说明用途；新增**按钮**漏注册则此断言当场咬死。 */
+  const STATE_MARKS = new Set(['pf', 'heat']);
+  /* 只抓 `export const ACTION_KEYS = [ ... ];` **数组本体** —— 不扫全文：全文抓会把
+     注释里提到的旧键 / 别的字符串也当「已注册」，护栏假绿。 */
+  const arrBody = bindSrc.match(/export const ACTION_KEYS = \[([\s\S]*?)\];/);
+  const actionKeys = new Set([...(arrBody ? arrBody[1].matchAll(/'([a-z0-9]+)'/g) : [])].map(m => m[1]));
+  check('9q 护栏活性：ACTION_KEYS 数组本体解析成功（否则本节护栏空转）',
+    actionKeys.size >= 30, `解析出 ${actionKeys.size} 键`);
+  const renderedKeys = new Set([...renderSrc.matchAll(/dataset\.([a-z0-9]+)\s*=/g)].map(m => m[1]));
+  const unbound = [...renderedKeys].filter(k => !actionKeys.has(k) && !STATE_MARKS.has(k));
+  check('9q render 渲染的每个 data-* 都注册进 ACTION_KEYS（漏 = 点了没反应）',
+    unbound.length === 0, unbound.length ? `漏 ${unbound.join('/')}` : `${renderedKeys.size} 键全覆盖（豁免状态标记 ${[...STATE_MARKS].join('/')}）`);
 }
 
 /* ═══════════════════ 9r · 上帝操盘台（2026-10-07 · 吃单 / 洗售 / 幌骗） ═══════════════════
@@ -2792,6 +2810,9 @@ section('9r · 上帝操盘台：吃单位移=预览 · 洗售零位移 · 幌�
     `补款 ${f(Math.max(sInf.god.lastFill, pvI.cost), 0)} 花费 ${f(pvI.cost, 0)} 余 ${f(engine.equity(sInf), 2)}`);
   const rIw = engine.godManipWash(sInf, 'BTC', 2e7);
   check('9r 无限资金贯通洗售（双边费同样先补后扣）', rIw.ok, `fee ${f(rIw.fee || 0, 0)}`);
+  check('9r 面板记忆：lastPush / lastWash 记下上次执行的名义额（重开面板预填）',
+    sInf.god.lastPush === 2e7 && sInf.god.lastWash === 2e7,
+    `push=${sInf.god.lastPush} wash=${sInf.god.lastWash}`);
 }
 
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════

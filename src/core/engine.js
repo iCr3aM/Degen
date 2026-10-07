@@ -3525,6 +3525,7 @@ export function godManipPush(s, sym, dir, notional) {
     debit(s, p.cost);           // 补款额 ≥ cost ⇒ 必成功
   }
   pushFlow(s, sym, dir, notional, 1, 'fut', true);
+  s.god.lastPush = notional;  // 面板记忆：下次打开操盘台预填这一笔（`god` 不进存档 ⇒ 会话级）
   return { ok: true, impact: p.impact, cost: p.cost };
 }
 
@@ -3549,6 +3550,7 @@ export function godManipWash(s, sym, notional) {
     debit(s, fee);
   }
   addPlayerVol(s, sym, notional, s.ex, 'fut');
+  s.god.lastWash = notional;  // 面板记忆：同 `lastPush`（洗售框自己记自己的）
   /* 与 `pushFlow` 的 P1-2 同一条口径：假量只喂**当前币**的热度（`m.pv` 的结算在 tickMarket）。 */
   if (sym === s.sym) mktOf(s, sym).pv += notional;
   return { ok: true, fee };

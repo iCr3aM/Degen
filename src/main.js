@@ -1326,8 +1326,8 @@ function onMarginAdjust(s, val) {
 function onGodTap(node) {
   if (node && node.dataset.god === 'logo') return onGodLogo();
   if (!s.god || s.over || s.pending) return;   // 未解锁 / 本局已结束 / 停在救济金遮罩：不理
-  godSel = null;                      // 重新打开 ⇒ 选择器回到「当前日期」起手
-  godPage = 0;                        // 页签同样回到第 1 页
+  /* 面板记忆（2026-10-07 用户拍板）：重开**不重置** —— 页签停在上次所在页、日期选择器
+     留在上次的目标上（`godSel` / `godPage` 是模块级变量，天然跨开合存活，只要别主动归零）。 */
   showGod();
   after();
 }

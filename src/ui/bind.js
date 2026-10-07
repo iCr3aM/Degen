@@ -32,7 +32,7 @@ export const ACTION_KEYS = [
         `godoff`（「关闭上帝模式」）已随 2026-10-07 的入口改型删除 —— 上帝模式是会话级
         一次性状态（`save.js` 落盘剔除 `s.god`，读档回来就是普通局），面板底部只剩
         「关闭」（关的是面板，不是模式）。 */
-  'god', 'godcash', 'godyear', 'godmon', 'godday', 'godgo', 'godtab',
+  'god', 'godcash', 'godinf', 'godyear', 'godmon', 'godday', 'godgo', 'godtab',
   'godpush', 'godwash', 'godspoof',
   /* U1（ROADMAP §21.4）：`mode2`（2026-10-04 起是操作区顶部「工具」行里的两枚段控
      「杠杆」/「合约」—— `data-mode2="margin"` / `"fut"`，取代旧那枚「金额」行末尾的切换键）。

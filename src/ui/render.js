@@ -3138,7 +3138,8 @@ export function openGod(s, sel = null, page = 0) {
   manipIn.inputMode = 'decimal';
   manipIn.min = String(MANIP_MIN);
   manipIn.step = '10000';
-  manipIn.value = String(s.god.lastFill);
+  /* 面板记忆：预填上次实际执行的名义额（没有才回落到填入资金那一格） */
+  manipIn.value = String(s.god.lastPush ?? s.god.lastFill);
   const mnUp = el('button', 'set-btn on', '拉');
   mnUp.dataset.godpush = '1';
   const mnDn = el('button', 'set-btn on', '砸');
@@ -3154,7 +3155,7 @@ export function openGod(s, sel = null, page = 0) {
   washIn.inputMode = 'decimal';
   washIn.min = String(MANIP_MIN);
   washIn.step = '10000';
-  washIn.value = String(s.god.lastFill);
+  washIn.value = String(s.god.lastWash ?? s.god.lastFill);
   const wBtn = el('button', 'set-btn on', '执行');
   wBtn.dataset.godwash = '';
   wRow.append(el('i', null, '洗售'), washIn, wBtn);
