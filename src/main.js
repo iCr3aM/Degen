@@ -11,11 +11,11 @@ import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, exchangeOf, hasFinancingAt
 import { anyHeld, createState, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godManipPush, godManipSpoof, godManipWash } from './core/engine.js';
+import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godManipPump } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
-import { MANIP_SPOOF_NUDGE, SB_DEFAULT, SB_KEYS, SB_PRESETS, enableGod, factorFor, sbOf } from './core/god.js';
+import { SB_DEFAULT, SB_KEYS, SB_PRESETS, enableGod, factorFor, sbOf } from './core/god.js';
 import { fmtDate, fmtMoney, fmtMoneyShort, fmtPct } from './core/format.js';
 import { canLiquidate, safetyOf } from './core/positions.js';
 import {
@@ -1088,12 +1088,11 @@ function dispatch(node, ev) {
     return onGodGo();
   }
   /* ── 上帝操盘台（2026-10-07）── 与上面几枚同一处境：只出现在上帝面板里，
-     同样以 `s.god` 非空兜底（状态机不靠 DOM）。 */
-  if (d.godpush !== undefined || d.godwash !== undefined || d.godspoof !== undefined) {
+     同样以 `s.god` 非空兜底（状态机不靠 DOM）。2026-10-08 三行合一后只剩一枚 `godpump`
+     （一键组合拳：幌骗 → 洗售 → 吃单）。 */
+  if (d.godpump !== undefined) {
     if (!s.god) return;
-    if (d.godpush !== undefined) return onGodPush(node);
-    if (d.godwash !== undefined) return onGodWash(node);
-    return onGodSpoof(node);
+    return onGodPump(node);
   }
   /* ── 上帝沙盒（2026-10-05）── 与上面几枚同一处境：只出现在上帝面板里，
      同样以 `s.god` 非空兜底（状态机不靠 DOM）。 */
@@ -1726,9 +1725,11 @@ function godRewind(to, label) {
    真实化依据见 `engine.godManip*` 的头注。
    ⚠️ 「关闭上帝模式」已随入口改型删除：上帝模式不进存档（会话级一次性），没有退出的路。 */
 
-/** 吃单拉砸（`data-godpush="1|-1"`）：单小时满额吃单，位移走既有冲击管线，付手续费＋冲击成本。 */
-function onGodPush(node) {
-  const dir = Number(node.dataset.godpush);
+/** 拉盘/砸盘一键组合拳（`data-godpump="1|-1"`，2026-10-08 用户拍板「晃骗＋洗售合并」）：
+ *  `engine.godManipPump` 依次执行 幌骗造势（免费）→ 洗售造量（min(N, 本时深度)）→ 吃单推价；
+ *  资金预检一步不动，总花费 = 吃单花费 ＋ 洗售双边费。 */
+function onGodPump(node) {
+  const dir = Number(node.dataset.godpump);
   const v = readGodInput(node, '.god-manip');
   const num = v === null ? NaN : Number(v);
   if (v === null || v.trim() === '' || !Number.isFinite(num)) {
@@ -1736,39 +1737,9 @@ function onGodPush(node) {
     snd.deny();
     return;
   }
-  const r = godManipPush(s, s.sym, dir, num);
+  const r = godManipPump(s, s.sym, dir, num);
   pushLog(s, r.ok
-    ? `操盘 · 吃单${dir > 0 ? '拉' : '砸'} ${fmtMoneyShort(num)} ｜ 位移 ${fmtPct(r.impact)} ｜ 花费 ${fmtMoneyShort(r.cost)}`
-    : `操盘失败 · ${r.why}`, r.ok ? 'ok' : 'bad');
-  if (!r.ok) snd.deny();
-  showGod();
-  after();
-}
-
-/** 洗售（`data-godwash`）：同额对倒 —— 放量不推价，付双边手续费（顺带刷低费率阶梯）。 */
-function onGodWash(node) {
-  const v = readGodInput(node, '.god-wash');
-  const num = v === null ? NaN : Number(v);
-  if (v === null || v.trim() === '' || !Number.isFinite(num)) {
-    pushLog(s, '操盘失败 · 先填名义额', 'bad');
-    snd.deny();
-    return;
-  }
-  const r = godManipWash(s, s.sym, num);
-  pushLog(s, r.ok
-    ? `操盘 · 洗售 ${fmtMoneyShort(num)} ｜ 双边手续费 ${fmtMoneyShort(r.fee)} ｜ 位移 0（放量不推价）`
-    : `操盘失败 · ${r.why}`, r.ok ? 'ok' : 'bad');
-  if (!r.ok) snd.deny();
-  showGod();
-  after();
-}
-
-/** 幌骗（`data-godspoof="1|-1"`）：零成交零费用，只给该币热度一脚偏置，随时间自然消散。 */
-function onGodSpoof(node) {
-  const dir = Number(node.dataset.godspoof);
-  const r = godManipSpoof(s, s.sym, dir);
-  pushLog(s, r.ok
-    ? `操盘 · ${dir > 0 ? '拉' : '砸'}情绪 ｜ 热度瞬时偏移 ${fmtPct(MANIP_SPOOF_NUDGE)}，几小时后自然消散`
+    ? `操盘 · 一键${dir > 0 ? '拉盘' : '砸盘'} ${fmtMoneyShort(num)}（造势 ${fmtMoneyShort(r.wash)}） ｜ 位移 ${fmtPct(r.impact)} ｜ 花费 ${fmtMoneyShort(r.cost)}`
     : `操盘失败 · ${r.why}`, r.ok ? 'ok' : 'bad');
   if (!r.ok) snd.deny();
   showGod();

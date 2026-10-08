@@ -4030,6 +4030,41 @@ export function godManipSpoof(s, sym, dir) {
 }
 
 /**
+ * 操盘台「**拉盘 / 砸盘**」—— 一键组合拳（2026-10-08 用户拍板「晃骗＋洗售合并为拉盘与
+ * 砸盘的按钮操作，贴合口径」）：按真实 P&D 的一条龙顺序依次执行 ——
+ *   ① 幌骗挪情绪（免费，先造势）→ ② 洗售造量（小额双边费把热度放大器喂饱）→ ③ 吃单推价（大头）。
+ *
+ * 洗售配比 = `min(N, 本时深度)`（拍板）：热度放大器 `k3·min(pv,1)` 在假量 ≥ 本时实际深度
+ * （`hourLiqBase`，含上帝深度旋钮 —— 与热度结算 `tickMarket` 同一条口径）时饱和，
+ * 配到饱和即止 —— 多洗纯浪费双边费；吃单小就等额对敲（真实对敲即 1:1）。
+ * 早期流动性低（深度 < `MANIP_MIN`）时取下限，保证洗售闸放行。
+ *
+ * ⚠️ 资金**预检**（`cashOf` 与 `debit` 同一面值口径）：总花费 = 吃单 cost ＋ 洗售双边费，
+ *    不够（且非无限资金）就**一步都不动** —— 避免「造势钱花了、推动没钱」的半拉子状态。
+ *    三步各自的内部闸再拦一道（预检过 ⇒ 理论不可达，兜底而已）。
+ */
+export function godManipPump(s, sym, dir, notional) {
+  if (!s.god) return { ok: false, why: '非上帝模式' };
+  if (dir !== 1 && dir !== -1) return { ok: false, why: '方向非法' };
+  if (!(Number.isFinite(notional) && notional >= MANIP_MIN)) {
+    return { ok: false, why: `名义额至少 ${MANIP_MIN}` };
+  }
+  const p = manipPreview(s, sym, dir, notional);
+  const wash = Math.max(MANIP_MIN, Math.min(notional, hourLiqBase(s, sym, s.i)));
+  const washFee = wash * feeRateOf(s.ex, timeOf(s), 'fut', vol30Of(s, s.ex, s.i, 'fut')) * 2;
+  const total = p.cost + washFee;
+  if (cashOf(s) + 1e-9 < total) {
+    if (!(s.god.inf && s.god.lastFill > 0)) return { ok: false, why: '资金不足（拉盘 = 吃单花费 ＋ 洗售双边费）' };
+    godFillCash(s, Math.max(s.god.lastFill, total));
+  }
+  godManipSpoof(s, sym, dir);   // ① 造势（免费）
+  const ws = godManipWash(s, sym, wash);   // ② 造量
+  const pu = godManipPush(s, sym, dir, notional);   // ③ 推动
+  if (!pu.ok) return pu;
+  return { ok: true, impact: pu.impact, cost: pu.cost + (ws.ok ? ws.fee : 0), wash: ws.ok ? wash : 0 };
+}
+
+/**
  * 「归零」的**唯一出口**（Batch 5 · B30）—— 原来有 4 处各自 `isBankrupt → endGame`，
  * 现在全部走这里。收成一个口的好处不只是少写几遍：**这条规则以后只会有一个地方要改**。
  *

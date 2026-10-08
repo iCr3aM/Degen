@@ -3171,7 +3171,10 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   lqRow.append(lqGrp);
   rowsC.append(lqRow);
 
-  /* ⚠️ 局部变量用 `mn*` 前缀 —— 页签 1 的月份选择器已经占了 `mRow`（2026-10-07 构建撞名修正）。 */
+  /* ⚠️ 局部变量用 `mn*` 前缀 —— 页签 1 的月份选择器已经占了 `mRow`（2026-10-07 构建撞名修正）。
+     操盘行（2026-10-08 用户拍板「晃骗＋洗售合并为拉盘/砸盘」）：三行合一 —— 点击即整条
+     一键组合拳（幌骗造势 → 洗售造量 → 吃单推价，`engine.godManipPump`），原三行独立操作
+     退役。预填/面板记忆沿用 `lastPush`。 */
   const mnRow = el('div', 'set-row');
   const manipIn = el('input', 'god-in god-manip');
   manipIn.type = 'number';
@@ -3180,55 +3183,32 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   manipIn.step = '10000';
   /* 面板记忆：预填上次实际执行的名义额（没有才回落到填入资金那一格） */
   manipIn.value = String(s.god.lastPush ?? s.god.lastFill);
-  const mnUp = el('button', 'set-btn on', '拉');
-  mnUp.dataset.godpush = '1';
-  const mnDn = el('button', 'set-btn on', '砸');
-  mnDn.dataset.godpush = '-1';
-  mnRow.append(el('i', null, '吃单'), manipIn, mnUp, mnDn);
+  const mnUp = el('button', 'set-btn on', '拉盘');
+  mnUp.dataset.godpump = '1';
+  const mnDn = el('button', 'set-btn on', '砸盘');
+  mnDn.dataset.godpump = '-1';
+  mnRow.append(el('i', null, '操盘'), manipIn, mnUp, mnDn);
   rowsC.append(mnRow);
   const mnPrev = el('p', 'god-prev', '');
   rowsC.append(mnPrev);
 
-  const wRow = el('div', 'set-row');
-  const washIn = el('input', 'god-in god-wash');
-  washIn.type = 'number';
-  washIn.inputMode = 'decimal';
-  washIn.min = String(MANIP_MIN);
-  washIn.step = '10000';
-  washIn.value = String(s.god.lastWash ?? s.god.lastFill);
-  const wBtn = el('button', 'set-btn on', '执行');
-  wBtn.dataset.godwash = '';
-  wRow.append(el('i', null, '洗售'), washIn, wBtn);
-  rowsC.append(wRow);
-  const wPrev = el('p', 'god-prev', '');
-  rowsC.append(wPrev);
-
-  const sRow = el('div', 'set-row');
-  const sUp = el('button', 'set-btn on', '拉情绪');
-  sUp.dataset.godspoof = '1';
-  const sDn = el('button', 'set-btn on', '砸情绪');
-  sDn.dataset.godspoof = '-1';
-  sRow.append(el('i', null, '幌骗'), sUp, sDn);
-  rowsC.append(sRow);
-  rowsC.append(el('p', 'god-prev', '假单挪情绪：零成交零费用，几小时后自然消散'));
-
-  /* 预览：与 `engine.manipPreview` 同式同参（同一时刻同一单，预览即实值）；
-     洗售不碰价 ⇒ 预览只报双边费。输入非法 / 不足下限时留空（执行时引擎还会再拦一道）。 */
+  /* 预览：与 `engine.godManipPump` 同式同参（同一时刻同一单，预览即实值）——
+     吃单位移/花费走 `manipPreview`；造势量 = `min(N, 本时深度)`（热度放大器饱和点，
+     `depth.hourBase` 含深度旋钮，与引擎 `hourLiqBase` 同口径）、造势费 = 双边手续费。
+     输入非法 / 不足下限时留空（执行时引擎还会再拦一道）。 */
   const updPrev = () => {
     const n = Number(manipIn.value);
-    const pv = Number.isFinite(n) && n >= MANIP_MIN ? manipPreview(s, s.sym, 1, n) : null;
-    /* `sat`（2026-10-07 用户拍板「两者都做」）：本笔名义已顶到深度上限（普通 0.25 / 上帝 1.0
-       倍小时深度）⇒ 再加钱位移不再涨 —— 预览如实说，玩家自己决定少花冤枉钱。 */
-    mnPrev.textContent = pv
-      ? `预计位移 ${fmtPct(pv.impact)} ｜ 花费 ${fmtMoneyShort(pv.cost)}${pv.sat ? ' ｜ 深度不足 · 超出部分无效' : ''}`
-      : '';
-    const wn = Number(washIn.value);
-    wPrev.textContent = Number.isFinite(wn) && wn >= MANIP_MIN
-      ? `假量 ${fmtMoneyShort(wn)} ｜ 双边费 ${fmtMoneyShort(wn * feeRateOf(s.ex, timeOf(s), 'fut', vol30Of(s, s.ex, s.i, 'fut')) * 2)} ｜ 位移 0`
-      : '';
+    if (!(Number.isFinite(n) && n >= MANIP_MIN)) { mnPrev.textContent = ''; return; }
+    const pv = manipPreview(s, s.sym, 1, n);
+    const deep = godWatchOf(s, s.sym).depth.hourBase;
+    const wash = Math.max(MANIP_MIN, Math.min(n, deep));
+    const feeRate = feeRateOf(s.ex, timeOf(s), 'fut', vol30Of(s, s.ex, s.i, 'fut'));
+    /* `sat`（2026-10-07 用户拍板）：本笔名义已顶到深度上限 ⇒ 再加钱位移不再涨 —— 如实说。 */
+    mnPrev.textContent =
+      `预计位移 ${fmtPct(pv.impact)} ｜ 花费 ${fmtMoneyShort(pv.cost + wash * feeRate * 2)}` +
+      ` ｜ 造势 ${fmtMoneyShort(wash)}${pv.sat ? ' ｜ 深度不足 · 超出部分无效' : ''}`;
   };
   manipIn.addEventListener('input', updPrev);
-  washIn.addEventListener('input', updPrev);
   updPrev();
 
   /* 互斥显隐：改 `.confirm-rows`（`display:grid`）的 inline `display` —— 见本函数头注。 */
@@ -3401,9 +3381,13 @@ function floatBody(s, page, bookStep = 1) {
        `price×(1±d)` 逐小时整体重锚、名义又挂小时流动性，三列数字像量化一样逐帧跳。
        改版（**纯显示层**，撮合梯 `baseLadder` / `walkBook` 原样不动 ——「走簿 ≡ 连续式」
        恒等式的承重结构，审计 9v①）：把**连续冲击曲线**分桶装进 `1-2-5×10ⁿ` 可读网格 ——
-       每格名义 = 内外缘价距上的连续深度差 `liq×[(x₂/3σ)² − (x₁/3σ)²]`（`3σ√q` 的反函数），
-       与真实成交成本同一条曲线、到外缘恰收敛于 `cap` ⇒ 不发明深度；数量 = 名义 ÷ 格价
-       （`fmtQty` 无 $），金额 = 从贴中向外累计（coinglass「总计」同款）。墙 = 真实历史
+       每格名义 = 内外缘价距上的连续深度差（`3σ√q` 的反函数），
+       数量 = 名义 ÷ 格价（`fmtQty` 无 $），金额 = 从贴中向外累计（coinglass「总计」同款）。
+       ⚠️ 2026-10-08 用户拍板「正常情况每个价格都有人挂单」：显示曲线**不夹断**（不再把滑点
+       顶格线 `cap` 误画成「更远处没挂单」）—— 真实 LOB 远场永远有单（Potters & Bouchaud 2002:
+       限价价距宽尾幂律 µ≈0.6~1.5；Tóth et al. 2011: 平均账本 V 形、远处尾部不枯竭），
+       累积深度随价距持续增长（二次律与文献 ζ≈1.6~2 同族）。`cap` 只是**吃单成本**的玩法
+       上限（撮合侧原样），与「挂单是否存在」是两回事。墙 = 真实历史
        价位，**不吸附网格**（它就是要被撞的那条价），照插格间；视野外（单侧 12~18 格，
        ≈ ±1.3~4.7% 随断点）的梯与墙折成一行 `gb-far` 汇总 —— 热力图页管全景，这页管
        近场，与真实盘口同构。 */
@@ -3425,20 +3409,21 @@ function floatBody(s, page, bookStep = 1) {
     const VIEW = (window.matchMedia && window.matchMedia('(min-width: 1280px)').matches) ? 18 : 12;
     const qOf = x => { const t = x / (3 * b.sigma); return t * t; };   // 价距比例 x ⇒ 已吃名义 q
     const midIdx = Math.round(b.mid / step);
-    /* 第 k 格（贴中数起）的名义（q 单位）：外缘/内缘价距上的连续深度差，q 在 `cap` 处夹断。 */
+    /* 第 k 格（贴中数起）的名义（q 单位）：外缘/内缘价距上的连续深度差 —— **不夹断**：
+       `qOf` 单调 ⇒ 差恒 ≥ 0；远处格子随价距继续增厚（远场一直有挂单，见上）。 */
     const cellQ = (k, above) => {
       const pOut = (midIdx + (above ? k + 0.5 : -k - 0.5)) * step;
       const pIn = pOut - (above ? step : -step);
       const xOut = Math.abs(pOut / b.mid - 1);
       const xIn = Math.max(0, Math.abs(pIn / b.mid - 1));
-      return Math.max(0, Math.min(qOf(xOut), b.cap) - Math.min(qOf(xIn), b.cap));
+      return qOf(xOut) - qOf(xIn);
     };
     const side = above => {
       const rows = [];
       const xEdge = Math.abs((midIdx + (above ? VIEW + 0.5 : -VIEW - 0.5)) * step / b.mid - 1);
-      /* ② 远场稀疏化（2026-10-08 用户拍板）：单格名义 q 过半顶格（cap/2）之后，曲线已经贴着
-         平台线走，逐格列出一排近乎等高的行反而失真 —— 真实 LOB 的远场本就稀疏
-         （Krause 2021, arXiv:2106.11691 的「两类流动性」）。隔档显示（偶数格隐藏），
+      /* ② 远场稀疏化（2026-10-08 用户拍板）：单格名义 q 超过顶格线一半（cap/2）之后，
+         每格金额已经大到一屏写不下几行 —— 真实 LOB 的远场本就稀疏（Krause 2021,
+         arXiv:2106.11691 的「两类流动性」：近场致密、远场稀而不断）。隔档显示（偶数格隐藏），
          跳过格的名义折进下面的 `gb-far` 累计 ⇒ 行上少画的 ＋ 更远行的 ＝ 全侧总量，守恒。 */
       let spN = 0, spUsd = 0;
       for (let k = 1; k <= VIEW; k++) {
@@ -3454,9 +3439,13 @@ function floatBody(s, page, bookStep = 1) {
           gate: kk % 10 === 0 ? 1 : kk % 5 === 0 ? 2 : 0,
         });
       }
-      /* 视野外：梯的剩余 = `cap − 已展示的 q`（连续口径下逐格守恒），墙按真实价逐条判断；
+      /* 视野外（2026-10-08 用户拍板「远处永远有挂单」）：口径从「到顶格为止的剩余」改成
+         **下一屏**（再 VIEW 格）的连续累计 —— 有限、随步进档自动伸缩、且恒 > 0（远场
+         不枯竭）。再往远不说了：真实聚合深度图也只画到某个价距截止。墙按真实价逐条判断；
          稀疏化跳过格的名义在这里并入（见上）。 */
-      const far = { n: spN, usd: spUsd + Math.max(0, (b.cap - Math.min(qOf(xEdge), b.cap)) * b.liq) };
+      const p2 = Math.max(0, (midIdx + (above ? 2 * VIEW + 0.5 : -2 * VIEW - 0.5)) * step);
+      const xEdge2 = Math.abs(p2 / b.mid - 1);
+      const far = { n: spN, usd: spUsd + Math.max(0, qOf(xEdge2) - qOf(xEdge)) * b.liq };
       for (const r of above ? b.asks : b.bids) {
         const beyond = Math.abs(r.price / b.mid - 1) >= xEdge;
         if (!r.wall) { if (beyond) far.n++; continue; }
