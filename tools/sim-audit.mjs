@@ -3150,6 +3150,25 @@ section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源
     && styleSrc9v.includes('.gb-row.wall') && styleSrc9v.includes('.gb-head')
     && /\.gb-ask b \{ color: var\(--down\)/.test(styleSrc9v)
     && /\.gb-bid b \{ color: var\(--up\)/.test(styleSrc9v));
+  /* ── ⑥ 订单簿网格化（2026-10-08 用户拍板「步进网格 ＋ 视野收窄 ±2~3% ＋ 远档汇总一行」）──
+     纯显示层改版：`niceStep` 取 1-2-5×10ⁿ 步进、连续冲击曲线分桶（cells + far 守恒于 cap×liq）、
+     墙不吸附网格、视野外折 `gb-far` 一行。承重结构 `baseLadder` / `walkBook` 不动（9v①~④ 照旧）。 */
+  check('9v⑥ render：订单簿网格化（niceStep 步进 ＋ 远档 gb-far 汇总行；旧逐档切窗 baseAsks/cut 退役）',
+    rendSrc9v.includes('const niceStep = p =>') && rendSrc9v.includes("'gb-far'")
+    && rendSrc9v.includes('更远')
+    && !rendSrc9v.includes('baseAsks') && !rendSrc9v.includes('const cut = rows'));
+  /* 行为锚不取副本：正则把 render.js 里的 niceStep 箭头函数**原样提取**成真函数再执行 ——
+     被测对象就是 shipped 源码，副本漂移无从谈起。 */
+  check('9v⑥ niceStep 行为锚（源码提取执行）：108k→200 · 3.9k→10 · 2.3→0.005 · 0.16→0.0002',
+    (() => {
+      const body = rendSrc9v.match(/const niceStep = p => \{([\s\S]*?)\n    \};/)[1];
+      const niceStep = new Function('p', body);
+      const near = (a, z) => Math.abs(a - z) <= Math.abs(z) * 1e-12;
+      return near(niceStep(108000), 200) && near(niceStep(3900), 10)
+        && near(niceStep(2.3), 0.005) && near(niceStep(0.16), 0.0002);
+    })());
+  check('9v⑥ style：远档汇总行样式 ＋ 1280px 档随订单簿行同步放大',
+    styleSrc9v.includes('.gb-far') && styleSrc9v.includes('.gb-row, .gb-head, .gb-far'));
 }
 
 /* ═══════════════════ 9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 预算 ═══════════════════
@@ -3280,7 +3299,7 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
     styleSrc9w.includes('.god-ftab, .god-fx, .god-frow2, .god-fnote { font-size: 11px; }')
     && styleSrc9w.includes('.god-hm-bar { font-size: 9.5px; }')
     && styleSrc9w.includes('.god-hm-now { font-size: 10px; }')
-    && styleSrc9w.includes('.gb-row, .gb-head { font-size: 10px; line-height: 14px; }')
+    && styleSrc9w.includes('.gb-row, .gb-head, .gb-far { font-size: 10px; line-height: 14px; }')
     && styleSrc9w.includes('.gb-row i, .gb-head i { flex: 0 0 72px; }')
     && /\.god-hm-bar \{[^}]*font-size: 8\.5px/.test(styleSrc9w)
     && /\.gb-row \{[^}]*font-size: 9px/.test(styleSrc9w));
@@ -3511,10 +3530,10 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
     chartSrc9y.includes('import { fmtAxisPrice, fmtMoneyShort }')
     && chartSrc9y.includes('const axisLabel = fmtAxisPrice;')
     && chartSrc9y.includes('axisLabel(p, span / 3)'));
-  check('9y⑤ render：订单簿档位 / mid 传 tick（基础档非墙前两行价差），热力图/巨鲸页仍量级口径',
-    rendSrc9y.includes('fmtFloatPrice(r.price, tick)')
-    && rendSrc9y.includes('fmtFloatPrice(b.mid, tick)')
-    && rendSrc9y.includes('Math.abs(baseAsks[1].price - baseAsks[0].price)'));
+  check('9y⑤ render：订单簿档位 / mid 传 step（niceStep 1-2-5 网格步进，2026-10-08 网格化改版），热力图/巨鲸页仍量级口径',
+    rendSrc9y.includes('const step = niceStep(b.mid)')
+    && rendSrc9y.includes('fmtFloatPrice(r.price, step)')
+    && rendSrc9y.includes('fmtFloatPrice(b.mid, step)'));
 }
 
 /* ═══════════════════ 9z · 深跌护盘三层（2026-10-08 大改） ═══════════════════

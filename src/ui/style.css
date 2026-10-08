@@ -2155,6 +2155,9 @@ button { user-select: none; -webkit-user-select: none; }
 .gb-head i { font-style: normal; flex: 0 0 66px; }
 .gb-head em { font-style: normal; flex: 0 0 44px; text-align: right; }
 .gb-head b { font-weight: 600; flex: 0 0 56px; text-align: right; }
+/* 视野外汇总行（2026-10-08 网格化）：视野外（单侧 18 格 ≈ ±2~3%）的梯与墙折成一行居中置灰
+   —— 热力图页管全景，这页管近场，与真实盘口「聚合深度」读法同构。 */
+.gb-far { display: flex; align-items: center; justify-content: center; gap: 4px; font-size: 9px; line-height: 13px; color: var(--mut); white-space: nowrap; }
 .gb-mid {
   border-top: 1px dashed var(--gold);
   color: var(--gold);
@@ -2185,7 +2188,7 @@ button { user-select: none; -webkit-user-select: none; }
   .god-ftab, .god-fx, .god-frow2, .god-fnote { font-size: 11px; }
   .god-hm-bar { font-size: 9.5px; }
   .god-hm-now { font-size: 10px; }
-  .gb-row, .gb-head { font-size: 10px; line-height: 14px; }
+  .gb-row, .gb-head, .gb-far { font-size: 10px; line-height: 14px; }
   .gb-row i, .gb-head i { flex: 0 0 72px; }
   .gb-row em, .gb-head em { flex: 0 0 48px; }
   .gb-row b, .gb-head b { flex: 0 0 62px; }

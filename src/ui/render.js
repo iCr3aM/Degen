@@ -3368,45 +3368,73 @@ function floatBody(s, page) {
        浮窗巨鲸页不再显示（`w.fng` 数据轨保留 —— 审计 9x 仍锚定 godWatchOf 的读数域）。 */
     box.append(el('div', 'god-frow2 mut', `热度 ${fmtPct(w.heat)}`));
   } else if (page === 3) {
-    /* 订单簿（2026-10-08 用户拍板「参考 coinglass 展示方式」）：三列 **价格 / 数量 / 金额**，
-       asks 反序（远档在上、最近的卖价贴中价）、bids 正序（最近的买价贴中价）——与真实
-       交易所的盘口同一副上下结构。数量 = 名义 ÷ 价格（币本位档位量，`fmtQty` 无 $）；
-       金额 = **从贴中价档向外累计**的名义（coinglass「总计」列同款口径、换成金额）——
-       基础档名义由撮合梯等分（`baseLadder`，「走簿 ≡ 连续式」恒等式的承重结构，不能动），
-       所以基础档数量近恒、累计列单调增长，墙行在两侧各是一次跳变。量条宽 ∝ 本档数量。
-       每侧 18 根**基础档**全列：数到第 19 根非墙行截断（兜底），墙照插
-       （墙才是这页的主角 —— 它们就是下一笔成交真的会撞上的货）。 */
+    /* 订单簿（2026-10-08 二次改版 · 用户拍板「步进网格 ＋ 视野收窄 ±2~3% ＋ 远档汇总一行」）：
+       真实交易所的盘口钉在**固定 tick 网格**上 —— 档位是整数网格价（108,100 而非 108,507）、
+       价格动了只是边缘行轮转，中间的数字纹丝不动。旧版把 18 根σ梯直接列出 ⇒ 档价随
+       `price×(1±d)` 逐小时整体重锚、名义又挂小时流动性，三列数字像量化一样逐帧跳。
+       改版（**纯显示层**，撮合梯 `baseLadder` / `walkBook` 原样不动 ——「走簿 ≡ 连续式」
+       恒等式的承重结构，审计 9v①）：把**连续冲击曲线**分桶装进 `1-2-5×10ⁿ` 可读网格 ——
+       每格名义 = 内外缘价距上的连续深度差 `liq×[(x₂/3σ)² − (x₁/3σ)²]`（`3σ√q` 的反函数），
+       与真实成交成本同一条曲线、到外缘恰收敛于 `cap` ⇒ 不发明深度；数量 = 名义 ÷ 格价
+       （`fmtQty` 无 $），金额 = 从贴中向外累计（coinglass「总计」同款）。墙 = 真实历史
+       价位，**不吸附网格**（它就是要被撞的那条价），照插格间；视野外（单侧 18 格 ≈ ±2~3%）
+       的梯与墙折成一行 `gb-far` 汇总 —— 热力图页管全景，这页管近场，与真实盘口同构。 */
     const b = w.book;
     if (!b) { box.append(el('p', 'god-fnote', '盘口暂不可用')); return box; }
-    const cut = rows => {
-      const out = [];
-      let base = 0;
-      for (const r of rows) {
-        if (!r.wall && ++base > 18) break;
-        out.push(r);
-      }
-      return out;
+    /* 可读步进：`1-2-5×10ⁿ` 里取最接近 `price×2e-3` 的一档 ⇒ 18 格视野 ≈ ±2~4.7%，
+       正是真实盘口视野的量级（BTC@108k→200 · ETH@3.9k→10 · XRP@2.3→0.005 · DOGE@0.16→0.0002）。 */
+    const niceStep = p => {
+      const raw = p * 2e-3;
+      const e = Math.pow(10, Math.floor(Math.log10(raw)));
+      const m = raw / e;
+      return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * e;
     };
-    /* 累计从**贴中价档**出发向外累加（b.asks / b.bids 本就按价距升序 = 贴中在前）；
-       asks 显示时反转（远档在上），累计值跟着撮合顺序走、不跟显示顺序走。 */
+    const step = niceStep(b.mid);
+    const VIEW = 18;                                   // 单侧视野格数
+    const qOf = x => { const t = x / (3 * b.sigma); return t * t; };   // 价距比例 x ⇒ 已吃名义 q
+    const midIdx = Math.round(b.mid / step);
+    /* 第 k 格（贴中数起）的名义（q 单位）：外缘/内缘价距上的连续深度差，q 在 `cap` 处夹断。 */
+    const cellQ = (k, above) => {
+      const pOut = (midIdx + (above ? k + 0.5 : -k - 0.5)) * step;
+      const pIn = pOut - (above ? step : -step);
+      const xOut = Math.abs(pOut / b.mid - 1);
+      const xIn = Math.max(0, Math.abs(pIn / b.mid - 1));
+      return Math.max(0, Math.min(qOf(xOut), b.cap) - Math.min(qOf(xIn), b.cap));
+    };
+    const side = above => {
+      const rows = [];
+      const xEdge = Math.abs((midIdx + (above ? VIEW + 0.5 : -VIEW - 0.5)) * step / b.mid - 1);
+      for (let k = 1; k <= VIEW; k++) {
+        const q = cellQ(k, above);
+        if (q > 0) rows.push({ price: (midIdx + (above ? k : -k)) * step, notional: q * b.liq, wall: false });
+      }
+      /* 视野外：梯的剩余 = `cap − 已展示的 q`（连续口径下逐格守恒），墙按真实价逐条判断。 */
+      const far = { n: 0, usd: Math.max(0, (b.cap - Math.min(qOf(xEdge), b.cap)) * b.liq) };
+      for (const r of above ? b.asks : b.bids) {
+        const beyond = Math.abs(r.price / b.mid - 1) >= xEdge;
+        if (!r.wall) { if (beyond) far.n++; continue; }
+        if (beyond) { far.n++; far.usd += r.notional; }
+        else rows.push({ price: r.price, notional: r.notional, wall: true });
+      }
+      rows.sort((a, z) => a.price - z.price);
+      return { rows, far };
+    };
+    /* 累计从**贴中格**出发向外累加：asks 升序（贴中在前）累计后反转显示（远档在上），
+       bids 反转成贴中在前再累计、原序显示（最近的买价贴着 mid）。 */
     const decorate = rows => {
       let cum = 0;
       return rows.map(r => { cum += r.notional; return { ...r, qty: r.notional / r.price, cum }; });
     };
-    const asks = decorate(cut(b.asks)).reverse();
-    const bids = decorate(cut(b.bids));
+    const A = side(true), B = side(false);
+    const asks = decorate(A.rows).reverse();
+    const bids = decorate(B.rows.slice().reverse());
     const maxQ = Math.max(1e-12, ...asks.map(r => r.qty), ...bids.map(r => r.qty));
-    /* 档距 = 基础档（非墙）前两行的价格差 —— `bookForWatch` 的基础阶梯是比例式的（price×(1±d)），
-       第一段最细、取它作 step 最保守。传给 `fmtFloatPrice` 后价格被砸到 <$0.01、档距 <$1e-6
-       （护盘/深跌沙盒的极端场景）相邻档也不会同显（2026-10-07 · 「y 轴步进同步检查详情浮窗」）。 */
-    const baseAsks = b.asks.filter(r => !r.wall);
-    const tick = baseAsks.length > 1 ? Math.abs(baseAsks[1].price - baseAsks[0].price) : 0;
     const head = el('div', 'gb-head');
     head.append(el('i', null, '价格'), el('span', 'gb-track'), el('em', null, '数量'), el('b', null, '金额'));
     box.append(head);
     const gbRow = (r, cls) => {
       const row = el('div', `gb-row ${cls}${r.wall ? ' wall' : ''}`);
-      row.append(el('i', null, (r.wall ? '墙 ' : '') + fmtFloatPrice(r.price, tick)));
+      row.append(el('i', null, (r.wall ? '墙 ' : '') + fmtFloatPrice(r.price, step)));
       const u = el('u');
       u.style.width = `${Math.max(3, (r.qty / maxQ) * 100)}%`;
       const track = el('span', 'gb-track');
@@ -3414,9 +3442,12 @@ function floatBody(s, page) {
       row.append(track, el('em', null, fmtQty(r.qty)), el('b', null, fmtMoneyShort(r.cum)));
       return row;
     };
+    const gbFar = far => el('div', 'gb-far', `更远${far.n ? ` ${far.n} 档` : ''} · 累计 ${fmtMoneyShort(far.usd)}`);
+    if (A.far.usd > 0) box.append(gbFar(A.far));
     for (const r of asks) box.append(gbRow(r, 'gb-ask'));
-    box.append(el('div', 'gb-mid', fmtFloatPrice(b.mid, tick)));
+    box.append(el('div', 'gb-mid', fmtFloatPrice(b.mid, step)));
     for (const r of bids) box.append(gbRow(r, 'gb-bid'));
+    if (B.far.usd > 0) box.append(gbFar(B.far));
   } else {
     /* 深度页（页 2）。⚠️ 旧页 4「逐笔成交」已退役（2026-10-08）：明细行数随本小时进度漂移、
        拖动时乱跳 —— 页表里不再有 4，这里只服务页 2。 */
