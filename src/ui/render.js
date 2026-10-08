@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtFloatPrice, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, eventsOff, exMarkPrice, FEED_STEPS, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { latentOf, available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, eventsOff, exMarkPrice, FEED_STEPS, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -3601,15 +3601,25 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
       return m;
     };
     const bidMap = bucketOf(b.bids), askMap = bucketOf(b.asks);
+    /* 潜在流动性基线（2026-10-09 · 用户拍板「任何地方都不许 0」）：空桶不是「没有挂单」，
+       只是**没有离散大单** —— 做市商长梯 ＋ 散单云的底仓永远在（Krause 2021 远场长寿命单 /
+       A-S λ(δ)=Ae^(−kδ) 恒正 / Potters-Bouchaud 幂律重尾）。空桶金额 = 引擎 `latentOf`
+       （连续冲击曲线解析母函数在该桶价距带上的积分）× 关口加成：买侧随价距增厚（支撑聚集）、
+       卖侧缓降到 0.4 地板（突破后上方变薄但永不真空 —— Glassnode 85K 撤单实录）。 */
+    const latent = (k, side) => {
+      const gate = k % 10 === 0 ? 2 : k % 5 === 0 ? 1.5 : 1;
+      return latentOf(b.sigma, b.cap, b.liq, b.mid, k * step, (k + 1) * step, side) * gate;
+    };
     /* 单侧：从中价桶向外逐格取 VIEW 格。关口行：网格步长的 10 倍格 = Tier1（Urquhart 2017 /
        Hu et al. 2019 的 round-number 聚集）、5 倍格 = Tier2 —— 10 | k ⇒ 5 | k，任何缩放档都成立。 */
     const sideOf = (m, dir) => {
       const vis = [];
       for (let i = 1; i <= VIEW; i++) {
         const k = midK + dir * i;
-        const o = m.get(k) || { k, price: k * step, notional: 0, wall: false };
+        const o = m.get(k);
+        const notional = o ? o.notional : latent(k, dir);
         vis.push({
-          price: o.price, notional: o.notional, wall: o.wall, qty: 0, cum: 0,
+          price: k * step, notional, wall: o ? o.wall : false, qty: 0, cum: 0,
           gate: k % 10 === 0 ? 1 : k % 5 === 0 ? 2 : 0,
           you: k === youK,
         });
@@ -3621,10 +3631,16 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const A = sideOf(askMap, 1);
     const B = sideOf(bidMap, -1);
     /* 买卖比（真实簿量口径）：窗口 = 中价两侧各 `2×VIEW` 格内实挂名义求和（与显示行数解耦）；
-       窗口外的离散墙逐条补上。 */
+       空桶补潜在基线（与行显示同一口径）；窗口外的离散墙逐条补上。 */
     let aUsd = 0, bUsd = 0;
-    for (const [k, o] of askMap) { if (k > midK && k <= midK + 2 * VIEW) aUsd += o.notional; else if (o.wall) aUsd += o.notional; }
-    for (const [k, o] of bidMap) { if (k < midK && k >= midK - 2 * VIEW) bUsd += o.notional; else if (o.wall) bUsd += o.notional; }
+    for (let i = 1; i <= 2 * VIEW; i++) {
+      const ka = midK + i, oa = askMap.get(ka);
+      aUsd += oa ? oa.notional : latent(ka, 1);
+      const kb = midK - i, ob = bidMap.get(kb);
+      bUsd += ob ? ob.notional : latent(kb, -1);
+    }
+    for (const [k, o] of askMap) { if (k > midK + 2 * VIEW && o.wall) aUsd += o.notional; }
+    for (const [k, o] of bidMap) { if (k < midK - 2 * VIEW && o.wall) bUsd += o.notional; }
     /* 累计从**贴中**出发向外累加：A 近→远累加后反转显示（远档在上）；
        B 近→远累加、原序显示（最近的买价贴着 mid）。 */
     const decorate = rows => {
@@ -3694,12 +3710,18 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const rowH = desk ? 15 : 13;
     const fh = floatGeo().h;
     const maxRows = Math.max(6, Math.floor((fh - 104) / rowH));
+    /* 行列表装进**固定高度**容器（2026-10-09 · 用户拍板「过滤按钮要固定，不能随内容跳动」）：
+       高度恒 = maxRows × rowH，行少时容器留白、行多（理论不会，过滤后 ≤ maxRows）滚动 ——
+       底部过滤行因此钉死在同一位置，不再随 tape 行数上下跳。 */
+    const list = el('div', 'gfd-list');
+    list.style.height = `${maxRows * rowH}px`;
+    box.append(list);
     const rows = (s.feed || []).filter(r => r.sym === s.sym && r.t >= lf).slice(-maxRows).reverse();
     const head = el('div', 'gfd-head');
     head.append(el('i'), el('span', null, '价格'), el('b', null, '名义'), el('em', null, '数量'), el('u', null, '时间'));
-    box.append(head);
+    box.prepend(head);
     if (!rows.length) {
-      box.append(el('div', 'god-fnote', `暂无大单 —— 超过当日流动性 ${feedPctLabel(lf)} 的合约开/平/爆仓会上这里。`));
+      list.append(el('div', 'god-fnote', `暂无大单 —— 超过当日流动性 ${feedPctLabel(lf)} 的合约开/平/爆仓会上这里。`));
     } else {
       /* 六型 → [字形, 类型类]：颜色走 --up/--down（红涨绿跌主题自动跟随），爆仓两色按拍板写死。 */
       const K = [['▲', 'gfd-ol'], ['▼', 'gfd-os'], ['△', 'gfd-cl'], ['▽', 'gfd-cs'], ['💥', 'gfd-lq'], ['💥', 'gfd-ls']];
@@ -3712,7 +3734,7 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
           el('b', null, fmtMoneyShort(r.n)),
           el('em', null, fmtQty(r.n / r.p)),
           el('u', null, fmtHour(GAME.start + r.i * HOUR_MS)));
-        box.append(row);
+        list.append(row);
       }
     }
     /* 底部过滤档（2026-10-09 用户拍板⑥）：与订单簿步进同一族样式（`.gb-steps` / `.gb-step`），

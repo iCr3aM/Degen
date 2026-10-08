@@ -6085,6 +6085,74 @@ section('9an · 回流管道：费用落账 · 每小时分流逐位 · 双封�
   }
 }
 
+/* ═══════════════════ 9ao · 现实地板 ＋ 订单簿潜在基线（2026-10-09 三修） ═══════════════════
+   ① 上帝局价格乘数现实地板（`SHOCK.godFloor`）：NPC 世界层照夹 fallMax/riseMax（沙盒 ×3 的
+   级联不许把市值砸到 $0.1 / 枚数爆出流通量），玩家层不夹（2026-10-07 拍板不动），地板 0.01 兜底；
+   ② 订单簿潜在基线（`latentOf`）：空桶不是 0 —— 做市商底仓恒正、买厚卖薄（用户口径「价格越低
+   买盘越多、上方薄但非零」）；③ 日志页过滤行固定（`.gfd-list` 固定高，按钮不随内容跳）。 */
+section('9ao · 现实地板 godFloor ＋ 潜在基线 latentOf ＋ 步进行固定');
+{
+  /* ① 纯函数：任何价距恒正 ＋ 方向不对称（买厚卖薄、买远增厚、卖远缓降）。 */
+  {
+    const sigma = 0.035, cap = 0.25, liq = 1e7, price = 120, step = 0.2;   // 2013 BTC 量纲
+    let allPos = true, bMid = 0, bFar = 0, aMid = 0, aFar = 0, bAllGe = true;
+    for (let i = 1; i <= 400; i++) {
+      const nb = engine.latentOf(sigma, cap, liq, price, price - (i + 1) * step, price - i * step, -1);
+      const na = engine.latentOf(sigma, cap, liq, price, price + i * step, price + (i + 1) * step, 1);
+      if (!(nb > 0) || !(na > 0)) { allPos = false; break; }
+      if (nb < na) bAllGe = false;
+      if (i === 5) { bMid = nb; aMid = na; }
+      if (i === 200) { bFar = nb; aFar = na; }
+    }
+    check('9ao① latentOf：贴中 1~400 格恒 > 0 ＋ 同价距买 ≥ 卖', allPos && bAllGe);
+    check('9ao② latentOf：买侧随价距增厚（支撑聚集）＆ 卖侧远档更薄但不真空',
+      bFar > bMid && aFar > 0 && aFar < aMid,
+      `b ${f(bMid, 0)}→${f(bFar, 0)} · a ${f(aMid, 0)}→${f(aFar, 0)}`);
+    check('9ao③ latentOf：退化输入（缺 σ/非正带）回落不抛', engine.latentOf(NaN, cap, liq, price, 119, 120, -1) > 0
+      && engine.latentOf(sigma, cap, liq, price, 120, 120, -1) === 0);
+  }
+  /* ② 行为：沙盒 ×3 上帝局纯 NPC 推进 ⇒ 级联被夹（factor ≥ 1+fallMax）；玩家巨额 flow ⇒ 地板兜底。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e8, i: idx(at(2013, 8, 1)) });
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e10;
+    s.god.liqMul = 8;
+    s.god.sb = { ...god.SB_DEFAULT, heat: 3, npc: 3, shock: 3, res: 3, lob: 3 };
+    let minF = Infinity;
+    for (let h = 0; h < 720; h++) {
+      engine.advanceOneHour(s);
+      if (s.over) break;
+      const fq = god.factorFor(s, 'BTC', s.i);
+      if (fq < minF) minF = fq;
+      if (fq < god.SHOCK.godFloor - 1e-12) { minF = fq; break; }
+    }
+    check('9ao④ 沙盒 ×3 级联：NPC 世界层照夹 ⇒ factor ≥ 1+fallMax（不再 1e-9）',
+      minF >= 1 + god.SHOCK.fallMax - 1e-9, `minF=${f(minF, 4)}`);
+    /* 玩家自己砸穿：地板兜底在 0.01（−99%，LUNA/FTT 级小时极值），不是 1e-9。 */
+    god.addFlow(s, 'BTC', -0.9);                                         // 玩家层巨额永久位移（uncapped）
+    const fFloor = god.factorFor(s, 'BTC', s.i);
+    check('9ao⑤ 玩家层不夹但现实地板兜底（factor ≥ 0.01）',
+      fFloor >= god.SHOCK.godFloor - 1e-12, `f=${f(minF, 4)} → ${f(fFloor, 4)}`);
+  }
+  /* ③ 源断言：地板常量 ＋ NPC 层夹 ＋ 渲染基线填充 ＋ 日志列表固定高。 */
+  {
+    const godSrcAo = fs.readFileSync(path.join(ROOT, 'src/core/god.js'), 'utf8');
+    const engSrcAo = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+    const rendSrcAo = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+    const styleSrcAo = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
+    check('9ao⑥ 结构：SHOCK.godFloor = 0.01 ＋ factorFor NPC 层照夹（普通局整段夹不变）',
+      godSrcAo.includes('godFloor: 0.01,')
+      && godSrcAo.includes('const npcC = Math.min(SHOCK.riseMax, Math.max(SHOCK.fallMax, npcPart));')
+      && godSrcAo.includes('if (!s.god) return shockFactorOf(playerPart + npcPart, false);')
+      && godSrcAo.includes('return Math.max(f, SHOCK.godFloor);'));
+    check('9ao⑦ 结构：render 空桶填 latentOf ＋ 买卖比含基线 ＋ 日志列表固定高',
+      rendSrcAo.includes('const notional = o ? o.notional : latent(k, dir);')
+      && rendSrcAo.includes('aUsd += oa ? oa.notional : latent(ka, 1);')
+      && rendSrcAo.includes("list.style.height = `${maxRows * rowH}px`;")
+      && styleSrcAo.includes('.gfd-list { overflow-y: auto;'));
+  }
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);

@@ -16,7 +16,7 @@ import { GAME, HOUR_MS, COINS, EXCHANGES, EXREV, LIQ, MARGIN, MIN_NOTIONAL, minN
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCandleAt, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
-import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
+import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, LADDER, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
 import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS_CD, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, manipTplsOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
@@ -487,6 +487,48 @@ function bookForWatch(s, sym, price) {
     return rows;
   };
   return { mid: price, sigma, cap, liq, asks: side(1), bids: side(-1) };
+}
+
+/**
+ * **潜在流动性基线**（订单簿空格的「做市商底仓」· 纯函数 · 2026-10-09 用户拍板「任何地方都不许 0」）
+ * —— 连续冲击曲线的**解析母函数**在价距带 `[pLo, pHi]` 上的名义积分：
+ *   `D(q) = 2σ·q^1.5/√h`（`baseLadder` 档距公式的连续形式，h = cap/18）⇒ 反解
+ *   `q(D) = (D·√h / 2σ)^(2/3)`，带宽 [D0,D1] 上的 q 差 × 当小时流动性 = 这一带的底仓名义。
+ *
+ * 现实口径（2026-10-09 联网调研）：
+ *   · **任何价距恒 > 0** —— Krause et al. 2021（arXiv:2106.11691）的两 regime：近场「流动性垫」
+ *     密集短命、远场**稀疏但长寿命单恒在**；Avellaneda-Stoikov 成交强度 λ(δ)=A·e^(−kδ) 恒正；
+ *     Potters & Bouchaud 2002 限价价距幂律重尾（µ≈0.6~1.5，参与者专在远处挂单等大波动）。
+ *     「远处挂单为 0」在真实 LOB 里不存在 —— 空的只是**离散大单**，底仓（做市商长梯 ＋ 散单云）永远在。
+ *   · **买侧随价距增厚**（side<0）：抄底墙 / 成本聚集（Hu et al. 2019、Urquhart 2017）——
+ *     价格越低、支撑越密，×(1 + D/3%)，×7 封顶（盖过冲击曲线密度的缓降 ⇒ 每桶非降）。
+ *   · **卖侧随价距缓降但不真空**（side>0）：×(1 − D/20% × 0.6)，0.4 形状地板 —— 突破前高后
+ *     上方卖单变薄（Glassnode 2026-10：85K 卖墙吃穿后其余卖单主动撤出 → 轧空加速冲高；
+ *     2024-11 首破 80K 同款：上方无历史成本区 ＋ 130K 空头爆仓 ⇒ 快速价格发现），
+ *     但做市商 ladder 恒在 ⇒ 永不为 0（叠上密度缓降，远档绝对值更薄）。
+ *
+ * ⚠️ 只进**显示与买卖比**（render 空格填充用），与 `walkFillFor` 成本仍两把尺子（红线 A 不破）。
+ * @param {number} side −1 买侧 / +1 卖侧
+ * @returns {number} 名义（美元，> 0）
+ */
+export function latentOf(sigma, cap, liq, price, pLo, pHi, side) {
+  const sg = Number.isFinite(sigma) && sigma > 0 ? sigma : SLIP.sigmaDefault;
+  const h = (Number.isFinite(cap) && cap > 0 ? cap : SLIP.cap) / LADDER.levels;
+  if (!(liq > 0) || !(price > 0) || !(pHi > pLo)) return 0;
+  const qOf = D => Math.pow(D * Math.sqrt(h) / (2 * sg), 2 / 3);
+  /* 距离带取 min/max：买桶（pHi 贴中、pLo 远）与卖桶（pLo 贴中）的方向相反，
+     直接按价格序做差会让买侧恒负 ⇒ 恒 0（2026-10-09 专项脚本抓到的）。 */
+  const D0 = Math.min(Math.abs(pLo / price - 1), Math.abs(pHi / price - 1));
+  const D1 = Math.max(Math.abs(pLo / price - 1), Math.abs(pHi / price - 1));
+  const q = qOf(D1) - qOf(D0);
+  if (!(q > 0)) return 0;
+  const D = (D0 + D1) / 2;
+  /* 方向形状（叠加在冲击曲线密度 D^(-1/3) 缓降之上 —— 要让买侧**每桶**非降，梯度须盖过它）：
+     · 买侧：×(1 + min(6, D/3%)) —— 支撑聚集（抄底墙/成本区，Hu·Urquhart），越深越厚；
+     · 卖侧：×(1 − min(0.6, D/20% × 0.6)) —— 上方缓降（突破前高后卖单变薄，Glassnode 85K 撤单
+       实录、2024-11 首破 80K 轧空），0.4 地板 ⇒ 永不真空。 */
+  const shape = side < 0 ? 1 + Math.min(6, D / 0.03) : 1 - Math.min(0.6, D / 0.2 * 0.6);
+  return q * liq * shape;
 }
 
 /**

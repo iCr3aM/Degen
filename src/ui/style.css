@@ -2202,7 +2202,7 @@ button { user-select: none; -webkit-user-select: none; }
 /* 步进选择器（2026-10-08 用户拍板①）：订单簿页底部的网格缩放档 ×½/×1/×2/×5 ——
    与 .god-ftab 同一族（1px --line 边框、9px 字），选中档走 --accent（页签同款）。
    2026-10-09：浮窗「日志」页底部的**流动性过滤档**（0.1% / 0.5% / 1% / 2% / 5%）复用同一族样式。 */
-.gb-steps { display: flex; justify-content: center; gap: 6px; margin-top: 4px; }
+.gb-steps { display: flex; justify-content: center; gap: 6px; margin-top: 4px; flex: none; }
 .gb-step {
   font-size: 9px;
   line-height: 1;
@@ -2218,6 +2218,9 @@ button { user-select: none; -webkit-user-select: none; }
    爆多 #EC407A / 爆空 #FF9800 按拍板写死；行背景 t0 透明 → t4 最深（档位 = feedTier，五档
    0.1% / 0.5% / 1% / 2% / 5%，2026-10-09 补 1%）。 */
 .gfd-head { display: flex; align-items: center; gap: 4px; font-size: 9px; line-height: 13px; color: var(--mut); }
+/* 行列表固定高度容器（2026-10-09 · 用户拍板「过滤按钮要固定」）：行少留白、行多滚动，
+   底部过滤行位置恒定 —— 高度由 render 按面板高现算（maxRows × 行高）。 */
+.gfd-list { overflow-y: auto; min-height: 0; }
 .gfd-head i { flex: 0 0 14px; }
 .gfd-head span { flex: 1 1 auto; }
 .gfd-head b, .gfd-row b { flex: 0 0 56px; font-weight: 600; text-align: right; overflow: hidden; white-space: nowrap; }

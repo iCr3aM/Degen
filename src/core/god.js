@@ -119,6 +119,15 @@ export const SHOCK = {
    */
   fallMax: -0.45,
   /**
+   * **现实地板**（2026-10-09 · 用户报「新币市值被砸到 $0.1 ＋ 日志枚数超流通量」）——
+   * 上帝局虽然不夹（`fallMax` 不适用），价格乘数也不得低于 **0.01**：单小时 −99% 是现实里
+   * 死亡螺旋币（LUNA 2022-05 / FTT 2022-11）的小时级极值，再往下不是市场、是数值病 ——
+   * 旧 1e-9 地板只防负值，放任价格乘到 raw×1e-9 ⇒ 市值读数 $0.1、日志枚数（名义 ÷ 价格）
+   * 爆出 1e9 倍流通量。0.01 地板下：市值 ≥ 原始 × 1%（ETH 2020 ≈ $4.8e8）、枚数至多 ×100，
+   * 全部回到可读量纲。普通局 `fallMax = −0.45` 高于地板 ⇒ 恒不触发、逐位不变；涨侧无夹不受影响。
+   */
+  godFloor: 0.01,
+  /**
    * 平仓 / 强平 / 部分强平**回吐**的比例（用户 2026-10-02 拍板 **0.35**）—— 决定「买卖往返在
    * K 线上永久留下多少台阶」。
    *
@@ -1437,26 +1446,36 @@ export function playerFactor(s, sym, j) {
  *    热度的价格输入若含 NPC 自己的位移，就会自激（§73.5）。
  *
  * **两侧同时夹**（B1，2026-09-29；2026-10-02 收紧为 `SHOCK.fallMax` / `SHOCK.riseMax`）。
- * ⚠️ **夹子只属于普通局**（2026-10-07 用户拍板「上帝模式去掉封顶封底」）：`s.god` 非空时
- *    原样放行、不夹 —— 想拉多少拉多少（`1e-9` 下界仍保留：价格不能为 0）。
+ * ⚠️ **夹子的分层**（2026-10-09 修订 · 用户报「新币市值 $0.1」）：普通局四项之和一次进夹；
+ *    上帝局**玩家层不夹**（2026-10-07 拍板「想拉多少拉多少」）、**NPC 世界层照夹**（级联是
+ *    世界自己的行为，不许把市场砸没）＋ 现实地板 `SHOCK.godFloor` 兜底 —— 详见函数体注。
  *    挑战局 `s.god` 恒空 ⇒ 与普通局同一条夹子，行为与改动前逐位相同。
  */
 export function factorFor(s, sym, j) {
-  const r = residualAt(s, sym, j) + overhangAt(s, sym, j) + npcDriftAt(s, sym, j) + npcShockAt(s, sym, j);
-  /* 沙盒「世界偏向」（见 `SB_MOOD_PUSH`）：**外部给定**的持续方向位移，与上面四项相加。
-     ⚠️ `mood = 0` ⇒ `sbBiasAt` 恒 0（表都不建）⇒ `r + 0` 逐位等于 `r`，普通局不受影响。
+  const playerPart = residualAt(s, sym, j) + overhangAt(s, sym, j);
+  const npcPart = npcDriftAt(s, sym, j) + npcShockAt(s, sym, j);
+  /* 普通局 / 挑战局：整段夹（与改动前逐位同式 —— 四项之和一次进夹子）。 */
+  if (!s.god) return shockFactorOf(playerPart + npcPart, false);
+  /* 沙盒「世界偏向」（见 `SB_MOOD_PUSH`）：**外部给定**的持续方向位移。
      ⚠️ 只进 `factorFor`、**不进** `playerFactor` —— 否则它会喂进热度价格输入而自激。 */
-  const bias = s.god ? sbBiasAt(s, j) : 0;
-  return shockFactorOf(bias ? r + bias : r, !!s.god);
+  const bias = sbBiasAt(s, j);
+  /* **NPC 世界层照夹**（2026-10-09 · 用户报「新币市值被砸到 $0.1 ＋ 枚数超流通量」）：
+     2026-10-07「上帝不夹」松的是**玩家的手**（想拉多少拉多少）；NPC 级联是**世界自己的行为**
+     —— 沙盒 ×3 把级联位移堆过 −1 时，价格会乘到 1e-9、市值读数 $0.1、日志枚数（名义 ÷ 价格）
+     爆出流通量几百倍。NPC 层照夹 fallMax/riseMax ⇒ 级联最多 ±45%（与现实闪崩同量级），
+     玩家层不夹 ＋ 现实地板（`SHOCK.godFloor`）兜底 —— 上帝要砸到地板仍可以，那是玩家自己的选择。 */
+  const npcC = Math.min(SHOCK.riseMax, Math.max(SHOCK.fallMax, npcPart));
+  return shockFactorOf(playerPart + npcC + bias, true);
 }
 
 /** 把一份「位移总量」夹进 `fallMax ~ riseMax` 并转成乘数（两个入口共用，保证同形）；
- *  `uncapped` = 上帝局不夹（见 `factorFor` 头注）。 */
+ *  `uncapped` = 上帝局不夹（见 `factorFor` 头注）—— 但**现实地板** `godFloor` 仍然生效：
+ *  价格乘数不得低于 0.01（见 `SHOCK.godFloor` 注；2026-10-09 用户报「市值 $0.1」的根因修复）。 */
 function shockFactorOf(r, uncapped) {
   if (!r) return 1;
   const c = uncapped ? r : Math.min(SHOCK.riseMax, Math.max(SHOCK.fallMax, r));
   const f = 1 + c;
-  return f > 1e-9 ? f : 1e-9;
+  return Math.max(f, SHOCK.godFloor);
 }
 
 /* ───────────────────── 跨所价格偏移（缺口 10 · 2026-10-03 拍板） ───────────────────── */
