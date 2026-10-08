@@ -187,15 +187,15 @@ function rollNumber(el, key, to, { sign = false, speed = 1, fx = 2, fmt = null }
 }
 
 /**
- * 日志条显示几行 —— 手机 / 平板 **2**（2026-10-03 用户拍板）／桌面（≥1280px）**5**
- * （2026-10-08 用户拍板「桌面端日志栏加高、显示更多日志」）。
+ * 日志条显示几行 —— 手机 / 平板 **2**（2026-10-03 用户拍板）／桌面（≥1280px）**6**
+ * （2026-10-08 拍板加高 → 2026-10-09 用户要求再加一档）。
  * ⚠️ 恒定行数（不是「有内容才长高」）：变高会带着 K 线区／下方内容一起跳。
- * ⚠️ 断点与 CSS 的 `@media (min-width: 1280px)` **同源**（那一段把 `.logline` 高度 40 → 100px）；
+ * ⚠️ 断点与 CSS 的 `@media (min-width: 1280px)` **同源**（那一段把 `.logline` 高度 40 → 120px）；
  *     `mount()` 开局只跑一次 ⇒ 窗口尺寸在会话中途跨过断点时行数不重算（与 `--ui` 缩放同一处境）。
  * ⚠️ 行数变多只是把**最近的日志**多摊开几行（`s.log[0]` 最新）——`s.log` 本身的封顶不在这里。
  */
 const LOG_ROWS = (typeof window !== 'undefined' && window.matchMedia
-  && window.matchMedia('(min-width: 1280px)').matches) ? 5 : 2;
+  && window.matchMedia('(min-width: 1280px)').matches) ? 6 : 2;
 
 /** F&G **五档** → 文字 ＋ 三色桶（2026-10-04 用户拍板改 5 档，对齐 Coinglass 展示口径）。
  *  ⚠️ 档名出自 `engine` 的 `FNG_BANDS`（xfear / fear / mid / greed / xgreed）；
@@ -3131,17 +3131,21 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   rowsA.append(mRow);
 
   /* ③ 沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）——
-     精选 **5 枚高影响旋钮 ＋ 4 组世界预设 ＋ 全局种子**，只作用在合成层（热度 / NPC / 冲击 / 共振）。
+     精选 **6 枚高影响旋钮 ＋ 4 组世界预设 ＋ 全局种子**，只作用在合成层（热度 / NPC / 冲击 / 共振 / 挂单密度）。
      ⚠️ 种子走**独立输入框**（挂 `.god-seed`，**不挂 `data-*`** —— 同资金框的理由：
         `bind.js` 会 `preventDefault`，挂上去就打不了字）。 */
   const sb = sbOf(s);
 
   /* 档位表：倍率类 5 档 `[0.5,1,1.5,2,3]`；`mood` 是偏移量可负 `[-0.3,-0.15,0,0.15,0.3]`。
      ⚠️ 预设里有 1.4 / 1.6 / 2.2 这类**非档位值** ⇒ 预设应用后档位可能**全不高亮**，
-        此时靠下面那排「预设」按钮的选中态告诉玩家现在是哪个世界。 */
+        此时靠下面那排「预设」按钮的选中态告诉玩家现在是哪个世界。
+     ⚠️ **每个 `SB_KEYS` 都必须在这里有档位**（`god.js` 是旋钮的唯一出处，加键时这里漏一行
+        就会 `for (const v of undefined)` 直接抛 —— 2026-10-09 用户报的「进上帝模式面板打不开 /
+        重开本局报 `not iterable`」正是 `lob` 加进 `SB_KEYS` 后这里漏了）。`sim-audit` 9ai 已加护栏。 */
   const SB_STEPS = {
     heat: [0.5, 1, 1.5, 2, 3], npc: [0.5, 1, 1.5, 2, 3],
     shock: [0.5, 1, 1.5, 2, 3], res: [0.5, 1, 1.5, 2, 3],
+    lob: [0.5, 1, 1.5, 2, 3],
     mood: [-0.3, -0.15, 0, 0.15, 0.3],
   };
   for (const key of SB_KEYS) {
@@ -3513,44 +3517,55 @@ function floatBody(s, page, bookStep = 1) {
     const fh = floatGeo().h;
     const fitRows = Math.max(8, Math.floor((fh - 76 - rowH) / rowH));
     const VIEW = Math.min(22, Math.max(6, Math.floor((fitRows - 1) / 2)));
-    const midIdx = Math.round(b.mid / step);
-    /* 可见窗口 = VIEW 格价距；簿行已按远近排序（asks 升序 / bids 降序，bookForWatch 保证）
-       ⇒ 从贴中往外直接取，超预算保近舍远（墙是真历史价位，必留、且不占近场预算）。
-       关口行：网格步长的 10 倍格 = Tier1（Urquhart 2017 / Hu et al. 2019 的 round-number
-       聚集）、5 倍格 = Tier2 —— 10 | kk ⇒ 5 | kk，强度分级在任何缩放档下都成立。 */
-    const edge = VIEW * step / b.mid;
-    const sideOf = rows => {
-      const vis = [];
-      let n = 0;
+    /* 按 `step` **分桶**（2026-10-09 修两处真实缺陷：①「×1~×20 口径无变化」②「订单会跳动」）：
+       桶键 = 绝对价网格序号 `floor(price / step)`（与现价解耦），桶宽 = `step`；中价桶 `midK`；
+       两侧各取 `midK ± 1 .. midK ± VIEW` **共 VIEW 个桶**（一格 = 一行）。
+       ⇒ ① 每侧固定 VIEW 行 ⇒ 装框恒定、行集不随显示跳动（旧实现里 `edge` 只卡 asks、
+          买侧 `d < 0` 使 `edge` 空操作；且 `++n > VIEW` 把非墙行一律卡在 VIEW —— 于是
+          ×1 与 ×20 取到的是**同一批最近原始挂单**，档位形同虚设，这才是「口径无变化」的根因）。
+         ② 桶宽 = `step` 随档位 ×1~×20 放大 ⇒ 一屏看多远随之变（×1 近场细看、×20 扫到远处大单）。
+         ③ 桶锚在**绝对价格网格**上 ⇒ 现价在同一桶内移动时整页纹丝不动，只有跨过桶边界才整体
+            挪一行（与真实交易所盘口一致），不再每帧重锚。
+       桶内名义求和（同价单引擎 `lobPut` 已并，跨网格线同理并）；墙（`levelsOf`，真历史价位）照并、
+       并标 `wall`。空桶留空行（价格照显、量为 0）—— 这是盘口阶梯的常态，也是「装框恒定」的前提。 */
+    const midK = Math.floor(b.mid / step + 1e-9);
+    const bucketOf = rows => {
+      const m = new Map();
       for (const r of rows) {
-        if (r.d > edge) break;
-        if (!r.wall && ++n > VIEW) continue;
-        const kk = Math.round(r.price / step);
-        vis.push({ ...r, gate: kk % 10 === 0 ? 1 : kk % 5 === 0 ? 2 : 0 });
+        const k = Math.floor(r.price / step + 1e-9);
+        let o = m.get(k);
+        if (!o) { o = { k, price: k * step, notional: 0, wall: false }; m.set(k, o); }
+        o.notional += r.notional;
+        if (r.wall) o.wall = true;
+      }
+      return m;
+    };
+    const bidMap = bucketOf(b.bids), askMap = bucketOf(b.asks);
+    /* 单侧：从中价桶向外逐格取 VIEW 格。关口行：网格步长的 10 倍格 = Tier1（Urquhart 2017 /
+       Hu et al. 2019 的 round-number 聚集）、5 倍格 = Tier2 —— 10 | k ⇒ 5 | k，任何缩放档都成立。 */
+    const sideOf = (m, dir) => {
+      const vis = [];
+      for (let i = 1; i <= VIEW; i++) {
+        const k = midK + dir * i;
+        const o = m.get(k) || { k, price: k * step, notional: 0, wall: false };
+        vis.push({
+          price: o.price, notional: o.notional, wall: o.wall, qty: 0, cum: 0,
+          gate: k % 10 === 0 ? 1 : k % 5 === 0 ? 2 : 0,
+        });
       }
       return vis;
     };
-    const A = sideOf(b.asks);                 // asc：贴中在前
-    const B = sideOf(b.bids);                 // desc：贴中在前
-    /* 装框裁剪（兜底）：两侧行总数超出行预算时，从**最远端**裁非墙行（两侧都已按远近排序
-       ⇒ 最远端都在尾部）。正常不触发（预算本就按面板高算）；`overflow-y: auto` 托底。 */
-    const trimFar = rows => {
-      for (let i = rows.length - 1; i >= 0; i--) {
-        if (!rows[i].wall) { rows.splice(i, 1); return true; }
-      }
-      return false;
-    };
-    while (A.length + B.length + 2 > fitRows && (trimFar(A) || trimFar(B))) { /* 裁到装下 */ }
-    /* 买卖比（四批起改**真实簿量**口径）：两侧到「下一屏」边界（2×VIEW＋0.5 格）的实挂
-       名义直接求和 —— 可见行、被装框裁掉的行、步进窗外的行全在簿里，与显示行数解耦；
-       边界外的离散墙逐条补上。 */
-    const xA = Math.abs(Math.max(0, (midIdx + 2 * VIEW + 0.5) * step) / b.mid - 1);
-    const xB = Math.abs(Math.max(0, (midIdx - 2 * VIEW - 0.5) * step) / b.mid - 1);
+    /* A 从贴中向外（近→远）⇒ 显示时反转（远档在上）；B 原序（最近买价贴着 mid）。
+       ⚠️ 两侧各固定 VIEW 行、且 `2×VIEW＋1 ≤ fitRows`，无需再装框裁剪。 */
+    const A = sideOf(askMap, 1);
+    const B = sideOf(bidMap, -1);
+    /* 买卖比（真实簿量口径）：窗口 = 中价两侧各 `2×VIEW` 格内实挂名义求和（与显示行数解耦）；
+       窗口外的离散墙逐条补上。 */
     let aUsd = 0, bUsd = 0;
-    for (const r of b.asks) { if (r.d <= xA) aUsd += r.notional; else if (r.wall) aUsd += r.notional; }
-    for (const r of b.bids) { if (r.d <= xB) bUsd += r.notional; else if (r.wall) bUsd += r.notional; }
-    /* 累计从**贴中**出发向外累加：A 升序（贴中在前）累计后反转显示（远档在上）；
-       B 降序（贴中在前）直接累计、原序显示（最近的买价贴着 mid）。 */
+    for (const [k, o] of askMap) { if (k > midK && k <= midK + 2 * VIEW) aUsd += o.notional; else if (o.wall) aUsd += o.notional; }
+    for (const [k, o] of bidMap) { if (k < midK && k >= midK - 2 * VIEW) bUsd += o.notional; else if (o.wall) bUsd += o.notional; }
+    /* 累计从**贴中**出发向外累加：A 近→远累加后反转显示（远档在上）；
+       B 近→远累加、原序显示（最近的买价贴着 mid）。 */
     const decorate = rows => {
       let cum = 0;
       return rows.map(r => { cum += r.notional; return { ...r, qty: r.notional / r.price, cum }; });

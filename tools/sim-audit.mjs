@@ -2702,15 +2702,38 @@ section('9q · 上帝面板分页接线（data-godtab ⇄ ACTION_KEYS ⇄ onGodT
      新增状态标记要在这里补一行并说明用途；新增**按钮**漏注册则此断言当场咬死。 */
   const STATE_MARKS = new Set(['pf', 'heat', 'pages']);
   /* 只抓 `export const ACTION_KEYS = [ ... ];` **数组本体** —— 不扫全文：全文抓会把
-     注释里提到的旧键 / 别的字符串也当「已注册」，护栏假绿。 */
-  const arrBody = bindSrc.match(/export const ACTION_KEYS = \[([\s\S]*?)\];/);
-  const actionKeys = new Set([...(arrBody ? arrBody[1].matchAll(/'([a-z0-9]+)'/g) : [])].map(m => m[1]));
+     注释里提到的旧键 / 别的字符串也当「已注册」，护栏假绿。
+     ⚠️ 数组本体里还夹着大量**解释性注释**（含 `'toggle'` / 旧键名的字面量）—— 必须**先剥注释**
+     再抽键，否则注释里提到的字符串会被当成「已注册」⇒ 漏注册也测不出来（本护栏假绿）。 */
+  const arrRaw = (bindSrc.match(/export const ACTION_KEYS = \[([\s\S]*?)\];/) || ['', ''])[1];
+  const arrBody = arrRaw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const actionKeys = new Set([...arrBody.matchAll(/'([a-z0-9]+)'/g)].map(m => m[1]));
   check('9q 护栏活性：ACTION_KEYS 数组本体解析成功（否则本节护栏空转）',
     actionKeys.size >= 30, `解析出 ${actionKeys.size} 键`);
   const renderedKeys = new Set([...renderSrc.matchAll(/dataset\.([a-z0-9]+)\s*=/g)].map(m => m[1]));
+  /* ⚠️ 静态正则抓不到**动态键工厂** `dataset[key] = v`（`segRow` 音量/震动/动效、`pickBtn`
+     公元/月）—— 把**调用点传入的字面键**也收进来，否则从这两个工厂新加的按钮会绕过护栏
+     （历史上 `vol/vib/fx` 与 `godyear/godmon` 都从这里出，静态正则看不到它们）。 */
+  for (const m of renderSrc.matchAll(/segRow\('[^']*',\s*'([a-z0-9]+)'/g)) renderedKeys.add(m[1]);
+  for (const m of renderSrc.matchAll(/pickBtn\([^)]*?'([a-z0-9]+)'/g)) renderedKeys.add(m[1]);
   const unbound = [...renderedKeys].filter(k => !actionKeys.has(k) && !STATE_MARKS.has(k));
-  check('9q render 渲染的每个 data-* 都注册进 ACTION_KEYS（漏 = 点了没反应）',
+  check('9q render 渲染的每个 data-*（含动态键工厂）都注册进 ACTION_KEYS（漏 = 点了没反应）',
     unbound.length === 0, unbound.length ? `漏 ${unbound.join('/')}` : `${renderedKeys.size} 键全覆盖（豁免状态标记 ${[...STATE_MARKS].join('/')}）`);
+  /* 反向穷举：注册了却**从未**渲染的键（死键）。只放行已知的 `settings`（顶栏那枚已随 A6 撤，
+     设置页将来可能复用它做出口，见 `bind.js` 注释）；其余一律咬死 —— 防「删了按钮忘摘键」。
+     ⚠️ 与上一条成对：两条一起才封死「渲染 ⇄ 注册」两个方向的脱节。 */
+  const DEAD_KEYS = new Set(['settings']);
+  const unrendered = [...actionKeys].filter(k => !renderedKeys.has(k) && !DEAD_KEYS.has(k));
+  check('9q 反向：ACTION_KEYS 无「未渲染的死键」（豁免 settings）',
+    unrendered.length === 0, unrendered.length ? `死键 ${unrendered.join('/')}` : '全部有渲染出处');
+  /* 第三向：注册的键必须在 `main.dispatch` 里有 `d.<key>` 的**任一读法**（`!==` / `===` /
+     `typeof` 都算 —— `careers` 就是 `d.careers === 'exit'` 那一路，旧正则只认 `!==` 会误报）。
+     键只是**标记**，没人读它照样点了没反应（`findActionEl` 命中 → `onAction` 派发 → dispatch
+     逐条认领，三环缺一即死）。豁免同上 `settings`。 */
+  const dispatched = new Set([...mainSrc.matchAll(/\bd\.([a-z][a-zA-Z0-9]*)/g)].map(m => m[1]));
+  const undispatch = [...actionKeys].filter(k => !dispatched.has(k) && !DEAD_KEYS.has(k));
+  check('9q 分派：每个 ACTION_KEY 都在 main.dispatch 有 `d.<key>` 分支（豁免 settings）',
+    undispatch.length === 0, undispatch.length ? `未分派 ${undispatch.join('/')}` : '全部有分派分支');
 }
 
 /* ═══════════════════ 9r · 上帝操盘台（2026-10-07 · 吃单 / 洗售 / 幌骗） ═══════════════════
@@ -3164,9 +3187,10 @@ section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源
      三批（2026-10-08）：`gb-far` 汇总行删除（远场一直有单，靠步进 ×10/×20 翻看）＋
      行数自适应装框（手机 / 桌面订单簿页都不滚动）＋ 买卖比改读真实簿量。
      承重结构 `baseLadder` / `walkBook` 不动（9v①~④ 照旧）。 */
-  check('9v⑥ render：订单簿网格化（niceStepOf 步进 ＋ 装框行数/裁剪 ＋ gb-far 退役；旧逐档切窗 baseAsks/cut 退役）',
+  check('9v⑥ render：订单簿网格化（niceStepOf 步进 ＋ 按 step 分桶装框 ＋ gb-far 退役；旧逐档切窗 baseAsks/cut 退役）',
     rendSrc9v.includes('const step = niceStepOf(b.mid)') && !rendSrc9v.includes("'gb-far'")
-    && rendSrc9v.includes('const fitRows =') && rendSrc9v.includes('trimFar')
+    && rendSrc9v.includes('const fitRows =') && rendSrc9v.includes('const bucketOf =')
+    && rendSrc9v.includes('const midK = Math.floor(b.mid / step')
     && rendSrc9v.includes('const tot = aUsd + bUsd')
     && !rendSrc9v.includes('baseAsks') && !rendSrc9v.includes('const cut = rows'));
   /* 行为锚不取副本：正则把 engine.js 里的 `niceStepOf` **原样提取**成真函数再执行 ——
@@ -5196,6 +5220,10 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     && renderSrc9y.includes('gfd-lq') && renderSrc9y.includes('gfd-ls')
     && styleSrc9y.includes('.gfd-row') && styleSrc9y.includes('.gfd-row.t3')
     && styleSrc9y.includes('.gfd-lq i, .gfd-lq span') && styleSrc9y.includes('#ec407a') && styleSrc9y.includes('#ff9800'));
+  /* 桌面 ≥1280 的浮窗日志页字号与订单簿对齐（2026-10-09 用户报「桌面端字体偏小」）：`.gfd-*`
+     原来漏了这档覆盖、停在手机 9px/13px，与同结构 `.gb-*`（11/15）不一致 —— 这里咬住修复。 */
+  check('9ae⑦b style：桌面 ≥1280 补 `.gfd-*` 覆盖（11px/15px，与订单簿同口径）',
+    styleSrc9y.includes('.gfd-head, .gfd-row { font-size: 11px; line-height: 15px; }'));
 }
 
 /* ═══════════════════ 9af · NPC 限价单离散簿（2026-10-08 三批拍板⑦） ═══════════════════
@@ -5324,10 +5352,10 @@ section('9af · NPC 限价单离散簿（行为级 ＋ 显示/播报读簿 ＋ �
   }
 
   /* ⑥ render 锚：页 3 直接读簿行 ＋ 整数关口标记 ＋ 步进底栏 */
-  check('9af⑥ render：页 3 读簿（sideOf(asks/bids)）＋ 关口标记（kk%10/%5）＋ 步进底栏接线在位',
-    rendSrc9af.includes('const A = sideOf(b.asks)')
-    && rendSrc9af.includes('const B = sideOf(b.bids)')
-    && rendSrc9af.includes('kk % 10 === 0 ? 1 : kk % 5 === 0 ? 2 : 0')
+  check('9af⑥ render：页 3 按 step 分桶读簿（sideOf(askMap/bidMap)）＋ 关口标记（k%10/%5）＋ 步进底栏接线在位',
+    rendSrc9af.includes('const A = sideOf(askMap, 1)')
+    && rendSrc9af.includes('const B = sideOf(bidMap, -1)')
+    && rendSrc9af.includes('k % 10 === 0 ? 1 : k % 5 === 0 ? 2 : 0')
     && rendSrc9af.includes('b.dataset.gofstep = String(v)'));
 }
 
@@ -5492,7 +5520,7 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
         （NPC 靶心 / 基底 / OI / 量柱 / 簿 / 基金池 / 对抗性暴露）；玩家自己的名义额**不过闸**（红线 A）；
    M4c：爆仓潮 / ADL 阈值同源放大（`liqEventScaleOf = gm × npc`）＋ 日志冷却（`NPC.liqEventCd`）；
    M4d：上帝新闻（模板各 16 条 ＋ 冷却 `MANIP_NEWS_CD` ＋ 轮换去重 ＋ 「关闭真实新闻」开关）；
-   M4f：桌面日志条 2 → 5 行（`LOG_ROWS` 断点与 CSS 同源）。
+   M4f：桌面日志条 2 → 6 行（`LOG_ROWS` 断点与 CSS 同源）。
    ⚠️ 全部在 `gm === 1` / 缺键时**逐位早退** ⇒ 普通 / 挑战局零回归（9p 恒等断言咬住这一条）。 */
 section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新闻（结构锚 ＋ 行为锚）');
 {
@@ -5533,7 +5561,7 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     && engSrc9ah.includes('if (!(s.god && s.god.noRealNews)) {')
     && engSrc9ah.includes('s.god.newsAt = null;')
     && engSrc9ah.includes('s.god.newsN = null;'));
-  check('9ah① M4d/M4e/M4f 接线：godreal 三处 ＋ 冷却置灰 ＋ 长按连发 ＋ 日志条 5 行',
+  check('9ah① M4d/M4e/M4f 接线：godreal 三处 ＋ 冷却置灰 ＋ 长按连发 ＋ 日志条 6 行/120px',
     bindSrc9ah.includes("'godreal'")
     && mainSrc9ah.includes('if (d.godreal !== undefined)') && mainSrc9ah.includes('s.god.noRealNews = !s.god.noRealNews;')
     && rendSrc9ah.includes("realBtn.dataset.godreal = ''")
@@ -5542,8 +5570,8 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     && mainSrc9ah.includes('function pumpStop()') && mainSrc9ah.includes('pumpAcc.timer = setInterval(')
     && mainSrc9ah.includes('window.addEventListener(\'pointerup\', pumpStop);')
     && mainSrc9ah.includes('return onGodPump(node, ev);')
-    && rendSrc9ah.includes("&& window.matchMedia('(min-width: 1280px)').matches) ? 5 : 2;")
-    && cssSrc9ah.includes('.logline { height: calc(100px * var(--ui)); }'));
+    && rendSrc9ah.includes("&& window.matchMedia('(min-width: 1280px)').matches) ? 6 : 2;")
+    && cssSrc9ah.includes('.logline { height: calc(120px * var(--ui)); }'));
 
   /* ② M4b 行为：深度 ×1/×4/×8 ⇒ 本时深度严格成比例、OI / 散户簿近似成比例（纯缩放） */
   const scaleProbe = async (mul) => {
@@ -5718,6 +5746,65 @@ section('9ai · 新闻占位符 newsVars / fillNews ＋ 上帝终局 s.god.ended
     && mainSrc.includes('s.god && s.god.ended')
     && mainSrc.includes('godEndOpen = false')
     && rendSrc.includes('export function renderGodEnd(root, s)'));
+}
+
+/* ═══════════════════ 9aj · 上帝沙盒旋钮 × 面板档位表（2026-10-09） ═══════════════════
+   病根（用户报「进上帝模式后点 degen 无弹窗 / 重开本局报 `nt[F] is not iterable`」）：
+   `god.js` 的 `SB_KEYS` 加了第 6 枚 `lob`（挂单密度），而 `render.js` 的 `SB_STEPS` 只有前 5 枚 ——
+   `for (const v of SB_STEPS['lob'])` 遍历 `undefined` ⇒ 直接抛 ⇒ `openGod` 整个炸掉、遮罩被开半截。
+   ⚠️ 静态护栏只能咬「两表键集相等」这一条不变量（值域是否合理由 9ai / 9ah 的行为锚管）。 */
+section('9aj · 上帝沙盒旋钮 SB_KEYS × 面板档位表 SB_STEPS（2026-10-09 面板打不开的病根）');
+{
+  const godSrcAj = fs.readFileSync(path.join(ROOT, 'src/core/god.js'), 'utf8');
+  const rendSrcAj = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  const mainSrcAj = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+  const keysRaw = (godSrcAj.match(/export const SB_KEYS = \[([^\]]*)\];/) || ['', ''])[1];
+  const sbKeys = [...keysRaw.matchAll(/'([a-z]+)'/g)].map(m => m[1]);
+  const stepsRaw = (rendSrcAj.match(/const SB_STEPS = \{([\s\S]*?)\};/) || ['', ''])[1];
+  const stepKeys = [...stepsRaw.matchAll(/(?:^|[{\s,])([a-z]+)\s*:\s*\[/g)].map(m => m[1]);
+  const missing = sbKeys.filter(k => !stepKeys.includes(k));
+  const extra = stepKeys.filter(k => !sbKeys.includes(k));
+  check('9aj① `SB_KEYS` 每一枚旋钮在 `SB_STEPS` 都有档位（缺 = 面板 `for…of undefined` 直接炸）',
+    sbKeys.length >= 6 && missing.length === 0,
+    missing.length ? `缺档位 ${missing.join('/')}` : `${sbKeys.length} 枚全覆盖`);
+  check('9aj② `SB_STEPS` 无表外多余键（与 `SB_KEYS` 键集严格相等）',
+    extra.length === 0, extra.length ? `多余 ${extra.join('/')}` : '无多余');
+  /* 每档必须是**非空数组**（空数组不抛，但渲染出一排没有按钮的空行 = 静默失灵）。 */
+  const empty = stepKeys.filter((k, i) => !/\[[^\]]/.test((stepsRaw.match(new RegExp(k + '\\s*:\\s*(\\[[^\\]]*\\])')) || ['', '[]'])[1]));
+  check('9aj③ 每枚旋钮的档位表都非空', empty.length === 0, empty.join('/') || '全部非空');
+  /* `SB_DEFAULT` 的键集同样必须与 `SB_KEYS` 相等（缺键 ⇒ 预设回填 `undefined` ⇒ NaN 落进状态）。 */
+  const defRaw = (godSrcAj.match(/export const SB_DEFAULT = \{([^}]*)\};/) || ['', ''])[1];
+  const defKeys = [...defRaw.matchAll(/([a-z]+)\s*:/g)].map(m => m[1]);
+  const defMissing = sbKeys.filter(k => !defKeys.includes(k));
+  check('9aj④ `SB_DEFAULT` 覆盖全部 `SB_KEYS`（缺键 ⇒ 预设回填 NaN）',
+    defMissing.length === 0, defMissing.join('/') || '全覆盖');
+  /* 四组预设也必须逐键齐全（`onSbPreset` 按 `SB_KEYS` 逐键读 `p.sb[k]`）。 */
+  const presetsRaw = (godSrcAj.match(/export const SB_PRESETS = \[([\s\S]*?)\n\];/) || ['', ''])[1];
+  const presetBodies = [...presetsRaw.matchAll(/sb:\s*\{([^}]*)\}/g)].map(m => m[1]);
+  const presetBad = presetBodies
+    .map((b, i) => ({ i, miss: sbKeys.filter(k => !new RegExp(k + '\\s*:').test(b)) }))
+    .filter(x => x.miss.length);
+  check('9aj⑤ 每组世界预设 `sb` 覆盖全部 `SB_KEYS`（缺键 ⇒ 该旋钮回默认、预设语义漂）',
+    presetBodies.length === 4 && presetBad.length === 0,
+    presetBad.map(x => `#${x.i} 缺 ${x.miss.join('/')}`).join(' | ') || `${presetBodies.length} 组齐全`);
+
+  /* ⑥「进主菜单不许有浮窗残留」（2026-10-09 用户要求）—— 静态锚在**入口唯一性**上：
+     浮窗圆钮 / 面板挂在 `document.body`（不在 `#app`），`openMenu` 里的 `closePicker` 够不着；
+     而 `updateFloat` 只在 `draw()` 里跑、回菜单那几个入口又都停了钟 ⇒ 之后再没有一帧。
+     所以每个弹菜单的入口都必须走 `openMenuClean`（它 `openMenu` ＋ `updateFloat(null, null)`）。
+     ⚠️ 咬的是「main.js 里没有裸 `openMenu(` 调用」——比逐个入口点断言更耐重构。 */
+  /* ⚠️ 先把 `openMenuClean` 的函数体剥掉再数 —— 它内部那一声 `openMenu(opts)` 是**预期**的。 */
+  const noClean = mainSrcAj.replace(/function openMenuClean\(opts\) \{[\s\S]*?\n\}/, '');
+  const bare = [...noClean.matchAll(/(^|[^A-Za-z])openMenu\(/g)].length;
+  check('9aj⑥ main.js 弹主菜单一律走 `openMenuClean`（无裸 `openMenu(`，否则浮窗残留在菜单上）',
+    mainSrcAj.includes('function openMenuClean(opts) {')
+    && mainSrcAj.includes('openMenu(opts);')
+    && mainSrcAj.includes('updateFloat(null, null);')
+    && bare === 0, bare ? `裸调用 ${bare} 处` : '入口唯一');
+  /* 档案 / 回顾两支同样在 `try` 外 return，浮窗得**就地**摘（历史上正是这里漏出「档案页叠浮窗」）。 */
+  check('9aj⑥ 档案 / 回顾两支都就地 `updateFloat(null, null)`（`try` 外提前 return，漏了必残留）',
+    /if \(arch\) \{ updateFloat\(null, null\)/.test(mainSrcAj)
+    && /if \(rv\) \{ updateFloat\(null, null\)/.test(mainSrcAj));
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

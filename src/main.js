@@ -477,7 +477,24 @@ async function boot() {
       clock.start();
     }
     after();
-  } else openMenu({ canLoad: menuSlots().length > 0 });
+  } else openMenuClean({ canLoad: menuSlots().length > 0 });
+}
+
+/**
+ * 弹主菜单 ＋ **顺手摘掉浮窗**（2026-10-09 用户报缺陷「进主菜单所有状态都要清空，不能有残留」）。
+ *
+ * 病根：浮窗圆钮（`.god-chip`）与面板（`.god-float`）挂在 `document.body`，**不在 `#app`** ——
+ * `openMenu` 里的 `closePicker()` 只清 `#overlay`，够不着它们；而 `updateFloat` 只在 `draw()` 里跑。
+ * 那几个回菜单的入口（`onHome` / `exitReview` / `exitCareers`）都是**先 `draw` 再 `openMenu`**，
+ * 且时钟已被停住 ⇒ 之后再没有一帧，圆钮就一直叠在主菜单上。
+ *
+ * ⚠️ 必须**在 `openMenu` 之后**调：`floatUi()` 的闸判据就是「`.menu-box` 在不在」，
+ *    提前调的话菜单还没建出来，`updateFloat(s, floatUi())` 会把浮窗又挂回去。
+ * ⚠️ 回到局内不用管：`closePicker` 抹掉 `.menu-box` 后，下一帧 `draw()` 自己会把浮窗接回来。
+ */
+function openMenuClean(opts) {
+  openMenu(opts);
+  updateFloat(null, null);
 }
 
 /** 保证某个币的数据已加载；失败只记一条日志，不让整个游戏崩掉 */
@@ -878,7 +895,11 @@ function draw(force = false, chartOnly = false) {
         从结算遮罩「回主菜单」再进档案页，那时 `#app` 里还挂着那张 `position:fixed` 的 `.over`；
         这一支**在 `try` 之前就 return 了**，落不到最后那个 `else` 的 `clearOver` 上 ——
         原来那句 `if (s.over && !arch)` 里的 `!arch` 因此管不到这里（是一处死守卫）。 */
-  if (arch) { clearOver(root); renderCareers(refs, loadCareers()); return; }
+  /* ⚠️ 还要先摘**浮窗**（2026-10-09 用户报缺陷）：浮窗圆钮 / 面板挂在 `document.body`（不在 `#app`），
+     `clearOver` 只删 `#app` 里的 `.over`，删不到它 —— 于是「回主菜单 → 交易档案」时浮窗直接叠在
+     档案页上（普通局 `mktFloatOn` 默认开，日常必现）。与下面 `rv` 分支同一句 `updateFloat(null, null)`。
+     ⚠️ 这一支**在 `try` 之前就 return**，落不到别处的清理上 —— 必须就地摘。 */
+  if (arch) { updateFloat(null, null); clearOver(root); renderCareers(refs, loadCareers()); return; }
   /* 回顾页量的是它自己那块 K 线区（两页的 DOM 各有一套，方案 §3.2） */
   const rect = (rv ? refs.rvWrap : refs.chartWrap).getBoundingClientRect();
   const view = buildView(
@@ -1552,8 +1573,12 @@ function onGodLiq(node) {
 function floatUi() {
   const pages = s.god ? GOD_FLOAT_PAGES : MKT_FLOAT_PAGES;
   if (!pages.some(([p]) => p === floatPage)) floatPage = pages[0][0];
+  /* 主菜单在时**不挂浮窗**（2026-10-09 用户要求「进主菜单所有状态都要清空」）：
+     判据是菜单 DOM 还在不在（`openMenu` 造 `.menu-box`，`closePicker` 清 `#overlay` 时一并抹掉）
+     —— 用 DOM 事实、不引状态位，就不会漏掉某一条「关菜单」的路径。回到局内菜单没了，浮窗自动回来。 */
+  const menuUp = !!document.querySelector('.menu-box');
   return {
-    on: s.god ? godFloatOn : mktFloatOn, open: floatOpen, page: floatPage, pos: floatPos,
+    on: !menuUp && (s.god ? godFloatOn : mktFloatOn), open: floatOpen, page: floatPage, pos: floatPos,
     pages, mkt: !s.god, step: bookStep,
   };
 }
@@ -1863,7 +1888,7 @@ function onGodNews(node) {
 }
 
 /* ── 上帝沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）────────────
-   5 枚旋钮 ＋ 4 组预设 ＋ 种子，全走 `s.god.sb`（种子例外，见 `onSbSeed`）。
+   6 枚旋钮 ＋ 4 组预设 ＋ 种子，全走 `s.god.sb`（种子例外，见 `onSbSeed`）。
    ⚠️ 只作用在合成层，**不碰真实 OHLC** —— 无论怎么调，行情仍是那段真实历史（见 `god.js` 头注）。 */
 
 /** 旋钮档位（`data-sb="heat:1.5"` / `"mood:-0.15"`）—— 写单枚旋钮。 */
@@ -2064,7 +2089,7 @@ function onHome() {
   closePicker();
   clock.stop();
   after();                       // 先落一次盘：菜单里「读取存档」靠这份档才列得出当前这一局
-  openMenu({ canLoad: menuSlots().length > 0 });
+  openMenuClean({ canLoad: menuSlots().length > 0 });
 }
 
 /**
@@ -2336,7 +2361,7 @@ function exitReview() {
      不归位的话「回顾 → 退出」会停在一屏没头没尾的设置页上。 */
   tab = 'trade';
   draw(true);                                    // `rv` 归 nil ⇒ `showPage` 按 `tab` 切回交易页
-  openMenu({ canLoad: menuSlots().length > 0 });
+  openMenuClean({ canLoad: menuSlots().length > 0 });
 }
 
 /* ── 交易档案页（M2 · 2026-10-01）────────────────────────────────
@@ -2358,7 +2383,7 @@ function exitCareers() {
   arch = false;
   tab = 'trade';                                 // 与 `exitReview` 同一条：退出整屏页落回交易页
   draw(true);                                    // `arch` 归 falsy ⇒ `showPage` 按 `tab` 切回交易页
-  openMenu({ canLoad: menuSlots().length > 0 });
+  openMenuClean({ canLoad: menuSlots().length > 0 });
 }
 
 /* ── 生涯海报（M5 · 2026-10-02）────────────────────────────────────
