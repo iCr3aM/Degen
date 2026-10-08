@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtFloatPrice, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, FEED_STEPS, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, eventsOff, exMarkPrice, FEED_STEPS, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -970,9 +970,10 @@ export function update(refs, s, view) {
   if (s.transfer) {
     setText(refs.exRate, `→ 剩 ${Math.max(0, s.transfer.arriveAt - s.i)}h`);
     setCls(refs.exRate, '');
-  } else if (haltedAt(now, s.ex)) {
+  } else if (!eventsOff(s) && haltedAt(now, s.ex)) {
     /* 停机维护（B24）：第二行**顶掉费率**显示状态词 —— 这段时间开仓会被拒，
-       不显式说一句，玩家只会觉得「按钮坏了」。（与转账倒计时同一优先级：先报状态、再报费率。） */
+       不显式说一句，玩家只会觉得「按钮坏了」。（与转账倒计时同一优先级：先报状态、再报费率。）
+       ⚠️ 受「新闻源与事件」总闸（2026-10-09 `eventsOff`）：上帝关事件 ⇒ 停机不存在，照常显费率。 */
     setText(refs.exRate, '维护中');
     setCls(refs.exRate, 'down');
   } else {
@@ -1485,18 +1486,21 @@ export function update(refs, s, view) {
  *        用户 2026-10-02 拍板「交易页只算不画」（那是手感，画出来只会干扰看盘）。
  *   `volMul` 市场量柱倍率（2026-10-08 拍板④）：上帝局随深度旋钮放大市场份，**只交易页传**
  *        （回顾页是市场史，恒缺省 1）；`×1` 走 IEEE 精确恒等 ⇒ 普通局逐位不变。
+ *   `anchors` 是否画历史锚点刻度（2026-10-09）：上帝局「新闻源与事件」关 ⇒ 不画（`eventsOff`），
+ *        回顾页 / 普通局缺省真 —— 历史照画。
  * @returns {object} `windowFor` 的返回值（`mode` / `count` / `locked` / `right` 都要用）
  */
-function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns = '', levels = null, volMul = 1, liqBars = null }) {
+function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns = '', levels = null, volMul = 1, liqBars = null, anchors = true }) {
   const win = windowFor(sym, i, view.chartW, own, ns, volMul);
   /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
      日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
      （`count` 可能大于可用根数，这里的下界会算成负数）。 */
   const hLo = win.mode === '1d' ? (win.right - win.count + 1) * HOURS_PER_DAY : win.right - win.count + 1;
   const hHi = win.mode === '1d' ? win.right * HOURS_PER_DAY + HOURS_PER_DAY - 1 : win.right;
-  const anchorMarks = anchorsInRange(hLo, hHi).map(a => ({
+  /* ⚠️ 上帝局「新闻源与事件」关（2026-10-09）⇒ 传 `anchors: false`，历史事件刻度一并熄火。 */
+  const anchorMarks = anchors ? anchorsInRange(hLo, hHi).map(a => ({
     d: win.mode === '1d' ? Math.floor(a.at / HOURS_PER_DAY) : a.at,
-  }));
+  })) : [];
   /* 图上唯一的入口：K 线、量柱、两条水平线都在这一笔里画。
      ⚠️ 返回值必须写回视野 —— 价格轴的平移限位夹在 `drawChart` 里（换算的唯一真源在那边），
         状态记的是**没夹过**的原始位移，不写回就会越夹越离谱。 */
@@ -1604,6 +1608,8 @@ function syncChart(refs, s, view, sym, cur, mark) {
     volMul: s.god ? godLiqMulOf(s) : 1,
     /* 强平叠加（2026-10-08 三批拍板③）：开关开着才读（`godWatchOf` 不便宜，别白算）。 */
     liqBars: s.god && s.god.liqOverlay ? godWatchOf(s, sym).liqs : null,
+    /* 历史锚点刻度（2026-10-09）：上帝局「新闻源与事件」关 ⇒ 不画。 */
+    anchors: !eventsOff(s),
   });
 
   /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种（`main.js` 里定的目标档） */
@@ -3301,12 +3307,14 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
     rowsC.append(el('p', 'god-prev', `冷却中 · 还需 ${MANIP_NEWS_CD - newsCd} 小时`));
   }
 
-  /* 「新闻源」开关（2026-10-08 用户拍板）：进入上帝模式**默认关**真实新闻 —— 价格与播报只随
-     玩家操作走；面板上可重新打开（引擎闸门见 `npcBuild` 的 `extFlow` 与 `advanceOneHour`）。 */
+  /* 「新闻源与事件」开关（2026-10-08 用户拍板；2026-10-09 由「新闻源」扩名）：进入上帝模式
+     **默认关** —— 4 条真实新闻播报 ＋ 巨鲸/ETF 有向买盘（`extFlow`）＋ 交易所停机（播报＋
+     「只平不开」）＋ 被盗/归零削减 ＋ 破产预警遮罩 ＋ K 线历史锚点刻度，**全部一起熄火**
+     （总闸 = 引擎 `eventsOff`）。价格与播报只随玩家操作走；面板上可重新打开。 */
   const realRow = el('div', 'set-row');
-  const realBtn = el('button', s.god.noRealNews ? 'set-btn' : 'set-btn on', s.god.noRealNews ? '真实新闻 关' : '真实新闻 开');
+  const realBtn = el('button', s.god.noRealNews ? 'set-btn' : 'set-btn on', s.god.noRealNews ? '关' : '开');
   realBtn.dataset.godreal = '';
-  realRow.append(el('i', null, '新闻源'), realBtn);
+  realRow.append(el('i', null, '新闻源与事件'), realBtn);
   rowsC.append(realRow);
 
   /* 强平叠加（2026-10-08 三批拍板③）：主图右轴画当前币的强平档位条（多红空绿、宽∝名义额）。

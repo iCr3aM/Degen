@@ -3881,7 +3881,7 @@ section('9ac · 巨鲸/机构队列 WHALES：逐位摊平 ＋ 买卖都含 ＋ �
   /* ④ 接线：npcBuild 注入 extFlow（whaleFlowAt + etfFlowAt），买加长侧 / 卖加短侧，只给 ≤10x 档 */
   const engSrc9ac = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   check('9ac④ 接线：npcBuild 读 extFlow = whaleFlowAt + etfFlowAt（按游戏日 dayIndexOf）',
-    engSrc9ac.includes('const extFlow = (s.god && s.god.noRealNews) ? 0 : (whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx));')
+    engSrc9ac.includes('const extFlow = eventsOff(s) ? 0 : (whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx));')
     && engSrc9ac.includes('const dayIdx = dayIndexOf(i);'));
   check('9ac④ 注入方式：买加长侧 / 卖加短侧（当根全量入仓 · 与 stepNpc 加仓同一会计），只在 low（≤10x）档',
     engSrc9ac.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;')
@@ -5529,7 +5529,7 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
    M4b：上帝「深度」旋钮（`godLiqMulOf`）⇒ 一处 `gm` 闸门（`godScale`）贯通市场规模类分母 / 读数
         （NPC 靶心 / 基底 / OI / 量柱 / 簿 / 基金池 / 对抗性暴露）；玩家自己的名义额**不过闸**（红线 A）；
    M4c：爆仓潮 / ADL 阈值同源放大（`liqEventScaleOf = gm × npc`）＋ 日志冷却（`NPC.liqEventCd`）；
-   M4d：上帝新闻（模板各 16 条 ＋ 冷却 `MANIP_NEWS_CD` ＋ 轮换去重 ＋ 「关闭真实新闻」开关）；
+   M4d：上帝新闻（模板各 16 条 ＋ 冷却 `MANIP_NEWS_CD` ＋ 轮换去重 ＋ 「新闻源与事件」开关）；
    M4f：桌面日志条 2 → 6 行（`LOG_ROWS` 断点与 CSS 同源）。
    ⚠️ 全部在 `gm === 1` / 缺键时**逐位早退** ⇒ 普通 / 挑战局零回归（9p 恒等断言咬住这一条）。 */
 section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新闻（结构锚 ＋ 行为锚）');
@@ -5567,8 +5567,8 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     && engSrc9ah.includes('const cd = s.i - last;')
     && engSrc9ah.includes('if (cd < MANIP_NEWS_CD) return { ok: false, why: `冷却中（还需 ${MANIP_NEWS_CD - cd} 小时）` };')
     && engSrc9ah.includes('s.god.newsN[key] = n + 1;')
-    && engSrc9ah.includes('const extFlow = (s.god && s.god.noRealNews) ? 0 : (whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx));')
-    && engSrc9ah.includes('if (!(s.god && s.god.noRealNews)) {')
+    && engSrc9ah.includes('const extFlow = eventsOff(s) ? 0 : (whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx));')
+    && engSrc9ah.includes('if (!eventsOff(s)) {')
     && engSrc9ah.includes('s.god.newsAt = null;')
     && engSrc9ah.includes('s.god.newsN = null;'));
   check('9ah① M4d/M4e/M4f 接线：godreal 三处 ＋ 冷却置灰 ＋ 长按连发 ＋ 日志条 6 行/120px',
@@ -5815,6 +5815,93 @@ section('9aj · 上帝沙盒旋钮 SB_KEYS × 面板档位表 SB_STEPS（2026-10
   check('9aj⑥ 档案 / 回顾两支都就地 `updateFloat(null, null)`（`try` 外提前 return，漏了必残留）',
     /if \(arch\) \{ updateFloat\(null, null\)/.test(mainSrcAj)
     && /if \(rv\) \{ updateFloat\(null, null\)/.test(mainSrcAj));
+}
+
+/* ═══════════════════ 9ak · 上帝「新闻源与事件」总闸（2026-10-09 扩容） ═══════════════════
+   「新闻源」扩名成「新闻源与事件」：上帝关（`s.god.noRealNews` 默认 true）⇒ 全部史实事件注入
+   一起熄火 —— 新闻播报 ×4 / extFlow / 交易所停机（播报＋只平不开）/ 被盗削减 / 交易所归零 /
+   破产预警遮罩 / K 线锚点刻度。普通局与挑战局无 `s.god` ⇒ 闸恒开，口径与真实历史逐位一致
+   （普通局停机/被盗的史实行为另由 §2.2 / §11 / 本节④⑥ 咬住）。 */
+section('9ak · 上帝「新闻源与事件」总闸：普通/挑战照常 · 上帝关 ⇒ 全部熄火');
+{
+  const readSrcAk = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const engSrcAk = readSrcAk('src/core/engine.js');
+  const renderSrcAk = readSrcAk('src/ui/render.js');
+  const mainSrcAk = readSrcAk('src/main.js');
+
+  /* ① 结构：总闸导出 ＋ 引擎全部闸口 ＋ render/main 随扩名 */
+  check('9ak① 结构：eventsOff 导出 ＋ 引擎七处闸口（extFlow/播报/停机播报/停机限制/归零/被盗/预警）',
+    /export function eventsOff\(s\) \{\s*return !!\(s\.god && s\.god\.noRealNews\);\s*\}/.test(engSrcAk)
+    && engSrcAk.includes('const extFlow = eventsOff(s) ? 0 :')
+    && engSrcAk.includes('if (!eventsOff(s)) {')                       // 4 条新闻播报
+    && engSrcAk.includes('if (!eventsOff(s)) for (const h of ex.halts || []) {')   // 停机播报
+    && engSrcAk.includes('if (!eventsOff(s) && haltedAt(timeOf(s), s.ex)) {')      // 停机限制
+    && engSrcAk.split('if (!eventsOff(s)) for (const ex of EXCHANGES) {').length >= 3  // 归零＋被盗
+    && engSrcAk.includes('if (s.hintOn && !eventsOff(s)) {'));          // 破产预警遮罩
+  check('9ak② render：停机状态词 / K 线锚点刻度随总闸熄火 ＋ 面板行改「新闻源与事件」',
+    renderSrcAk.includes('!eventsOff(s) && haltedAt(now, s.ex)')
+    && renderSrcAk.includes('anchors: !eventsOff(s),')
+    && renderSrcAk.includes("el('i', null, '新闻源与事件')"));
+  check('9ak③ main：开关日志文案随扩名更新（关/开两条）',
+    mainSrcAk.includes('新闻源与事件已关闭') && mainSrcAk.includes('新闻源与事件已开启'));
+
+  /* ② 行为：BitMEX 停机窗口（2020-03-13 02:00–03:00）—— 普通局拒 / 上帝关事件放 */
+  const openAt = async (t, godOn) => {
+    const s = await mk({ sym: 'BTC', mode: 'margin', i: idx(t) });
+    s.ex = 'bitmex'; s.lev = 1;
+    s.books.bitmex = { usd: 1000, usdt: 1000 };
+    if (godOn) god.enableGod(s);
+    return { s, r: engine.openTrade(s, 'long') };
+  };
+  {
+    const A = await openAt(at(2020, 2, 13, 2), false);
+    const B = await openAt(at(2020, 2, 13, 3), false);
+    check('9ak④ 普通局：停机窗口内拒「停机维护」/ 恢复即放（史实口径不变，与 §11 互证）',
+      !A.r.ok && /停机维护/.test(A.r.why || '') && B.r.ok);
+    const G = await openAt(at(2020, 2, 13, 2), true);
+    check('9ak⑤ 上帝关事件：同一停机窗口可开仓（停机这条史实事件被真正关闭）',
+      G.r.ok && G.s.god.noRealNews === true, G.r.ok ? 'ok' : `拒(${G.r.why})`);
+  }
+
+  /* ③ 行为：Bitfinex 被盗削减（B21 · 2016-08-02 普损 36.067%）—— 普通局照削、上帝关事件不动账 */
+  {
+    const run = async (godOn) => {
+      const s = await mk({ sym: 'BTC', mode: 'margin', i: idx(at(2016, 7, 2)) - 1 });
+      s.books.bitfinex = { usd: 1000, usdt: 1000 };
+      if (godOn) god.enableGod(s);
+      engine.advanceOneHour(s);              // 跨到 2016-08-02 00:00 那一根
+      return { book: s.books.bitfinex, hacked: (s.log || []).some(l => /被盗/.test(l.text || l.msg || '')) };
+    };
+    const N = await run(false);
+    const G = await run(true);
+    check('9ak⑥ 普通局：被盗日普损 36.067% 照削 ＋ 有播报（B21 史实口径不变）',
+      Math.abs(N.book.usd - 639.33) < 1e-6 && Math.abs(N.book.usdt - 639.33) < 1e-6 && N.hacked,
+      `usd=${f(N.book.usd, 2)} usdt=${f(N.book.usdt, 2)} log=${N.hacked}`);
+    check('9ak⑦ 上帝关事件：被盗日余额分文不动 ＋ 无播报',
+      G.book.usd === 1000 && G.book.usdt === 1000 && !G.hacked,
+      `usd=${f(G.book.usd, 2)} usdt=${f(G.book.usdt, 2)} log=${G.hacked}`);
+  }
+
+  /* ④ 行为：破产预警遮罩（Mt.Gox 2014-02-25 warn 锚点前 7 天）—— 普通局（hintOn）弹、上帝关事件不弹。
+     ⚠️ 上帝支先 `enableGod`（它会把 hintOn 强制关掉）再显式开回 hintOn —— 隔离出 `eventsOff` 这一道闸。 */
+  {
+    const warnI = idx(at(2014, 1, 25)) - 7 * 24;
+    const run = async (godOn) => {
+      const s = await mk({ sym: 'BTC', mode: 'margin', i: warnI - 1 });
+      s.hintOn = true;
+      if (godOn) { god.enableGod(s); s.hintOn = true; }
+      engine.advanceOneHour(s);
+      return { pending: s.pending, warnAt: s.warnAt };
+    };
+    const N = await run(false);
+    const G = await run(true);
+    check('9ak⑧ 普通局（hintOn）：Mt.Gox 前 7 天弹破产预警遮罩（v11 口径不变）',
+      N.pending === 'warn' && N.warnAt === idx(at(2014, 1, 25)),
+      `pending=${N.pending} warnAt=${N.warnAt}`);
+    check('9ak⑨ 上帝关事件：同一时刻不弹预警（遮罩也是史实利空事件的播报）',
+      G.pending == null && G.warnAt == null,
+      `pending=${G.pending} warnAt=${G.warnAt}`);
+  }
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

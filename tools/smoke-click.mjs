@@ -80,7 +80,7 @@ const STEPS = [
   ['上帝 · 拉盘组合拳', '[data-godpump="1"]'],
   ['上帝 · 插针', '[data-godpin="1"]'],
   ['上帝 · 假消息', '[data-godnews="1"]'],
-  ['上帝 · 真实新闻开关', '[data-godreal]'],
+  ['上帝 · 新闻源与事件开关', '[data-godreal]'],
   ['上帝 · 强平叠加', '[data-godliqov]'],
   ['上帝 · 世界预设', '[data-sbpreset]'],
   ['上帝 · 随机种子', '[data-sbroll]'],

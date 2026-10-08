@@ -489,6 +489,22 @@ function bookForWatch(s, sym, price) {
   return { mid: price, sigma, cap, liq, asks: side(1), bids: side(-1) };
 }
 
+/**
+ * 上帝模式「新闻源与事件」总闸（2026-10-09 · 用户拍板把「新闻源」扩成「新闻源与事件」）：
+ * `true` ⇒ 真实历史的**全部事件注入**一起熄火 ——
+ *   ① 4 条新闻播报（事件条 / 结果条 / 巨鲸披露 / ETF 月报）；
+ *   ② `extFlow`（巨鲸 / ETF 有向买盘）；
+ *   ③ 交易所停机（BitMEX 2020-03-13：播报 ＋「只平不开」限制）；
+ *   ④ 交易所被盗削减（Bitfinex 2016-08-02 普损）与归零（`close`，当前档无此配置，防御性同闸）；
+ *   ⑤ 破产预警遮罩（`warnAnchorAt`）与 K 线上的历史锚点刻度（render 侧）。
+ * 普通局 / 挑战局无 `s.god` ⇒ 恒 false，全部事件照常 —— 口径与真实历史逐位一致。
+ * ⚠️ 只关「事件注入」这一层：**底价仍是真实历史 K 线**（崩盘本身就在数据里，本作从不人为制造涨跌幅）；
+ *    市场自身行为（护盘 / 爆仓潮 / 极端行情保护带）不是历史事件，不在此闸内。
+ */
+export function eventsOff(s) {
+  return !!(s.god && s.god.noRealNews);
+}
+
 export function godWatchOf(s, sym = s.sym) {
   const m = mktOf(s, sym);
   const t = timeOf(s);
@@ -3045,9 +3061,10 @@ function npcBuild(s, sym, m, i) {
      ⚠️ 位移仍走既有链路（`npcNet` → `syncNpcDrift` × `NPC.synthGive`）—— 真实行情已含涨幅，
         这一层只让「玩家此刻在跟谁对着干」在盘口可见，不写 `s.flow`、零新状态（不升存档版）。 */
   const dayIdx = dayIndexOf(i);
-  /* ⚠️ 上帝模式「关闭真实新闻」（2026-10-08，`s.god.noRealNews` 默认 true）⇒ `extFlow` 归零：
-     巨鲸 / ETF 的**有向买盘**不再注入靶心，价格只随玩家操作走。普通局无 `s.god` ⇒ 逐位不变。 */
-  const extFlow = (s.god && s.god.noRealNews) ? 0 : (whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx));
+  /* ⚠️ 上帝模式「新闻源与事件」（2026-10-08 起，2026-10-09 扩容，`s.god.noRealNews` 默认 true）
+     ⇒ `extFlow` 归零：巨鲸 / ETF 的**有向买盘**不再注入靶心，价格只随玩家操作走。
+     普通局 / 挑战局无 `s.god` ⇒ 逐位不变。 */
+  const extFlow = eventsOff(s) ? 0 : (whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx));
   let npcRealisedSum = 0;
   for (let k = 0; k < NPC.ladder.length; k++) {
     const w = NPC.ladder[k].w;
@@ -3569,8 +3586,10 @@ function openCheck(s, side, frac = 1) {
 
   /* 停机维护（B24）：窗口内**只平不开** —— 平仓是逃生通道，不许被维护挡住（2020-03-13 那种暴跌里
      真被挡住的玩家就是这么绝望的，但本作不打算把「无法平仓」也一起复刻成必然爆仓）。
-     ⚠️ 只拦开仓，`closeTrade` 一个字都不动。 */
-  if (haltedAt(timeOf(s), s.ex)) {
+     ⚠️ 只拦开仓，`closeTrade` 一个字都不动。
+     ⚠️ 受「新闻源与事件」总闸（2026-10-09 `eventsOff`）：停机本身是一条史实利空事件 ——
+        上帝关事件 ⇒ 不播也不限（沙盒里不存在「所坏了」）。 */
+  if (!eventsOff(s) && haltedAt(timeOf(s), s.ex)) {
     return { ok: false, why: `${exchangeOf(s.ex)?.name ?? s.ex} 停机维护 ｜ 暂时不能开仓` };
   }
 
@@ -5122,8 +5141,10 @@ export function advanceOneHour(s) {
 
   // 交易所归零（由 `EXCHANGES[].close` 触发）：提前 7 天预警，到点余额清零、该所仓位作废。
   // 预警只在「玩家此刻就待在那家所」时出现 —— 已经搬走的人不需要被吓一跳。
+  // ⚠️ 上帝模式「新闻源与事件」关（`eventsOff`，2026-10-09）⇒ 整段跳过（当前档 `close` 全 null，
+  //    本路径本就是死代码 —— 同闸是防御性的：将来补史实闭所日时，上帝关事件也不会被归零吞钱）。
   const t = timeOf(s);
-  for (const ex of EXCHANGES) {
+  if (!eventsOff(s)) for (const ex of EXCHANGES) {
     if (ex.close == null) continue;
     if (t === ex.close - WARN_LEAD && s.ex === ex.id) {
       pushLog(s, `${ex.name} 提现异常，7 天后将停止一切交易`, 'bad', 'mkt');
@@ -5132,7 +5153,8 @@ export function advanceOneHour(s) {
   }
 
   // 被盗削减（B21 · Bitfinex 2016-08-02）：只削该所余额，不归零、不作废仓位。
-  for (const ex of EXCHANGES) {
+  // ⚠️ 同受「新闻源与事件」总闸（2026-10-09）：史实普损也是一笔真实的利空事件注入。
+  if (!eventsOff(s)) for (const ex of EXCHANGES) {
     if (ex.hack && t === ex.hack.at && applyHackCut(s, ex)) return;
   }
 
@@ -5142,10 +5164,10 @@ export function advanceOneHour(s) {
      ⚠️ 顺序即日志条的**先后**：`pushLog` 把最新的插在队首，同一个小时里最后写的那句才是
         日志条上显示的那句。新闻放在最前 —— 它是个 24 小时的「填充态」，该让位给同一小时里
         更具体的事件（与 P2-C「新闻让位于更新的日志」同一条口径）。 */
-  /* ⚠️ 上帝模式「关闭真实新闻」（2026-10-08，`s.god.noRealNews` 默认 true）⇒ 下面 4 条真实新闻
-     的日志**一律不播**，配合 `extFlow` 归零一起让价格与播报都只随玩家操作走。
-     普通局无 `s.god` ⇒ 闸门不生效，逐位不变。 */
-  if (!(s.god && s.god.noRealNews)) {
+  /* ⚠️ 上帝模式「新闻源与事件」（2026-10-08 起，2026-10-09 扩容，`s.god.noRealNews` 默认 true）
+     ⇒ 下面 4 条真实新闻的日志**一律不播**，配合 `extFlow` 归零一起让价格与播报都只随玩家操作走。
+     普通局 / 挑战局无 `s.god` ⇒ 闸门不生效，逐位不变。 */
+  if (!eventsOff(s)) {
     const news = newsStartAt(s.i);
     if (news) pushLog(s, news.title, 'news');
     /* **第二条 · 结果**（2026-10-01 拍板）：第一条只讲事件、不带数字；数字全部由这里给，
@@ -5169,8 +5191,9 @@ export function advanceOneHour(s) {
     /* 开张：只报「开局之后才开」的所 —— Bitfinex 在 2013-01-01 就在，
        `s.i` 那根永远不会等于 0（`advanceOneHour` 先自增），开局界面因此天然干净。 */
     if (ex.open > GAME.start && t === ex.open) pushLog(s, `${ex.name} 上线 ｜ 可在此交易`, 'ok');
-    // 停机维护（B24 · BitMEX 2020-03-13）：窗口内**只平不开**
-    for (const h of ex.halts || []) {
+    // 停机维护（B24 · BitMEX 2020-03-13）：窗口内**只平不开**。
+    // ⚠️ 受「新闻源与事件」总闸（2026-10-09）：停机是一条史实利空事件 ⇒ 上帝关事件时不播不限。
+    if (!eventsOff(s)) for (const h of ex.halts || []) {
       if (t === h.from) pushLog(s, `${ex.name} 停机维护 ｜ 只能平仓，不能开仓`, 'bad', 'mkt');
       if (t === h.to) pushLog(s, `${ex.name} 恢复交易`, 'ok');
     }
@@ -5220,9 +5243,11 @@ export function advanceOneHour(s) {
      ⚠️ **只有新手提示开着才打断**（`s.hintOn`）—— 老手在开场选了「我是老手」，自己扛。
         但那条**交易所级**预警日志不受它管（就在上面那个循环里，只在「你此刻就待在那家所」
         时才出现）—— 所以老手不是完全没有提示，只是没有那记强制暂停。
+     ⚠️ 上帝模式「新闻源与事件」关（`eventsOff`，2026-10-09）⇒ 预警也是一条史实利空事件的
+        播报，一并熄火（上帝有无限资金 ＋ 可重开，不需要这记保护）。
      ⚠️ **不写日志**：遮罩本身就是那条提醒；再 push 一条，那一格就会同时出现两条同义警告，
         违反「同一事件描述一局内最多一次」。`warnAnchorAt` 用 `===` 判等，天然只命中一次。 */
-  if (s.hintOn) {
+  if (s.hintOn && !eventsOff(s)) {
     const a = warnAnchorAt(s.i);
     if (a) {
       s.warnAt = a.at;
