@@ -12,7 +12,7 @@
  *    而 100x 下 0.5% 的逆向波动正是被针扎出来的，那才是这个游戏的核心体验（GDD §14）。
  */
 
-import { GAME, HOUR_MS, COINS, EXCHANGES, LIQ, MARGIN, MIN_NOTIONAL, minNotionalAt, notionalMaxLevAt, openNeedAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, BAND, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
+import { GAME, HOUR_MS, COINS, EXCHANGES, EXREV, LIQ, MARGIN, MIN_NOTIONAL, minNotionalAt, notionalMaxLevAt, openNeedAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, BAND, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCandleAt, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
@@ -2397,6 +2397,70 @@ function seedFund(s, sym) {
   s.fund = fundBaseOf(s, sym);
 }
 
+/* ── 交易所收入的回流管道（2026-10-09 审计「资金回流」§二）─────────────────────
+ * 单一出口原则：所有玩家侧费用先落 `s.exRev` 一本账（`exCharge`），每小时 sweep 一次
+ * 分流（`exRevSweep`）—— a → 保险基金（入流封顶）、b → 护盘储备（capRes 封顶）、
+ * 其余 = 运营利润不落账。守恒靠封顶，不靠记流水账。
+ * ⚠️ 全部收入源都是玩家/上帝侧动作 ⇒ 无玩家模拟 `exRev` 恒 0 ⇒ sweep no-op ⇒ NPC 世界
+ *    逐位不变（无玩家自洽由构造保证，见 `config.EXREV` 头注）。比例与排除项也在那里。 */
+
+/** 一笔交易所收入落账（懒建：老存档无 `exRev` 键，与 `s.adv`/`s.intWin` 同一先例，不升存档版）。 */
+function exCharge(s, amt) {
+  if (!(amt > 0)) return;
+  s.exRev = (Number.isFinite(s.exRev) ? s.exRev : 0) + amt;
+}
+
+/**
+ * 保险基金的**软上限**—— Σ 各币「当日流动性 × INSURE.seed」（与 `fundBaseOf` 同一把尺子），
+ * 随年代自动缩放（2013 与 2025 量级差三个数量级，写死绝对值必失真）。只统计已进过市场的币
+ * （`s.mkt` 有格的）：没碰过的币连基准都还没意义。
+ */
+function fundSoftCapOf(s) {
+  let cap = 0;
+  for (const sym of Object.keys(s.mkt)) cap += fundBaseOf(s, sym);
+  return cap;
+}
+
+/**
+ * **每小时分流**（`advanceOneHour` 每根调一次，排在 NPC 刻度之前 ⇒ 本根护盘就能用到回补）：
+ *   · `a = rev × EXREV.fundShare` → `s.fund`：**入流封顶**（`min(fund + a, max(fund, cap))`）——
+ *     存量不动（强平盈余等既有入池路径不在此列），只拦「回流管道」这一路的无限累积；
+ *   · `b = rev × EXREV.dipShare` → 护盘储备：按当日流动性比例摊到各币（`godScale` 同源，
+ *     与 `npcBuild` 的 liqDay 同一把尺子）、`capRes = liqDay × instSeedOf(sym, t)` 封顶，
+ *     **叠加**在 `instFlow` 涓流之上（`dipBuyOf` 是 9z 审计逐位锚定的纯函数，不动）；
+ *     `dipRes` 未播种（null）的币跳过——留给 `dipBuyOf` 首次满仓播种，不改变播种语义；
+ *   · 其余 `1 − a − b` = 运营利润，不落任何账（现实锚：交易所留存）。
+ * 两处封顶溢出都**耗散**（审计 §二：守恒靠封顶，不靠记流水账）。
+ * ⚠️ 导出给审计 9an 直调（与 `dipBuyOf` 同一先例）—— 差分测「每小时分流」的逐位口径，
+ *    免得端到端测被护盘买压的市场反馈污染（回补会真的变成买盘）。 */
+export function exRevSweep(s) {
+  const rev = Number.isFinite(s.exRev) ? s.exRev : 0;
+  s.exRev = 0;
+  if (!(rev > 0)) return;
+  if (Number.isFinite(s.fund)) {
+    const a = rev * EXREV.fundShare;
+    s.fund = Math.min(s.fund + a, Math.max(s.fund, fundSoftCapOf(s)));
+  }
+  const b = rev * EXREV.dipShare;
+  const t = timeOf(s);
+  let tot = 0;
+  const days = {};
+  for (const sym of Object.keys(s.mkt)) {
+    const liq = godScale(s, sym, liqOf(sym, dayIndexOf(s.i)));
+    if (liq > 0) { days[sym] = liq; tot += liq; }
+  }
+  if (tot > 0) {
+    for (const sym of Object.keys(days)) {
+      const m = s.mkt[sym];
+      if (!m || !Number.isFinite(m.dipRes)) continue;
+      const capRes = days[sym] * instSeedOf(sym, t);
+      /* 与基金同一「存量不动」口径：只拦回补这一路，已有存量（若因改表高于 capRes）不在此缩——
+         dipBuyOf 自己的 filled = min(capRes, …) 才是存量的收口（9z 逐位锚定，不动）。 */
+      m.dipRes = Math.min(m.dipRes + b * days[sym] / tot, Math.max(m.dipRes, capRes));
+    }
+  }
+}
+
 /**
  * **对手方池的上限**（方案 A · 2026-10-05）—— 当日流动性 × `CPOOL.capFrac`。
  * 与 `fundBaseOf` 复用**同一把尺子**（`liqOf` + `CPOOL.capFrac`）：随年代自动缩放，
@@ -3787,6 +3851,8 @@ export function openTrade(s, side, frac = 1) {
      原来只从余额里扣、不写 `realized`，于是 HUD 副行那个数既不等于真实现金变动、
      也不等于已实现盈亏。它只被 `render.js` 读来展示，不参与任何玩法判定。 */
   s.realized -= fee;
+  exCharge(s, fee);                     // 手续费进交易所收入账（回流管道 · config.EXREV）
+  if (otc) exCharge(s, notional * cost / (1 + (side === 'long' ? 1 : -1) * cost));   // OTC 溢价 = 柜台收入（点差对名义的加成，精确式见 config.EXREV 注）
   s.lev = lev;
 
   const marginMode = isMarginOrder;
@@ -4114,6 +4180,8 @@ export function closeTrade(s, why = '手动', frac = 1) {
      ⚠️ 只结算**毛盈亏**：手续费归交易所、保证金退回是玩家自己的抵押品，都不进池。 */
   settlePlayerPnl(s, sym, pnl);
   s.realized += pnl - fee;
+  exCharge(s, fee);                     // 平仓手续费进交易所收入账（回流管道 · config.EXREV）
+  if (otc) exCharge(s, notional * cost);   // OTC 溢价 = 柜台收入（`closeCheck` 的 notional 已是中间价口径 ⇒ 精确式恰为名义 × 点差）
   /* 交易统计（v21）：按**本笔回合净额**（毛盈亏 − 本笔分摊的开仓费 − 平仓费）分胜负 ——
      与日志里报的「净额」同一口径，所以玩家看到的「盈利」与档案里的「盈利笔数」对得上。
      ⚠️ 开仓费也要**按同一比例分摊**（全平时 `f = 1`，与旧口径逐位相同）。 */
@@ -4471,6 +4539,7 @@ export function godManipPush(s, sym, dir, notional) {
     debit(s, p.cost);           // 补款额 ≥ cost ⇒ 必成功
   }
   pushFlow(s, sym, dir, notional, 1, 'fut', true);
+  exCharge(s, notional * p.feeRate);   // 手续费部分进交易所收入账（冲击成本是价移不是收入 · config.EXREV）
   s.god.lastPush = notional;  // 面板记忆：下次打开操盘台预填这一笔（`god` 不进存档 ⇒ 会话级）
   return { ok: true, impact: p.impact, cost: p.cost };
 }
@@ -4496,6 +4565,7 @@ export function godManipWash(s, sym, notional) {
     debit(s, fee);
   }
   addPlayerVol(s, sym, notional, s.ex, 'fut');
+  exCharge(s, fee);                    // 洗售双边手续费全额进交易所收入账（回流管道 · config.EXREV）
   s.god.lastWash = notional;  // 面板记忆：同 `lastPush`（洗售框自己记自己的）
   /* 与 `pushFlow` 的 P1-2 同一条口径：假量只喂**当前币**的热度（`m.pv` 的结算在 tickMarket）。 */
   if (sym === s.sym) mktOf(s, sym).pv += notional;
@@ -4778,6 +4848,7 @@ export function godFakeNews(s, sym, dir) {
     debit(s, p.cost);
   }
   pushFlow(s, sym, dir, notional, 1, 'fut', true);
+  exCharge(s, notional * p.feeRate);   // 跟风单的手续费部分进交易所收入账（同 godManipPush · config.EXREV）
   mktOf(s, sym).heat = clamp01(mktOf(s, sym).heat + nudge);
   /* 轮换选条：取第 n 条、n+1 存档（坏值 / 缺键回 0）。 */
   if (!s.god.newsN) s.god.newsN = { good: 0, bad: 0 };
@@ -4975,6 +5046,7 @@ export function switchExchange(s, id) {
   s.books[from][cur] = 0;                              // 那一格离开旧所，此后只记在 s.transfer 里
   s.transfer = { amount: send, fee, rail: rail.id, cur, from, to: id, departAt: s.i, arriveAt: s.i + n };
   s.realized -= fee;                                   // 手续费是玩家真实付出的钱，与开/平仓费同一口径
+  exCharge(s, fee);                                    // 转账费进交易所收入账（回流管道 · config.EXREV）
   s.ex = id;                                           // 人已经在新所，钱还在路上
   normalizeLeverage(s);                                // 新所的上限可能更低，夹取一次
 
@@ -5278,6 +5350,10 @@ export function advanceOneHour(s) {
   // ⚠️ 上一步可能已经进了「待领救济金」或「破产预警」的待决态：时钟停了，后续的资金费 / 强平都不该再跑。
   if (s.pending) return;
 
+  /* 交易所收入分流（2026-10-09 回流管道 · config.EXREV）：上一小时攒下的手续费此刻落进
+     保险基金 / 护盘储备 —— 排在本根 NPC 刻度之前，这一根的护盘就能用到回补。 */
+  exRevSweep(s);
+
   /* 插针剧本伺服（2026-10-08 三批拍板③）：排在本根成形之前 —— `godManipPush` 写的位移
      进本根 K 线，随后 `liquidateAll` 的 `flushSlot` 用含位移的 `lastPrice` 判强平
      ⇒ 推到位的那一根，NPC 的强平簇真的爆。待决态（上面 return）时钟停走 ⇒ 伺服自然暂停。 */
@@ -5388,6 +5464,9 @@ export function rewindTo(s, to) {
   /* 保险基金（v30 · 缺口 5）也是「进度」⇒ 回退时抹成 `null`，让它按**跳转后那一天**的
      流动性重新播种（写死绝对值会在跨年代回退时失真）。 */
   s.fund = null;
+  /* 交易所收入累计（2026-10-09 回流管道）同属「进度」⇒ 清零：回退之后的手续费不该背着的
+     「未来」收入（时间线已换，谁收的费都算不清）。 */
+  s.exRev = 0;
   s.pvol = {};          // 玩家自己的成交量（v17）也是「进度」，回退时一并抹掉 —— 与 s.flow 同口径
   /* 持仓抛压折价（v18 / v25 疤痕）同样是「进度」⇒ 一并抹掉。⚠️ 漏掉它会让**没有持仓**的价格
      仍被一条永久疤痕压着（`refreshOverhang` 的按日重算只遍历 `heldSyms`，永远洗不掉它）。 */
@@ -5554,6 +5633,7 @@ function settleFunding(s) {
       const fee = borrowed * marginDailyRateAt(t, borrowCurOf(pos)) * marginRateMulOf(s, sym) / 24;
       pos.margin -= fee;
       s.realized -= fee;
+      exCharge(s, fee);                      // 借贷利息进交易所收入账（回流管道 · config.EXREV；现实 SAFU 的资金来源之一）
       ied += fee;
       grossM += borrowed;                            // 报出去的费率口径见下面窗口累计处
       continue;

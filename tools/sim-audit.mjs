@@ -5393,7 +5393,8 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     && engSrc9ag.includes('export function godPinTick(s)')
     && engSrc9ag.includes('export function godPinStop(s)')
     && engSrc9ag.includes('export function godFakeNews(s, sym, dir)')
-    && engSrc9ag.includes('if (s.pending) return;\n\n  /* 插针剧本伺服')
+    && engSrc9ag.includes('if (s.pending) return;\n\n  /* 交易所收入分流')
+    && engSrc9ag.includes('exRevSweep(s);\n\n  /* 插针剧本伺服')   // 2026-10-09 回流管道：排在伺服 / NPC 刻度之前
     && engSrc9ag.includes('godPinTick(s);\n\n  /* NPC 情绪 / 踩踏级联')
     /* 2026-10-08 M4k：作废行扩成对象体（插针 ＋ 沙盒世界偏向台阶 `sbBias` 一起清）；
        M4d：再并进假消息的冷却 / 轮换计数（`newsAt` / `newsN`）。 */
@@ -6003,6 +6004,84 @@ section('9am · 假新闻年代门控：四采样点禁词 ＋ 池下限 ＋ 唯
     const before = god.manipTplsOf('good', Date.UTC(2016, 4, 13) - 1).includes(g.t);
     const on = god.manipTplsOf('good', Date.UTC(2016, 4, 13)).includes(g.t);
     check('9am③ 边界：`time == from` 可出场、`from − 1ms` 不出场（`>=` 判定）', !before && on);
+  }
+}
+
+/* ═══════════════════ 9an · 交易所收入回流管道（2026-10-09 审计「资金回流」§二） ═══════════════════
+   玩家侧费用先落 `s.exRev` 一本账，每小时 `exRevSweep` 分流：10% → `s.fund`（入流封顶）、
+   5% → 护盘储备（capRes 封顶）、85% = 运营利润。无玩家自洽由构造保证（收入源全是玩家/上帝侧
+   动作 ⇒ 无玩家 exRev 恒 0 ⇒ sweep no-op ⇒ NPC 世界逐位不变）。 */
+section('9an · 回流管道：费用落账 · 每小时分流逐位 · 双封顶 · 无玩家恒 0');
+{
+  const readSrcAn = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const engSrcAn = readSrcAn('src/core/engine.js');
+  const cfgSrcAn = readSrcAn('src/core/config.js');
+  const stSrcAn = readSrcAn('src/core/state.js');
+
+  /* ① 结构：sweep 接线（NPC 刻度之前）＋ rewindTo 清零 ＋ state 播种 ＋ 七个收入落点 ＋ 比例 */
+  check('9an① 结构：exRevSweep 进 advanceOneHour（插针伺服之前）＋ rewindTo 清零 ＋ state 播种 exRev',
+    engSrcAn.includes('exRevSweep(s);\n\n  /* 插针剧本伺服')
+    && engSrcAn.includes('s.exRev = 0;')
+    && stSrcAn.includes('exRev: 0,'));
+  check('9an② 七个收入落点齐全（开/平仓费 · OTC 溢价×2 · 转账费 · 借贷利息 · 上帝吃单/跟风单 · 洗售）',
+    engSrcAn.includes('exCharge(s, fee);                     // 手续费进交易所收入账')
+    && engSrcAn.includes("if (otc) exCharge(s, notional * cost / (1 + (side === 'long' ? 1 : -1) * cost));")
+    && engSrcAn.includes('if (otc) exCharge(s, notional * cost);')
+    && engSrcAn.includes('exCharge(s, fee);                                    // 转账费进交易所收入账')
+    && engSrcAn.includes('exCharge(s, fee);                      // 借贷利息进交易所收入账')
+    && engSrcAn.includes('exCharge(s, notional * p.feeRate);   // 手续费部分进交易所收入账')
+    && engSrcAn.includes('exCharge(s, fee);                    // 洗售双边手续费全额进交易所收入账'));
+  check('9an③ config：EXREV 总回流 15%（fundShare 0.10 ＋ dipShare 0.05，∈ 审计区间 10~20%）',
+    cfgSrcAn.includes('fundShare: 0.10') && cfgSrcAn.includes('dipShare: 0.05'));
+
+  /* ② 行为：开＋平手续费落账 ＋ sweep 分流**逐位直测**（导出直调，免端到端被护盘买压反馈污染）。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+    s.lev = 5;
+    engine.openTrade(s, 'long', 0.5);
+    engine.closeTrade(s, '手动', 1);
+    const rev = s.exRev;
+    check('9an④ 行为：开＋平手续费精确落进 exRev（>0 ＋ 与 realized 里的费用同源）', rev > 0, `rev=${f(rev, 2)}`);
+    /* 直调 sweep：预置 fund / dipRes（有限值 ＋ 远低于各自封顶）⇒ 分流逐位 = rev × 比例。
+       单币局（mkt 只有 BTC）⇒ 摊给 BTC 的份额 = b 全额。 */
+    s.fund = 1e6; s.mkt.BTC.dipRes = 1e6;
+    engine.exRevSweep(s);
+    check('9an④′ sweep 逐位：fund +10% ＋ dipRes +5% ＋ 账本清零 ＋ 其余 85% 不落账',
+      Math.abs(s.fund - 1e6 - rev * 0.10) < rev * 1e-12 + 1e-6
+      && Math.abs(s.mkt.BTC.dipRes - 1e6 - rev * 0.05) < rev * 1e-12 + 1e-6
+      && s.exRev === 0,
+      `Δfund=${f(s.fund - 1e6, 2)} Δdip=${f(s.mkt.BTC.dipRes - 1e6, 2)} rev=${f(rev, 2)}`);
+  }
+
+  /* ③ 双封顶（存量不动口径）：基金存量高于软上限 ⇒ 入流全耗散不缩水；dipRes 顶格 ⇒ 回补全耗散。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+    s.lev = 5;
+    engine.openTrade(s, 'long', 0.5); engine.closeTrade(s, '手动', 1);
+    const rev = s.exRev;
+    s.fund = 1e12;                                    // ≫ 软上限（Σ liqDay × 2%）⇒ 入流必须全耗散
+    const dip0 = s.mkt.BTC.dipRes = 1e12;             // ≫ capRes ⇒ 回补必须全耗散
+    engine.exRevSweep(s);
+    check('9an⑤ 双封顶：基金存量超额时入流全耗散（存量不动）＆ dipRes 顶格时回补全耗散',
+      s.fund === 1e12 && s.mkt.BTC.dipRes === dip0 && rev > 0,
+      `fund=${f(s.fund, 0)} dip=${f(s.mkt.BTC.dipRes, 0)}`);
+  }
+
+  /* ④ 洗售费精确落账（godManipWash 返回的 fee == exRev 增量，逐位）。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+    god.enableGod(s); s.god.inf = true; s.god.lastFill = 1e9;
+    const r = engine.godManipWash(s, 'BTC', 1e6);
+    check('9an⑥ 上帝洗售双边手续费精确落账（exRev == 返回的 fee）',
+      r.ok && s.exRev === r.fee, `fee=${f(r.fee || 0, 2)}`);
+  }
+
+  /* ⑤ 无玩家自洽：纯 NPC 推进 48h ⇒ exRev 恒 0（sweep no-op ⇒ NPC 世界逐位不变）。 */
+  {
+    const s = await mk({ sym: 'BTC', i: idx(at(2021, 5, 10)) });
+    for (let h = 0; h < 48; h++) engine.advanceOneHour(s);
+    check('9an⑦ 无玩家 48h：exRev 恒 0（费用源全是玩家/上帝侧动作 ⇒ 回流管道休眠）',
+      s.exRev === 0, `exRev=${s.exRev}`);
   }
 }
 
