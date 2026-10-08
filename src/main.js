@@ -249,6 +249,7 @@ let godFloatOn = true;      // 浮窗开关（上帝面板浮窗行那枚），�
 let floatOpen = false;      // 面板是否展开
 let floatPage = 0;          // 面板页码：0 热力 / 1 巨鲸 / 2 深度 / 3 订单（随模式夹取）
 let floatPos = null;        // 圆钮视口坐标 {x,y}；null = 走 CSS 默认（右下角）
+let bookStep = 1;           // 订单簿网格步进 ×½/×1/×2/×5（2026-10-08）：会话级，不进存档
 
 /* ── 市场浮窗（2026-10-07 拍板）：普通 / 挑战局的盘口浮窗 ──────────────────────
    浏览器偏好（独立 localStorage 键、默认**开**）—— 与 `degen_colors` 同一口径，不进存档。
@@ -1073,13 +1074,14 @@ function dispatch(node, ev) {
   if (d.god !== undefined) return onGodTap(node);
   if (d.godcash !== undefined || d.godyear !== undefined || d.godmon !== undefined
     || d.godday !== undefined || d.godgo !== undefined
-    || d.godtab !== undefined || d.godinf !== undefined) {
+    || d.godtab !== undefined || d.godinf !== undefined || d.godliq !== undefined) {
     /* 这几枚只可能出现在上帝面板里，而面板只在 `s.god` 非空时打开。这一行是**状态机不靠 DOM 兜底**：
        万一面板被别的路径留下来（比如读到一份 `god: null` 的档），这里不能抛异常。 */
     if (!s.god) return;
     if (d.godtab !== undefined) return onGodTab(node);
     if (d.godcash !== undefined) return onGodCash(node);
     if (d.godinf !== undefined) return onGodInf();
+    if (d.godliq !== undefined) return onGodLiq(node);
     if (d.godyear !== undefined) return onGodPick('y', Number(d.godyear));
     if (d.godmon !== undefined) return onGodPick('m', Number(d.godmon));
     if (d.godday !== undefined) return onGodPick('d', Number(d.godday));
@@ -1106,15 +1108,19 @@ function dispatch(node, ev) {
     if (d.sbseed !== undefined) return onSbSeed(node);
     return onSbRoll();
   }
-  /* ── 上帝浮窗（2026-10-07）── 圆钮可能不在上帝面板里（它浮在图上），`s.god` 非空兜底同上；
+  /* ── 上帝浮窗（2026-10-07）── 圆钮可能不在上帝面板里（它浮在图上）；1dfe6b0 起**普通 /
+     挑战局的市场浮窗**（订单 ＋ 深度两页）也用同一套键 —— 闸门必须放宽到「浮窗 DOM 真的
+     存在」（`s.god` 或市场浮窗开关开着），否则普通局的圆钮 / 页签全部点不动（原闸门
+     `!s.god` 一刀切 ⇒ 既有 bug，2026-10-08 步进选择器要在普通局用，一并修正）。
      圆钮那一枚要**原始 pointer 事件**（bind.js 起转发）—— 拖拽的起点坐标。 */
   if (d.godfloat !== undefined || d.godalpha !== undefined || d.gofloat !== undefined
-    || d.goftab !== undefined || d.gofclose !== undefined) {
-    if (!s.god) return;
+    || d.goftab !== undefined || d.gofclose !== undefined || d.gofstep !== undefined) {
+    if (!s.god && !mktFloatOn) return;
     if (d.godfloat !== undefined) return onGodFloat();
     if (d.godalpha !== undefined) return onGodAlpha();
     if (d.gofloat !== undefined) return onGodFloatChip(ev);
     if (d.goftab !== undefined) return onGodFloatTab(node);
+    if (d.gofstep !== undefined) return onGodFloatStep(node);
     return onGodFloatClose();
   }
 
@@ -1459,6 +1465,15 @@ function onGodTab(node) {
   showGod();
 }
 
+/** 深度旋钮（`data-godliq`，2026-10-08）：写 `s.god.liqMul`（'auto' | 1|2|4|8）——
+ *  引擎闸门在 `engine.hourLiqBase` 末尾（`godLiqMulOf`），撮合 / 订单簿 / 量柱一处放大。
+ *  面板是静态 DOM ⇒ 重开本层刷新按钮高亮（同 `onGodTab` 的理由）；不进存档（会话级）。 */
+function onGodLiq(node) {
+  const v = node.dataset.godliq;
+  s.god.liqMul = v === 'auto' ? 'auto' : (Number(v) || 1);
+  showGod();
+}
+
 /* ── 上帝浮窗（2026-10-07 用户拍板）────────────────────────────────────────── */
 
 /** 浮窗的 `ui` 包（2026-10-07 起两模式共用）：页表随模式取、页码夹进表内、开关读各自的偏好
@@ -1468,7 +1483,7 @@ function floatUi() {
   if (!pages.some(([p]) => p === floatPage)) floatPage = pages[0][0];
   return {
     on: s.god ? godFloatOn : mktFloatOn, open: floatOpen, page: floatPage, pos: floatPos,
-    pages, mkt: !s.god,
+    pages, mkt: !s.god, step: bookStep,
   };
 }
 
@@ -1525,6 +1540,14 @@ function onGodFloatChip(ev) {
 /** 浮窗面板页签（`data-goftab`，**与上帝面板的 `godtab` 是两套**）—— 只改页码。 */
 function onGodFloatTab(node) {
   floatPage = Number(node.dataset.goftab) || 0;
+  after();
+}
+
+/** 订单簿步进档（`data-gofstep`，2026-10-08）：写会话级 `bookStep`（×½/×1/×2/×5），下一帧
+ *  `floatBody` 用它乘网格步进重画。普通局市场浮窗的订单页同样有这排按钮 ⇒ 闸门已放宽
+ *  （见 dispatch 浮窗组）。纯显示偏好，不进存档。 */
+function onGodFloatStep(node) {
+  bookStep = Number(node.dataset.gofstep) || 1;
   after();
 }
 

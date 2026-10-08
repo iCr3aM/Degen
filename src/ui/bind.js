@@ -34,6 +34,9 @@ export const ACTION_KEYS = [
         「关闭」（关的是面板，不是模式）。 */
   'god', 'godcash', 'godinf', 'godyear', 'godmon', 'godday', 'godgo', 'godtab',
   'godpush', 'godwash', 'godspoof',
+  /* `godliq`（2026-10-08）：操盘台「深度」行的档位按钮（自动 / ×1 / ×2 / ×4 / ×8）——
+     写 `s.god.liqMul`，引擎在 `hourLiqBase` 末尾统一放大深度分母。 */
+  'godliq',
   /* U1（ROADMAP §21.4）：`mode2`（2026-10-04 起是操作区顶部「工具」行里的两枚段控
      「杠杆」/「合约」—— `data-mode2="margin"` / `"fut"`，取代旧那枚「金额」行末尾的切换键）。
      ⚠️ 用 `mode2` 而不是 `mode` —— `mode` 已被 K 线左上角那枚**粒度**小字占用（`main.js` 的 `d.mode`）。
@@ -103,6 +106,9 @@ export const ACTION_KEYS = [
      `goftab` ＝ 浮窗面板页签（热力 / 巨鲸 / 深度 / 订单 / 成交）；`gofclose` ＝ 面板右上角「✕」。
      ⚠️ 与 `godtab`（上帝面板页签）是**两套**页签 —— 浮窗的用 `goftab`，别混。 */
   'godfloat', 'godalpha', 'gofloat', 'goftab', 'gofclose',
+  /* `gofstep`（2026-10-08）：订单簿页底部的步进档（×½/×1/×2/×5）—— 会话级网格缩放，
+     普通 / 挑战局的市场浮窗订单页同样有这排按钮（分派见 `main.js` 的 `onGodFloatStep`）。 */
+  'gofstep',
   /* 市场浮窗开关（2026-10-07 拍板）：普通 / 挑战局设置页那枚「市场浮窗 开/关」——
      详浮窗本体（上帝局）与这枚开关是两回事；分派见 `main.js` 的 `onMktFloat`。 */
   'mktfloat',

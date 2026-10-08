@@ -200,6 +200,10 @@ export function godWatchOf(s, sym = s.sym) {
   const base = hourLiqBase(s, sym, s.i);
   const rawBase = hourLiqRaw(s, sym, s.i);   // 未折减分母（ADV 口径）—— 深度页「深度乘数」读数用
   const price = lastPrice(s, sym);
+  /* 深度旋钮（2026-10-08）：深度页的 `liqDay / dead / sat` 三行读数**同步 ×mul** 保持页面自洽
+     —— `hourBase` / `poolCap` 已随 `hourLiqBase` 自带旋钮，这三行走的是 `liqOf`（原始日流动性）
+     不跟着走就会两套口径；`×1` 走 IEEE 精确恒等 ⇒ 普通局逐位不变。 */
+  const liqMul = godLiqMulOf(s, sym);
   /* 同价聚合（2026-10-08 热力图改版 · 用户拍板 A）：六档共用一条均价 ＋ 同一倍率 ⇒ 同价
      强平线逐位相等，六根条叠同一价位纯属冗余 ⇒ 按「侧|价」合并（名义累加、`w` 累加、
      档名 join）——`sp` 梯度改版后各档均价本已离散，这只在「恰好同价」时兜底（如早年
@@ -223,9 +227,9 @@ export function godWatchOf(s, sym = s.sym) {
        折减残值（已折进上面的「本时深度」，这行让玩家看清折了多少）；refillPct = 深度池
        在途消耗的回补进度 `1 − poolRefill(e)`，无在途消耗 ⇒ 1（满）。纯派生，不写状态。 */
     depth: {
-      liqDay, hourBase: base,
+      liqDay: liqDay * liqMul, hourBase: base,
       poolUsed: poolConsumedAt(s, sym, s.i), poolCap: POOL.capK * base,
-      dead: liqDay * SLIP.threshold, sat: liqDay * SLIP.cap,
+      dead: liqDay * liqMul * SLIP.threshold, sat: liqDay * liqMul * SLIP.cap,
       depthMul: rawBase > 0 ? advDepthMul(s, sym, s.i, rawBase) : 1,
       refillPct: (s.pool && s.pool[sym] && s.pool[sym].v > 0)
         ? Math.max(0, 1 - poolConsumedAt(s, sym, s.i) / s.pool[sym].v) : 1,
@@ -992,14 +996,45 @@ function advTick(s) {
 }
 
 /**
- * 该小时的**基准深度分母** ＝ `hourLiqRaw × 对抗性深度乘数`
+ * **上帝深度旋钮**（2026-10-08 用户拍板）—— 拉盘后订单簿「越拉越薄」的现实化出路：
+ * 价格被推离史实越远，做市盘 / 挂单方越有理由跟上来 ⇒ 深度分母按**位移偏离史实的倍数**
+ * 放大。闸门只加在 `hourLiqBase` 末尾一处 ⇒ 撮合 / 走簿 / 浮窗订单簿 / 压力位墙自动同源
+ * （看到的深度 ＝ 撞上的深度，审计 9v 的恒等式不被破坏）。
+ *
+ *   · `'auto'`（缺省）＝ `clamp(1, 8, lastPrice ÷ indexPrice)` —— 价移比，自动跟随玩家把盘拉了多远；
+ *   · 手动档 `1|2|4|8` ＝ 操盘台里拍死一个倍数（覆盖自动）。
+ *
+ * ⚠️ 只在上帝局生效：`s.god` 为空 ⇒ **恰好返回 1**（乘法恒等）—— 普通 / 挑战局逐位不变（审计红线）。
+ * ⚠️ `s.god` 不进存档（会话级，`save.js` 落盘剔除）⇒ 旋钮同为会话级，读档回普通局自然归位。
+ * ⚠️ 自动档分子 `lastPrice`（含位移）、分母 `indexPrice`（原始收盘）—— 与「偏离史实」的定义严格
+ *    一致；任一价取不到（未上线 / 越界）⇒ 退回 1。自阻尼：位移↑ ⇒ mul↑ ⇒ 分母↑ ⇒ 后续位移↓。
+ * @returns {number} 深度倍率，恒 ≥ 1（旋钮只把市场变大，不把市场变小）
+ * ⚠️ 唯一的外部读数方：render.js 的量柱市场份（拍板④）—— 同一函数同一口径，不许各算各的。
+ */
+export function godLiqMulOf(s, sym = s.sym) {
+  if (!s.god) return 1;
+  const m = s.god.liqMul;
+  if (m != null && m !== 'auto') {
+    const n = Number(m);
+    return Number.isFinite(n) && n > 1 ? Math.min(8, n) : 1;
+  }
+  const idx = indexPrice(s, sym), last = lastPrice(s, sym);
+  if (!(idx > 0) || !(last > 0)) return 1;
+  return Math.min(8, Math.max(1, last / idx));
+}
+
+/**
+ * 该小时的**基准深度分母** ＝ `hourLiqRaw × 对抗性深度乘数 × 上帝深度旋钮`
  * —— **不含**瞬时深度池（池容量要拿它当基数 ⇒ 不能在它里面自洽引用，见 `poolFactorOf`）。
+ * ⚠️ 上帝旋钮乘在**末尾**（2026-10-08）：`×1` 走 IEEE 精确恒等 ⇒ 普通局逐位不变。
  */
 function hourLiqBase(s, sym, i) {
   const raw = hourLiqRaw(s, sym, i);
   if (!(raw > 0)) return 0;
   const mul = advDepthMul(s, sym, i, raw);
-  return mul === 1 ? raw : raw * mul;
+  const base = mul === 1 ? raw : raw * mul;
+  const gm = godLiqMulOf(s, sym);
+  return gm === 1 ? base : base * gm;
 }
 
 /**

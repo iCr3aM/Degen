@@ -2166,6 +2166,21 @@ button { user-select: none; -webkit-user-select: none; }
   text-align: right;
   padding: 0 2px;
 }
+/* 关口格（2026-10-08 用户拍板②）：整数关口（网格步长的 10× 格 / 5× 格）只提亮价格列 ——
+   数值与量条一字不动（render.js 挂类、这里管样式）。Tier1（10×）亮过 Tier2（5×）。 */
+.gb-row.gate i { color: color-mix(in srgb, var(--fg) 72%, var(--mut)); font-weight: 600; }
+.gb-row.gate2 i { color: color-mix(in srgb, var(--fg) 42%, var(--mut)); }
+/* 步进选择器（2026-10-08 用户拍板①）：订单簿页底部的网格缩放档 ×½/×1/×2/×5 ——
+   与 .god-ftab 同一族（1px --line 边框、9px 字），选中档走 --accent（页签同款）。 */
+.gb-steps { display: flex; justify-content: center; gap: 6px; margin-top: 4px; }
+.gb-step {
+  font-size: 9px;
+  line-height: 1;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  color: var(--mut);
+}
+.gb-step.on { color: var(--accent); background: var(--accent-soft); }
 
 /* ══════════════ 桌面端分档：详情浮窗扩大 ＋ 容器再放宽（2026-10-08 用户拍板）══════════════
    用户原话「做桌面端（桌面网页版）适配，详细适配，比如详情浮窗可以扩大」。浮窗那三档尺寸改由
@@ -2192,6 +2207,7 @@ button { user-select: none; -webkit-user-select: none; }
   .gb-row i, .gb-head i { flex: 0 0 72px; }
   .gb-row em, .gb-head em { flex: 0 0 48px; }
   .gb-row b, .gb-head b { flex: 0 0 62px; }
+  .gb-step { font-size: 10px; }
 }
 @media (min-width: 1680px) {
   :root { --float-w: 480px; --float-h: 72dvh; --hm-h: 330px; }

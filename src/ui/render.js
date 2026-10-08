@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtFloatPrice, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -1478,10 +1478,12 @@ export function update(refs, s, view) {
  *        （交易页看 `s.i`、回顾页看 `rv.i`），共用一格视野就会串台（见 `view.js` 的 `keyOf`）。
  *   `levels` 历史压力位（ROADMAP §六十五）。⚠️ **只有回顾页传**，交易页恒 null ——
  *        用户 2026-10-02 拍板「交易页只算不画」（那是手感，画出来只会干扰看盘）。
+ *   `volMul` 市场量柱倍率（2026-10-08 拍板④）：上帝局随深度旋钮放大市场份，**只交易页传**
+ *        （回顾页是市场史，恒缺省 1）；`×1` 走 IEEE 精确恒等 ⇒ 普通局逐位不变。
  * @returns {object} `windowFor` 的返回值（`mode` / `count` / `locked` / `right` 都要用）
  */
-function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns = '', levels = null }) {
-  const win = windowFor(sym, i, view.chartW, own, ns);
+function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns = '', levels = null, volMul = 1 }) {
+  const win = windowFor(sym, i, view.chartW, own, ns, volMul);
   /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
      日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
      （`count` 可能大于可用根数，这里的下界会算成负数）。 */
@@ -1505,8 +1507,10 @@ function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns
     anchors: anchorMarks,
     right: win.right,
     /* 量柱 P95 的缓存键（用户 2026-10-01 拍板）：`windowFor` 每帧重建 `vols`，所以不能用引用当键 ——
-       用「这份视野是谁」的字符串。同一视野（未换币 / 未换粒度 / 未拖动）下 P95 恒定。 */
-    cacheKey: `${sym}|${win.mode}|${win.right}|${win.count}`,
+       用「这份视野是谁」的字符串。同一视野（未换币 / 未换粒度 / 未拖动）下 P95 恒定。
+       ⚠️ 末尾附加 `volMul`（2026-10-08）：上帝局自动档的倍率随价移逐小时漂移，不进键
+          就会复用旧倍率下的 P95（量柱刻度错一档）；普通局恒 1 ⇒ 键照样稳定，缓存不受影响。 */
+    cacheKey: `${sym}|${win.mode}|${win.right}|${win.count}|${volMul}`,
     /* 顶部留白 = 左上角遮罩的**实测**高度（Batch 5 · B27）：量不到时由 `chart.js` 退回自己的兜底常量。
        ⚠️ 量一次就缓存（用户 2026-10-01 拍板）：它只随**容器宽度**（换行）与**文案长度**变，
           每帧 `getBoundingClientRect` 会白白强制一次布局。键 = 宽度 ＋ 那几段文案的总长。 */
@@ -1587,6 +1591,9 @@ function syncChart(refs, s, view, sym, cur, mark) {
 
   const win = chartOpts({
     canvas: refs.canvas, head: refs.chartHead, heat: refs.heatChip, sym, i: s.i, view, mark, cur,
+    /* 上帝局量柱市场份随深度旋钮放大（2026-10-08 拍板④）—— 与引擎撮合分母同一个函数同一
+       个口径（`godLiqMulOf`）；普通 / 回顾页不传 ⇒ 恒 1，逐位不变。 */
+    volMul: s.god ? godLiqMulOf(s) : 1,
   });
 
   /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种（`main.js` 里定的目标档） */
@@ -3148,6 +3155,22 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
      ⚠️ 输入框照旧不挂 `data-*`（`bind.js` preventDefault）；预览随 `input` 事件即时重算。 */
   const rowsC = el('div', 'confirm-rows');
 
+  /* 深度旋钮（2026-10-08 用户拍板）：市场分母的倍率 —— 拉盘后订单簿不再「越拉越薄」。
+     自动档 = 位移偏离史实的倍数（clamp 1~8），手动档拍死；闸门在 `engine.hourLiqBase` 末尾
+     一处 ⇒ 吃单 / 走簿 / 浮窗订单簿 / 量柱同一处放大、处处自洽。普通 / 挑战局没有 `s.god`
+     ⇒ 恒 ×1（引擎逐位不变）。按钮高亮靠重开面板刷新（静态 DOM，同页签的理由）。 */
+  const lqRow = el('div', 'set-row god-sbrow');
+  lqRow.append(el('i', null, '深度'));
+  const lqGrp = el('div', 'god-pick');
+  const lqCur = s.god.liqMul == null ? 'auto' : String(s.god.liqMul);
+  for (const [v, label] of [['auto', '自动'], ['1', '×1'], ['2', '×2'], ['4', '×4'], ['8', '×8']]) {
+    const b = el('button', lqCur === v ? 'set-btn on' : 'set-btn', label);
+    b.dataset.godliq = v;
+    lqGrp.append(b);
+  }
+  lqRow.append(lqGrp);
+  rowsC.append(lqRow);
+
   /* ⚠️ 局部变量用 `mn*` 前缀 —— 页签 1 的月份选择器已经占了 `mRow`（2026-10-07 构建撞名修正）。 */
   const mnRow = el('div', 'set-row');
   const manipIn = el('input', 'god-in god-manip');
@@ -3281,9 +3304,12 @@ function floatGeo() {
  *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ 热度（恐惧贪婪只在交易页）；
  *  页 2 深度：日流动性 / 本时基准 / 深度池余量 / 免滑点线 / 单笔顶格线 ＋ 压力位墙汇总 —— 全是真状态；
  *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础 18 档 ＋ 压力位墙逐档列出。
+ *  2026-10-08 加：① 底部步进选择器 ×½/×1/×2/×5（会话级 `bookStep`，main.js 持有）；
+ *             ② 远场稀疏化（q 过半顶格后隔档显示，跳格名义折进 `gb-far` 守恒）
+ *                ＋ Tier1/Tier2 关口格 CSS 提亮（数值不动）。
  *  ⚠️ 旧页 4「逐笔成交」已退役（2026-10-08 用户拍板）：明细行数随本小时进度漂移（每帧跳变）、
  *     拖动浮窗时列表乱跳，且与订单簿 / 深度页信息重叠 —— 数据源 `tape.js` 一并删除。 */
-function floatBody(s, page) {
+function floatBody(s, page, bookStep = 1) {
   const w = godWatchOf(s, s.sym);
   const box = el('div', 'god-fbody');
   if (page === 0) {
@@ -3391,7 +3417,7 @@ function floatBody(s, page) {
       const m = raw / e;
       return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * e;
     };
-    const step = niceStep(b.mid);
+    const step = niceStep(b.mid) * bookStep;   // ① 底部步进选择器（会话级）：×½ 细看 / ×5 广看，档位数不变
     /* 单侧视野格数（2026-10-08 · 用户拍板）：<1280px 12 档 —— 手机 39 行 ≈ 507px 矮屏必滚，
        27 行 ≈ 351px 免滚动；≥1280px 三档桌面 18 档不动（断点对齐 `--float-w` 的 media query）。
        远档 `gb-far` 汇总线随之自动收窄。 */
@@ -3409,12 +3435,27 @@ function floatBody(s, page) {
     const side = above => {
       const rows = [];
       const xEdge = Math.abs((midIdx + (above ? VIEW + 0.5 : -VIEW - 0.5)) * step / b.mid - 1);
+      /* ② 远场稀疏化（2026-10-08 用户拍板）：单格名义 q 过半顶格（cap/2）之后，曲线已经贴着
+         平台线走，逐格列出一排近乎等高的行反而失真 —— 真实 LOB 的远场本就稀疏
+         （Krause 2021, arXiv:2106.11691 的「两类流动性」）。隔档显示（偶数格隐藏），
+         跳过格的名义折进下面的 `gb-far` 累计 ⇒ 行上少画的 ＋ 更远行的 ＝ 全侧总量，守恒。 */
+      let spN = 0, spUsd = 0;
       for (let k = 1; k <= VIEW; k++) {
         const q = cellQ(k, above);
-        if (q > 0) rows.push({ price: (midIdx + (above ? k : -k)) * step, notional: q * b.liq, wall: false });
+        if (q <= 0) continue;
+        if (q > b.cap / 2 && k % 2 === 0) { spN++; spUsd += q * b.liq; continue; }
+        const kk = midIdx + (above ? k : -k);   // 网格序号（整数）—— 关口判定用，无浮点误差
+        /* ② 关口格（数值不动，只挂类名由 CSS 提亮）：网格步长的 10 倍格 = Tier1（整数关口，
+           Urquhart 2017 / Hu et al. 2019 的 round-number 聚集）、5 倍格 = Tier2。
+           10 | kk ⇒ 5 | kk，Tier1 恒比 Tier2 稀 ⇒ 强度分级在任何缩放档下都成立。 */
+        rows.push({
+          price: kk * step, notional: q * b.liq, wall: false,
+          gate: kk % 10 === 0 ? 1 : kk % 5 === 0 ? 2 : 0,
+        });
       }
-      /* 视野外：梯的剩余 = `cap − 已展示的 q`（连续口径下逐格守恒），墙按真实价逐条判断。 */
-      const far = { n: 0, usd: Math.max(0, (b.cap - Math.min(qOf(xEdge), b.cap)) * b.liq) };
+      /* 视野外：梯的剩余 = `cap − 已展示的 q`（连续口径下逐格守恒），墙按真实价逐条判断；
+         稀疏化跳过格的名义在这里并入（见上）。 */
+      const far = { n: spN, usd: spUsd + Math.max(0, (b.cap - Math.min(qOf(xEdge), b.cap)) * b.liq) };
       for (const r of above ? b.asks : b.bids) {
         const beyond = Math.abs(r.price / b.mid - 1) >= xEdge;
         if (!r.wall) { if (beyond) far.n++; continue; }
@@ -3438,7 +3479,9 @@ function floatBody(s, page) {
     head.append(el('i', null, '价格'), el('span', 'gb-track'), el('em', null, '数量'), el('b', null, '金额'));
     box.append(head);
     const gbRow = (r, cls) => {
-      const row = el('div', `gb-row ${cls}${r.wall ? ' wall' : ''}`);
+      /* ② 关口格只提亮价格列（CSS `.gb-row.gate` / `.gate2`），数值与量条一字不动；墙行不参与。 */
+      const gateCls = r.wall ? '' : r.gate === 1 ? ' gate' : r.gate === 2 ? ' gate2' : '';
+      const row = el('div', `gb-row ${cls}${gateCls}${r.wall ? ' wall' : ''}`);
       row.append(el('i', null, (r.wall ? '墙 ' : '') + fmtFloatPrice(r.price, step)));
       const u = el('u');
       u.style.width = `${Math.max(3, (r.qty / maxQ) * 100)}%`;
@@ -3453,6 +3496,15 @@ function floatBody(s, page) {
     box.append(el('div', 'gb-mid', fmtFloatPrice(b.mid, step)));
     for (const r of bids) box.append(gbRow(r, 'gb-bid'));
     if (B.far.usd > 0) box.append(gbFar(B.far));
+    /* ① 步进选择器（2026-10-08 用户拍板）：挂在页底 —— 网格缩放档，点按写 `main.js` 的
+       会话级 `bookStep`（`data-gofstep` 委托，不进存档）；选中档高亮随每帧重画自动跟随。 */
+    const stepRow = el('div', 'gb-steps');
+    for (const v of [0.5, 1, 2, 5]) {
+      const b = el('button', `gb-step${Math.abs(bookStep - v) < 1e-9 ? ' on' : ''}`, v === 0.5 ? '×½' : `×${v}`);
+      b.dataset.gofstep = String(v);
+      stepRow.append(b);
+    }
+    box.append(stepRow);
   } else {
     /* 深度页（页 2）。⚠️ 旧页 4「逐笔成交」已退役（2026-10-08）：明细行数随本小时进度漂移、
        拖动时乱跳 —— 页表里不再有 4，这里只服务页 2。 */
@@ -3479,7 +3531,7 @@ function floatBody(s, page) {
  * 每帧调用（`main.js` 的 `draw()` 全量路径）：按 `ui` 挂 / 摘圆钮与面板。
  * @param {object|null} s  游戏状态；`null`（回顾 / 浮窗关）⇒ 全部摘除
  * @param {{on:boolean,open:boolean,page:number,pos:{x:number,y:number}|null,
- *          pages:Array<[number,string]>,mkt:boolean}} ui main.js 持有的浮窗状态
+ *          pages:Array<[number,string]>,mkt:boolean,step:number}} ui main.js 持有的浮窗状态
  *   —— `pages` 是**当前模式的页表**（上帝局 4 页 / 普通局订单簿＋深度 2 页），
  *      `mkt` = 普通局标记（决定圆钮副色，页签与内容都随 `pages` 走）。
  */
@@ -3520,7 +3572,7 @@ export function updateFloat(s, ui) {
     }));
   }
   for (const b of fPanel.querySelectorAll('[data-goftab]')) b.classList.toggle('on', Number(b.dataset.goftab) === ui.page);
-  fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page));
+  fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page, ui.step));
   /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽由 `--float-w` 给，＋8px 余量）。
      高度由 `--float-h` 给（手机端兜底 64dvh）⇒ 上弹时 top 还要夹进「视口高 − 面板高 − 余量」，
      否则矮视口下面板底边会探出屏幕外（2026-10-08 扩容后尤其明显）。 */

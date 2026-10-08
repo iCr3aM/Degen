@@ -1559,6 +1559,10 @@ export function enableGod(s) {
      开启后归零**自动补满**到 `lastFill`（见 `engine.js` 的 `godFillCash` 与 `checkRuin`）。
      ⚠️ 不进 `save.js` 的 `SHAPE`（那里只管数组 / 对象类型），缺键读侧一律当 `false`。 */
   if (s.god.inf == null) s.god.inf = false;
+  /* 深度旋钮（2026-10-08 用户拍板）：缺省 **自动档** —— 倍率 = 价移偏离史实的倍数
+     （clamp 1~8，`engine.godLiqMulOf`）。开局无位移 ⇒ 恰好 1 ⇒ 与不开旋钮逐位相同；
+     拉盘之后才自动跟着放大，订单簿不再「越拉越薄」。⚠️ 同 `god` 本体：不进存档（会话级）。 */
+  if (s.god.liqMul == null) s.god.liqMul = 'auto';
   /* 统计（v21 · M1）：这一局**动过上帝模式**（称号「上帝之手」读它）。
      写在解锁那一刻而不是每次开面板：它要回答的是「这局的成绩干不干净」。 */
   s.stat.god = true;

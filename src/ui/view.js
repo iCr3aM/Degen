@@ -185,8 +185,13 @@ function dayBarCached(sym, d, upto, own) {
  *   `slots` ＝ 本帧**要画的槽位数**（＝ `count`）。
  * @param {boolean} own 是否把**玩家自己的成交额**并进量柱（v20）。交易页传真；
  *   **历史回顾页必须传假** —— 那一屏讲的是市场史，玩家自己这一局的成交不该混进 2013 年的柱子。
+ * @param {number} [volMul] 市场量柱倍率（2026-10-08 拍板④ · 上帝深度旋钮的显示侧，缺省 1）——
+ *   **只放大市场那一份**：玩家自己的成交是真金白银，不随旋钮虚增。⚠️ 不能整柱放大：chart.js
+ *   按视野内 P95 归一化，均匀放大全部柱会被归一化**完全抵消**（视觉零变化）；只乘市场份 ⇒
+ *   玩家的成交柱相对变矮 ——「更深的市场里你的单子不再是异常巨量」，正是旋钮的现实化目的。
+ *   `×1` 是 IEEE 精确恒等 ⇒ 普通局 / 回顾页逐位不变。
  */
-export function windowFor(sym, i, cssW, own = true, ns = '') {
+export function windowFor(sym, i, cssW, own = true, ns = '', volMul = 1) {
   /* 回退 / 重开 ⇒ `s.i` 变小（`rewindTo` 会清空 `s.pvol`，过去那些天的玩家成交随之改变）
      ⇒ 1 日线缓存整表作废。正常推进不清（过去的天不因时间前进而改变）。见 `dayCache` 段注释。 */
   if (i < dayCacheMarkI) dayCache.clear();
@@ -207,7 +212,7 @@ export function windowFor(sym, i, cssW, own = true, ns = '') {
       candles.push(bar);
       /* 日线的量 = **已过小时的份额之和** × 当天真实总量（Batch 4 · B15）：
          整天 = 份额和约 1 ⇒ 拿回全量；今天 = 只算已过的那几个小时 ⇒ 柱子随小时推进逐格抬升。 */
-      vols.push(bar.share * (liqOf(sym, d) || 0) + (bar.pv ? bar.pv.margin + bar.pv.fut : 0));
+      vols.push(bar.share * (liqOf(sym, d) || 0) * volMul + (bar.pv ? bar.pv.margin + bar.pv.fut : 0));
       pvols.push(bar.pv);
     }
   } else {
@@ -220,7 +225,7 @@ export function windowFor(sym, i, cssW, own = true, ns = '') {
       /* 市场那一份 ＋ **玩家自己那一份**（v17）—— 玩家砸出的天量从此在图上看得到。
          v24：这一份**只认本币**（`pvol[sym]`）—— 在 BTC 买的量不该出现在 ETH 的柱子上。 */
       const pv = own ? playerVolOf(sym, k) : null;
-      vols.push((share > 0 ? share * (liqOf(sym, dayIndexOf(k)) || 0) : 0) + (pv ? pv.margin + pv.fut : 0));
+      vols.push((share > 0 ? share * (liqOf(sym, dayIndexOf(k)) || 0) : 0) * volMul + (pv ? pv.margin + pv.fut : 0));
       pvols.push(pv);
     }
   }
