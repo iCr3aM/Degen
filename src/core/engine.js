@@ -209,16 +209,22 @@ export const LOB = {
      实测（离线 `tools/tmp-m4-sim.mjs` · BTC 720h · 2026-10-08 M4a 终值）：0.056 ⇒ 双边 37.7%。
      ⚠️ 只有当 `sMul` 夹口 0.2~2 **不触底**时它才是设定点（见 `lobTick` 治理器注）。 */
   capQ: 0.056,
-  near: 20,            // 每小时每侧新生成的近场单数（× 沙盒旋钮 × 治理器）
-  kNear: 0.16,         // 近场指数衰减 k（每格；格 ≈ 0.2% 价距）
+  /* 2026-10-09 改：`near` 20→70、`kNear` 0.16→0.04（近场铺得更平更远）。
+     病根（用户报「×20 远处挂单为 0」）：旧近场 k≈0.16/格 ⇒ 价距中位仅 13 格（±2%），
+     簿真实 reach 只到 ±16%；而 ×20 一屏 ±67% ⇒ 视野外**必然**是 0。
+     改后价距中位 ~30 格、reach ~28%，每一档口径都落在簿的真实 reach 内。
+     ⚠️ 铺平会同步抬高总深；单笔大小 `nearQ` 按笔数反比缩回去（近场单更多更小），
+     并放开治理器夹口下限（见 `lobTick`）⇒ 总深仍锚 `capQ`（≈日成交量 30~40%）。 */
+  near: 70,            // 每小时每侧新生成的近场单数（× 沙盒旋钮 × 治理器）
+  kNear: 0.04,         // 近场指数衰减 k（每格；格 ≈ 0.2% 价距）
   farP: 0.30,          // 每小时每侧出现远场价值单的概率
   farD0: 15,           // 远场价距下限（格）
   farA: 1.8,           // 远场价距幂律 α（Potters & Bouchaud 2002）
   sizeSig: 0.6,        // 挂单大小对数正态 σ（1.2→0.6：去掉十万级个例）
-  nearQ: 0.00042,      // 近场单中位大小（q 单位）—— 0.0015→0.00042（M4a 校准：簿总深/日量 70.8%→35%）
-  farQ: 0.0039,        // 远场单 Pareto 尺度（q 单位）—— 0.015→0.0039（M4a 校准：与 nearQ 一起落到总深 35%）
+  nearQ: 0.00009,      // 近场单中位大小（q 单位）—— 0.0015→0.00042（M4a）→ 0.00009（2026-10-09 铺平后按笔数反比缩）
+  farQ: 0.00084,       // 远场单 Pareto 尺度（q 单位）—— 0.015→0.0039（M4a）→ 0.00084（2026-10-09 随 nearQ 同比例缩，保持 9.3× 近场比值）
   life0: 14,           // 撤单基线寿命（小时）—— θ0 ≈ 0.07/h
-  lifeDist: 30,        // δc（格）—— 寿命 = life0/(1+δ/δc)（θ 随距离增大）
+  lifeDist: 200,       // δc（格）—— 寿命 = life0/(1+δ/δc)（θ 随距离增大）—— 30→200（2026-10-09 铺平：远场单活得久才撑得住长尾）
   gateMin: 1.5, gateMax: 3,  // 整数关口加成区间（3~10 → 1.5~3：不再造 10× 巨档）
   bidEdge: 1.6,        // 买侧深度不对称（×1.2~2 的中值）
   refillP: 0.85,       // 吃穿后回填概率
@@ -305,6 +311,18 @@ function lobOf(s, sym) {
         const n = Math.min(LOB.maxQ, LOB.nearQ * Math.exp(LOB.sizeSig * z - LOB.sizeSig * LOB.sizeSig / 2) * scale) * scale0;
         const kk = Math.round(price * (1 + side * d * step / price) / step);
         lobPut(side < 0 ? b.bids : b.asks, kk * step, n * (kk % 10 === 0 ? LOB.gateMax : kk % 5 === 0 ? (LOB.gateMin + LOB.gateMax) / 2 : 1), h, side < 0);
+      }
+      /* 远场价值单 —— **与 `lobTick` ③ 逐位同分布**（同 `h` 小时、同通道号）。
+         ⚠️ 原实现此处**漏了这一支**（注释却自称「同 lobTick 的生成分布」）⇒ 冷启动簿没有长尾；
+         而 `rewindTo` 清空 `s.lob` ⇒ 每次上帝重开本局拿到的都是「无尾簿」，远处一片 0
+         （用户 2026-10-09 报「远处挂单为 0」的数据侧根因之一）。 */
+      if (randFast(s.seed, sy, h, side < 0 ? 61 : 62, CH_LOB) < LOB.farP) {
+        const u1 = randFast(s.seed, sy, h, side < 0 ? 63 : 64, CH_LOB);
+        const df = Math.min(400, LOB.farD0 * Math.pow(1 - u1 * 0.999, -1 / LOB.farA));
+        const u2 = randFast(s.seed, sy, h, side < 0 ? 65 : 66, CH_LOB);
+        const nf = Math.min(LOB.maxQ, LOB.farQ * Math.pow(1 - u2 * 0.999, -1 / 1.8) * scale) * scale0;
+        const kk = Math.round(price * (1 + side * df * step / price) / step);
+        lobPut(side < 0 ? b.bids : b.asks, kk * step, nf * (kk % 10 === 0 ? LOB.gateMax : kk % 5 === 0 ? (LOB.gateMin + LOB.gateMax) / 2 : 1), h, side < 0);
       }
     }
   }
@@ -398,13 +416,15 @@ function lobTick(s, sym) {
        治理器形同虚设、总深完全由生成量决定（67%≫35%）。下限放到 0.2 后 sMul 收敛到 ~0.37、
        夹口**不再触底** ⇒ `capQ` 重新成为真正的设定点（实测总深落到 35~40%），且自动补偿
        生成量的后续微调（M4b 起深度倍数联动也靠它保持自洽）。上限 2 不变（突发扫穿后的补生成本身
-       就是摆动源，不许再拉大）。 */
+       就是摆动源，不许再拉大）。
+       2026-10-09：近场铺平后每小时生成笔数 ~3.5×（`near` 20→70）⇒ 下限 0.2 又会被顶住、
+       深度冲破锚；下限放到 0.05 让治理器重新握住 `capQ`（铺平带来的增深由 `sMul` 自动折回）。 */
     /* ⚠️ 目标随侧走（× `scale`）：治理器按**每侧自己的**现存质量收敛 ⇒ 若两侧共用同一个目标，
        它会自动把两侧质量抹平、把买侧不对称（`bidEdge`）一起抹掉（实测比值从 1.6 掉到 1.24）。
        目标乘上同一 `scale`，两侧各收敛到「自己的目标」 ⇒ `bidEdge` 保留。 */
     const scale = side < 0 ? LOB.bidEdge : 1;
     const target = LOB.capQ * base * scale;
-    const sMul = Math.max(0.2, Math.min(2, target / (mass + target * 0.1)));
+    const sMul = Math.max(0.05, Math.min(2, target / (mass + target * 0.1)));
     const lobMul = sbOf(s).lob;            // 挂单密度旋钮（沙盒 · 2026-10-08 三批）：0 = 不再挂新单
     if (lobMul > 0) {
       const nNear = Math.max(1, Math.round((2 + Math.floor(randFast(s.seed, sy, s.i, side < 0 ? 31 : 32, CH_LOB) * LOB.near * 2)) * lobMul));

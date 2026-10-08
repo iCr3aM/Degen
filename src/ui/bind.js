@@ -108,7 +108,7 @@ export const ACTION_KEYS = [
      `goftab` ＝ 浮窗面板页签（热力 / 巨鲸 / 深度 / 订单 / 日志）；`gofclose` ＝ 面板右上角「✕」。
      ⚠️ 与 `godtab`（上帝面板页签）是**两套**页签 —— 浮窗的用 `goftab`，别混。 */
   'godfloat', 'godalpha', 'gofloat', 'goftab', 'gofclose',
-  /* `gofstep`（2026-10-08）：订单簿页底部的步进档（×1/×2/×5/×10/×20；三批改档）——
+  /* `gofstep`（2026-10-08）：订单簿页底部的步进档（×1/×2/×3/×5/×8；2026-10-09 收窄）——
      会话级网格缩放，普通 / 挑战局的市场浮窗订单页同样有这排按钮
      （分派见 `main.js` 的 `onGodFloatStep`）。 */
   'gofstep',

@@ -250,7 +250,7 @@ let godFloatOn = true;      // 浮窗开关（上帝面板浮窗行那枚），�
 let floatOpen = false;      // 面板是否展开
 let floatPage = 0;          // 面板页码：0 热力 / 1 巨鲸 / 2 深度 / 3 订单（随模式夹取）
 let floatPos = null;        // 圆钮视口坐标 {x,y}；null = 走 CSS 默认（右下角）
-let bookStep = 1;           // 订单簿网格步进 ×½/×1/×2/×5（2026-10-08）：会话级，不进存档
+let bookStep = 1;           // 订单簿网格步进 ×1/×2/×3/×5/×8（2026-10-08；2026-10-09 收窄）：会话级，不进存档
 
 /* ── 市场浮窗（2026-10-07 拍板）：普通 / 挑战局的盘口浮窗 ──────────────────────
    浏览器偏好（独立 localStorage 键、默认**开**）—— 与 `degen_colors` 同一口径，不进存档。
@@ -1639,7 +1639,7 @@ function onGodFloatTab(node) {
   after();
 }
 
-/** 订单簿步进档（`data-gofstep`，2026-10-08；三批改档 ×1/×2/×5/×10/×20）：写会话级
+/** 订单簿步进档（`data-gofstep`，2026-10-08；2026-10-09 收窄为 ×1/×2/×3/×5/×8）：写会话级
  *  `bookStep`，下一帧 `floatBody` 用它乘网格步进重画。普通局市场浮窗的订单页同样有这排
  *  按钮 ⇒ 闸门已放宽（见 dispatch 浮窗组）。纯显示偏好，不进存档。 */
 function onGodFloatStep(node) {

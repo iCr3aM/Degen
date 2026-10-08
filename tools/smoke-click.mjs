@@ -91,7 +91,7 @@ const STEPS = [
   /* 浮窗（上帝局）：圆钮 → 五页 → 订单档位 → 关 */
   ['浮窗圆钮', '[data-gofloat]', 0, 1, 260, true],
   ['浮窗页 · 订单', '[data-goftab="3"]'],
-  ['订单档 ×20', '[data-gofstep="20"]'],
+  ['订单档 ×8', '[data-gofstep="8"]'],
   ['订单档 ×1', '[data-gofstep="1"]'],
   ['浮窗页 · 日志', '[data-goftab="4"]'],
   ['浮窗页 · 热力', '[data-goftab="0"]'],
@@ -136,7 +136,7 @@ const PROBES = {
       '上帝面板不在屏上 / 只建了半截（`openGod` 中途抛了？）'],
   ],
   /* ── 订单簿：口径自适应 ＋ 装框恒定（用户两条抱怨的自动化锚）─────────────────
-     `浮窗页 · 订单` 时 `bookStep` 还是 ×1 ⇒ 记下当前行数；之后切 ×20 / 切回 ×1
+     `浮窗页 · 订单` 时 `bookStep` 还是 ×1 ⇒ 记下当前行数；之后切 ×8 / 切回 ×1
      都必须**行数一模一样**（每侧固定 VIEW 行 ⇒ 不跳动），但**价格跨度必须变**（口径真变了）。
      行数一样 = 装框不跳；跨度变 = 档位不是摆设。 */
   '浮窗页 · 订单': [
@@ -147,13 +147,18 @@ const PROBES = {
        })()) > 0`,
       '订单页一行都没渲染 / 价格跨度算不出来'],
   ],
-  '订单档 ×20': [
-    [`document.querySelectorAll('.gb-row').length === window.__gbN
-       && (() => {
-         const p = [...document.querySelectorAll('.gb-row > i')].map(n => parseFloat(n.textContent.replace(/[^0-9.]/g, '')));
-         return Math.max(...p) - Math.min(...p);
-       })() > window.__gbSpan1 * 2`,
-      '×20：行数变了（装框跳动）或价格跨度没放大（档位形同虚设）'],
+  '订单档 ×8': [
+    [`(() => {
+       const rows = [...document.querySelectorAll('.gb-row')];
+       const p = rows.map(r => parseFloat(r.querySelector('i').textContent.replace(/[^0-9.]/g, '')));
+       /* 有货行 = 量条宽度非 0（空档必须 width 0 = 不画条）。*/
+       const nz = rows.filter(r => { const u = r.querySelector('u'); return u && u.style.width !== '0%' && u.style.width !== '0px'; }).length;
+       window.__gbNz = nz;
+       return rows.length === window.__gbN
+         && Math.max(...p) - Math.min(...p) > window.__gbSpan1 * 3
+         && nz / rows.length >= 0.5;
+     })()`,
+      '×8：行数变了（装框跳动）／跨度没放大（档位形同虚设）／远处大面积空行（铺平失效）'],
   ],
   '订单档 ×1': [
     [`document.querySelectorAll('.gb-row').length === window.__gbN`,

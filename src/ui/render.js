@@ -3390,7 +3390,7 @@ function floatGeo() {
  *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ 热度（恐惧贪婪只在交易页）；
  *  页 2 深度：日流动性 / 本时基准 / 深度池余量 / 免滑点线 / 单笔顶格线 ＋ 压力位墙汇总 —— 全是真状态；
  *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础档位 ＋ 压力位墙逐档列出。
- *  2026-10-08 加：① 底部步进选择器 ×1/×2/×5/×10/×20（会话级 `bookStep`，main.js 持有）；
+ *  2026-10-08 加：① 底部步进选择器 ×1/×2/×3/×5/×8（会话级 `bookStep`，main.js 持有；2026-10-09 由 ×1~×20 收窄）；
  *             ② 远场稀疏化（q 过半顶格后隔档显示，**纯显示**）＋ Tier1/Tier2 关口格 CSS 提亮。
  *  2026-10-08 三批（用户拍板）：③ `gb-far`「更远 N 档」汇总行删除 —— 远场一直有单（Potters &
  *             Bouchaud 2002），想看更远就拨大步进，不必用一行汇总顶替真实档位；
@@ -3497,7 +3497,7 @@ function floatBody(s, page, bookStep = 1) {
     /* 订单簿（2026-10-08 四批改版 · 用户拍板⑦「限价单系统只给 NPC」）：**直接读 NPC 限价簿**
        （engine `s.lob` —— 行为级离散账：近场指数 / 远场幂律 / 关口加成 / 撤单 / 吃穿跳价回填），
        每一行就是一笔真实挂单（同价已合并），不再是连续冲击曲线的分桶近似。沿用的拍板纪律：
-       步进选择器 ×1~×20（会话级）管「看多远」；行数自适应装框（手机 / 桌面都不滚动）；
+       步进选择器 ×1/×2/×3/×5/×8（会话级）管「看多远」；行数自适应装框（手机 / 桌面都不滚动）；
        买卖比改**真实簿量**口径（窗口内实挂名义 ＋ 窗口外离散墙）。
        ⚠️ 撮合成本仍走连续曲线（`baseLadder` / `walkBook` 原样 —— 审计 9v①~④ 承重结构），
        这页是「谁把单挂在哪」的行为事实，与「吃一口多贵」是两把分开的尺子（拍板口径 R1）。
@@ -3505,8 +3505,8 @@ function floatBody(s, page, bookStep = 1) {
     const b = w.book;
     if (!b) { box.append(el('p', 'god-fnote', '盘口暂不可用')); return box; }
     /* 可读步进来自引擎 `niceStepOf`（1-2-5×10ⁿ，与 NPC 挂单落格同一把尺子 —— 四批上收），
-       ×1 时单格 ≈ 0.2%；步进旋钮 ×1~×20 负责「看多远」。 */
-    const step = niceStepOf(b.mid) * bookStep;   // ① 底部步进选择器（会话级）：×1 细看 / ×20 广看
+       ×1 时单格 ≈ 0.2%；步进旋钮 ×1/×2/×3/×5/×8 负责「看多远」。 */
+    const step = niceStepOf(b.mid) * bookStep;   // ① 底部步进选择器（会话级）：×1 细看 / ×8 广看
     /* 行数自适应装框（2026-10-08 三批拍板「订单簿手机端和桌面端都不滚动，只通过步进调整
        显示口径」）：面板高 − 固定骨架（面板头 / 内边距 / 比条 / 步进行，估 76px＋一行）
        = 可用行空间 ÷ 行高 = 总行数；−1（mid 行）再对半 = 单侧格数，夹 6~22。
@@ -3517,17 +3517,17 @@ function floatBody(s, page, bookStep = 1) {
     const fh = floatGeo().h;
     const fitRows = Math.max(8, Math.floor((fh - 76 - rowH) / rowH));
     const VIEW = Math.min(22, Math.max(6, Math.floor((fitRows - 1) / 2)));
-    /* 按 `step` **分桶**（2026-10-09 修两处真实缺陷：①「×1~×20 口径无变化」②「订单会跳动」）：
+    /* 按 `step` **分桶**（2026-10-09 修两处真实缺陷：①「×1~×8 口径无变化」②「订单会跳动」）：
        桶键 = 绝对价网格序号 `floor(price / step)`（与现价解耦），桶宽 = `step`；中价桶 `midK`；
        两侧各取 `midK ± 1 .. midK ± VIEW` **共 VIEW 个桶**（一格 = 一行）。
        ⇒ ① 每侧固定 VIEW 行 ⇒ 装框恒定、行集不随显示跳动（旧实现里 `edge` 只卡 asks、
           买侧 `d < 0` 使 `edge` 空操作；且 `++n > VIEW` 把非墙行一律卡在 VIEW —— 于是
-          ×1 与 ×20 取到的是**同一批最近原始挂单**，档位形同虚设，这才是「口径无变化」的根因）。
-         ② 桶宽 = `step` 随档位 ×1~×20 放大 ⇒ 一屏看多远随之变（×1 近场细看、×20 扫到远处大单）。
+          ×1 与 ×8 取到的是**同一批最近原始挂单**，档位形同虚设，这才是「口径无变化」的根因）。
+         ② 桶宽 = `step` 随档位 ×1~×8 放大 ⇒ 一屏看多远随之变（×1 近场细看、×8 扫到远处大单）。
          ③ 桶锚在**绝对价格网格**上 ⇒ 现价在同一桶内移动时整页纹丝不动，只有跨过桶边界才整体
             挪一行（与真实交易所盘口一致），不再每帧重锚。
        桶内名义求和（同价单引擎 `lobPut` 已并，跨网格线同理并）；墙（`levelsOf`，真历史价位）照并、
-       并标 `wall`。空桶留空行（价格照显、量为 0）—— 这是盘口阶梯的常态，也是「装框恒定」的前提。 */
+       并标 `wall`。空桶留空行（价格照显、量为 0、不画量条）—— 盘口阶梯的常态，也是「装框恒定」的前提。 */
     const midK = Math.floor(b.mid / step + 1e-9);
     const bucketOf = rows => {
       const m = new Map();
@@ -3582,7 +3582,9 @@ function floatBody(s, page, bookStep = 1) {
       const row = el('div', `gb-row ${cls}${gateCls}${r.wall ? ' wall' : ''}`);
       row.append(el('i', null, (r.wall ? '墙 ' : '') + fmtFloatPrice(r.price, step)));
       const u = el('u');
-      u.style.width = `${Math.max(3, (r.qty / maxQ) * 100)}%`;
+      /* 空档（本格无单）**不画量条**（2026-10-09 用户拍板）—— 旧实现 `Math.max(3, …)` 给
+         qty=0 也画 3% 短条 ⇒ 满屏「凑数的假条」，与「远处为 0」的真相打架。 */
+      u.style.width = r.qty > 0 ? `${(r.qty / maxQ) * 100}%` : '0%';
       const track = el('span', 'gb-track');
       track.append(u);
       row.append(track, el('em', null, fmtQty(r.qty)), el('b', null, fmtMoneyShort(r.cum)));
@@ -3603,11 +3605,14 @@ function floatBody(s, page, bookStep = 1) {
       rbar.append(bu, el('u', null, `${100 - buyPct}% 卖`));
       box.append(rbar);
     }
-    /* ① 步进选择器（2026-10-08 用户拍板；三批改档 ×1~×20）：挂在页底 —— 网格缩放档，
-       点按写 `main.js` 的会话级 `bookStep`（`data-gofstep` 委托，不进存档）；
-       选中档高亮随每帧重画自动跟随。基础步长本身按价格自适应（`engine.niceStepOf`）。 */
+    /* ① 步进选择器（2026-10-08 用户拍板；2026-10-09 由 ×1/×2/×5/×10/×20 收窄到
+       ×1/×2/×3/×5/×8）：`×20` 一屏 ±67%、远超任何真实订单簿的「深度」定义域（真实交易所/
+       分析口径最深也就到 ~100bps≈1%，见 Amberdata/HKEX 深度惯例）⇒ 那一档**必然**大面积空行，
+       看着就像 BUG。收窄到 ×8（一屏 ±22×0.16 ≈ ±27%）后，每一档都落在簿的真实 reach（~28%）内。
+       挂在页底 —— 网格缩放档，点按写 `main.js` 的会话级 `bookStep`（`data-gofstep` 委托，
+       不进存档）；选中档高亮随每帧重画自动跟随。基础步长本身按价格自适应（`engine.niceStepOf`）。 */
     const stepRow = el('div', 'gb-steps');
-    for (const v of [1, 2, 5, 10, 20]) {
+    for (const v of [1, 2, 3, 5, 8]) {
       const b = el('button', `gb-step${Math.abs(bookStep - v) < 1e-9 ? ' on' : ''}`, `×${v}`);
       b.dataset.gofstep = String(v);
       stepRow.append(b);

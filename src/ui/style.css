@@ -2165,7 +2165,7 @@ button { user-select: none; -webkit-user-select: none; }
 .gb-head em { font-style: normal; flex: 0 0 44px; text-align: right; }
 .gb-head b { font-weight: 600; flex: 0 0 56px; text-align: right; }
 /* ⚠️ 「更远 N 档」汇总行样式已退役（2026-10-08 三批拍板：远场一直有单，想看更远拨大
-   步进 ×10/×20，不用汇总行顶替真实档位）。 */
+   步进 ×5/×8，不用汇总行顶替真实档位）。 */
 .gb-mid {
   border-top: 1px dashed var(--gold);
   color: var(--gold);
