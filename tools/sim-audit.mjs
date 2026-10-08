@@ -3155,12 +3155,15 @@ section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源
     && styleSrc9v.includes('.gb-row.wall') && styleSrc9v.includes('.gb-head')
     && /\.gb-ask b \{ color: var\(--down\)/.test(styleSrc9v)
     && /\.gb-bid b \{ color: var\(--up\)/.test(styleSrc9v));
-  /* ── ⑥ 订单簿网格化（2026-10-08 用户拍板「步进网格 ＋ 视野收窄 ±2~3% ＋ 远档汇总一行」）──
-     纯显示层改版：`niceStep` 取 1-2-5×10ⁿ 步进、连续冲击曲线分桶（cells + far 守恒于 cap×liq）、
-     墙不吸附网格、视野外折 `gb-far` 一行。承重结构 `baseLadder` / `walkBook` 不动（9v①~④ 照旧）。 */
-  check('9v⑥ render：订单簿网格化（niceStep 步进 ＋ 远档 gb-far 汇总行；旧逐档切窗 baseAsks/cut 退役）',
-    rendSrc9v.includes('const niceStep = p =>') && rendSrc9v.includes("'gb-far'")
-    && rendSrc9v.includes('更远')
+  /* ── ⑥ 订单簿网格化（2026-10-08 用户拍板「步进网格 ＋ 视野收窄 ±2~3%」；三批修订）──
+     纯显示层改版：`niceStep` 取 1-2-5×10ⁿ 步进、连续冲击曲线分桶、墙不吸附网格。
+     三批（2026-10-08）：`gb-far` 汇总行删除（远场一直有单，靠步进 ×10/×20 翻看）＋
+     行数自适应装框（手机 / 桌面订单簿页都不滚动）＋ 买卖比改连续曲线积分。
+     承重结构 `baseLadder` / `walkBook` 不动（9v①~④ 照旧）。 */
+  check('9v⑥ render：订单簿网格化（niceStep 步进 ＋ 装框行数/裁剪 ＋ gb-far 退役；旧逐档切窗 baseAsks/cut 退役）',
+    rendSrc9v.includes('const niceStep = p =>') && !rendSrc9v.includes("'gb-far'")
+    && rendSrc9v.includes('const fitRows =') && rendSrc9v.includes('trimFar')
+    && rendSrc9v.includes('const tot = aUsd + bUsd')
     && !rendSrc9v.includes('baseAsks') && !rendSrc9v.includes('const cut = rows'));
   /* 行为锚不取副本：正则把 render.js 里的 niceStep 箭头函数**原样提取**成真函数再执行 ——
      被测对象就是 shipped 源码，副本漂移无从谈起。 */
@@ -3172,8 +3175,10 @@ section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源
       return near(niceStep(108000), 200) && near(niceStep(3900), 10)
         && near(niceStep(2.3), 0.005) && near(niceStep(0.16), 0.0002);
     })());
-  check('9v⑥ style：远档汇总行样式 ＋ 1280px 档随订单簿行同步放大',
-    styleSrc9v.includes('.gb-far') && styleSrc9v.includes('.gb-row, .gb-head, .gb-far'));
+  check('9v⑥ style：gb-far 退役 ＋ 1280px 档随订单簿行同步放大（11px/15px ＋ 三列 78/52/68）',
+    !styleSrc9v.includes('.gb-far')
+    && styleSrc9v.includes('.gb-row, .gb-head { font-size: 11px; line-height: 15px; }')
+    && styleSrc9v.includes('flex: 0 0 78px'));
 }
 
 /* ═══════════════════ 9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 预算 ═══════════════════
@@ -3293,25 +3298,28 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
     /\.god-float \{[^}]*width: var\(--float-w, 340px\)/.test(styleSrc9w)
     && /\.god-float \{[^}]*height: var\(--float-h, 64dvh\)/.test(styleSrc9w)
     && /\.god-hm \{[^}]*height: var\(--hm-h, 240px\)/.test(styleSrc9w));
-  /* 9w⑥（2026-10-08 桌面端适配，同日「缩矮」三档下调）：浮窗按视口宽度分两档（手机端兜底值不变），
-     `render.js` 的拖拽夹取与热力图级联读**同一份** CSS 变量 ⇒ 三处不会各说各话。 */
+  /* 9w⑥（2026-10-08 桌面端适配；三批「压缩上下高度」两轮后定档 60/64dvh）：浮窗按视口宽度
+     分两档（手机端兜底值不变），`render.js` 的拖拽夹取、热力图级联与订单簿装框读**同一份**
+     CSS 变量 ⇒ 几处不会各说各话。 */
   check('9w⑥ 桌面端浮窗分档（1280px / 1680px）＋ 超宽容器 1520px ＋ render.js 读同一份变量',
-    styleSrc9w.includes('--float-w: 420px; --float-h: 68dvh; --hm-h: 280px')
-    && styleSrc9w.includes('--float-w: 480px; --float-h: 72dvh; --hm-h: 330px')
+    styleSrc9w.includes('--float-w: 420px; --float-h: 60dvh; --hm-h: 280px')
+    && styleSrc9w.includes('--float-w: 480px; --float-h: 64dvh; --hm-h: 330px')
     && styleSrc9w.includes('@media (min-width: 1280px)') && styleSrc9w.includes('@media (min-width: 1680px)')
     && styleSrc9w.includes('#app { max-width: 1520px; }')
     && rendSrc9w.includes("px('--float-w', 340)") && rendSrc9w.includes("px('--float-h', ch * 0.64)")
     && rendSrc9w.includes("px('--hm-h', 240)") && rendSrc9w.includes('cw - geo.w - 8')
     && rendSrc9w.includes('const HM_H = floatGeo().hm'));
-  /* 9w⑥-bis（2026-10-08 用户反馈「桌面端有些文字、数字太小」）：浮窗字号桌面档整体上调一档
-     （密读数 11px / 热力图条 9.5px / 订单簿 10px ＋ 列宽同步）—— 只在 ≥1280px 媒体块内，
-     手机端「尽量小」拍板逐位不动。热力图条**行高 12px 不动**（级联 GAP 的锚，9x④ 单锚）。 */
-  check('9w⑥-bis 浮窗字号桌面档上调（11 / 9.5 / 10px ＋ gb 列宽 +6/+4/+6）＋ 手机端不动',
-    styleSrc9w.includes('.god-ftab, .god-fx, .god-frow2, .god-fnote { font-size: 11px; }')
-    && styleSrc9w.includes('.god-hm-bar { font-size: 9.5px; }')
-    && styleSrc9w.includes('.god-hm-now { font-size: 10px; }')
-    && styleSrc9w.includes('.gb-row, .gb-head, .gb-far { font-size: 10px; line-height: 14px; }')
-    && styleSrc9w.includes('.gb-row i, .gb-head i { flex: 0 0 72px; }')
+  /* 9w⑥-bis（2026-10-08 用户两轮反馈「桌面端有些文字、数字太小」）：浮窗字号桌面档整体上调
+     两档（密读数 12px / 热力图条 10.5px / 订单簿 11px/15px ＋ 列宽 78/52/68）—— 只在
+     ≥1280px 媒体块内，手机端「尽量小」拍板逐位不动。热力图条**行高 12px 不动**
+     （级联 GAP 的锚，9x④ 单锚）。 */
+  check('9w⑥-bis 浮窗字号桌面档上调（12 / 10.5 / 11px ＋ gb 列宽 78/52/68）＋ 手机端不动',
+    styleSrc9w.includes('.god-ftab, .god-fx, .god-frow2, .god-fnote { font-size: 12px; }')
+    && styleSrc9w.includes('.god-hm-bar { font-size: 10.5px; }')
+    && styleSrc9w.includes('.god-hm-now { font-size: 11px; }')
+    && styleSrc9w.includes('.gb-row, .gb-head { font-size: 11px; line-height: 15px; }')
+    && styleSrc9w.includes('.gb-row i, .gb-head i { flex: 0 0 78px; }')
+    && !styleSrc9w.includes('.gb-far')
     && /\.god-hm-bar \{[^}]*font-size: 8\.5px/.test(styleSrc9w)
     && /\.gb-row \{[^}]*font-size: 9px/.test(styleSrc9w));
   {

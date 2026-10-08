@@ -2995,7 +2995,8 @@ export function openYearPick(curYear) {
  *    UA 的 `[hidden] { display: none }`，写 `hidden` 不生效）；「关闭」常驻三页之外。
  * ⚠️ **资金框不能挂 `data-*`**：`bind.js` 拦的是 `[data-*]` 的 `pointerdown` 并会 `preventDefault`，
  *    挂上去就打不了字了。所以值由动作处理函数从同一个面板里按类名读（`god-cash`）。
- *    ⚠️ 档排上那些是**按钮**、不是输入框，照旧挂 `data-*`（`godyear` / `godmon` / `godday`）。
+ *    ⚠️ 档排上那些是**按钮**、不是输入框，照旧挂 `data-*`（`godyear` / `godmon`；`godday`
+ *       已随 2026-10-08 三批的「日选择删除」一并退役）。
  *    ⚠️ 操盘台的两个输入框同理（`god-manip` / `god-wash`）；预览行随 `input` 事件即时重算
  *       （`input` 不走 `bind.js`，不受拦）。
  * ⚠️ **「无限」开关（2026-10-07 用户拍板）与资金输入框同处一行**：它翻的是 `s.god.inf`，
@@ -3050,11 +3051,12 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   cRow.append(el('i', null, '资金'), cashIn, cBtn, infBtn);
   rowsA.append(cRow);
 
-  /* ② 跳到日期 —— 向前 = 时间自然流过（持仓保留）；向后 = 回到过去（保留资金、清空仓位）。
-       形状 = 两行读数（当前 / 目标 ＋ 跳到）＋ 年 / 月 / 日 三排按钮。 */
+  /* ② 跳到日期 —— 跳时间 = **重置上帝局到所选时刻**（2026-10-08 三批拍板：向前/向后统一落点，
+       保留资金、清空持仓与全部累积进度，NPC 世界从那一刻冷启动累积）。
+       形状 = 两行读数（当前 / 目标 ＋ 跳到）＋ 年 / 月 两排按钮（日选择已删：落点 = 该月 1 日）。 */
   const now = timeOf(s);
   const today = new Date(now);
-  const pick = sel ?? { y: today.getUTCFullYear(), m: today.getUTCMonth() + 1, d: today.getUTCDate() };
+  const pick = sel ?? { y: today.getUTCFullYear(), m: today.getUTCMonth() + 1 };
   /* 一枚档位按钮 —— 挂 `data-*`（这类是按钮，不受 `preventDefault` 影响），选中态走 `.on` */
   const pickBtn = (on, key, v) => {
     const b = el('button', on ? 'set-btn on' : 'set-btn', String(v));
@@ -3068,7 +3070,7 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
 
   const tRow = el('div', 'set-row');
   const tBox = el('div', 'god-target');
-  tBox.append(el('i', null, '目标'), el('b', 'num', fmtDate(Date.UTC(pick.y, pick.m - 1, pick.d), false)));
+  tBox.append(el('i', null, '目标'), el('b', 'num', fmtDate(Date.UTC(pick.y, pick.m - 1, 1), false)));
   const gBtn = el('button', 'set-btn on', '跳到');
   gBtn.dataset.godgo = '';
   tRow.append(tBox, gBtn);
@@ -3086,12 +3088,6 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   const mRow = el('div', 'god-pick god-months');
   for (let m = 1; m <= 12; m++) mRow.append(pickBtn(m === pick.m, 'godmon', m));
   rowsA.append(mRow);
-
-  /* 日的枚数跟着选中的年月走 —— `new Date(Date.UTC(y, m, 0))` 就是该月的最后一天 */
-  const days = new Date(Date.UTC(pick.y, pick.m, 0)).getUTCDate();
-  const ddRow = el('div', 'god-pick god-days');
-  for (let dd = 1; dd <= days; dd++) ddRow.append(pickBtn(dd === pick.d, 'godday', dd));
-  rowsA.append(ddRow);
 
   /* ③ 沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）——
      精选 **5 枚高影响旋钮 ＋ 4 组世界预设 ＋ 全局种子**，只作用在合成层（热度 / NPC / 冲击 / 共振）。
@@ -3283,11 +3279,16 @@ function floatGeo() {
  *  「另有 N 条远档」提示退役；
  *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ 热度（恐惧贪婪只在交易页）；
  *  页 2 深度：日流动性 / 本时基准 / 深度池余量 / 免滑点线 / 单笔顶格线 ＋ 压力位墙汇总 —— 全是真状态；
- *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础 18 档 ＋ 压力位墙逐档列出。
- *  2026-10-08 加：① 底部步进选择器 ×1/×2/×5/×10（会话级 `bookStep`，main.js 持有；同日
- *             拍板「删 ×½ 加 ×10」）；
- *             ② 远场稀疏化（q 过半顶格后隔档显示，跳格名义折进 `gb-far` 守恒）
- *                ＋ Tier1/Tier2 关口格 CSS 提亮（数值不动）。
+ *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础档位 ＋ 压力位墙逐档列出。
+ *  2026-10-08 加：① 底部步进选择器 ×1/×2/×5/×10/×20（会话级 `bookStep`，main.js 持有）；
+ *             ② 远场稀疏化（q 过半顶格后隔档显示，**纯显示**）＋ Tier1/Tier2 关口格 CSS 提亮。
+ *  2026-10-08 三批（用户拍板）：③ `gb-far`「更远 N 档」汇总行删除 —— 远场一直有单（Potters &
+ *             Bouchaud 2002），想看更远就拨大步进，不必用一行汇总顶替真实档位；
+ *             ④ 订单簿行数**自适应装框**：手机 / 桌面订单簿页都不滚动（面板高 ÷ 行高 →
+ *                单侧格数，夹 6~22；超预算时从最远端裁非墙格兜底），「看多远」只由步进决定；
+ *             ⑤ 买卖比全量口径改从**连续曲线**两侧边界直接积分（含稀疏跳过格与远场墙），
+ *                与显示行数彻底解耦；
+ *             ⑥ 热力图条加**币量**读数；页 1 巨鲸多空**分组**列出。
  *  ⚠️ 旧页 4「逐笔成交」已退役（2026-10-08 用户拍板）：明细行数随本小时进度漂移（每帧跳变）、
  *     拖动浮窗时列表乱跳，且与订单簿 / 深度页信息重叠 —— 数据源 `tape.js` 一并删除。 */
 function floatBody(s, page, bookStep = 1) {
@@ -3350,7 +3351,10 @@ function floatBody(s, page, bookStep = 1) {
         now.style.top = `${clampT(r.t) * 100}%`;
         hm.append(now);
       } else {
-        const bar = el('div', `god-hm-bar ${r.l.side}`, `${fmtFloatPrice(r.l.price)} ${fmtMoneyShort(r.l.notional)}·${r.l.name}`);
+        /* 数量读数（2026-10-08 三批拍板）：名义 ÷ 强平价 = 币量，缀在价格后 —— 与订单簿页
+           的「数量」列同源（fmtQty），宽度窄的条照旧允许横向溢出（行距级联钉死 ≥12px）。 */
+        const bar = el('div', `god-hm-bar ${r.l.side}`,
+          `${fmtFloatPrice(r.l.price)} ${fmtQty(r.l.notional / r.l.price)} ${s.sym} ${fmtMoneyShort(r.l.notional)}·${r.l.name}`);
         bar.style.top = `${clampT(r.t) * 100}%`;
         bar.style.width = `${Math.min(92, 10 + r.l.w * 82)}%`;
         hm.append(bar);
@@ -3366,11 +3370,16 @@ function floatBody(s, page, bookStep = 1) {
       return el('div', 'god-frow2',
         `${name} ${fmtMoneyShort(notional)}@${fmtFloatPrice(avg)} ｜ 强平 ${fmtFloatPrice(lp)} (${fmtPct(lp / t - 1)})`);
     };
+    /* 多空分组（2026-10-08 三批拍板「巨鲸的 tab 多空要分开」）：多头一行头、空头一行头，
+       各档逐条列在各自组下 —— 行内不再缀「多 / 空」字（组头已表达方向，LESS IS MORE）。 */
+    const longs = [], shorts = [];
     for (const tr of w.tiers) {
-      if (tr.long > 0) box.append(sideRow(`${tr.name} 多`, true, tr.long, tr.longAvg, tr.lev));
-      if (tr.short > 0) box.append(sideRow(`${tr.name} 空`, false, tr.short, tr.shortAvg, tr.lev));
+      if (tr.long > 0) longs.push(sideRow(tr.name, true, tr.long, tr.longAvg, tr.lev));
+      if (tr.short > 0) shorts.push(sideRow(tr.name, false, tr.short, tr.shortAvg, tr.lev));
     }
-    if (!w.tiers.some(tr => tr.long > 0 || tr.short > 0)) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
+    if (longs.length) { box.append(el('div', 'god-frow2 mut', '多头')); for (const r of longs) box.append(r); }
+    if (shorts.length) { box.append(el('div', 'god-frow2 mut', '空头')); for (const r of shorts) box.append(r); }
+    if (!longs.length && !shorts.length) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
     /* 情绪读数只留**热度**（2026-10-08 拍板）：恐惧贪婪指数与交易页 K 线左下角那份重复，
        浮窗巨鲸页不再显示（`w.fng` 数据轨保留 —— 审计 9x 仍锚定 godWatchOf 的读数域）。 */
     box.append(el('div', 'god-frow2 mut', `热度 ${fmtPct(w.heat)}`));
@@ -3388,25 +3397,31 @@ function floatBody(s, page, bookStep = 1) {
        限价价距宽尾幂律 µ≈0.6~1.5；Tóth et al. 2011: 平均账本 V 形、远处尾部不枯竭），
        累积深度随价距持续增长（二次律与文献 ζ≈1.6~2 同族）。`cap` 只是**吃单成本**的玩法
        上限（撮合侧原样），与「挂单是否存在」是两回事。墙 = 真实历史
-       价位，**不吸附网格**（它就是要被撞的那条价），照插格间；视野外（单侧 12~18 格，
-       ≈ ±1.3~4.7% 随断点）的梯与墙折成一行 `gb-far` 汇总 —— 热力图页管全景，这页管
-       近场，与真实盘口同构。 */
+       价位，**不吸附网格**（它就是要被撞的那条价），照插格间。
+       ⚠️ 三批（2026-10-08）拍板：「更远」汇总行删除（想看更远拨大步进）＋ 行数自适应装框
+       （手机 / 桌面都不滚动）＋ 买卖比从连续曲线直接积分。 */
     const b = w.book;
     if (!b) { box.append(el('p', 'god-fnote', '盘口暂不可用')); return box; }
-    /* 可读步进：`1-2-5×10ⁿ` 里取最接近 `price×2e-3` 的一档 ⇒ 手机 12 格 ≈ ±1.3~3.1%／
-       桌面 18 格 ≈ ±1.9~4.7%，正是真实盘口视野的量级
-       （BTC@108k→200 · ETH@3.9k→10 · XRP@2.3→0.005 · DOGE@0.16→0.0002）。 */
+    /* 可读步进：`1-2-5×10ⁿ` 里取最接近 `price×2e-3` 的一档 ⇒ ×1 时单格 ≈ 0.2%、
+       （BTC@108k→200 · ETH@3.9k→10 · XRP@2.3→0.005 · DOGE@0.16→0.0002），
+       步进旋钮 ×1~×20 负责「看多远」。 */
     const niceStep = p => {
       const raw = p * 2e-3;
       const e = Math.pow(10, Math.floor(Math.log10(raw)));
       const m = raw / e;
       return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * e;
     };
-    const step = niceStep(b.mid) * bookStep;   // ① 底部步进选择器（会话级）：×1 细看 / ×10 广看，档位数不变
-    /* 单侧视野格数（2026-10-08 · 用户拍板）：<1280px 12 档 —— 手机 39 行 ≈ 507px 矮屏必滚，
-       27 行 ≈ 351px 免滚动；≥1280px 三档桌面 18 档不动（断点对齐 `--float-w` 的 media query）。
-       远档 `gb-far` 汇总线随之自动收窄。 */
-    const VIEW = (window.matchMedia && window.matchMedia('(min-width: 1280px)').matches) ? 18 : 12;
+    const step = niceStep(b.mid) * bookStep;   // ① 底部步进选择器（会话级）：×1 细看 / ×20 广看
+    /* 行数自适应装框（2026-10-08 三批拍板「订单簿手机端和桌面端都不滚动，只通过步进调整
+       显示口径」）：面板高 − 固定骨架（面板头 / 内边距 / 比条 / 步进行，估 76px＋一行）
+       = 可用行空间 ÷ 行高 = 总行数；−1（mid 行）再对半 = 单侧格数，夹 6~22。
+       行高与 style.css 同源：手机 9px 字 / 13px 行，≥1280px 11px 字 / 15px 行。
+       极矮视口（横屏手机）兜底：`overflow-y: auto` 仍在，极端情形允许滚。 */
+    const desk = window.matchMedia && window.matchMedia('(min-width: 1280px)').matches;
+    const rowH = desk ? 15 : 13;
+    const fh = floatGeo().h;
+    const fitRows = Math.max(8, Math.floor((fh - 76 - rowH) / rowH));
+    const VIEW = Math.min(22, Math.max(6, Math.floor((fitRows - 1) / 2)));
     const qOf = x => { const t = x / (3 * b.sigma); return t * t; };   // 价距比例 x ⇒ 已吃名义 q
     const midIdx = Math.round(b.mid / step);
     /* 第 k 格（贴中数起）的名义（q 单位）：外缘/内缘价距上的连续深度差 —— **不夹断**：
@@ -3423,15 +3438,14 @@ function floatBody(s, page, bookStep = 1) {
       const xEdge = Math.abs((midIdx + (above ? VIEW + 0.5 : -VIEW - 0.5)) * step / b.mid - 1);
       /* ② 远场稀疏化（2026-10-08 用户拍板）：单格名义 q 超过顶格线一半（cap/2）之后，
          每格金额已经大到一屏写不下几行 —— 真实 LOB 的远场本就稀疏（Krause 2021,
-         arXiv:2106.11691 的「两类流动性」：近场致密、远场稀而不断）。隔档显示（偶数格隐藏），
-         跳过格的名义折进下面的 `gb-far` 累计 ⇒ 行上少画的 ＋ 更远行的 ＝ 全侧总量，守恒。 */
-      let spN = 0, spUsd = 0;
+         arXiv:2106.11691 的「两类流动性」：近场致密、远场稀而不断）。隔档显示（偶数格隐藏）
+         —— 三批起 `gb-far` 已删，跳过格不再折行累计（买卖比的曲线积分口径天然包含它们）。 */
       for (let k = 1; k <= VIEW; k++) {
         const q = cellQ(k, above);
         if (q <= 0) continue;
-        if (q > b.cap / 2 && k % 2 === 0) { spN++; spUsd += q * b.liq; continue; }
+        if (q > b.cap / 2 && k % 2 === 0) continue;
         const kk = midIdx + (above ? k : -k);   // 网格序号（整数）—— 关口判定用，无浮点误差
-        /* ② 关口格（数值不动，只挂类名由 CSS 提亮）：网格步长的 10 倍格 = Tier1（整数关口，
+        /* 关口格（数值不动，只挂类名由 CSS 提亮）：网格步长的 10 倍格 = Tier1（整数关口，
            Urquhart 2017 / Hu et al. 2019 的 round-number 聚集）、5 倍格 = Tier2。
            10 | kk ⇒ 5 | kk，Tier1 恒比 Tier2 稀 ⇒ 强度分级在任何缩放档下都成立。 */
         rows.push({
@@ -3439,31 +3453,42 @@ function floatBody(s, page, bookStep = 1) {
           gate: kk % 10 === 0 ? 1 : kk % 5 === 0 ? 2 : 0,
         });
       }
-      /* 视野外（2026-10-08 用户拍板「远处永远有挂单」）：口径从「到顶格为止的剩余」改成
-         **下一屏**（再 VIEW 格）的连续累计 —— 有限、随步进档自动伸缩、且恒 > 0（远场
-         不枯竭）。再往远不说了：真实聚合深度图也只画到某个价距截止。墙按真实价逐条判断；
-         稀疏化跳过格的名义在这里并入（见上）。 */
-      const p2 = Math.max(0, (midIdx + (above ? 2 * VIEW + 0.5 : -2 * VIEW - 0.5)) * step);
-      const xEdge2 = Math.abs(p2 / b.mid - 1);
-      const far = { n: spN, usd: spUsd + Math.max(0, qOf(xEdge2) - qOf(xEdge)) * b.liq };
       for (const r of above ? b.asks : b.bids) {
-        const beyond = Math.abs(r.price / b.mid - 1) >= xEdge;
-        if (!r.wall) { if (beyond) far.n++; continue; }
-        if (beyond) { far.n++; far.usd += r.notional; }
-        else rows.push({ price: r.price, notional: r.notional, wall: true });
+        if (r.wall && Math.abs(r.price / b.mid - 1) < xEdge) {
+          rows.push({ price: r.price, notional: r.notional, wall: true });
+        }
       }
       rows.sort((a, z) => a.price - z.price);
-      return { rows, far };
+      return rows;
     };
+    const A = side(true), B = side(false);
+    /* 装框裁剪（兜底）：两侧格行总数超出行预算时，从**最远端**裁非墙格（墙是真历史价位，
+       必须留）。正常不触发（VIEW 本就按面板高算）；两侧只剩墙的病态情形跳出，
+       `overflow-y: auto` 托底。 */
+    const trimFar = (rows, farIsTail) => {
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const j = farIsTail ? i : rows.length - 1 - i;
+        if (!rows[j].wall) { rows.splice(j, 1); return true; }
+      }
+      return false;
+    };
+    while (A.length + B.length + 2 > fitRows && (trimFar(A, true) || trimFar(B, false))) { /* 裁到装下 */ }
+    /* 买卖比（三批起改**连续曲线积分**口径）：两侧到「下一屏」边界（2×VIEW＋0.5 格）的
+       连续深度直接求和 —— 可见行、稀疏跳过格、被装框裁掉的格全在曲线里，与显示行数解耦；
+       边界外的离散墙逐条补上。 */
+    const xA = Math.abs(Math.max(0, (midIdx + 2 * VIEW + 0.5) * step) / b.mid - 1);
+    const xB = Math.abs(Math.max(0, (midIdx - 2 * VIEW - 0.5) * step) / b.mid - 1);
+    let aUsd = qOf(xA) * b.liq, bUsd = qOf(xB) * b.liq;
+    for (const r of b.asks) if (r.wall && Math.abs(r.price / b.mid - 1) > xA) aUsd += r.notional;
+    for (const r of b.bids) if (r.wall && Math.abs(r.price / b.mid - 1) > xB) bUsd += r.notional;
     /* 累计从**贴中格**出发向外累加：asks 升序（贴中在前）累计后反转显示（远档在上），
        bids 反转成贴中在前再累计、原序显示（最近的买价贴着 mid）。 */
     const decorate = rows => {
       let cum = 0;
       return rows.map(r => { cum += r.notional; return { ...r, qty: r.notional / r.price, cum }; });
     };
-    const A = side(true), B = side(false);
-    const asks = decorate(A.rows).reverse();
-    const bids = decorate(B.rows.slice().reverse());
+    const asks = decorate(A).reverse();
+    const bids = decorate(B.slice().reverse());
     const maxQ = Math.max(1e-12, ...asks.map(r => r.qty), ...bids.map(r => r.qty));
     const head = el('div', 'gb-head');
     head.append(el('i', null, '价格'), el('span', 'gb-track'), el('em', null, '数量'), el('b', null, '金额'));
@@ -3480,17 +3505,12 @@ function floatBody(s, page, bookStep = 1) {
       row.append(track, el('em', null, fmtQty(r.qty)), el('b', null, fmtMoneyShort(r.cum)));
       return row;
     };
-    const gbFar = far => el('div', 'gb-far', `更远${far.n ? ` ${far.n} 档` : ''} · 累计 ${fmtMoneyShort(far.usd)}`);
-    if (A.far.usd > 0) box.append(gbFar(A.far));
     for (const r of asks) box.append(gbRow(r, 'gb-ask'));
     box.append(el('div', 'gb-mid', fmtFloatPrice(b.mid, step)));
     for (const r of bids) box.append(gbRow(r, 'gb-bid'));
-    if (B.far.usd > 0) box.append(gbFar(B.far));
-    /* ③ 买卖比（2026-10-08 · 用户要求）：两侧**全量**名义（可见行 ＋ `far.usd` 远场累计，
-       与页内「更远」行同一条守恒口径）折成占比，coinglass 同款一条双色横条 —— 左绿买右红卖，
-       宽度即占比、数字嵌条内（占比极端时溢出隐藏，真实交易所同款读法）。 */
-    const aUsd = A.rows.reduce((t, r) => t + r.notional, 0) + A.far.usd;
-    const bUsd = B.rows.reduce((t, r) => t + r.notional, 0) + B.far.usd;
+    /* ③ 买卖比（2026-10-08 · 用户要求）：两侧**全量**名义折成占比（三批起由上方连续曲线
+       积分给出），coinglass 同款一条双色横条 —— 左绿买右红卖，宽度即占比、数字嵌条内
+       （占比极端时溢出隐藏，真实交易所同款读法）。 */
     const tot = aUsd + bUsd;
     if (tot > 0) {
       const buyPct = Math.max(0, Math.min(100, Math.round(bUsd / tot * 100)));
@@ -3500,11 +3520,11 @@ function floatBody(s, page, bookStep = 1) {
       rbar.append(bu, el('u', null, `${100 - buyPct}% 卖`));
       box.append(rbar);
     }
-    /* ① 步进选择器（2026-10-08 用户拍板，同日改档「删 ×½ 加 ×10」）：挂在页底 —— 网格缩放档，
+    /* ① 步进选择器（2026-10-08 用户拍板；三批改档 ×1~×20）：挂在页底 —— 网格缩放档，
        点按写 `main.js` 的会话级 `bookStep`（`data-gofstep` 委托，不进存档）；
        选中档高亮随每帧重画自动跟随。基础步长本身仍按价格自适应（上面的 `niceStep`）。 */
     const stepRow = el('div', 'gb-steps');
-    for (const v of [1, 2, 5, 10]) {
+    for (const v of [1, 2, 5, 10, 20]) {
       const b = el('button', `gb-step${Math.abs(bookStep - v) < 1e-9 ? ' on' : ''}`, `×${v}`);
       b.dataset.gofstep = String(v);
       stepRow.append(b);
@@ -3579,16 +3599,15 @@ export function updateFloat(s, ui) {
   for (const b of fPanel.querySelectorAll('[data-goftab]')) b.classList.toggle('on', Number(b.dataset.goftab) === ui.page);
   fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page, ui.step));
   /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽由 `--float-w` 给，＋8px 余量）。
-     高度由 `--float-h` 给（手机端兜底 64dvh）⇒ 上弹时 top 还要夹进「视口高 − 面板高 − 余量」，
-     否则矮视口下面板底边会探出屏幕外（2026-10-08 扩容后尤其明显）。 */
+     高度由 `--float-h` 给（手机端兜底 64dvh）⇒ **两个方向**的 top 都要夹进
+     「视口高 − 面板高 − 余量」（2026-10-08 三批修：旧版只夹了上弹支，钮在上半屏时面板向下
+     展开 `pos.y + 46` 不夹 ⇒ 面板底边探出屏幕外 —— 用户报的「详情浮窗容易被截断」）。 */
   const geo = floatGeo();
   const cw = geo.cw, ch = geo.ch;
   if (ui.pos) {
     const fh = geo.h;
     fPanel.style.left = `${Math.min(Math.max(4, ui.pos.x), cw - geo.w - 8)}px`;
-    fPanel.style.top = `${ui.pos.y > ch * 0.55
-      ? Math.max(4, Math.min(ui.pos.y - 320, ch - fh - 4))
-      : ui.pos.y + 46}px`;
+    fPanel.style.top = `${Math.max(4, Math.min(ui.pos.y + (ui.pos.y > ch * 0.55 ? -320 : 46), ch - fh - 4))}px`;
     fPanel.style.right = 'auto'; fPanel.style.bottom = 'auto';
   } else {
     fPanel.style.left = 'auto'; fPanel.style.top = 'auto';

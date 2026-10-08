@@ -224,9 +224,10 @@ const GOD_TAP_MS = 1500;
 let godTaps = 0;
 let godTapAt = 0;
 
-/* 上帝面板日期选择器的**暂存目标**（2026-09-30）—— `{y,m,d}` 或 `null`（= 跟随当前游戏日期）。
-   ⚠️ 点「年 / 月 / 日」只改它、**不碰 `s`**；只有点「跳到」才真正动状态（`godJump`）。
-      少了这层暂存，在 2 月与 3 月之间来回点就会每一下都触发一次「回到过去」的状态重置。
+/* 上帝面板日期选择器的**暂存目标**（2026-09-30；2026-10-08 三批起为 `{y,m}`，日选择已删）
+   —— 或 `null`（= 跟随当前游戏日期）。
+   ⚠️ 点「年 / 月」只改它、**不碰 `s`**；只有点「跳到」才真正动状态（`godJump`）。
+      少了这层暂存，在年与月之间来回点就会每一下都触发一次跳时间的状态重置。
    ⚠️ 与 `godTaps` 同一个口径：纯界面状态，**不进 `s`**。 */
 let godSel = null;
 
@@ -1073,7 +1074,7 @@ function dispatch(node, ev) {
      ⚠️ 设置页那枚「订单冲击」开关已于 2026-10-01 随 `s.impactOn` 字段一起删除 —— 冲击永远是开的。 */
   if (d.god !== undefined) return onGodTap(node);
   if (d.godcash !== undefined || d.godyear !== undefined || d.godmon !== undefined
-    || d.godday !== undefined || d.godgo !== undefined
+    || d.godgo !== undefined
     || d.godtab !== undefined || d.godinf !== undefined || d.godliq !== undefined) {
     /* 这几枚只可能出现在上帝面板里，而面板只在 `s.god` 非空时打开。这一行是**状态机不靠 DOM 兜底**：
        万一面板被别的路径留下来（比如读到一份 `god: null` 的档），这里不能抛异常。 */
@@ -1084,7 +1085,6 @@ function dispatch(node, ev) {
     if (d.godliq !== undefined) return onGodLiq(node);
     if (d.godyear !== undefined) return onGodPick('y', Number(d.godyear));
     if (d.godmon !== undefined) return onGodPick('m', Number(d.godmon));
-    if (d.godday !== undefined) return onGodPick('d', Number(d.godday));
     return onGodGo();
   }
   /* ── 上帝操盘台（2026-10-07）── 与上面几枚同一处境：只出现在上帝面板里，
@@ -1397,7 +1397,7 @@ function onMarginAdjust(s, val) {
    顶栏标题挂着同一枚键，但只作「已解锁时单击重开面板」。一张面板（资金·时间 / 沙盒 / 操盘）。
    ⚠️ 面板是**静态 DOM**，所以「填入」要从它内部读输入框的值 —— 输入框不能挂 `data-*`
       （`bind.js` 会 `preventDefault` 掉 `pointerdown`，挂上去就打不了字）。
-      ⚠️ 跳日期那三排档位是**按钮**、不是输入框，照旧走 `data-godyear` / `godmon` / `godday`。 */
+      ⚠️ 跳日期那两排档位（年 / 月）是**按钮**、不是输入框，照旧走 `data-godyear` / `godmon`。 */
 
 /**
  * 上帝入口点击（`data-god`）。两条路径（2026-10-07 入口改型）：
@@ -1542,9 +1542,9 @@ function onGodFloatTab(node) {
   after();
 }
 
-/** 订单簿步进档（`data-gofstep`，2026-10-08）：写会话级 `bookStep`（×½/×1/×2/×5），下一帧
- *  `floatBody` 用它乘网格步进重画。普通局市场浮窗的订单页同样有这排按钮 ⇒ 闸门已放宽
- *  （见 dispatch 浮窗组）。纯显示偏好，不进存档。 */
+/** 订单簿步进档（`data-gofstep`，2026-10-08；三批改档 ×1/×2/×5/×10/×20）：写会话级
+ *  `bookStep`，下一帧 `floatBody` 用它乘网格步进重画。普通局市场浮窗的订单页同样有这排
+ *  按钮 ⇒ 闸门已放宽（见 dispatch 浮窗组）。纯显示偏好，不进存档。 */
 function onGodFloatStep(node) {
   bookStep = Number(node.dataset.gofstep) || 1;
   after();
@@ -1593,42 +1593,45 @@ function onGodInf() {
 }
 
 /**
- * 日期选择器：改**一个**分量，其余不动（`k` = `'y'` / `'m'` / `'d'`）。
- * ⚠️ 日要夹到该月实际天数：选中 1/31 再点 2 月 ⇒ 落到 2/28（闰年 2/29），不往 3 月进位。
+ * 日期选择器：改**一个**分量，其余不动（`k` = `'y'` / `'m'`）。
+ * ⚠️ 日选择已删（2026-10-08 三批拍板）：落点恒为所选月份的 1 日 00:00。
  * ⚠️ 这里**只改暂存值 ＋ 重开面板**，一帧 `s` 都不碰 —— 真正跳转在 `onGodGo`。
  */
 function onGodPick(k, v) {
   const now = new Date(timeOf(s));
-  const b = godSel ?? { y: now.getUTCFullYear(), m: now.getUTCMonth() + 1, d: now.getUTCDate() };
-  const next = { ...b, [k]: v };
-  /* `Date.UTC(y, m, 0)` = 该月最后一天的 00:00 —— 拿它取「这个月有几天」 */
-  const dim = new Date(Date.UTC(next.y, next.m, 0)).getUTCDate();
-  godSel = { y: next.y, m: next.m, d: Math.min(next.d, dim) };
+  const b = godSel ?? { y: now.getUTCFullYear(), m: now.getUTCMonth() + 1 };
+  godSel = { ...b, [k]: v };
   showGod();
 }
 
-/** 「跳到」：把暂存的年月日折成小时序号，交给 `godJump`。 */
+/** 「跳到」：把暂存的年月折成小时序号（该月 1 日 00:00），交给 `godJump`。 */
 function onGodGo() {
   const now = new Date(timeOf(s));
-  const sel = godSel ?? { y: now.getUTCFullYear(), m: now.getUTCMonth() + 1, d: now.getUTCDate() };
+  const sel = godSel ?? { y: now.getUTCFullYear(), m: now.getUTCMonth() + 1 };
   godSel = null;
-  const at = Date.UTC(sel.y, sel.m - 1, sel.d);
+  const at = Date.UTC(sel.y, sel.m - 1, 1);
   godJump(Math.round((at - GAME.start) / HOUR_MS), fmtDate(at, false));
 }
 
 /**
- * 跳日期 —— **向前 = 时间自然流过；向后 = 回到过去**（2026-09-30 裁决）。
+ * 跳日期 —— **重置上帝局到所选时刻**（2026-10-08 三批拍板「跳时间直接为新开一局上帝模式
+ * 到所选的时间」，向前 / 向后统一口径）。
  *
- * 向前 ⇒ 逐小时重放（`advanceOneHour`）：不能只改 `s.i`，那等于把这段时间里的事件白送
- *        （交易所灾难、币解锁、杠杆阶梯、强平、资金费、转账到账），
- *        而且玩家的持仓必须**真的走过**这段时间。
- * 向后 ⇒ 倒放没有定义（行情与事件都是单向累积的），改走 `godRewind`：
- *        保留资金、清空持仓，直接把时钟落到那一刻。
+ * 旧版向前 = 逐小时重放（`advanceOneHour` 一路推到目标，全程 10.5 万小时 ≈ 0.4~1.6 秒，
+ * 即使加了 σ / 深度滑窗缓存，重放本身的成本也省不掉 —— 用户实测「还是会卡顿」）；
+ * 现在改走 `rewindTo` 整局落点：保留资金、清空持仓与全部累积进度（位移史 / NPC 情绪 /
+ * 冲击池 / 保险基金…），时钟直接落到目标那一刻，NPC 世界从落点冷启动累积 —— 与年代开局
+ * （挑战模式本就支持中途时刻冷开）同一套语义。
+ *
+ * ⚠️ 为什么上帝局可以砍掉向前重放：普通局向前必须重放是因为**玩家的持仓要真的走过那段时间**；
+ *    上帝局没有玩家持仓，重放的产出为零（事件日志也在落点清空），剩下的只有卡顿 ——
+ *    砍掉没有任何损失。落点后的状态是 `s.i` 的纯函数（`config.*At(t)` 一族）＋冷启动累积，
+ *    自洽性由「无玩家自洽」审计族保障。
  *
  * @param {number} target 目标小时序号（未夹取）
  * @param {string} label  日志里的日期文案（`fmtDate` 的结果）
  */
-async function godJump(target, label) {
+function godJump(target, label) {
   /* 年代开局（M1）：**跳不到本局开局之前** —— `day0` / `cash0` 都是按开局那一天定的，
      时钟落回 2013 年之后，资金曲线与涨跌着色的基准全部错位（M1 之前不存在这种目标，
      因为开局恒在全程第 0 根）。这里明说一句而不是静默夹取：玩家选的日期与真正跳到的日期
@@ -1647,81 +1650,33 @@ async function godJump(target, label) {
     after();
     return;
   }
-  if (to < s.i) return godRewind(to, label);
-
-  /* 遮罩（2026-10-07 用户报「跳转时间的时候会卡一下」）—— 逐小时循环是**同步**的
-     （2013-01 → 2024-12 全程 10.5 万小时 ≈ 0.4 秒），不先铺一层全屏遮罩就整段卡在旧画面上。
-     ⚠️ 必须**先让出一帧**再跑循环：插入 DOM 是同步的，而**绘制**要等本任务让出 ——
-        直接开跑 ⇒ 遮罩一帧都没画出来，卡顿照旧（`maskReload` 踩过同一个坑）。
-     ⚠️ 用**双 `rAF`**（这一帧的 rAF → 下一帧的 rAF）而不是那里的 `rAF → setTimeout`：
-        `setTimeout(0)` 只保证排在宏任务队尾，**不保证**浏览器在它之前完成绘制；
-        双 rAF 的第二帧回调一定发生在第一帧的绘制之后，遮罩必然已经上屏。
-     复用 `.boot` 那层遮罩（`z-index: 100`，压得住结算遮罩 `10` 与弹层 `20`）——
-     它就是本项目的「全屏过渡遮罩」，与 `maskReload` 同一写法。
-     ⚠️ **短跳不铺遮罩**：循环本身只要几毫秒，而遮罩为了上屏必须先让出**两帧（≈33ms）** ——
-        那等于拿 33ms 的暗屏去盖 3ms 的计算，反倒凭空造出一次闪屏。一个月（720 小时 ≈ 3ms）以下不铺。
-     ⚠️ 铺了遮罩就必须在 `finally` 里摘掉（下面那支），否则异常会让整屏僵住。 */
-  const span = to - s.i;
-  const needMask = span >= 24 * 30;
-  if (needMask) {
-    renderBoot(`正在推进到 ${label}…`);
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-  }
-
-  /* 同步循环 ⇒ `createClock` 的 `setInterval` 不可能插进来。三种情况都要停：
-       ① 到目标日期  ② 到 2024-12-31 收盘（`s.over`）
-       ③ **中途账户归零、弹出救济金遮罩**（`s.pending`）—— 少了第三个判据这里会**死循环**：
-          `advanceOneHour` 在 `pending` 下会立刻 return（`s.i` 永远不前进），
-          而 `!s.over` 一直为真，浏览器就卡死了（2026-09-29 离线断言逮到）。
-     ⚠️ 「不被打断」不是靠去掉 `!s.pending`，而是靠**内层退出来后清掉预警再继续**（见下）。
-     原「0.4 秒，不需要进度提示」的判断已于 2026-10-07 由用户实测推翻：0.4 秒的**僵死画面**
-     手感上是明显的卡顿 ⇒ 现在一律先铺遮罩。 */
-  const wasPaused = s.paused;
-  try {
-    while (s.i < to && !s.over) {
-      while (s.i < to && !s.over && !s.pending) advanceOneHour(s);
-      /* 破产预警（新手提示）**不打断跳转**：跳日期是玩家主动快进，一记「7 天后有大事」的遮罩
-         在这里没有意义（人已经在那一刻或之后了），而它会把面板顶掉、把跳转截停在半路。
-         ⚠️ 正常情况下走不到这里 —— `enableGod` 已把上帝模式的 `hintOn` 关掉（`core/god.js`）；
-            这一支是**兜底**：玩家在设置页把「新手提示」重新打开之后，跳日期仍不该被打断。
-         ⚠️ `s.paused` 还原成**跳转前**的值：预警把它置成了 `true`，不理它会让跳完之后
-            时钟莫名其妙停住（玩家没按过暂停）。 */
-      if (s.pending === 'warn') { s.warnAt = null; s.pending = null; s.paused = wasPaused; continue; }
-      break;   // 待领救济金（`'loan'`）等**必须**停：那是玩家要拍板的决策点，不是提示
-    }
-  } finally {
-    /* 遮罩必须在 `after()` 之前摘掉 —— 结算 / 救济金遮罩（`z-index: 10`）在 `.boot`（100）之下，
-       先画再摘会让它被盖住一帧。 */
-    if (needMask) hideBoot();
-  }
-  /* 停在救济金遮罩上时**不要**再开上帝面板 —— `draw()` 刚把遮罩铺上，压一张面板上去只会打架 */
-  if (!s.over && !s.pending) showGod();
-  after();
+  godReset(to, label);   // 向前 / 向后同一落点：O(1)，卡顿根除
 }
 
 /**
- * **回到过去**（2026-09-30 裁决）—— 保留资金、清空持仓。
+ * **重置上帝局到所选时刻**（2026-10-08 三批拍板，原「回到过去」向前推广）——
+ * 保留资金、清空持仓与全部累积进度，时钟落到第 `to` 根小时 K。
  *
- * 状态变换整块在 `engine.rewindTo`（core 侧，可离线断言）；这里只做 UI 该做的三件事：
- * 记一条日志、重开面板、必要时把回落到的币的行情拉进来。
+ * 状态变换整块在 `engine.rewindTo`（core 侧，可离线断言，方向无关）；
+ * 这里只做 UI 该做的三件事：记一条日志、重开面板、必要时把落点币的行情拉进来。
  */
-function godRewind(to, label) {
+function godReset(to, label) {
   /* ⚠️ `rewindTo` 是「复活」——它会把 `s.paused / s.pending / s.over` 一并复位（core 侧口径）。
-     其中 `s.paused = false` 会**替玩家按下「继续」**：暂停着跳回过去，回来时游戏自己跑起来了。
-     暂停是玩家的显式选择，跳日期不该动它 ⇒ 这里按跳转前的值还原（与 `godJump` 同一纪律）。 */
+     其中 `s.paused = false` 会**替玩家按下「继续」**：暂停着跳时间，回来时游戏自己跑起来了。
+     暂停是玩家的显式选择，跳日期不该动它 ⇒ 这里按跳转前的值还原。 */
   const wasPaused = s.paused;
   const cash = rewindTo(s, to);
   s.paused = wasPaused;
-  pushLog(s, `回到 ${label} ｜ 资金已保留（${fmtMoney(cash)}），持仓已清空`, 'ok');
+  pushLog(s, `跳到 ${label} ｜ 已重置为本局此刻（资金保留 ${fmtMoney(cash)}，持仓与进度清空）`, 'ok');
   showGod();
   after();
-  /* 回落到的币可能还没加载过 —— 与 `onSym` 同一手法：先重画，拉到之后再刷新 */
+  /* 落点币可能还没加载过 —— 与 `onSym` 同一手法：先重画，拉到之后再刷新 */
   if (!isLoaded(s.sym)) ensureCoin(s.sym).then(() => draw(true));
 }
 
 /* ── 上帝操盘台（2026-10-07）──────────────────────────────────────
    三枚动作都只做「调 engine ＋ 记日志 ＋ 重开面板 ＋ 落盘」—— 状态变换整块在 core
-   （可离线断言），与 `godRewind` / `onSb` 同一条纪律；动作全部走既有市场物理，
+   （可离线断言），与 `godReset` / `onSb` 同一条纪律；动作全部走既有市场物理，
    真实化依据见 `engine.godManip*` 的头注。
    ⚠️ 「关闭上帝模式」已随入口改型删除：上帝模式不进存档（会话级一次性），没有退出的路。 */
 

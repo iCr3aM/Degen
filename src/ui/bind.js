@@ -23,17 +23,18 @@ export const ACTION_KEYS = [
   'tab',
   /* 上帝模式：`god` ＝ 上帝入口 —— **主菜单图标连点 5 次**直接进局（2026-10-07 入口改型）；
         顶栏标题挂着同一枚键但只作「已解锁时单击重开面板」（不再是解锁入口）。
-     / `godcash` `godyear` `godmon` `godday` `godgo`（上帝面板内的各枚按钮）
+     / `godcash` `godyear` `godmon` `godgo`（上帝面板内的各枚按钮）
      / `godtab`（2026-10-05 分页：页签「资金·时间」/「沙盒」/「操盘」）
      / `godpump`（2026-10-08 操盘台三行合一：拉盘/砸盘一键组合拳 = 幌骗→洗售→吃单；
         原三枚 `godpush` `godwash` `godspoof` 随独立操作一并删除）
      ⚠️ 原来的 `godmult` `godscale` `godreset` 三枚已随上帝模式瘦身整体删除（2026-09-29）；
-        `goddate` 随原生日期框一起删除，日期改由 `godyear` / `godmon` / `godday` 三排档位选择、
-        `godgo` 才真正跳（2026-09-30）；
+        `goddate` 随原生日期框一起删除，日期改由 `godyear` / `godmon` 两排档位选择、
+        `godgo` 才真正跳（2026-09-30）；`godday`（日排）已随 2026-10-08 三批的
+        「跳时间 = 重置上帝局到所选时刻」一并删除（落点恒为该月 1 日 00:00）；
         `godoff`（「关闭上帝模式」）已随 2026-10-07 的入口改型删除 —— 上帝模式是会话级
         一次性状态（`save.js` 落盘剔除 `s.god`，读档回来就是普通局），面板底部只剩
         「关闭」（关的是面板，不是模式）。 */
-  'god', 'godcash', 'godinf', 'godyear', 'godmon', 'godday', 'godgo', 'godtab',
+  'god', 'godcash', 'godinf', 'godyear', 'godmon', 'godgo', 'godtab',
   'godpump',
   /* `godliq`（2026-10-08）：操盘台「深度」行的档位按钮（自动 / ×1 / ×2 / ×4 / ×8）——
      写 `s.god.liqMul`，引擎在 `hourLiqBase` 末尾统一放大深度分母。 */
@@ -107,8 +108,9 @@ export const ACTION_KEYS = [
      `goftab` ＝ 浮窗面板页签（热力 / 巨鲸 / 深度 / 订单 / 成交）；`gofclose` ＝ 面板右上角「✕」。
      ⚠️ 与 `godtab`（上帝面板页签）是**两套**页签 —— 浮窗的用 `goftab`，别混。 */
   'godfloat', 'godalpha', 'gofloat', 'goftab', 'gofclose',
-  /* `gofstep`（2026-10-08）：订单簿页底部的步进档（×½/×1/×2/×5）—— 会话级网格缩放，
-     普通 / 挑战局的市场浮窗订单页同样有这排按钮（分派见 `main.js` 的 `onGodFloatStep`）。 */
+  /* `gofstep`（2026-10-08）：订单簿页底部的步进档（×1/×2/×5/×10/×20；三批改档）——
+     会话级网格缩放，普通 / 挑战局的市场浮窗订单页同样有这排按钮
+     （分派见 `main.js` 的 `onGodFloatStep`）。 */
   'gofstep',
   /* 市场浮窗开关（2026-10-07 拍板）：普通 / 挑战局设置页那枚「市场浮窗 开/关」——
      详浮窗本体（上帝局）与这枚开关是两回事；分派见 `main.js` 的 `onMktFloat`。 */
