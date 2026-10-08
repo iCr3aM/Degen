@@ -1365,7 +1365,11 @@ export function update(refs, s, view) {
     rollNumber(refs.asUsdt, 'usdt', usdt, { speed: s.speed, fx: view.fx });
     const share = v => (book > 0 ? `占 ${Math.round(v / book * 100)}%` : '--');
     setText(refs.asUsdSub, share(usd));
-    setText(refs.asUsdtSub, share(usdt));
+    /* U 那一格的副行：**脱锚/溢价时把汇率写出来**（缺口 2 · 2026-10-08）—— 权益现在按市值重估
+       （`engine.cashMtmOf`），U 一折价总资产就跟着缩，不写出汇率玩家只会觉得「数字自己少了」。
+       常态（|p − 1| ≤ 0.1%）不写，保持那一行的干净（LESS IS MORE）。 */
+    const uP = usdtPriceAt(now);
+    setText(refs.asUsdtSub, Math.abs(uP - 1) > 0.001 ? `${share(usdt)} ｜ 1 U = $${uP.toFixed(3)}` : share(usdt));
 
     /* 总资产（B6-c · §7.12 ④⑤）：全屏**唯一的主数值**（18px）＋ 换值闪一下。
        ⚠️ 颜色用 `classList.toggle` 而不是整体重写 `className` —— 整体重写会把下面刚挂上的

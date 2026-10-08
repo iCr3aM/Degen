@@ -620,11 +620,31 @@ export const bookOf = (s, ex = s.ex) => s.books[ex] ?? ZERO_BOOK;
 export const ensureBook = (s, ex = s.ex) => (s.books[ex] ??= blankBook());
 
 /**
- * 某一所的**总余额**（两格之和）—— 面值 1:1。
- * ⚠️ 它与 `engine.equity` 的口径必须一致：USDT 在权益里也按 $1 计，
- *    溢价已经在「买 U」那一刻结清，不再按市价重估（否则同一笔钱被计两次价）。
+ * 某一所的**总余额**（两格之和）—— **面值** 1:1（不是市值）。
+ *
+ * ⚠️ 2026-10-08（缺口 2）起，「面值」与「市值」**刻意分成两个口径**，别再把它们合并：
+ *    · **面值**（本函数）=「这一单能用多少钱」—— `debit` / `spendableOf` / 最小名义闸门都走它，
+ *      因为交易所的最小名义与保证金都是 **U 计价**的，U 脱锚并不妨碍你下单；
+ *    · **市值**（`engine.cashMtmOf`）=「手上的钱值多少美元」—— 权益 / HUD / 资产曲线 / 结算页走它。
+ *    合成一个式子的后果是「显示 $88、却能花 $100」这种自相矛盾。
+ * ⚠️ 旧注释说的「溢价已在『买 U』那一刻结清」**不再是事实**：现在改为持有期逐小时重估
+ *    （`engine.markUsdt`），换汇那一刻不再结账 —— 见 `cashMtmOf` 与 `markUsdt` 的注释。
  */
 export const cashOf = (s, ex = s.ex) => { const b = bookOf(s, ex); return b.usd + b.usdt; };
+
+/**
+ * **手上（含在途）的 USDT 总量**（枚）—— 只服务「持有期市值重估」那一笔小时结账
+ * （`engine.markUsdt`）。
+ * ⚠️ 口径 = 所有交易所账本的 `usdt` 格 ＋ 在途转账里的 USDT（`s.transfer.cur === 'usdt'`）。
+ *    仓位保证金**不算** —— 它的取值范围见 `engine.cashMtmOf` 的口径说明。
+ * ⚠️ 必须扫**全部** `books`（不是只看当前所）：换所后旧所那格还在，市值一样会随汇率动。
+ */
+export function usdtHeldOf(s) {
+  let sum = 0;
+  for (const ex of Object.keys(s.books)) sum += s.books[ex].usdt;
+  if (s.transfer && s.transfer.cur === 'usdt') sum += s.transfer.amount;
+  return sum;
+}
 
 /** 当前所**这一格**的余额（资产页分列显示用） */
 export const slotOf = (s, cur, ex = s.ex) => bookOf(s, ex)[cur] ?? 0;

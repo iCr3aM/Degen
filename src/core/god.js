@@ -43,7 +43,7 @@
  *    否则会算出「价格在动、波动率不动」的不自洽滑点。
  */
 
-import { exchangeOf, GAME } from './config.js';
+import { exchangeOf, GAME, HOUR_MS } from './config.js';
 import { SLIP } from './impact.js';
 import { hashStr, rand } from './rng.js';
 
@@ -850,6 +850,204 @@ export function instSeedOf(sym, t) {
   let mul = INST_ERA[0].mul;
   for (const s of INST_ERA) { if (s.from <= t) mul = s.mul; else break; }
   return base * mul;
+}
+
+/* ═══════════ 独立巨鲸 / 机构队列 ＋ 现货 ETF 日频净流入（缺口 4 / 5 · 2026-10-08） ═══════════
+ *
+ * 这两个都是**与玩家无关、但真实存在的方向性买/卖盘**：队列里的机构在披露日前后把一笔钱
+ * 摊到若干天里吃进 / 抛出，ETF 则从上市那天起按月净额逐日流入（或流出）。两者共用**同一个
+ * 注入点**（`engine.npcBuild` 的长/短侧靶心，与深跌护盘 `dipBuy` 同址），因此：
+ *   · **纯函数、不进存档、不升 `STATE_VERSION`**（同 `anchors` / `instSeedOf`）——
+ *     取值只依赖 `s.i` 与这两张表，老档读出来与新档逐位同轨；
+ *   · 位移走既有链路（`npcNet` → `syncNpcDrift` → `permImpactOf` × `NPC.synthGive`），
+ *     **不新开通道、不写 `s.flow`**（那是玩家自己的永久痕迹，见本文件头注）。
+ *
+ * ⚠️ **口径说明（红线 A · 不双重计价）**：真实行情里**已经**包含这些机构买入与 ETF 流入带来的
+ *    涨幅 —— 本层是**叠加**在真实数据之上的一层「方向性偏移」，故与 NPC 净持仓同一把尺子乘
+ *    `NPC.synthGive = 0.45`（只给不足一半的合成力度）。它的作用不是复刻历史涨幅，而是让
+ *    「玩家此刻在跟谁对着干」这件事在盘口上可见。嫌强 / 嫌弱先动下表的名义额或 `days`。
+ *
+ * ⚠️ **量级一律按游戏自己的日流动性折算**（`liqOf`，2024 BTC ≈ $104 亿/天），**不用外部口径**：
+ *    外部研究报告的「日成交额」有 3–5 倍的口径分歧（Glassnode 窄口径 vs 全 CEX 汇总），
+ *    按外部数写死会与本作的滑点分母脱钩。故下表只存**真实披露的美元名义额**与**执行窗口天数**，
+ *    逐日流量 = `usd / days`，占比由 `liqOf` 当场算出。
+ */
+
+/**
+ * **巨鲸 / 机构队列**（缺口 4）—— 逐条来自公开披露，字段：
+ *   `t`    披露日（UTC 零点；日粒度）
+ *   `sym`  币种（本轮**只有 BTC**：ETH 侧没有可比的「有精确日期＋金额」的机构买卖事件）
+ *   `dir`  `+1` 买入 / `−1` 卖出
+ *   `usd`  披露的名义额（**美元**）
+ *   `days` 这笔钱摊开的市场窗口（天）—— 见下条说明
+ *   `who`  主体（日志用）
+ *
+ * ⚠️ **`days` 的取法**：机构大单基本走 **OTC 台**（MSTR 走 Coinbase Prime），**不直接砸盘口**
+ *    —— 真正落到现货薄子上的，是「跟风买盘 ＋ 浮筹被锁走」的那部分，释放得慢。故执行窗口
+ *    一律取「市场消化这笔消息的时长」：常态机构买入 **30 天**、交易所内执行的抛售
+ *    （德国政府 / Mt.Gox 分发）按**实际发生窗口** 24–120 天。窗口越长、日流量越温和
+ *    —— 2024-11-25 那笔 $54 亿 / 30 天 ≈ $1.8 亿/天 ≈ **1.7%/天**（$104 亿/天口径），
+ *    与同期 ETF 的流入速率同量级，不会把 2024 年的行情顶飞。
+ *
+ * ⚠️ **刻意排除的两类**（审计对照见本轮方案）：
+ *   ① **查封 ≠ 抛售**：Silk Road 69,370 枚（2020-11）、Bitfinex 94,643 枚（2022-02）—— 币从
+ *      市场里被**移走并锁住**，当时并没有砸出来，写成一笔卖盘是编的；
+ *   ② **政府拍卖**（2014–2015 共 187,381 枚，含 Draper 那 29,656 枚）—— 场外拍卖、不触现货薄子，
+ *      且成交价与逐场金额无一致一手数据。
+ */
+export const WHALES = [
+  /* ── 买入：上市公司 / 主权资产负债表进场 ── */
+  { t: Date.UTC(2020, 7, 11),  sym: 'BTC', dir: 1, usd: 2.50e8, days: 30, who: 'MicroStrategy 首次披露' },
+  { t: Date.UTC(2020, 9, 8),   sym: 'BTC', dir: 1, usd: 5.00e7, days: 20, who: 'Square（Block）披露' },
+  { t: Date.UTC(2020, 11, 10), sym: 'BTC', dir: 1, usd: 1.00e8, days: 30, who: 'MassMutual 披露' },
+  { t: Date.UTC(2021, 1, 8),   sym: 'BTC', dir: 1, usd: 1.50e9, days: 30, who: '特斯拉披露' },
+  { t: Date.UTC(2021, 1, 24),  sym: 'BTC', dir: 1, usd: 1.026e9, days: 30, who: 'MicroStrategy 增持' },
+  { t: Date.UTC(2021, 8, 7),   sym: 'BTC', dir: 1, usd: 1.04e7, days: 14, who: '萨尔瓦多把 BTC 列为法币并买入首批 200 枚' },
+  { t: Date.UTC(2024, 2, 11),  sym: 'BTC', dir: 1, usd: 8.217e8, days: 30, who: 'MicroStrategy 增持' },
+  { t: Date.UTC(2024, 5, 20),  sym: 'BTC', dir: 1, usd: 7.86e8,  days: 30, who: 'MicroStrategy 增持' },
+  { t: Date.UTC(2024, 8, 13),  sym: 'BTC', dir: 1, usd: 1.11e9,  days: 30, who: 'MicroStrategy 增持' },
+  { t: Date.UTC(2024, 10, 11), sym: 'BTC', dir: 1, usd: 2.03e9,  days: 30, who: 'MicroStrategy 增持' },
+  { t: Date.UTC(2024, 10, 18), sym: 'BTC', dir: 1, usd: 4.60e9,  days: 30, who: 'MicroStrategy 增持' },
+  { t: Date.UTC(2024, 10, 25), sym: 'BTC', dir: 1, usd: 5.40e9,  days: 30, who: 'MicroStrategy 增持' },
+  { t: Date.UTC(2024, 11, 16), sym: 'BTC', dir: 1, usd: 1.54e9,  days: 30, who: 'MicroStrategy 增持' },
+  /* ── 卖出 ── */
+  { t: Date.UTC(2021, 3, 26),  sym: 'BTC', dir: -1, usd: 2.72e8, days: 14,  who: '特斯拉一季报减持' },
+  { t: Date.UTC(2022, 6, 20),  sym: 'BTC', dir: -1, usd: 9.36e8, days: 14,  who: '特斯拉减持约七成持仓' },
+  { t: Date.UTC(2023, 2, 31),  sym: 'BTC', dir: -1, usd: 2.157e8, days: 60, who: '美国政府处置 Silk Road 案 9,861 枚' },
+  { t: Date.UTC(2024, 5, 19),  sym: 'BTC', dir: -1, usd: 2.85e9, days: 24,  who: '德国政府抛售 Movie2k 案 49,858 枚' },
+  { t: Date.UTC(2024, 6, 5),   sym: 'BTC', dir: -1, usd: 8.10e9, days: 120, who: 'Mt.Gox 受托人向债权人分发 14.2 万枚' },
+];
+
+/** 巨鲸队列里第 `d` 天（游戏窗口天序号）的**净有向流量**（美元/天）—— 纯函数 */
+export function whaleFlowAt(sym, d) {
+  let sum = 0;
+  for (const e of WHALES) {
+    if (e.sym !== sym) continue;
+    const d0 = Math.round((e.t - GAME.start) / HOUR_MS / 24);
+    const n = Math.max(1, e.days);
+    if (d < d0 || d >= d0 + n) continue;
+    sum += e.dir * e.usd / n;
+  }
+  return sum;
+}
+
+/**
+ * **现货 ETF 的月度净流入**（缺口 5）—— 「一级市场申赎」口径（AP 创设 / 赎回，非二级成交）。
+ * 数据源：Farside Investors 日度表逐月累加，与 SoSoValue / Blockworks 交叉核对（2026-10-08）。
+ *
+ * ⚠️ **只到 2024-12**：本作行程终点是 2025-01-01（`GAME.end`），2025 年的数据用不着。
+ * ⚠️ **起用日严格锚在上市首日**：BTC 现货 ETF **2024-01-11** 上市、ETH **2024-07-23**（美国
+ *    证监会在 2024-07-22 放行）—— 早于这两个时刻的天一律返回 0（那年根本还没有这个买盘）。
+ * ⚠️ **2024 年 BTC 全年 +$35.3B / ETH +$2.66B**（ETH 是净正：ETHE 全年 −$3.64B 被
+ *    ETHA 等新基金盖过）。逐月的**符号**是要紧的 —— 4 月 BTC、8 月 BTC、7/9 月 ETH 都是
+ *    净流出，那几个月这条买盘应当**反向**变成卖压。
+ * ⚠️ 表格里是**月净额**，`etfFlowAt` 按当月**交易日数**摊平 ⇒ 日间结构（如 2024-01 上半月
+ *    GBTC 单日流出 $5–6 亿、下半月回补）被抹平，这是刻意接受的简化（月度是真数据、日度是估计）。
+ */
+export const ETF_FLOW = {
+  BTC: {
+    from: Date.UTC(2024, 0, 11),
+    months: [
+      [Date.UTC(2024, 0, 1),   1.500e9],
+      [Date.UTC(2024, 1, 1),   6.000e9],
+      [Date.UTC(2024, 2, 1),   4.600e9],
+      [Date.UTC(2024, 3, 1),  -3.45e8 ],
+      [Date.UTC(2024, 4, 1),   2.100e9],
+      [Date.UTC(2024, 5, 1),   6.66e8 ],
+      [Date.UTC(2024, 6, 1),   3.200e9],
+      [Date.UTC(2024, 7, 1),  -9.2e7  ],
+      [Date.UTC(2024, 8, 1),   1.300e9],
+      [Date.UTC(2024, 9, 1),   5.300e9],
+      [Date.UTC(2024, 10, 1),  6.500e9],
+      [Date.UTC(2024, 11, 1),  4.600e9],
+    ],
+  },
+  ETH: {
+    from: Date.UTC(2024, 6, 23),
+    months: [
+      [Date.UTC(2024, 6, 1),  -4.84e8 ],
+      [Date.UTC(2024, 7, 1),   6.0e6  ],
+      [Date.UTC(2024, 8, 1),  -4.6e7 ],
+      [Date.UTC(2024, 9, 1),   4.3e7 ],
+      [Date.UTC(2024, 10, 1),  1.057e9],
+      [Date.UTC(2024, 11, 1),  2.084e9],
+    ],
+  },
+};
+
+/** 当月（`ms` 所在月，但不早于 `from`）的**交易日数** —— 周一至周五，不含美国法定假日 */
+function tradingDaysIn(ms, from) {
+  const dt = new Date(ms);
+  const y = dt.getUTCFullYear(), m = dt.getUTCMonth();
+  const last = Date.UTC(y, m + 1, 0);                 // 当月最后一天（日号 0 = 上一天）
+  const start = Math.max(Date.UTC(y, m, 1), from);
+  let n = 0;
+  for (let d = start; d <= last; d += 24 * HOUR_MS) {
+    const w = new Date(d).getUTCDay();
+    if (w !== 0 && w !== 6) n++;
+  }
+  return n;
+}
+
+/** 游戏窗口天序号 → UTC 零点毫秒 */
+const dayMs = d => GAME.start + d * 24 * HOUR_MS;
+
+/**
+ * 现货 ETF 第 `d` 天（游戏窗口天序号）的**净有向流量**（美元/天）—— 纯函数。
+ * 周末（美国市场休市）一律 0；未上市 / 无当月数据 / 当月交易日数为 0 也返回 0。
+ */
+export function etfFlowAt(sym, d) {
+  const f = ETF_FLOW[sym];
+  if (!f) return 0;
+  const ms = dayMs(d);
+  if (ms < f.from) return 0;
+  const w = new Date(ms).getUTCDay();
+  if (w === 0 || w === 6) return 0;
+  const dt = new Date(ms);
+  const key = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), 1);
+  const hit = f.months.find(mo => mo[0] === key);
+  if (!hit) return 0;
+  const n = tradingDaysIn(ms, f.from);
+  return n > 0 ? hit[1] / n : 0;
+}
+
+/** 美元额写成中文量级（亿 / 万）—— 只服务巨鲸与 ETF 两条播报，**不换单位到 B/M** */
+function amtOf(usd) {
+  const a = Math.abs(usd);
+  if (a >= 1e8) return `${(usd / 1e8).toFixed(a >= 1e9 ? 0 : 1)} 亿`;
+  if (a >= 1e4) return `${(usd / 1e4).toFixed(0)} 万`;
+  return usd.toFixed(0);
+}
+
+/**
+ * 巨鲸 / 机构**披露**的那一条播报（缺口 4）—— 命中 `t` 所在的那一根小时返回文案，否则 `null`。
+ * 与 `advanceOneHour` 里那批历史时刻同一套 `===` 判等 ⇒ 一局内只说一次，不需要状态位。
+ */
+export function whaleNewsAt(i) {
+  const d = Math.floor(i / 24);
+  for (const e of WHALES) {
+    if (Math.round((e.t - GAME.start) / HOUR_MS / 24) !== d) continue;
+    return `机构动向 ｜ ${e.who} ${e.dir > 0 ? '买入' : '卖出'} ${amtOf(e.usd)}美元 BTC`;
+  }
+  return null;
+}
+
+/**
+ * 现货 ETF 的**月度净流入**播报（缺口 5）—— 每月 **1 日**播上个月的净额（月初才拿得到月报），
+ * 一条里把 BTC / ETH 并排写明。没有数据的月份返回 `null`。
+ */
+export function etfNewsAt(i) {
+  const ms = dayMs(Math.floor(i / 24));
+  const dt = new Date(ms);
+  if (dt.getUTCDate() !== 1) return null;
+  const prev = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() - 1, 1);
+  const parts = [];
+  for (const sym of Object.keys(ETF_FLOW)) {
+    const hit = ETF_FLOW[sym].months.find(mo => mo[0] === prev);
+    if (hit) parts.push(`${sym} ${hit[1] >= 0 ? '+' : '−'}${amtOf(Math.abs(hit[1]))}`);
+  }
+  if (!parts.length) return null;
+  return `现货 ETF ｜ ${dt.getUTCMonth() === 0 ? 12 : dt.getUTCMonth()} 月净流入 ${parts.join(' ｜ ')}美元`;
 }
 
 /* ───────────────────── NPC 杠杆可得性的年代封顶（缺口 17 · 2026-10-03 拍板） ───────────────────── */

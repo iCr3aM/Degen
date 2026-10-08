@@ -29,7 +29,7 @@ globalThis.fetch = async (u) => {
   return new Response(buf, { status: 200 });
 };
 
-const { createState } = await import('../src/core/state.js');
+const { createState, STATE_VERSION, usdtHeldOf } = await import('../src/core/state.js');
 const engine = await import('../src/core/engine.js');
 const market = await import('../src/core/market.js');
 const god = await import('../src/core/god.js');
@@ -3215,8 +3215,8 @@ section('9w · tape 逐笔采样 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋
   }
   const engSrc9w = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 只给生效杠杆 ≤ 10x 档（恒等式前提）',
-    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow, price, floor)")
-    && engSrc9w.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor)")
+    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow + dExtLong, price, floor)")
+    && engSrc9w.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w) + dExtShort, price, floor)")
     && engSrc9w.includes('const b = low ? liqDay * NPC.base * w : 0')
     && engSrc9w.includes('const dLow = low ? dipBuy * w : 0'));
 
@@ -3536,8 +3536,8 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
   check('9y② 接线：dipOf 导出 ＋ npcBuild 长侧 dipBuy（短侧不动）＋ npcOtherTick 复用（护盘覆盖全币）',
     engSrc9y.includes('export function dipOf')
     && engSrc9y.includes('const dipBuy = d3.dipBuy;')
-    && engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow, price, floor)")
-    && engSrc9y.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow + dExtLong, price, floor)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w) + dExtShort, price, floor)")
     && engSrc9y.includes('npcBuild(s, sym, m, s.i);')
     && engSrc9y.includes('import { candleAt, closeAt, dayIndexOf'));
 
@@ -3748,6 +3748,231 @@ section('9aa · 监管事件锚点 7 条 ＋ 回顾节点去重');
     got.every(a => { const n = rv.find(v => v.at === a.at); return n && typeof n.note === 'string' && n.note.length > 0; }));
   check('9aa③ Tornado Cash 回顾切到 ETH（事件在以太坊上）',
     (rv.find(v => v.at === Math.round((Date.UTC(2022, 7, 8) - C.GAME.start) / H)) || {}).sym === 'ETH');
+}
+
+/* ═══════════════════ 9ab · 稳定币脱锚市值重估（缺口 2 · 2026-10-08） ═══════════════════
+   口径（用户拍板「市值重估参与破产判定」）：`cashOf`（面值 = 可交易余额）与 `cashMtmOf`
+   （市值 = 财富口径）**分立**；换汇那一刻**不结账**（`qty × p ≡ usd` ⇒ 权益守恒），盈亏改由
+   持有期 `markUsdt` 逐小时结进 `s.realized`；`equity` 走市值口径 ⇒ 脱锚真的缩水、参与破产判定。 */
+section('9ab · 稳定币脱锚市值重估 USDT：cashMtmOf / markUsdt / 破产市值口径');
+{
+  /* 找一个 2022-05 Terra 拖累段的深折价小时 */
+  let iD = null;
+  for (let i = idx(at(2022, 4, 1)); i < idx(at(2022, 7, 1)); i++) {
+    if (C.usdtPriceAt(C.GAME.start + i * H) < 0.99) { iD = i; break; }
+  }
+  check('9ab① 前置：2022-05 Terra 拖累段存在深折价（usdtPriceAt < 0.99）', iD != null, `i=${iD}`);
+
+  const s = await mk({ i: iD });
+  s.hintOn = false;
+  s.books[s.ex] = { usd: 1e6, usdt: 0 };
+  const p = C.usdtPriceAt(engine.timeOf(s));
+  check('9ab① 面值 vs 市值：全 USD 时两者相等（无 U ⇒ 无重估差）',
+    engine.available(s) === 1e6 && engine.cashMtmOf(s) === 1e6,
+    `面值=${f(engine.available(s), 2)} 市值=${f(engine.cashMtmOf(s), 2)}`);
+
+  const eqA = engine.equity(s);
+  const rBuy = engine.buyUsdt(s, 1);
+  const qty = usdtHeldOf(s);
+  const eqB = engine.equity(s);
+  check('9ab② 折价买 U ⇒ 换汇当下权益守恒（qty × p ≡ usd ⇒ 价差 0）',
+    rBuy.ok && Math.abs(eqB - eqA) < 1e-6 && qty > 0,
+    `买前=${f(eqA, 6)} 买后=${f(eqB, 6)} qty=${f(qty, 2)} 汇率=${f(p, 4)}`);
+  check('9ab② 面值 ≠ 市值：折价持有 U ⇒ 面值 > 市值（市值 = qty × 汇率）',
+    engine.available(s) > engine.cashMtmOf(s)
+    && Math.abs(engine.cashMtmOf(s) - qty * p) < 1e-6,
+    `面值=${f(engine.available(s), 2)} 市值=${f(engine.cashMtmOf(s), 2)} qty×p=${f(qty * p, 2)}`);
+
+  /* ③ 逐小时重估：找一个汇率真的动了的小时，Δrealized 必须 = qty × (p1 − p0) */
+  let i2 = null;
+  for (let i = iD + 1; i < iD + 240; i++) {
+    if (C.usdtPriceAt(C.GAME.start + i * H) !== C.usdtPriceAt(C.GAME.start + (i - 1) * H)) { i2 = i; break; }
+  }
+  check('9ab③ 前置：脱锚段内存在逐小时汇率变动的小时', i2 != null, `i2=${i2}`);
+  if (i2 != null) {
+    const p0 = C.usdtPriceAt(C.GAME.start + (i2 - 1) * H);
+    const p1 = C.usdtPriceAt(C.GAME.start + i2 * H);
+    const before = s.realized;
+    engine.markUsdt(s, i2);
+    check('9ab③ markUsdt 结账 = 持仓量 × (p1 − p0)（持有期兑现，非买入即锁定）',
+      Math.abs((s.realized - before) - qty * (p1 - p0)) < 1e-6 * Math.max(1, qty),
+      `Δ=${f(s.realized - before, 4)} 期望=${f(qty * (p1 - p0), 4)} p0=${f(p0, 5)} p1=${f(p1, 5)}`);
+  }
+
+  /* ④ 平段零开销：v0 === v1 的区间里 markUsdt 早退、一分钱不动。
+     用 2021-06→2022-05 的双 1.000 段（相邻两锚同值 ⇒ 逐小时恒等，这才是真正的平段）。 */
+  const iFlat = idx(at(2021, 7, 1));
+  const pf0 = C.usdtPriceAt(C.GAME.start + (iFlat - 1) * H);
+  const pf1 = C.usdtPriceAt(C.GAME.start + iFlat * H);
+  check('9ab④ 前置：存在汇率平段（p0 === p1，2021-06→2022-05 双 1.000 段）', pf0 === pf1, `p0=${f(pf0, 5)} p1=${f(pf1, 5)}`);
+  {
+    const before = s.realized;
+    engine.markUsdt(s, iFlat);
+    check('9ab④ 平段（p0 === p1）⇒ markUsdt 早退、s.realized 一分钱不动', s.realized === before);
+  }
+
+  /* ⑤ 常态 $1.000 平段：市值口径 ≈ 面值（差异 < 0.5%） */
+  {
+    const s2 = await mk({ i: idx(at(2024, 6, 1)) });
+    s2.books[s2.ex] = { usd: 0, usdt: 1e6 };
+    check('9ab⑤ 常态 $1.000 平段：市值口径 ≈ 面值（差异 < 0.5%）',
+      Math.abs(engine.cashMtmOf(s2) - engine.available(s2)) / 1e6 < 0.005,
+      `面值=${f(engine.available(s2), 2)} 市值=${f(engine.cashMtmOf(s2), 2)}`);
+  }
+
+  /* ⑥ 源码接线 */
+  const engSrc9ab = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('9ab⑥ 接线：advanceOneHour 调 markUsdt ＋ equity 走 cashMtmOf ＋ 两函数均已导出',
+    engSrc9ab.includes('markUsdt(s, s.i);')
+    && engSrc9ab.includes('let sum = cashMtmOf(s);')
+    && /export function cashMtmOf/.test(engSrc9ab)
+    && /export function markUsdt/.test(engSrc9ab));
+  check('9ab⑥ buyUsdt 已删「买入即结算 s.realized += got − usd」（旧无风险套利口径）',
+    !/s\.realized \+= got - usd;/.test(engSrc9ab));
+  check('9ab⑥ 不升 STATE_VERSION（纯口径改动，零新状态字段）', STATE_VERSION === 32, `v=${STATE_VERSION}`);
+}
+
+/* ═══════════════════ 9ac · 巨鲸 / 机构持仓队列（缺口 4 · 2026-10-08） ═══════════════════
+   口径：公开披露的**美元名义额** ÷ 执行窗口天数 ⇒ 美元/天；与 `dipBuy` 同址注入 `npcBuild`
+   靶心（买加长侧 / 卖加短侧，只给生效杠杆 ≤ 10x 档）；位移走既有链路（`synthGive` 折减），
+   **不写 `s.flow`**、零新状态 ⇒ 不升 `STATE_VERSION`。 */
+section('9ac · 巨鲸/机构队列 WHALES：逐位摊平 ＋ 买卖都含 ＋ 靶心注入 ＋ 披露播报');
+{
+  check('9ac① 表 18 条、字段齐备（t/sym/dir/usd/days/who）', god.WHALES.length === 18
+    && god.WHALES.every(e => Number.isFinite(e.t) && e.sym && (e.dir === 1 || e.dir === -1)
+      && e.usd > 0 && e.days >= 1 && e.who), `n=${god.WHALES.length}`);
+  const buys = god.WHALES.filter(e => e.dir > 0), sells = god.WHALES.filter(e => e.dir < 0);
+  check('9ac① 买卖都含（用户拍板）：买入 13 条 ＋ 卖出 5 条',
+    buys.length === 13 && sells.length === 5, `买=${buys.length} 卖=${sells.length}`);
+  check('9ac① 全部落在行程内（披露日 < GAME.end = 2025-01-01）',
+    god.WHALES.every(e => e.t < C.GAME.end));
+
+  /* ② 逐位摊平：窗口内 = dir × usd ÷ days；窗口边界前一 / 后一天 = 0 */
+  const e0 = god.WHALES[0];
+  const d0 = Math.round((e0.t - C.GAME.start) / H / 24);
+  const per = e0.dir * e0.usd / e0.days;
+  check('9ac② 摊平逐位：窗口首日 = dir × usd ÷ days',
+    Math.abs(god.whaleFlowAt('BTC', d0) - per) < 1e-6, `实得=${f(god.whaleFlowAt('BTC', d0), 2)} 期望=${f(per, 2)}`);
+  check('9ac② 窗口末日在内（d0 + days − 1 仍计）＋ 窗口外两侧为 0',
+    Math.abs(god.whaleFlowAt('BTC', d0 + e0.days - 1) - per) < 1e-6
+    && god.whaleFlowAt('BTC', d0 - 1) === 0
+    && god.whaleFlowAt('BTC', d0 + e0.days) === 0);
+  check('9ac② 买入为正 / 卖出为负（方向性）',
+    god.whaleFlowAt('BTC', Math.round((sells[0].t - C.GAME.start) / H / 24)) < 0);
+  check('9ac② 非 BTC / 未列出的币 ⇒ 0（本轮只有 BTC）',
+    god.whaleFlowAt('ETH', d0) === 0 && god.whaleFlowAt('DOGE', d0) === 0);
+
+  /* ③ 抽查真实披露日 */
+  const mstr = god.WHALES.find(e => e.t === Date.UTC(2024, 10, 25));
+  check('9ac③ 抽查：MSTR 2024-11-25 单笔 $5.4B / 30 天 / 买入（本表最大买入）',
+    !!mstr && mstr.dir === 1 && Math.abs(mstr.usd - 5.40e9) < 1 && mstr.days === 30,
+    mstr ? `usd=${f(mstr.usd, 0)} days=${mstr.days}` : '未找到');
+  const mtgox = god.WHALES.find(e => e.who.includes('Mt.Gox'));
+  check('9ac③ 抽查：Mt.Gox 分发（$8.1B / 120 天 / 卖出，长期分发窗口）',
+    !!mtgox && mtgox.dir === -1 && mtgox.days === 120, mtgox ? `days=${mtgox.days}` : '未找到');
+  check('9ac③ 刻意排除「查封 ≠ 抛售」：表内无 Silk Road 查封 / Bitfinex 查封两条',
+    !god.WHALES.some(e => /Silk Road 案 6|69,370|Bitfinex 9|94,643/.test(e.who)));
+
+  /* ④ 接线：npcBuild 注入 extFlow（whaleFlowAt + etfFlowAt），买加长侧 / 卖加短侧，只给 ≤10x 档 */
+  const engSrc9ac = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('9ac④ 接线：npcBuild 读 extFlow = whaleFlowAt + etfFlowAt（按游戏日 dayIndexOf）',
+    engSrc9ac.includes('const extFlow = whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx);')
+    && engSrc9ac.includes('const dayIdx = dayIndexOf(i);'));
+  check('9ac④ 注入方式：买加长侧（dExtLong）/ 卖加短侧（dExtShort），只在 low（≤10x）档',
+    /stepNpc\(m\.npc\[k\], 'long', b \+ Math\.max\(0, target \* w\) \+ dLow \+ dExtLong/.test(engSrc9ac)
+    && /stepNpc\(m\.npc\[k\], 'short', b \+ Math\.max\(0, -target \* w\) \+ dExtShort/.test(engSrc9ac)
+    && engSrc9ac.includes("const dExtLong = low ? Math.max(0, extFlow) * w : 0;")
+    && engSrc9ac.includes("const dExtShort = low ? Math.max(0, -extFlow) * w : 0;"));
+  check('9ac④ 外部流量只进 NPC 靶心（stepNpc），不写玩家痕迹通道 s.flow',
+    !/dExt(Long|Short)[\s\S]{0,120}s\.flow/.test(engSrc9ac));
+  check('9ac④ god.js 两函数自 god.js 导入引擎',
+    /import\s*\{[^}]*whaleFlowAt[^}]*\}\s*from\s*'\.\/god\.js'/.test(engSrc9ac)
+    && /import\s*\{[^}]*etfFlowAt[^}]*\}\s*from\s*'\.\/god\.js'/.test(engSrc9ac));
+
+  /* ⑤ 播报：命中披露日那一根 → 含方向；非披露日 → null（日粒度判等 ⇒ 一局一次） */
+  const iw = idx(e0.t);
+  check('9ac⑤ 披露播报命中披露日那一根、含方向与主体',
+    (god.whaleNewsAt(iw) || '').includes('买入') && (god.whaleNewsAt(iw) || '').includes(e0.who),
+    god.whaleNewsAt(iw) || 'null');
+  check('9ac⑤ 非披露日 ⇒ null（日粒度 floor 判等 ⇒ 一局一次）',
+    god.whaleNewsAt(iw + 24) === null && god.whaleNewsAt(idx(at(2013, 5, 1))) === null);
+  check('9ac⑤ 接线：advanceOneHour 播报 whaleNewsAt（推入日志）',
+    engSrc9ac.includes('const wnews = whaleNewsAt(s.i);')
+    && engSrc9ac.includes("if (wnews) pushLog(s, wnews, 'news', 'mkt');"));
+}
+
+/* ═══════════════════ 9ad · 现货 ETF 日频净流入（缺口 5 · 2026-10-08） ═══════════════════
+   口径：一级市场申赎净额（AP 创设/赎回），月度真数据 ÷ 当月**交易日数** ⇒ 美元/天；
+   起用日严格锚在上市首日（BTC 2024-01-11 / ETH 2024-07-23），周末休市一律 0；
+   与巨鲸同址注入 `npcBuild` 靶心。 */
+section('9ad · 现货 ETF 月度净流入：起用日 ＋ 交易日摊平 ＋ 符号 ＋ 月度播报');
+{
+  const btc = god.ETF_FLOW.BTC, eth = god.ETF_FLOW.ETH;
+  check('9ad① 表结构：BTC 12 条月度 ＋ ETH 6 条月度（只到 2024-12，行程终点 2025-01-01）',
+    btc.months.length === 12 && eth.months.length === 6);
+  check('9ad① 起用日 = 上市首日：BTC 2024-01-11 / ETH 2024-07-23',
+    btc.from === Date.UTC(2024, 0, 11) && eth.from === Date.UTC(2024, 6, 23));
+  const dFrom = Math.round((btc.from - C.GAME.start) / H / 24);
+  check('9ad① 早于上市首日 ⇒ 0（BTC 起用前一天、ETH 在其后仍 0）',
+    god.etfFlowAt('BTC', dFrom - 1) === 0 && god.etfFlowAt('ETH', dFrom + 5) === 0);
+
+  /* ② 交易日摊平：独立复算 2024-11 的周一至周五天数，断言单日 = 月额 ÷ N */
+  const weekdaysIn = (y, m, fromMs) => {
+    const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    let n = 0;
+    for (let dd = 1; dd <= last; dd++) {
+      const ms = Date.UTC(y, m, dd);
+      if (ms < fromMs) continue;
+      const w = new Date(ms).getUTCDay();
+      if (w !== 0 && w !== 6) n++;
+    }
+    return n;
+  };
+  const dNov = Math.round((Date.UTC(2024, 10, 6) - C.GAME.start) / H / 24);   // 2024-11-06（周三）
+  const nNov = weekdaysIn(2024, 10, btc.from);
+  check('9ad② 摊平逐位：2024-11 工作日单日 = 月额 ÷ 当月交易日数（独立复算 N）',
+    Math.abs(god.etfFlowAt('BTC', dNov) - 6.500e9 / nNov) < 1e-6,
+    `实得=${f(god.etfFlowAt('BTC', dNov), 2)} 期望=${f(6.500e9 / nNov, 2)} N=${nNov}`);
+
+  /* ③ 周末休市 ⇒ 0（2024-11-09 周六 / 11-10 周日）*/
+  const dSat = Math.round((Date.UTC(2024, 10, 9) - C.GAME.start) / H / 24);
+  check('9ad③ 周末（美国休市）⇒ 0（周六/周日）',
+    god.etfFlowAt('BTC', dSat) === 0 && god.etfFlowAt('BTC', dSat + 1) === 0);
+
+  /* ④ 符号：净流出月 ⇒ 日频为负（4 月 / 8 月 BTC、7 月 ETH） */
+  const dApr = Math.round((Date.UTC(2024, 3, 15) - C.GAME.start) / H / 24);
+  const dAug = Math.round((Date.UTC(2024, 7, 15) - C.GAME.start) / H / 24);
+  const dEthJul = Math.round((Date.UTC(2024, 6, 25) - C.GAME.start) / H / 24);
+  check('9ad④ 净流出月 ⇒ 日频为负（4 月 / 8 月 BTC、7 月 ETH）',
+    god.etfFlowAt('BTC', dApr) < 0 && god.etfFlowAt('BTC', dAug) < 0 && god.etfFlowAt('ETH', dEthJul) < 0,
+    `4月BTC=${f(god.etfFlowAt('BTC', dApr), 0)} 8月BTC=${f(god.etfFlowAt('BTC', dAug), 0)} 7月ETH=${f(god.etfFlowAt('ETH', dEthJul), 0)}`);
+
+  /* ⑤ 自洽：当月每个工作日的日频流量之和 = 月净额 */
+  let sum = 0;
+  for (let dd = 1; dd <= 30; dd++) {
+    const ms = Date.UTC(2024, 10, dd);
+    const w = new Date(ms).getUTCDay();
+    if (w === 0 || w === 6) continue;
+    sum += god.etfFlowAt('BTC', Math.round((ms - C.GAME.start) / H / 24));
+  }
+  check('9ad⑤ 自洽：2024-11 全月工作日日频之和 = 月净额（+$65 亿）',
+    Math.abs(sum - 6.500e9) < 1, `Σ=${f(sum, 0)}`);
+
+  /* ⑥ 播报：每月 1 日播上月净额；非月初 ⇒ null；ETH 上市前的月份只报 BTC */
+  const en = god.etfNewsAt(idx(at(2024, 8, 1)));      // 2024-09-01 播 8 月（BTC 净流出）
+  check('9ad⑥ 月初播上月净额（含 BTC/ETH 并排与符号）',
+    !!en && en.includes('BTC') && en.includes('8 月净流入') && en.includes('−'), en || 'null');
+  check('9ad⑥ 非月初 ⇒ null；ETH 上市前的月份只报 BTC（不编 ETH）',
+    god.etfNewsAt(idx(at(2024, 1, 15))) === null
+    && !(god.etfNewsAt(idx(at(2024, 2, 1))) || '').includes('ETH'),
+    god.etfNewsAt(idx(at(2024, 2, 1))) || 'null');
+
+  /* ⑦ 接线 ＋ 不升版本 */
+  const engSrc9ad = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('9ad⑦ 接线：advanceOneHour 播报 etfNewsAt（推入日志）',
+    engSrc9ad.includes('const enews = etfNewsAt(s.i);')
+    && engSrc9ad.includes("if (enews) pushLog(s, enews, 'news', 'mkt');"));
+  check('9ad⑦ 不升 STATE_VERSION（纯表 ＋ 纯函数，零新状态）', STATE_VERSION === 32, `v=${STATE_VERSION}`);
 }
 
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════
@@ -4110,13 +4335,20 @@ section('14 · 交易涌现性：资金费双向 · 对手方池偿付上限 · 
     const npcN = m.npc.reduce((a, g) => a + (g.long - g.short), 0)
       + (m.mm ? m.mm.long - m.mm.short : 0);
     const before = { margin: pos.margin, fund: m.npcFund, realized: s.realized };
+    /* ⚠️ 缺口 2（2026-10-08）后 `advanceOneHour` 会先跑一次 `markUsdt`（持有 U 的汇率重估）
+       —— 它也写 `s.realized` ⇒ 本条断言必须把它单独拎出来，「Δrealized == Δmargin」才成立。
+       `markUsdt` 排在 `settleFunding` **之前**（engine 里 `s.i += 1` 之后立刻调）⇒ 用它那一刻
+       的持仓量（= 此刻的 `usdtHeldOf`，结算尚未动账）。 */
+    const qtyU = usdtHeldOf(s);
+    const iN = s.i + 1;
+    const markTerm = qtyU * (C.usdtPriceAt(C.GAME.start + iN * H) - C.usdtPriceAt(C.GAME.start + (iN - 1) * H));
     god.NPC.speed = 0; god.NPC.mm.speed = 0;
     try { engine.advanceOneHour(s); } finally { god.NPC.speed = speed0; god.NPC.mm.speed = mm0; }
     return {
-      s, pos, m, rate, npcN, mark, exp, before,
+      s, pos, m, rate, npcN, mark, exp, before, markTerm,
       dm: pos.margin - before.margin,                  // 保证金变化（永续仓只受资金费影响）
       df: m.npcFund - before.fund,                     // 对手方池变化
-      dr: s.realized - before.realized,                // 已实现盈亏变化
+      dr: s.realized - before.realized,                // 已实现盈亏变化（含汇率重估那一项）
     };
   };
 
@@ -4129,8 +4361,8 @@ section('14 · 交易涌现性：资金费双向 · 对手方池偿付上限 · 
     check('14b 玩家**真的吃到了**资金费：保证金增加 ≈ 应收（±2%）',
       b.dm > 0 && Math.abs(b.dm - b.exp) <= Math.abs(b.exp) * 0.02 + 1e-9,
       `Δmargin=${f(b.dm, 4)} vs 应收=${f(b.exp, 4)}`);
-    check('14b 已实现盈亏同步增加（HUD 副行 / 档案口径与保证金一致）',
-      Math.abs(b.dr - b.dm) < 1e-9, `Δrealized=${f(b.dr, 4)}`);
+    check('14b 已实现盈亏同步增加（HUD 副行 / 档案口径与保证金一致，扣掉汇率重估那一项）',
+      Math.abs(b.dr - (b.dm + b.markTerm)) < 1e-9, `Δrealized=${f(b.dr, 4)} Δmargin=${f(b.dm, 4)} markU=${f(b.markTerm, 4)}`);
     check('14b 零和：玩家收的 ＋ 池收的 = 市场净额该付的（`Δmargin + Δpool = rate × npcN`）',
       Math.abs((b.dm + b.df) - b.rate * b.npcN) < Math.abs(b.rate * b.npcN) * 0.02 + 1e-6,
       `Δmargin+Δpool=${f(b.dm + b.df, 2)} vs rate×npcN=${f(b.rate * b.npcN, 2)}`);
@@ -4731,7 +4963,10 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
       s3.i = iBase + 1;
       const F3 = engine.ruinFloorOf(s3);          // 判定发生在**下一根**小时，门槛取那一根
       s3.i = iBase;
-      setCash(s3, F3 * (1 - 1e-6));
+      /* ⚠️ 用**美元**（面值 ≡ 市值）而不是 `setCash`：缺口 2 后 `equity` 按市值重估现金，
+         `setCash` 在 2014-10 之后的年代把现金放进 U 那一格 ⇒ 权益还会乘上当时的 USDT 汇率，
+         而这里的探针要的是**美元门槛的 ±1e-6 精确边界**（汇率那一层由 9ab 单独锚定）。 */
+      s3.books[s3.ex] = { usd: F3 * (1 - 1e-6), usdt: 0 };
       engine.advanceOneHour(s3);
       const belowRuined = s3.pending === 'loan' || !!s3.over;
       check(`16c 低于门槛 ⇒ 判归零（公开路径）${tag}`, belowRuined,
@@ -4743,7 +4978,7 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
       s4.i = iBase + 1;
       const F4 = engine.ruinFloorOf(s4);
       s4.i = iBase;
-      setCash(s4, F4 * (1 + 1e-6));
+      s4.books[s4.ex] = { usd: F4 * (1 + 1e-6), usdt: 0 };
       engine.advanceOneHour(s4);
       check(`16c 高于门槛 ⇒ 不判 ${tag}`, !s4.pending && !s4.over,
         `cash=${f(F4 * (1 + 1e-6), 8)} floor=${f(F4, 8)} pending=${s4.pending} over=${s4.over ? s4.over.reason : 'null'}`);
@@ -4795,7 +5030,11 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
       `ok=${r.ok} why=${r.why || '—'} fee=${f(plan.fee, 4)} 权益=${f(engine.equity(s), 6)} pending=${s.pending} over=${s.over ? s.over.reason : 'null'}`);
   }
   {
-    /* ③ 买 U 溢价：溢价买入当场结账 ⇒ 权益少一截。 */
+    /* ③ 买 U 溢价：**换汇本身不产生价差**（缺口 2 · 2026-10-08 市值口径）。
+       ⚠️ 旧断言「溢价买入当场结账 ⇒ 权益掉到门槛下、判归零」**已被推翻** —— 那正是旧口径
+          （`s.realized += got − usd`）的问题：它把溢价当成即时亏损、且让折价买入变成无风险套利。
+          现在 `equity` 按市值重估（`qty × p ≡ usd`）⇒ 权益守恒、不误判归零；盈亏改由持有期
+          `markUsdt` 逐小时结（9ab 有逐位锚定）。 */
     let iU = null;
     for (let i = idx(C.USDT_LIVE) + 1; i < idx(at(2024, 1, 1)); i += 3) {
       if (C.usdtPriceAt(C.GAME.start + i * H) > 1.005) { iU = i; break; }
@@ -4804,15 +5043,14 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     if (iU != null) {
       const s = await mk({ scen: 'classic', mode: 'margin', i: iU });
       s.hintOn = false;
-      s.lev = Math.max(1, C.maxLeverageAt(engine.timeOf(s), s.ex, 'margin'));
+      s.books[s.ex] = { usd: 50000, usdt: 0 };
       const price = C.usdtPriceAt(engine.timeOf(s));
-      const F = engine.ruinFloorOf(s);
-      s.books[s.ex] = { usd: F * price * 0.999, usdt: 0 };   // 买之前权益 > 门槛（price > 1）
       const before = engine.equity(s);
       const r = engine.buyUsdt(s, 1);
-      check('16e ③买 U 溢价压到门槛下 ⇒ 当场判归零（买 U 本身成功）',
-        r.ok && before >= F && (s.pending === 'loan' || !!s.over),
-        `ok=${r.ok} 前=${f(before, 8)} 后=${f(engine.equity(s), 8)} floor=${f(F, 8)} 汇率=${f(price, 4)}`);
+      const after = engine.equity(s);
+      check('16e ③买 U 溢价 ⇒ 权益守恒（|Δ| < 1e-6）、不误判归零（换汇不产生价差）',
+        r.ok && Math.abs(after - before) < 1e-6 && !s.pending && !s.over,
+        `ok=${r.ok} 前=${f(before, 8)} 后=${f(after, 8)} 汇率=${f(price, 4)} pending=${s.pending}`);
     }
   }
   {

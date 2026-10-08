@@ -17,7 +17,7 @@ import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, ra
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_SPOOF_NUDGE, addFlow, exDevOf, instSeedOf, npcLevOf, playerFactor, sbOf, shockParamsOf } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_SPOOF_NUDGE, addFlow, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, npcLevOf, playerFactor, sbOf, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -26,7 +26,7 @@ import {
   FUNDING, FR, INSURE, CPOOL, fundingOf, premiumIndexOf, fundingRateOf, canLiquidate, paysFunding, paysInterest, borrowedOf, borrowCurOf, shockKindOf,
   bankruptcyFillPrice, effLevOf,
 } from './positions.js';
-import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf } from './state.js';
+import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf, usdtHeldOf } from './state.js';
 import { pathOf } from './simulate.js';
 import { hashStr, rand } from './rng.js';
 import { addCareer, thinEq } from './careers.js';
@@ -300,25 +300,48 @@ export function totalUnrealized(s) {
 }
 
 /**
- * 账户权益 = 当前所的余额 ＋ **在途的链上转账** ＋ **所有仓位权益之和**（逐仓：每个仓位的保证金 + 各自的未实现盈亏）。
- * 空仓时就是当前所的余额。破产始终看这个总数（GDD §10）—— 单个仓位被强平只损失它自己的保证金。
+ * 账户权益 = 当前所余额的**市值** ＋ **在途的链上转账**（市值）＋ **所有仓位权益之和**
+ * （逐仓：每个仓位的保证金 + 各自的未实现盈亏）。空仓时就是当前所的余额。破产始终看这个总数
+ * （GDD §10）—— 单个仓位被强平只损失它自己的保证金。
  *
  * ⚠️ **在途资金必须算进来**（P2-A 陷阱①）：换所后 `books` 是空的，漏掉这一项会让权益显示 $0.00，
  *    并且被 `isBankrupt` 直接误判成破产、本局当场结束。它不是「隐藏资产」，是**可见但不可用**。
- * ⚠️ **USDT 按面值 $1 计入**（v13 · 方案 §2.2）：溢价已经在「买 U」那一刻结清（`usdtPriceAt`），
- *    这里再按市价重估就是把同一笔钱计两次价。副作用是好的：破产判定不会因为 U 脱锚而提前触发。
+ * ⚠️ **USDT 按**市值**计入**（缺口 2 · 2026-10-08 用户拍板）：现金两格走 `cashMtmOf`
+ *    （`usd + usdt × usdtPriceAt`），在途的 USDT 同样按那一刻的汇率折成美元。
+ *    ⇒ 持有 U 穿越脱锚会真实地看到权益缩水、回锚时又涨回来（史实：2014–2024 的 U 脱锚
+ *      全部在数天内回锚，没有一次是永久的）。
+ *    ⚠️ 这**推翻**了旧注释那句「破产判定不会因为 U 脱锚而提前触发」—— 现在会的，那是用户拍板
+ *      要的口径（脱锚确实让「手上的钱」变少）；量级很窄（见 `ruinFloorOf` 的注释）。
  * ⚠️ **仓位按它自己那家所的本所价估值**（缺口 10 · 2026-10-03）：玩家换所之后旧仓照旧按 `pos.ex` ⇒
  *    权益不会因为「人在哪家所」而跳。
  */
 export function equity(s) {
-  let sum = cashOf(s);
-  if (s.transfer) sum += s.transfer.amount;
+  let sum = cashMtmOf(s);
+  if (s.transfer) sum += s.transfer.amount * (s.transfer.cur === 'usdt' ? usdtPriceAt(timeOf(s)) : 1);
   for (const sym of heldSyms(s)) {
     const pos = s.positions[sym];
     const p = exMarkPrice(s, sym, pos.ex);
     sum += p == null ? pos.margin : equityOf(pos, p);
   }
   return sum;
+}
+
+/**
+ * 当前所账本的**市值**（美元）—— 「持有期市值重估」（缺口 2 · 2026-10-08 用户拍板）。
+ *
+ * ⚠️ 与 `state.cashOf`（**面值** = `usd + usdt`）**刻意分成两个口径**，别再合并：
+ *    · **面值** = 「这一单能用多少钱」—— `debit` / `spendableOf` / 最小名义闸门按面值
+ *      （交易所的最小名义与保证金是 **U 计价**的，U 脱锚不妨碍下单）；
+ *    · **市值**（本函数）= 「手上的钱值多少美元」—— 权益 / HUD / 资产曲线 / 结算页。
+ *    合成一个式子会长出「显示 $88、却能花 $100」的自相矛盾。
+ * ⚠️ 范围**只到现金两格（含在途 USDT，见 `usdtHeldOf`）**：仓位保证金与浮盈浮亏仍按 U 面值
+ *    （`equityOf`）—— 保证金率本身就是 U 计价的，把仓位也按 U 的美元价重估会让它与强平判定打架。
+ * ⚠️ 汇率变动的那笔价差由 `markUsdt` 每小时结进 `s.realized` ⇒ HUD 不变量
+ *    （`realized + unrealized = 权益 − 本金`）继续成立。
+ */
+export function cashMtmOf(s, ex = s.ex) {
+  const b = bookOf(s, ex);
+  return b.usd + b.usdt * usdtPriceAt(timeOf(s));
 }
 
 /**
@@ -347,6 +370,33 @@ export const available = s => cashOf(s);
 export function sampleEquity(s) {
   const day = Math.floor(s.i / 24) - s.day0;
   while (s.eq.length <= day) s.eq.push(equity(s));
+}
+
+/* ───────────────── 持有期市值重估的小时结账（缺口 2 · 2026-10-08） ───────────────── */
+
+/**
+ * 把「手上的 U 随汇率变动产生的美元价差」结进 `s.realized` —— 每小时一次，`advanceOneHour` 里调。
+ *
+ * ⚠️ **为什么必须结账**：`equity` 现在按 `usdtPriceAt` 重估现金（市值口径），而汇率变动与玩家的
+ *    任何一笔成交都无关 —— 不落进 `s.realized`，权益就动了而「已实现盈亏」不动，那条
+ *    `realized + unrealized = 权益 − 本金` 的不变量当场破（P0-1 同源口径）。
+ *    ⚠️ 这也正是「折价买 U 不再瞬间获利」的落点：换汇那一刻按**当根**汇率进出（`buyUsdt` 用
+ *       `usdtPriceAt(t)`），价差为 0；只有在折价期**持有**到回锚，才在这一条里逐小时兑现
+ *       —— 与史实一致（USDT 2014–2024 从未永久脱锚，折价是「买便宜 U 换回锚」的套利窗口）。
+ * ⚠️ 价差恒取 `p(i) − p(i − 1)`：绝不夹取、绝不放大 —— 它必须**逐位等于**权益在同一根上的变动量，
+ *    否则不变量又破了（这条纪律优先于「手感好看」）。
+ * ⚠️ 数量取**结账那一刻**的持仓（`usdtHeldOf`）：本根之内后续的下单 / 平仓都按当根汇率进出，
+ *    各自不产生价差，所以先结账、后跑本根的行情与成交。
+ * @param {object} s
+ * @param {number} i 已经自增后的当前小时序号（`s.i`）
+ */
+export function markUsdt(s, i) {
+  const p0 = usdtPriceAt(GAME.start + (i - 1) * HOUR_MS);
+  const p1 = usdtPriceAt(GAME.start + i * HOUR_MS);
+  if (p0 === p1) return;                        // 常态（$1.000 平段）⇒ 一分钱都不动，零开销
+  const qty = usdtHeldOf(s);
+  if (!(qty > 0)) return;
+  s.realized += qty * (p1 - p0);
 }
 
 /* ───────────────────────── 下单通道（P2-B3 · GDD §15.3） ───────────────────────── */
@@ -452,9 +502,11 @@ function supplyCapOf(sym, i) {
  *    币没上线、取不到价 —— 这些都是**会过去的**临时状态，拿它们判归零等于「一次停机就炸号」。
  *    所以这里只反解资金那两条，与 `openCheck` 里那几条并行存在、互不替代。
  *
- * ⚠️ **单位与 `equity` 对齐（面值 1:1）**：合约通道要 USDT，而 `usdtPriceAt` 的溢价/折价
- *    已经在「买 U」那一刻结进 `realized`。按 1:1 折算在门槛量级（<$1）上最多差千分之几，
- *    且方向**偏保守**（门槛略低 ⇒ 宁可晚判归零）—— 残留的极窄边界由遮罩接住，不会卡死流程。
+ * ⚠️ **这个门槛是 U 计价的最小名义反解出来的，而比它的是 `equity`（市值口径）** ——
+ *    缺口 2（2026-10-08）把 `equity` 改成按 `usdtPriceAt` 重估现金之后，两边不再严格同口径：
+ *    U 折价（如 2018-10-15 的 0.88）会让手全押在 U 上的玩家市值缩水 ⇒ 门槛附近（数美分宽的
+ *    一条窄带）可能被**判归零**。这是用户拍板要的口径（脱锚确实让「手上的钱」变少），
+ *    而不是漏洞：门槛量级（<$1）上的差别最多几美分，且史实里 U 的脱锚都在数天内回锚。
  * ⚠️ 两条通道都取不到（理论上不会）⇒ 退回 `MIN_NOTIONAL`，不制造离谱阈值。
  * ⚠️ **导出**（2026-10-05）：审计要拿它复算「门槛 == 真·开得出一单的门槛（死区宽度 = 0）」。
  */
@@ -2452,6 +2504,14 @@ function npcBuild(s, sym, m, i) {
   const cutT = dip / NPC.dip.cap;
   const mmMul = dip > 0 && dip >= dipPrev ? 1 + (NPC.dip.mmCut - 1) * cutT
     : (dipPrev > 0 && dip < dipPrev ? 1 + (NPC.dip.mmBoost - 1) * cutT : 1);
+  /* 外部有向买盘（缺口 4 巨鲸/机构 ＋ 缺口 5 现货 ETF）—— 两者都是**公开披露的真实美元额**，
+     摊到执行窗口/当月交易日 ⇒ 美元/天。与 `dipBuy` 同址注入靶心：**买加上长侧、卖加上短侧**
+     （与护盘同一范式：方向性偏移，不进「净敞口 = t×w」那条恒等式）。
+     ⚠️ 只给生效杠杆 ≤ 10x 的档（与基底/护盘同一判据：50x/100x 接单会持续摩擦止损线）。
+     ⚠️ 位移仍走既有链路（`npcNet` → `syncNpcDrift` × `NPC.synthGive`）—— 真实行情已含涨幅，
+        这一层只让「玩家此刻在跟谁对着干」在盘口可见，不写 `s.flow`、零新状态（不升存档版）。 */
+  const dayIdx = dayIndexOf(i);
+  const extFlow = whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx);
   let npcRealisedSum = 0;
   for (let k = 0; k < NPC.ladder.length; k++) {
     const w = NPC.ladder[k].w;
@@ -2459,8 +2519,10 @@ function npcBuild(s, sym, m, i) {
     const low = npcLevOf(t, NPC.ladder[k].lev) <= 10;
     const b = low ? liqDay * NPC.base * w : 0;
     const dLow = low ? dipBuy * w : 0;
-    npcRealisedSum += stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow, price, floor);
-    npcRealisedSum += stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor);
+    const dExtLong = low ? Math.max(0, extFlow) * w : 0;
+    const dExtShort = low ? Math.max(0, -extFlow) * w : 0;
+    npcRealisedSum += stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow + dExtLong, price, floor);
+    npcRealisedSum += stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w) + dExtShort, price, floor);
   }
   /* ③′ **做市盘**（缺口 6-A）：站到趋势盘**对面**；靶心取趋势盘六档的**实际净持仓**。
      ⚠️ 残尾阈值不乘权重（单个格子）；`speed` 用 `NPC.mm.speed`（更快）。
@@ -3927,8 +3989,9 @@ function checkRuin(s) {
  *   - **同所内兑换、不过链**：它不产生矿工费、不吃拥堵，秒到账（跨所搬 U 是另一回事，走 rail）；
  *   - **价格走 `usdtPriceAt`**（1 USDT 值多少美元）：纯锚点插值、**双向** ——
  *     大多时候 $1 附近，危机时能买到 0.88（折价，捡便宜），挤兑时 1.05（溢价，吃亏）。
- *     ⚠️ 溢价是**真实史实**，不是惩罚机制；它也是 `equity` 里 USDT 按面值 $1 计的原因
- *        （溢价的账只在**这一刻**结一次，之后不再按市价重估）。
+ *     ⚠️ **换汇这一刻不结账**（缺口 2 · 2026-10-08）：按当根汇率进出 ⇒ 价差为 0，账目天然守恒。
+ *        折价买入的收益要靠**持有到回锚**才能兑现（`markUsdt` 逐小时结），溢价买入的亏损同理
+ *        —— 这是史实里那笔套利真正需要承担的风险（旧实现买入即锁定收益，不需要持有、无风险）。
  *   - **只做买入，不做卖出**（LESS IS MORE）：跨所搬 U 已经给了出口，再开一条卖 U
  *     只是把同一件事做两遍。
  *
@@ -3948,22 +4011,19 @@ export function buyUsdt(s, frac = 1) {
   const got = usd / price;             // 花掉的美元买到了多少 U
   b.usd -= usd;
   b.usdt += got;
-  /* ⚠️ P0-1（2026-10-04 审计）：买入这一刻就把**折价/溢价**结进 `s.realized`。
-     病根：`equity` 里 USD / USDT 都按**面值 1:1** 计（见 state.js 注释），而 `usdtPriceAt`
-     双向 —— 折价买 U（$0.90）时现金总量按面值凭空多出 `got − usd`，于是
-       ① 破坏 HUD 那条不变量（`realized + unrealized = 权益 − 本金`）；
-       ② 可以靠「折价买 U」把权益抬回 `ruinFloorOf` 之上，**规避破产**。
-     溢价（$1.05）时反之凭空少钱。两边都靠这一行当场结清：折价 ⇒ `realized` 记正，
-     溢价 ⇒ 记负，**账目守恒**，而「捡便宜 / 挨宰」的手感原样保留（下一行的日志仍照报汇率）。 */
-  s.realized += got - usd;
+  /* ⚠️ 这里**不再**结 `s.realized`（P0-1 那一行已于缺口 2 删除）：`equity` 现在按市值重估现金
+     ⇒ 换汇当下的价差天然为 0（花 $80 换来的 U 立刻只值 $80），折价/溢价的盈亏改由
+     `markUsdt` 在**持有期**逐小时结账。于是「靠折价买 U 把权益抬回门槛之上」那条规避破产的
+     路依然堵着，而「买便宜 U 换回锚」这笔真实套利**必须承担持有风险**才算数。 */
   /* 日志把**汇率**写出来（而不是只报两个金额）：玩家要能看出这一笔是赚了还是亏了 ——
      0.900 时买 U 是捡便宜、1.050 时是挨宰，那正是这个机制的全部意义。 */
   pushLog(s, `买入 USDT ${fmtMoney(got)}｜1 USDT = $${price.toFixed(3)}｜花费 ${fmtMoney(usd)}`, 'info', 'trade');
 
-  /* ⚠️ R2（2026-10-05 审计修 · 死区缺口）：买 U **当场**就结清了折价 / 溢价（上面那行 `s.realized`）
-     ⇒ 权益当场变动：溢价（`price > 1`）时这一笔真金白银地少了一截，玩家若恰好在门槛上买 U，
-     就会掉到 `ruinFloorOf` 之下。不在这里判，就有「钱已不够开下一单、却还能继续操作」的小时级死区。
-     与 `closeTrade` 末尾同一条口径：返回值必须是 **`ok: true`**（买 U 已经落账）。 */
+  /* ⚠️ R2（2026-10-05 审计修 · 死区缺口）—— **缺口 2（2026-10-08）后它从「修缺口」降级为「保险」**：
+     市值口径下换汇本身不产生价差（花 $100 换来的 U 立刻只值 $100），所以买 U **不再**当场改变权益，
+     当初那个「溢价买入 ⇒ 掉到 `ruinFloorOf` 之下却不判」的时级死区已随 `equity` 的重估消失。
+     仍然保留这一判：`buyUsdt` 是玩家主动动账的入口之一，将来任何口径再变，都不该在这里重新长出死区
+     —— 代价只是一次 `equity` 比较，返回值口径同 `closeTrade` 末尾（买 U 已落账 ⇒ `ok: true`）。 */
   checkRuin(s);
   return { ok: true };
 }
@@ -4199,6 +4259,10 @@ export function advanceOneHour(s) {
     return;
   }
 
+  /* 持有期市值重估的小时结账（缺口 2 · 2026-10-08）：把本根汇率变动对「手上 U」的美元价差
+     先结进 `s.realized`，本根之内后续的行情与成交再跑 —— 顺序见 `markUsdt` 的注释。 */
+  markUsdt(s, s.i);
+
   /* 暂停下单的锁**解开**（§73.8）：走满 1 游戏小时即可再下一笔。 */
   if (s.lockI >= 0 && s.i > s.lockI) s.lockI = -1;
 
@@ -4251,6 +4315,15 @@ export function advanceOneHour(s) {
         「结果」永远比「起因」更值得占着日志条那一行。 */
   const rnews = resultNewsStartAt(s.i);
   if (rnews) pushLog(s, rnews.rt, 'news');
+
+  /* **外部买盘的两条披露播报**（缺口 4 / 缺口 5 · 2026-10-08）：
+     · 巨鲸/机构：命中披露日那根小时播一条（买卖都含），摊平窗口与靶心注入同一个表（`whaleFlowAt`）；
+     · 现货 ETF：每月 1 日播上月 BTC/ETH 净额（月初才拿得到月报）。
+     两者都用 `===` / 日号判等，一局内天然只说一次，不需要状态位。 */
+  const wnews = whaleNewsAt(s.i);
+  if (wnews) pushLog(s, wnews, 'news', 'mkt');
+  const enews = etfNewsAt(s.i);
+  if (enews) pushLog(s, enews, 'news', 'mkt');
 
   for (const ex of EXCHANGES) {
     /* 开张：只报「开局之后才开」的所 —— Bitfinex 在 2013-01-01 就在，
