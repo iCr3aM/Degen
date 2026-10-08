@@ -3304,7 +3304,8 @@ function floatGeo() {
  *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ 热度（恐惧贪婪只在交易页）；
  *  页 2 深度：日流动性 / 本时基准 / 深度池余量 / 免滑点线 / 单笔顶格线 ＋ 压力位墙汇总 —— 全是真状态；
  *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础 18 档 ＋ 压力位墙逐档列出。
- *  2026-10-08 加：① 底部步进选择器 ×½/×1/×2/×5（会话级 `bookStep`，main.js 持有）；
+ *  2026-10-08 加：① 底部步进选择器 ×1/×2/×5/×10（会话级 `bookStep`，main.js 持有；同日
+ *             拍板「删 ×½ 加 ×10」）；
  *             ② 远场稀疏化（q 过半顶格后隔档显示，跳格名义折进 `gb-far` 守恒）
  *                ＋ Tier1/Tier2 关口格 CSS 提亮（数值不动）。
  *  ⚠️ 旧页 4「逐笔成交」已退役（2026-10-08 用户拍板）：明细行数随本小时进度漂移（每帧跳变）、
@@ -3417,7 +3418,7 @@ function floatBody(s, page, bookStep = 1) {
       const m = raw / e;
       return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * e;
     };
-    const step = niceStep(b.mid) * bookStep;   // ① 底部步进选择器（会话级）：×½ 细看 / ×5 广看，档位数不变
+    const step = niceStep(b.mid) * bookStep;   // ① 底部步进选择器（会话级）：×1 细看 / ×10 广看，档位数不变
     /* 单侧视野格数（2026-10-08 · 用户拍板）：<1280px 12 档 —— 手机 39 行 ≈ 507px 矮屏必滚，
        27 行 ≈ 351px 免滚动；≥1280px 三档桌面 18 档不动（断点对齐 `--float-w` 的 media query）。
        远档 `gb-far` 汇总线随之自动收窄。 */
@@ -3496,11 +3497,26 @@ function floatBody(s, page, bookStep = 1) {
     box.append(el('div', 'gb-mid', fmtFloatPrice(b.mid, step)));
     for (const r of bids) box.append(gbRow(r, 'gb-bid'));
     if (B.far.usd > 0) box.append(gbFar(B.far));
-    /* ① 步进选择器（2026-10-08 用户拍板）：挂在页底 —— 网格缩放档，点按写 `main.js` 的
-       会话级 `bookStep`（`data-gofstep` 委托，不进存档）；选中档高亮随每帧重画自动跟随。 */
+    /* ③ 买卖比（2026-10-08 · 用户要求）：两侧**全量**名义（可见行 ＋ `far.usd` 远场累计，
+       与页内「更远」行同一条守恒口径）折成占比，coinglass 同款一条双色横条 —— 左绿买右红卖，
+       宽度即占比、数字嵌条内（占比极端时溢出隐藏，真实交易所同款读法）。 */
+    const aUsd = A.rows.reduce((t, r) => t + r.notional, 0) + A.far.usd;
+    const bUsd = B.rows.reduce((t, r) => t + r.notional, 0) + B.far.usd;
+    const tot = aUsd + bUsd;
+    if (tot > 0) {
+      const buyPct = Math.max(0, Math.min(100, Math.round(bUsd / tot * 100)));
+      const rbar = el('div', 'gb-ratio');
+      const bu = el('u', null, `买 ${buyPct}%`);
+      bu.style.width = `${buyPct}%`;
+      rbar.append(bu, el('u', null, `${100 - buyPct}% 卖`));
+      box.append(rbar);
+    }
+    /* ① 步进选择器（2026-10-08 用户拍板，同日改档「删 ×½ 加 ×10」）：挂在页底 —— 网格缩放档，
+       点按写 `main.js` 的会话级 `bookStep`（`data-gofstep` 委托，不进存档）；
+       选中档高亮随每帧重画自动跟随。基础步长本身仍按价格自适应（上面的 `niceStep`）。 */
     const stepRow = el('div', 'gb-steps');
-    for (const v of [0.5, 1, 2, 5]) {
-      const b = el('button', `gb-step${Math.abs(bookStep - v) < 1e-9 ? ' on' : ''}`, v === 0.5 ? '×½' : `×${v}`);
+    for (const v of [1, 2, 5, 10]) {
+      const b = el('button', `gb-step${Math.abs(bookStep - v) < 1e-9 ? ' on' : ''}`, `×${v}`);
       b.dataset.gofstep = String(v);
       stepRow.append(b);
     }

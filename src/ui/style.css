@@ -2142,7 +2142,10 @@ button { user-select: none; -webkit-user-select: none; }
 .gb-row i { font-style: normal; color: var(--mut); flex: 0 0 66px; overflow: hidden; }
 .gb-row em { font-style: normal; flex: 0 0 44px; text-align: right; }
 .gb-row b { font-weight: 600; flex: 0 0 56px; text-align: right; }
-.gb-row .gb-track { flex: 1 1 auto; min-width: 0; }
+/* ⚠️ 不带 .gb-row 前缀（2026-10-08 用户报「数量/金额表头没对齐」的根因）：表头里也是
+   `.gb-track`（render.js），选择器一限定就把表头排除在外 ⇒ 表头的 track 宽 0、
+   后两列整体左移。撑开规则是通用列语义，行与表头共用。 */
+.gb-track { flex: 1 1 auto; min-width: 0; }
 .gb-row u { display: block; height: 10px; text-decoration: none; }
 .gb-ask b { color: var(--down); }
 .gb-ask u { margin-left: auto; background: color-mix(in srgb, var(--down) 26%, transparent); }
@@ -2166,6 +2169,19 @@ button { user-select: none; -webkit-user-select: none; }
   text-align: right;
   padding: 0 2px;
 }
+/* 买卖比条（2026-10-08 · 用户要求）：coinglass 同款一条双色横幅 —— 左绿买右红卖，
+   宽度即占比（render.js 算），数字嵌条内；占比极端时右段挤掉文字（overflow 隐藏），
+   行永远不换行。色相与量条同源（--up/--down 的 16% 底），比量条浅一档不抢层次。 */
+.gb-ratio { display: flex; gap: 2px; margin: 3px 0 0; font-size: 9px; line-height: 13px; overflow: hidden; }
+.gb-ratio u {
+  text-decoration: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: center;
+  color: var(--up);
+  background: color-mix(in srgb, var(--up) 16%, transparent);
+}
+.gb-ratio u + u { flex: 1 1 auto; min-width: 0; color: var(--down); background: color-mix(in srgb, var(--down) 16%, transparent); }
 /* 关口格（2026-10-08 用户拍板②）：整数关口（网格步长的 10× 格 / 5× 格）只提亮价格列 ——
    数值与量条一字不动（render.js 挂类、这里管样式）。Tier1（10×）亮过 Tier2（5×）。 */
 .gb-row.gate i { color: color-mix(in srgb, var(--fg) 72%, var(--mut)); font-weight: 600; }
@@ -2204,6 +2220,7 @@ button { user-select: none; -webkit-user-select: none; }
   .god-hm-bar { font-size: 9.5px; }
   .god-hm-now { font-size: 10px; }
   .gb-row, .gb-head, .gb-far { font-size: 10px; line-height: 14px; }
+  .gb-ratio { font-size: 10px; line-height: 14px; }
   .gb-row i, .gb-head i { flex: 0 0 72px; }
   .gb-row em, .gb-head em { flex: 0 0 48px; }
   .gb-row b, .gb-head b { flex: 0 0 62px; }
