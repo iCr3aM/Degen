@@ -197,8 +197,23 @@ function hitAt(a, r, k) {
  *     （`r.w` 是结果新闻的**扫描窗口**，与 ramp 是两回事）。`r.k === 'cong'` 的锚点必带 `congestion`。 */
 const congStartOf = a => a.at + a.congestion.ramp * 24 + NEWS_DELAY;
 
+/* ── 结果新闻的**增量记忆**（2026-10-08 跳时间性能修）──
+ * 原实现每小时对窗口内的每条锚点**从头重扫整窗**（`for k = from..to`，最多 w×24 根、
+ * 每根一次 `candleAt` ＝ 2 次位移因子），一个 w=30 天的窗口全程累计 ~26 万次 `hitAt`
+ * ——实测占上帝跳时间（2013→2023）冷扫描的半壁。
+ *
+ * 为什么能记忆化：窗口里 `k ≤ i−1` 的根在「位移只许追加」的硬纪律下**不可变**（第 k 根的
+ * `factorFor` 在 `s.i > k` 之后永不再变，见 god.js 头注），⇒ 每条锚点只需把扫描推进到
+ * `min(to, i−1)`、命中即冻结，判定与重扫**逐位等价**；「动态」口径（玩家改价改时点）只
+ * 依赖未扫描的未来根，照样成立。扫描只碰**已收盘**的根 ⇒ 顺带让 god.js 的历史根游标
+ * 恒走升序快路径（每小时至多 1 根新扫描）。
+ *
+ * ⚠️ memo 挂 `s.mkt` 对象（WeakMap）：`rewindTo` 整条 `s.mkt` 换新 ⇒ 自动失效，倒带重算
+ *   天然正确；不进存档、不升 `STATE_VERSION`。 */
+const RNEWS_MEMO = new WeakMap();
+
 /**
- * 第 `i` 根 K 线是不是某条锚点**第二条 · 结果新闻**的播报时刻。
+ * 第 `s.i` 根 K 线是不是某条锚点**第二条 · 结果新闻**的播报时刻。
  *
  * 三条口径（缺一不可）：
  *   ① **在事情之后** —— 从「第一条播完那一小时」起扫，命中那根再 `+1h` 播 ⇒ 与第一条至少错开 **2 小时**
@@ -206,11 +221,13 @@ const congStartOf = a => a.at + a.congestion.ramp * 24 + NEWS_DELAY;
  *   ② **动态** —— 判定走位移后价格（`hitAt`），玩家改写行情就会改写这条新闻的时点或有无
  *   ③ **不报假数** —— 窗口 `w` 内始终没触发 ⇒ 返回 null，这条结果新闻**静默不出现**
  *
- * ⚠️ 锚点稀疏：窗口外的锚点在头两行就 `continue` 掉了，只有窗口内的那几天才真扫（≤ 720 根）。
- * ⚠️ 扫描是**纯函数**（不缓存、不落状态）：上帝模式倒带回到过去时，判定自然跟着重算。
+ * ⚠️ 锚点稀疏：窗口外的锚点在头两行就 `continue` 掉了，只有窗口内的那几天才真扫。
  * @returns {object|null} 命中的锚点（含 `rt`），没命中返回 null
  */
-export function resultNewsStartAt(i) {
+export function resultNewsStartAt(s) {
+  const i = s.i;
+  let memo = RNEWS_MEMO.get(s.mkt);
+  if (!memo) { memo = new Map(); RNEWS_MEMO.set(s.mkt, memo); }
   for (const a of ENTRIES) {
     const r = a.r;
     if (!r || !a.rt) continue;
@@ -218,10 +235,14 @@ export function resultNewsStartAt(i) {
     const from = newsStartOf(a) + 1;          // ① 至少等第一条播完
     const to = newsStartOf(a) + r.w * 24;
     if (i < from + 1 || i > to + 1) continue; // 播报时刻 = 命中根 + 1
-    /* 取**窗口内第一次**命中：价格在窗口里反复穿越同一价位（如 $64,000 上上下下）也只会播一条 */
-    let first = -1;
-    for (let k = from; k <= to; k++) if (hitAt(a, r, k)) { first = k; break; }
-    if (first >= 0 && first + 1 === i) return a;
+    let st = memo.get(a);
+    if (!st) { st = { upTo: from - 1, first: -1 }; memo.set(a, st); }
+    if (st.first < 0) {
+      const lim = Math.min(to, i - 1);        // 只扫**已收盘**的根（k ≤ i−1 ⇒ 判定不可变、可冻结）
+      for (let k = st.upTo + 1; k <= lim; k++) if (hitAt(a, r, k)) { st.first = k; break; }
+      if (st.first < 0) st.upTo = lim;
+    }
+    if (st.first >= 0 && st.first + 1 === i) return a;
   }
   return null;
 }

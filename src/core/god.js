@@ -39,8 +39,10 @@
  *    图上就是「一根悬浮的孤立 K 线」，而且整根平移 ⇒ 实体形状不变 ⇒ 看不出「我把订单薄吃了」。
  *
  * ⚠️ 逐根系数的代价必须记住：相邻收益率会变 ⇒ σ_30日会变 ⇒ 滑点与资金费率连带变。
- *    所以 `engine.invalidateSigma()` 必须在**每次写 `s.flow` 之后**调用，
- *    否则会算出「价格在动、波动率不动」的不自洽滑点。
+ *    但这只发生在**未来**的日子：σ 的窗口只含**已收盘**的日收盘（全部早于写入时刻），
+ *    而写入（`at = s.i`）只影响它之后的根 ⇒ 任何一次 σ 重算与它命中缓存时的值**逐位相同**
+ *    ——所以正常推进**不需要**刷 σ 缓存；唯一要清的场合是**回退**（`rewindTo`，
+ *    见 `engine.invalidateSigma` 的头注）。
  */
 
 import { exchangeOf, GAME, HOUR_MS } from './config.js';
@@ -1242,6 +1244,118 @@ const DECAY = new Float64Array(DECAY_MAX);
 for (let e = 0; e < DECAY_MAX; e++) DECAY[e] = Math.pow(0.5, e / NPC.shockHalf);
 
 /**
+ * **窗口和**（2026-10-08 跳时间 O(n²) 修复的扫窗底座）—— `Σ_{e∈[0,DECAY_MAX)} v_k × DECAY[e]`。
+ *
+ * `e ≥ DECAY_MAX` 的条目在旧式全表扫描里本来就是 `if (e < DECAY_MAX)` 跳过、**一分不加** ⇒
+ * 二分定起点（`at` 严格升序 ⇒ 窗口是连续后缀）之后从那里扫到头，**逐位等价**于旧全表扫描，
+ * 只是省掉了必为 0 的前缀。任何 4800 小时窗内条目数 ≈ 窗宽 ÷ 平均步进 4.5h ≈ 1062 条封顶
+ * （一局 10.5 万小时 ⇒ 表长 1.9 万条，图表 240 根/帧的成本从 240×9600 降到 240×1062）。
+ */
+function shockScan(tab, j) {
+  const at = tab.at, v = tab.v, n = at.length;
+  let lo = 0, hi = n;
+  const cut = j - DECAY_MAX;                       // `at ≤ cut` ⇔ `e ≥ DECAY_MAX` ⇒ 贡献恒 0
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (at[mid] <= cut) lo = mid + 1; else hi = mid; }
+  let sum = 0;
+  for (let k = lo; k < n; k++) {
+    const e = j - at[k];
+    if (e < 0) break;                              // `at` 之后才生效（升序 ⇒ 之后全部无效）
+    sum += v[k] * DECAY[e];
+  }
+  return sum;
+}
+
+/**
+ * 窗口和的**惰性前滚累加器**（2026-10-08 · 跳时间卡死的主修复）。
+ *
+ * 病根（实测 node --cpu-prof：2013→2023 跳 8.76 万小时 27.4s，92% 烧在位移因子链上）：
+ *   `factorFor` 被 `candleAt` 每根调 **2 次**（本根 `f` ＋ 上一根 `fp`）、每小时又调几十次，
+ *   每次都全表扫 `npcShock` ⇒ 表长随 `s.i` 线性长（级联平均 4.5h 追加一条），总代价 O(n²)。
+ *
+ * 修法：指数核支持**前滚递推** —— `S(h) = S(h−1) × DECAY[1] + V_h`（`V_h` = 第 h 小时追加的
+ * 合计量），数学上与逐条求和**完全等价**；最新两根（`j = i` / `i − 1`，正是引擎逐小时路径
+ * 只会读的两根）O(1) 直读，更早的历史根回落到 `shockScan`（图表窗口 ≤240 根，扫窗已封顶）。
+ *
+ * ⚠️ 挂 **WeakMap**（键 = 表对象）：不进存档、不升 `STATE_VERSION`；`rewindTo` 整条 `s.mkt`
+ *    归零重来 ⇒ 新表无缓存，天然失效。`pushNpcShock` 追加后调 `shockAccForgetFile` 失效。
+ * ⚠️ 递推与逐条求和在浮点上**差在第 ~14 位**（求和顺序不同），对价格的相对影响 ~1e-13 ——
+ *    远小于任何显示位数与审计容差；「无位移 ⇒ 恰好 0 ⇒ 系数恰为 1」的逐位口径不受影响。
+ */
+const SHOCK_ACC = new WeakMap();
+
+/** 引擎侧的失效钩子：`pushNpcShock` 追加 / 合并之后调一下，下次读数冷启动重扫 */
+export function shockAccForgetFile(tab) { SHOCK_ACC.delete(tab); }
+
+/**
+ * 历史根读数的**前滚游标 ＋ 回环缓冲**（2026-10-08 补两刀）：`dailySigma` 每次换日都要回读
+ * 31 个**日收盘**（`d×24+23`，全部早于最新两根），每次都冷扫 1062 条窗 ≈ 19k 次 × 39 读
+ * ——实测占跳全程的 ~60%。日收盘读数**天然升序** ⇒ 维护一个只进不退的游标
+ * （`S(h) = S(h−1) × DECAY[1] + V_h` 同一递推），升序读摊还 O(1)；**近距离倒退读**（σ 窗、
+ * 24 小时窗、结果新闻窗——都在 1024 根内）直读回环；**远距离倒退**（图表每帧从窗首重放、
+ * 锚点回读多年前）才回落 `shockScan`，与旧成本持平。
+ * ⚠️ 与 `SHOCK_ACC` 分开：那枚钉在最新两根上，游标会被倒退读不断打回，两者互相踩。
+ */
+const SHOCK_CUR = new WeakMap();
+
+/* 回环缓冲：前滚时顺手把每根的 S 存下来（1024 根 ≈ 42 天，5 币共 40KB）。
+   σ 窗（720 根）/ 24 小时窗 / 结果新闻窗（≤720 根）的**近距离倒退读**因此 O(1) 直读，
+   不再每根冷扫 —— 这是跳时间 profile 里 shockRowAt 1.9s 的主犯（每小时窗首都被游标甩在身后）。
+   取 2 的幂 ⇒ 下标用 `& MASK`。 */
+const RING_MASK = 1023;
+
+/** 任意历史根的窗口和 —— 游标能接上（升序读）就前滚；近距离倒退读走回环；太远才冷扫。 */
+function shockRowAt(tab, j) {
+  let c = SHOCK_CUR.get(tab);
+  if (c) {
+    if (j === c.j) return c.S;
+    if (j > c.j) {                                   // 前滚：边滚边落回环
+      while (c.j < j) {
+        const h = c.j + 1;
+        let V = 0;
+        if (tab.at[c.k] === h) { V = tab.v[c.k]; c.k++; }
+        c.S = c.S * DECAY[1] + V;
+        c.j = h;
+        c.ring[h & RING_MASK] = c.S;
+        if (h - c.lo >= 1024) c.lo = h - 1023;       // 最老的槽即将被覆盖 ⇒ 收紧有效下界
+      }
+      return c.S;
+    }
+    if (j >= c.lo) return c.ring[j & RING_MASK];     // 回环命中：与前滚逐位相同（就是当时存的那个值）
+  }
+  /* 冷扫：首次 / 倒退超出回环（如锚点回读几年前的收盘） */
+  let lo = 0, hi = tab.at.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (tab.at[mid] <= j) lo = mid + 1; else hi = mid; }
+  c = { j, S: shockScan(tab, j), k: lo, ring: new Float64Array(1024), lo: j };
+  c.ring[j & RING_MASK] = c.S;
+  SHOCK_CUR.set(tab, c);
+  return c.S;
+}
+
+/**
+ * 取「第 `i` 根及上一根」的窗口和 —— 必要时从缓存位置一路前滚（摊还 O(1)/小时）。
+ * 冷启动不扫全史：`S(i)` / `S(i−1)` 各做一次**扫窗**（窗口外的贡献恰为 0，见 `shockScan`）。
+ */
+function shockAccOf(tab, i) {
+  let a = SHOCK_ACC.get(tab);
+  if (!a || a.i > i) {
+    let lo = 0, hi = tab.at.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (tab.at[mid] <= i) lo = mid + 1; else hi = mid; }
+    a = { i, S0: shockScan(tab, i - 1), S1: shockScan(tab, i), k: lo };
+    SHOCK_ACC.set(tab, a);
+    return a;
+  }
+  while (a.i < i) {
+    const h = a.i + 1;
+    let V = 0;
+    if (tab.at[a.k] === h) { V = tab.v[a.k]; a.k++; }
+    a.S0 = a.S1;
+    a.S1 = a.S1 * DECAY[1] + V;
+    a.i = h;
+  }
+  return a;
+}
+
+/**
  * 第 j 根上**NPC 级联成交**留下的瞬时冲击（v28 · 2026-10-02）。
  *
  * 形状与 `npcDrift` 一样是**只许追加的平行数组** `{ at: [], v: [] }`（`at` 恒等于写入那一刻的
@@ -1256,17 +1370,14 @@ for (let e = 0; e < DECAY_MAX; e++) DECAY[e] = Math.pow(0.5, e / NPC.shockHalf);
 function npcShockAt(s, sym, j) {
   const tab = s.mkt && s.mkt[sym] && s.mkt[sym].npcShock;
   if (!tab || !tab.at.length) return 0;
-  let sum = 0;
-  for (let k = 0; k < tab.at.length; k++) {
-    const e = j - tab.at[k];
-    /* ⚠️ `break` 而不是 `continue`（方案 B′）：`at` **严格升序** —— 写入点 `pushNpcShock` 只往
-       `at = 那一刻的 s.i` 追加、同小时还会合并；而 `rewindTo` 是**整条 `s.mkt` 归零重来**
-       （`engine.js` 那句 `s.mkt = {}`）⇒ 永远不会出现「后来的 `at` 更小」。
-       这一条顺带把**回顾页拖回 2013** 那种「j 远早于表尾」的读法从 O(n) 砍成 O(命中条数)。 */
-    if (e < 0) break;                          // `at` 之后才生效（升序 ⇒ 之后全部无效）
-    if (e < DECAY_MAX) sum += tab.v[k] * DECAY[e];
+  /* 快路径：引擎逐小时路径只会读最新两根（`candleAt` 的 f / fp）—— O(1) 直读（跳时间主修复） */
+  if (j >= s.i - 1) {
+    const a = shockAccOf(tab, s.i);
+    if (j === a.i) return a.S1;
+    if (j === a.i - 1) return a.S0;
+    return shockRowAt(tab, j);                     // j > s.i 不可能（写入恒 ≤ s.i）；兜底走游标
   }
-  return sum;
+  return shockRowAt(tab, j);                       // 历史根：升序读走游标、倒退读冷扫
 }
 
 /**

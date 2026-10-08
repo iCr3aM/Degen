@@ -18,7 +18,6 @@ import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safet
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
-import { tape24h } from '../core/tape.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
@@ -3253,7 +3252,7 @@ let fChip = null, fPanel = null;
 
 /* 浮窗几何（2026-10-08 桌面端分档）：宽 / 高 / 热力图高由 style.css 的 `:root` 变量给
    （`--float-w` / `--float-h` / `--hm-h`，见文件末尾那两档媒体查询）。手机端未定义 ⇒ 走兜底值,
-   与旧硬编码（340px / 72dvh / 260px）逐位一致。读**同一份**变量 ⇒ 拖拽夹取与热力图级联不会
+   与 CSS 兜底（340px / 64dvh / 240px）逐位一致。读**同一份**变量 ⇒ 拖拽夹取与热力图级联不会
    各说各话（改档只改 style.css 一处）。
    ⚠️ 带缓存：只在视口尺寸变化时重读，避免每帧 `getComputedStyle`（跳时间性能红线）。 */
 let geoKey = '', geoVal = null;
@@ -3269,39 +3268,49 @@ function floatGeo() {
     if (!v || !Number.isFinite(n)) return dflt;
     return /v[hd]$/.test(v) ? (n / 100) * ch : n;
   };
-  geoVal = { cw, ch, w: px('--float-w', 340), h: px('--float-h', ch * 0.72), hm: px('--hm-h', 260) };
+  geoVal = { cw, ch, w: px('--float-w', 340), h: px('--float-h', ch * 0.64), hm: px('--hm-h', 240) };
   geoKey = key;
   return geoVal;
 }
 
 /** 面板内容（每帧重建）。页 0 热力图：纵轴 = 价格、条 = 各档强平价位（宽 ∝ 名义占比，
- *  多头强平在下方走跌色、空头强平在上方走涨色）＋ 当前价标线 —— 视窗夹在现价 ±35%
- *  （3x 年代封顶的最大强平距离 32.83% ＋ 余量），远档强平不进来把轴压扁（2026-10-07 bug 修）；
+ *  多头强平在下方走跌色、空头强平在上方走涨色）＋ 当前价标线 —— 视窗**自适应**覆盖现价与
+ *  全部档位极值（2026-10-08 用户拍板「远档也要完整展示」，coinglass 同口径：不裁剪纵轴、
+ *  强度靠条宽表达），近档挤压由像素级级联兜底（行距恒 ≥12px）—— 旧 ±35% 固定视窗与
+ *  「另有 N 条远档」提示退役；
  *  页 1 巨鲸：有仓的一侧一行「杠杆 名义@均价 ｜ 强平价 (距%)」＋ 热度（恐惧贪婪只在交易页）；
  *  页 2 深度：日流动性 / 本时基准 / 深度池余量 / 免滑点线 / 单笔顶格线 ＋ 压力位墙汇总 —— 全是真状态；
  *  页 3 订单簿（2026-10-07 拍板「压力位挂单墙并入订单簿」）：基础 18 档 ＋ 压力位墙逐档列出。
- *  页 4 逐笔成交（2026-10-07 拍板）：本小时量的**代表性采样**（幂律 ＋ taker 偏斜，见 tape.js）
- *       ＋ 已收盘前 23 小时的**逐时汇总**（近 24 小时记录，`tape24h`），
- *       列固定「时刻 价 数量 金额」最新在前 —— `prog` = 本小时已走的量占比（main.js 时钟）。 */
-function floatBody(s, page, prog) {
+ *  ⚠️ 旧页 4「逐笔成交」已退役（2026-10-08 用户拍板）：明细行数随本小时进度漂移（每帧跳变）、
+ *     拖动浮窗时列表乱跳，且与订单簿 / 深度页信息重叠 —— 数据源 `tape.js` 一并删除。 */
+function floatBody(s, page) {
   const w = godWatchOf(s, s.sym);
   const box = el('div', 'god-fbody');
   if (page === 0) {
-    const BAND = 0.35, HM_H = floatGeo().hm;       // 与 style.css 的 .god-hm 同源（`--hm-h`，桌面端分档抬高）
-    const hi = w.price * (1 + BAND), lo = w.price * (1 - BAND);
+    const HM_H = floatGeo().hm;                    // 与 style.css 的 .god-hm 同源（`--hm-h`，桌面端分档抬高）
+    /* 视窗自适应（2026-10-08 用户拍板「远档也要完整展示」，coinglass 展示口径：纵轴覆盖
+       现价与**全部**清算档位的极值区间、不人为裁剪，强度靠条宽表达）：上下界 = 极值 ＋
+       跨度 6% 边距；无档位时退化为现价 ±4% 的空视野（只剩现价线）。现价线落在真实比例
+       位置（不再恒居中 —— 那是 ±35% 固定视窗时代的定义），近档挤压由下面的级联兜底。 */
+    let hi = w.price, lo = w.price;
+    for (const l of w.liqs) {
+      if (l.price > hi) hi = l.price;
+      if (l.price < lo) lo = l.price;
+    }
+    const pad = (hi - lo) * 0.06 || w.price * 0.04;
+    hi += pad; lo -= pad;
     const yFrac = p => (hi - p) / (hi - lo);       // 0 = 视窗顶（高价）
-    const vis = w.liqs.filter(l => l.price >= lo && l.price <= hi).sort((a, b) => b.price - a.price);
     /* 像素级去重叠（2026-10-07 bug 修）：条与现价线**合并**进同一排序级联，任意两行中心距
        恒 ≥ 12px（= .god-hm-bar 的行高，style.css 同源）。旧版 gap = (H−24)/(n−1)−12 随条数
        变密反而缩水（n=10 时仅 5.3px），高杠杆档（20x/50x/100x 挤在现价 ±4.5% 内）相邻条
        文字互相压字、100x 条压住现价线。级联最坏跨度 = (n−1)×12px，n 上限 = 6 档×2 侧＋做市
-       2 侧＋现价线 = 15 行 ⇒ 14×12 = 168px ≤ 可用区（HM_H−2×6：手机端 248px，桌面端更高）。 */
+       2 侧＋现价线 = 15 行 ⇒ 14×12 = 168px ≤ 可用区（HM_H−2×6：手机端 228px，桌面端更高）。 */
     const GAP = 12 / HM_H;
     const MARGIN = 6 / HM_H;                        // 上下各留 6px，条不贴边
     const avail = 1 - 2 * MARGIN;
     const clampT = v => Math.min(1 - MARGIN, Math.max(MARGIN, v));
-    const rows = vis.map(l => ({ y: yFrac(l.price), l }));
-    rows.push({ y: 0.5, now: true });              // 现价线恒在视窗正中（±35% 视窗的定义），参与同一场级联
+    const rows = w.liqs.map(l => ({ y: yFrac(l.price), l }));
+    rows.push({ y: yFrac(w.price), now: true });   // 现价线在真实比例位置，参与同一场级联
     rows.sort((a, b) => a.y - b.y);
     /* 双向级联（2026-10-08 bug 修）：旧版只做**正向**（自顶向下推），底部密集条目（多头强平
        挤在下方）被推到越界后，`clampT` 把多行夹到同一值 ⇒ 左下角堆叠（左上角因上侧条目少、
@@ -3342,7 +3351,6 @@ function floatBody(s, page, prog) {
     }
     box.append(hm);
     if (!w.liqs.length) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
-    else if (vis.length < w.liqs.length) box.append(el('p', 'god-fnote', `另有 ${w.liqs.length - vis.length} 条远档强平在 ±35% 视窗外`));
   } else if (page === 1) {
     const t = w.price;
     const sideRow = (name, isLong, notional, avg, lev) => {
@@ -3360,9 +3368,13 @@ function floatBody(s, page, prog) {
        浮窗巨鲸页不再显示（`w.fng` 数据轨保留 —— 审计 9x 仍锚定 godWatchOf 的读数域）。 */
     box.append(el('div', 'god-frow2 mut', `热度 ${fmtPct(w.heat)}`));
   } else if (page === 3) {
-    /* 订单簿：asks 反序（远档在上、最近的卖价贴中价）、bids 正序（最近的买价贴中价）——
-       与真实交易所的盘口同一副上下结构。每侧 18 根**基础档**全列（2026-10-08 浮窗扩容
-       340×72dvh 后放得下整侧）：数到第 19 根非墙行截断（兜底），墙照插
+    /* 订单簿（2026-10-08 用户拍板「参考 coinglass 展示方式」）：三列 **价格 / 数量 / 金额**，
+       asks 反序（远档在上、最近的卖价贴中价）、bids 正序（最近的买价贴中价）——与真实
+       交易所的盘口同一副上下结构。数量 = 名义 ÷ 价格（币本位档位量，`fmtQty` 无 $）；
+       金额 = **从贴中价档向外累计**的名义（coinglass「总计」列同款口径、换成金额）——
+       基础档名义由撮合梯等分（`baseLadder`，「走簿 ≡ 连续式」恒等式的承重结构，不能动），
+       所以基础档数量近恒、累计列单调增长，墙行在两侧各是一次跳变。量条宽 ∝ 本档数量。
+       每侧 18 根**基础档**全列：数到第 19 根非墙行截断（兜底），墙照插
        （墙才是这页的主角 —— 它们就是下一笔成交真的会撞上的货）。 */
     const b = w.book;
     if (!b) { box.append(el('p', 'god-fnote', '盘口暂不可用')); return box; }
@@ -3375,51 +3387,39 @@ function floatBody(s, page, prog) {
       }
       return out;
     };
-    const asks = cut(b.asks).reverse();
-    const bids = cut(b.bids);
-    const maxN = Math.max(1, ...asks.map(r => r.notional), ...bids.map(r => r.notional));
+    /* 累计从**贴中价档**出发向外累加（b.asks / b.bids 本就按价距升序 = 贴中在前）；
+       asks 显示时反转（远档在上），累计值跟着撮合顺序走、不跟显示顺序走。 */
+    const decorate = rows => {
+      let cum = 0;
+      return rows.map(r => { cum += r.notional; return { ...r, qty: r.notional / r.price, cum }; });
+    };
+    const asks = decorate(cut(b.asks)).reverse();
+    const bids = decorate(cut(b.bids));
+    const maxQ = Math.max(1e-12, ...asks.map(r => r.qty), ...bids.map(r => r.qty));
     /* 档距 = 基础档（非墙）前两行的价格差 —— `bookForWatch` 的基础阶梯是比例式的（price×(1±d)），
        第一段最细、取它作 step 最保守。传给 `fmtFloatPrice` 后价格被砸到 <$0.01、档距 <$1e-6
        （护盘/深跌沙盒的极端场景）相邻档也不会同显（2026-10-07 · 「y 轴步进同步检查详情浮窗」）。 */
     const baseAsks = b.asks.filter(r => !r.wall);
     const tick = baseAsks.length > 1 ? Math.abs(baseAsks[1].price - baseAsks[0].price) : 0;
+    const head = el('div', 'gb-head');
+    head.append(el('i', null, '价格'), el('span', 'gb-track'), el('em', null, '数量'), el('b', null, '金额'));
+    box.append(head);
     const gbRow = (r, cls) => {
       const row = el('div', `gb-row ${cls}${r.wall ? ' wall' : ''}`);
       row.append(el('i', null, (r.wall ? '墙 ' : '') + fmtFloatPrice(r.price, tick)));
       const u = el('u');
-      u.style.width = `${Math.max(4, (r.notional / maxN) * 100)}%`;
+      u.style.width = `${Math.max(3, (r.qty / maxQ) * 100)}%`;
       const track = el('span', 'gb-track');
       track.append(u);
-      row.append(track, el('b', null, fmtMoneyShort(r.notional)));
+      row.append(track, el('em', null, fmtQty(r.qty)), el('b', null, fmtMoneyShort(r.cum)));
       return row;
     };
     for (const r of asks) box.append(gbRow(r, 'gb-ask'));
     box.append(el('div', 'gb-mid', fmtFloatPrice(b.mid, tick)));
     for (const r of bids) box.append(gbRow(r, 'gb-bid'));
-  } else if (page === 4) {
-    /* 逐笔成交（2026-10-07 拍板「保留 24 小时记录」）：本小时真实成交量（hourLiqRaw，与滑点
-       同一把尺子）按幂律 α=1.5 拆成 96 笔采样，方向按 taker 偏斜（锚：中性买方份额 0.499、
-       每 +1% 收益 +0.007）—— 见 tape.js 模块头注；已收盘的前 23 小时各压一行「逐时汇总」
-       （tape24h：收价 / 量额 / 该根 K 线涨跌着色），明细在前、汇总按小时倒序跟在后面。
-       列固定不换行（用户红线）：时刻 | 价 | 数量(币) | 金额($)，最新在前。 */
-    const tp = tape24h(s, s.sym, prog || 0);
-    if (!tp) { box.append(el('p', 'god-fnote', '行情暂不可用')); return box; }
-    box.append(el('div', 'god-frow2 mut', `本时量 ${fmtMoneyShort(tp.vol)} ｜ 买占 ${(tp.pBuy * 100).toFixed(1)}%`));
-    if (!tp.prints.length) box.append(el('p', 'god-fnote', '本小时刚开始 · 以下为近 24 小时逐时'));
-    const list = el('div', 'gd-list');
-    for (const p of tp.prints) {
-      const row = el('div', `gd-row ${p.side > 0 ? 'gd-buy' : 'gd-sell'}`);
-      row.append(el('i', null, p.t), el('em', null, fmtFloatPrice(p.price)), el('span', null, fmtQty(p.qty)), el('b', null, fmtMoneyShort(p.usd)));
-      list.append(row);
-    }
-    for (let k = tp.hours.length - 1; k >= 0; k--) {
-      const hh = tp.hours[k];
-      const row = el('div', `gd-row ${hh.side > 0 ? 'gd-buy' : 'gd-sell'}`);
-      row.append(el('i', null, fmtHour(GAME.start + hh.h * HOUR_MS)), el('em', null, fmtFloatPrice(hh.close)), el('span', null, fmtQty(hh.qty)), el('b', null, fmtMoneyShort(hh.usd)));
-      list.append(row);
-    }
-    if (list.children.length) box.append(list);
   } else {
+    /* 深度页（页 2）。⚠️ 旧页 4「逐笔成交」已退役（2026-10-08）：明细行数随本小时进度漂移、
+       拖动时乱跳 —— 页表里不再有 4，这里只服务页 2。 */
     const d = w.depth;
     const row = (k, v) => { const r = el('div', 'god-frow2'); r.append(el('i', null, k), el('b', null, v)); return r; };
     box.append(row('日流动性', fmtMoneyShort(d.liqDay)));
@@ -3481,7 +3481,7 @@ export function updateFloat(s, ui) {
     }));
   }
   for (const b of fPanel.querySelectorAll('[data-goftab]')) b.classList.toggle('on', Number(b.dataset.goftab) === ui.page);
-  fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page, ui.prog));
+  fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page));
   /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽由 `--float-w` 给，＋8px 余量）。
      高度由 `--float-h` 给（手机端 72dvh）⇒ 上弹时 top 还要夹进「视口高 − 面板高 − 余量」，
      否则矮视口下面板底边会探出屏幕外（2026-10-08 扩容后尤其明显）。 */

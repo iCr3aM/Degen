@@ -247,20 +247,20 @@ let godAlpha = (() => {
 })();
 let godFloatOn = true;      // 浮窗开关（上帝面板浮窗行那枚），会话级，默认开
 let floatOpen = false;      // 面板是否展开
-let floatPage = 0;          // 面板页码：0 热力 / 1 巨鲸 / 2 深度 / 3 订单 / 4 成交（随模式夹取）
-let floatPos = null;        // 圆钮视口坐标 {x,y}；null = 走 CSS 默认（右下角）
+let floatPage = 0;          // 面板页码：0 热力 / 1 巨鲸 / 2 深度 / 3 订单（随模式夹取）
 
 /* ── 市场浮窗（2026-10-07 拍板）：普通 / 挑战局的盘口浮窗 ──────────────────────
    浏览器偏好（独立 localStorage 键、默认**开**）—— 与 `degen_colors` 同一口径，不进存档。
-   普通局开放**订单 ＋ 深度 ＋ 成交**三页：热力 / 巨鲸（含 NPC 仓位明细）保持上帝专属。 */
+   普通局开放**订单 ＋ 深度**两页：热力 / 巨鲸（含 NPC 仓位明细）保持上帝专属。
+   ⚠️ 旧页 4「逐笔成交」已退役（2026-10-08 用户拍板）：明细行数随本小时进度漂移、拖动时乱跳。 */
 const MKT_FLOAT_KEY = 'degen_mkt_float';
 let mktFloatOn = (() => {
   try { return localStorage.getItem(MKT_FLOAT_KEY) !== '0'; }
   catch { return true; }
 })();
-/** 浮窗页表：上帝局 5 页 / 普通局 3 页 —— `floatUi()` 按模式取，`updateFloat` 据此建页签。 */
-const GOD_FLOAT_PAGES = [[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单'], [4, '成交']];
-const MKT_FLOAT_PAGES = [[3, '订单'], [2, '深度'], [4, '成交']];
+/** 浮窗页表：上帝局 4 页 / 普通局 2 页 —— `floatUi()` 按模式取，`updateFloat` 据此建页签。 */
+const GOD_FLOAT_PAGES = [[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单']];
+const MKT_FLOAT_PAGES = [[3, '订单'], [2, '深度']];
 const applyGodAlpha = () => document.documentElement.style.setProperty('--god-alpha', String(godAlpha));
 applyGodAlpha();
 
@@ -364,7 +364,8 @@ async function boot() {
   /* 价格位移层（方案 §2.6）：**唯一收口**在 `market.candleAt`。
      注入一个**逐根**系数，markPrice / 权益 / 强平价 / 资金费 / K 线图 / HUD 涨跌幅全部自动跟上。
      ⚠️ 难度在于它**不能**写成「一个全局常数」：一笔单只影响它之后的行情（`j < at ⇒ 1`），
-        所以历史 K 线不会被重新标定，收益率会真的变 ⇒ σ 会变（见 `engine.invalidateSigma`）。
+        所以历史 K 线不会被重新标定，收益率会真的变 ⇒ 未来日子的 σ 会跟着变
+        （σ 缓存的失效纪律见 `engine.invalidateSigma` / `daySigmaCache` 头注）。
      ⚠️ 没有上帝位移也没有冲击池时 `factorFor` 恒返回 1，`candleAt` 走原路径 —— **逐位相同**。
      ⚠️ **回顾态恒返回 1**（ROADMAP §六十五，2026-10-02 修）：注入的这个闭包读的是**运行时**的 `rv`，
         回顾页开着时价格位移必须整条摘掉 —— 否则「你在 2015 年砸的那一笔」会把 2015 年的历史 K 线
@@ -1464,10 +1465,9 @@ function onGodTab(node) {
 function floatUi() {
   const pages = s.god ? GOD_FLOAT_PAGES : MKT_FLOAT_PAGES;
   if (!pages.some(([p]) => p === floatPage)) floatPage = pages[0][0];
-  /* prog：本小时已走占比（0-1）—— 「成交」页的采样窗口要贴着时钟走，不传只会永远显示空窗。 */
   return {
     on: s.god ? godFloatOn : mktFloatOn, open: floatOpen, page: floatPage, pos: floatPos,
-    pages, mkt: !s.god, prog: clock ? clock.progress() : 0,
+    pages, mkt: !s.god,
   };
 }
 

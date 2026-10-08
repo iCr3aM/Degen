@@ -3140,65 +3140,29 @@ section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源
   check('9v⑤ main：市场浮窗开关（localStorage 持久化 ＋ 页表随模式）',
     mainSrc9v.includes("MKT_FLOAT_KEY = 'degen_mkt_float'")
     && mainSrc9v.includes('MKT_FLOAT_PAGES') && mainSrc9v.includes('mkt: !s.god'));
-  check('9v⑤ render：订单簿页（页 3）＋ 设置页开关 ＋ 深度页墙汇总',
-    rendSrc9v.includes('gb-row') && rendSrc9v.includes('gb-mid')
+  check('9v⑤ render：订单簿页 coinglass 三列（价格/数量/金额累计 ＋ 量条∝数量）＋ 设置页开关 ＋ 深度页墙汇总',
+    rendSrc9v.includes('gb-row') && rendSrc9v.includes('gb-mid') && rendSrc9v.includes('gb-head')
+    && rendSrc9v.includes('r.notional / r.price') && rendSrc9v.includes('fmtQty(r.qty)')
+    && rendSrc9v.includes('fmtMoneyShort(r.cum)') && rendSrc9v.includes('qty: r.notional / r.price, cum')
     && rendSrc9v.includes('mktFloatBtn') && rendSrc9v.includes('压力位墙'));
-  check('9v⑤ style：订单簿行样式（9px 固定口径 ＋ 墙金色）',
+  check('9v⑤ style：订单簿行样式（9px 固定口径 ＋ 墙金色）＋ 三列表头 ＋ 红卖绿买（真实盘口配色）',
     styleSrc9v.includes('.gb-row') && styleSrc9v.includes('.gb-mid')
-    && styleSrc9v.includes('.gb-row.wall'));
+    && styleSrc9v.includes('.gb-row.wall') && styleSrc9v.includes('.gb-head')
+    && /\.gb-ask b \{ color: var\(--down\)/.test(styleSrc9v)
+    && /\.gb-bid b \{ color: var\(--up\)/.test(styleSrc9v));
 }
 
-/* ═══════════════════ 9w · tape 逐笔 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 预算 ═══════════════════
-   本批收口（2026-10-07 用户七问）：
-     ① tape（浮窗「成交」页）：确定性 · 窗口过滤 · 方向有界 · 量守恒 · 不前视 · 零状态；
+/* ═══════════════════ 9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 预算 ═══════════════════
+   本批收口（2026-10-07 用户七问；2026-10-08 修订）：
      ② NPC 双侧基底（`NPC.base`）：净敞口恒等（代数镜像 ＋ 源码锚）· 全币两侧常在 · OI 地板 ——
         「无玩家自洽」的仓位面收口；
      ③ `godWatchOf` 档名带**生效杠杆**（2016-05-13 前封顶 ⇒「100x→3x」，名实同尺）；
      ④ 50x 速度的单「游戏秒」成本预算：50 × advanceOneHour ＋ 60 × godWatchOf 计时；
-     ⑤ 浮窗「成交」页接线锚（页表 5/3 页 · prog · gd 样式）。 */
-section('9w · tape 逐笔采样 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
+     ⑤ 浮窗页表锚（上帝 4 页 / 普通 2 页）—— ⚠️ 旧页 4「逐笔成交」连同 `tape.js` 已退役
+        （2026-10-08 用户拍板：明细行数随本小时进度漂移、拖动浮窗时列表乱跳），
+        这里改成**负向锚**：tape / gd 行 / 页 4 不许再回来。 */
+section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
 {
-  const tape = await import('../src/core/tape.js');
-
-  /* ── ① tape：纯函数逐位确定 ＋ 窗口 / 方向 / 量守恒 ── */
-  const sT = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2021, 5, 10)) });
-  const tpA = tape.tapeOf(sT, 'BTC', 0.5);
-  check('9w① tape 确定性：同状态两次调用逐位同一条（零状态纯函数）',
-    !!tpA && JSON.stringify(tpA) === JSON.stringify(tape.tapeOf(sT, 'BTC', 0.5)));
-  check('9w① tape 方向有界：pBuy ∈ [0.35, 0.65]（taker 偏斜夹取）',
-    !!tpA && tpA.pBuy >= 0.35 && tpA.pBuy <= 0.65, `pBuy=${f(tpA.pBuy, 4)}`);
-  const tpW = tape.tapeOf(sT, 'BTC', 0.5, 96);            // n=K ⇒ 全窗，窗口过滤才验得住
-  const secOf = t0 => Number(t0.slice(0, 2)) * 60 + Number(t0.slice(3));
-  check('9w① tape 展示窗：progress=0.5 ⇒ 所有笔落在 (35%, 50%] 小时内',
-    !!tpW && tpW.prints.length > 0
-    && tpW.prints.every(p => { const q = secOf(p.t); return q > 0.35 * 3600 - 1 && q <= 0.5 * 3600 + 1; }),
-    `窗内 ${tpW ? tpW.prints.length : 0} 笔`);
-  const markT = engine.lastPrice(sT, 'BTC');
-  check('9w① tape 笔结构：side ∈ {±1} · 价 ∈ 标记价 ±2bp · qty == usd/价',
-    !!tpW && tpW.prints.every(p => (p.side === 1 || p.side === -1)
-      && Math.abs(p.price - markT) <= markT * 0.0002 + 1e-9
-      && p.usd > 0 && Math.abs(p.qty - p.usd / p.price) < 1e-9));
-  const usdSum = tpW ? tpW.prints.reduce((a, p) => a + p.usd, 0) : 0;
-  check('9w① tape 量守恒：窗内名义之和 ≤ 小时总量（与滑点同一把尺 hourLiqRaw）',
-    usdSum > 0 && usdSum <= tpW.vol, `窗内 $${f(usdSum, 0)} / 全时 $${f(tpW.vol, 0)}`);
-  check('9w① tape 单笔 ≤ 小时总量（无凭空量）', !!tpW && tpW.prints.every(p => p.usd <= tpW.vol));
-  const tpEarly = tape.tapeOf(sT, 'BTC', 0.15, 96);
-  const tSet = new Set(tpW.prints.map(p => p.t));
-  check('9w① tape 窗口随 progress 前移：0.15 窗与 0.5 窗时刻集合无交集',
-    tpEarly.prints.length > 0 && !tpEarly.prints.some(p => tSet.has(p.t)));
-  const tpZero = tape.tapeOf(sT, 'BTC', 0, 96);
-  check('9w① tape 小时刚开始：progress=0 ⇒ 空窗但 vol 可用（render 显「暂无采样」）',
-    !!tpZero && tpZero.vol > 0 && tpZero.prints.length === 0);
-  const sT2 = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2021, 5, 10)) + 1 });
-  check('9w① tape 按小时重播种：下一小时采样流与上一小时不同',
-    JSON.stringify(tape.tapeOf(sT2, 'BTC', 0.5, 96).prints) !== JSON.stringify(tpW.prints));
-  const tapeSrc = fs.readFileSync(path.join(ROOT, 'src/core/tape.js'), 'utf8');
-  check('9w① tape 不前视：只读已收盘 K 线（rawCloseAt s.i−1 / s.i−2），不读本根',
-    tapeSrc.includes('rawCloseAt(sym, s.i - 1)') && tapeSrc.includes('rawCloseAt(sym, s.i - 2)')
-    && !tapeSrc.includes('rawCloseAt(sym, s.i)'));
-  check('9w① tape 零状态红线：模块内不存在任何 `s.xxx =` 写路径',
-    !/s\.\w+\s*=[^=]/.test(tapeSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')));
-
   /* ── ② NPC 双侧基底 ──
      恒等式（代数镜像）：long 靶 = B + t⁺、short 靶 = B + t⁻（t = t⁺ − t⁻）⇒
      净敞口递推 netₙ₊₁ = netₙ + (t − netₙ)·speed，与无基底**逐位同轨** —— 基底只抬 OI 地板。 */
@@ -3262,9 +3226,10 @@ section('9w · tape 逐笔采样 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋
         && Math.abs(l.price - capRow.longAvg * (1 - (1 / 3 - C.GAME.maintRate))) < 1e-6)
       : true,
     `long=${f(capRow ? capRow.long : 0, 0)}`);
+  const sU = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2021, 5, 10)) });
+  const wU = engine.godWatchOf(sU, 'BTC');
   check('9w③ 未封顶年代档名全裸（含 100x，无「→」）',
-    engine.godWatchOf(sT, 'BTC').tiers.some(t => t.name === '100x')
-    && !engine.godWatchOf(sT, 'BTC').tiers.some(t => t.name.includes('→')));
+    wU.tiers.some(t => t.name === '100x') && !wU.tiers.some(t => t.name.includes('→')));
 
   /* ── ④ 50x 速度的单「游戏秒」预算：50 × advanceOneHour ＋ 60 × godWatchOf（每帧浮窗快照）
          必须远低于 1s 墙钟 —— 实测打印；阈值 400ms 已留 4× 余量（手机 ≈ 慢 3–5×）。 ── */
@@ -3279,32 +3244,46 @@ section('9w · tape 逐笔采样 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋
       ms < 400, `实测 ${f(ms, 1)} ms`);
   }
 
-  /* ── ⑤ 浮窗「成交」页接线锚 ── */
+  /* ── ⑤ 浮窗页表锚（成交页退役 · 负向锚）──
+     旧页 4「逐笔成交」连同 `tape.js` 已删除（2026-10-08 用户拍板）。负向锚防止它被无意加回来；
+     `floatPage` 的夹取纪律（不在页表内 ⇒ 回页 0）在 main.js `floatUi()` 里，行为面由 9v⑤ 侧面覆盖。 */
   const mainSrc9w = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
   const rendSrc9w = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
   const styleSrc9w = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
-  check('9w⑤ main：浮窗页表 5 页 / 3 页 ＋ prog 接线（clock.progress）',
-    mainSrc9w.includes("[[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单'], [4, '成交']]")
-    && mainSrc9w.includes("[[3, '订单'], [2, '深度'], [4, '成交']]")
-    && mainSrc9w.includes('prog: clock ? clock.progress() : 0'));
-  check('9w⑤ render：成交页走 tape24h（9x 扩的 24h 记录）＋ 圆钮「详」＋ gd 行结构',
-    rendSrc9w.includes('tape24h(s, s.sym, prog || 0)')
-    && rendSrc9w.includes("'详'") && rendSrc9w.includes('gd-row'));
-  check('9w⑤ style：浮窗尺寸走 :root 变量（兜底值即手机端 340px×72dvh / 热力图 260px）＋ 成交页固定列样式',
+  check('9w⑤ main：浮窗页表 4 页 / 2 页（成交页已退役）＋ prog 接线已摘',
+    mainSrc9w.includes("[[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单']]")
+    && mainSrc9w.includes("[[3, '订单'], [2, '深度']]")
+    && !mainSrc9w.includes("'成交'") && !mainSrc9w.includes('prog:'));
+  check('9w⑤ render/style：tape ＋ gd 行结构全链路退役（不许再回来）＋ 圆钮「详」仍在',
+    !fs.existsSync(path.join(ROOT, 'src/core/tape.js'))
+    && !rendSrc9w.includes('tape24h') && !rendSrc9w.includes('gd-row') && !rendSrc9w.includes('prog')
+    && rendSrc9w.includes("'详'")
+    && !styleSrc9w.includes('.gd-row') && !styleSrc9w.includes('.gd-buy') && !styleSrc9w.includes('.gd-sell'));
+  check('9w⑤ style：浮窗尺寸走 :root 变量（兜底值即手机端 340px×64dvh / 热力图 240px）',
     /\.god-float \{[^}]*width: var\(--float-w, 340px\)/.test(styleSrc9w)
-    && /\.god-float \{[^}]*height: var\(--float-h, 72dvh\)/.test(styleSrc9w)
-    && /\.god-hm \{[^}]*height: var\(--hm-h, 260px\)/.test(styleSrc9w)
-    && styleSrc9w.includes('.gd-row') && styleSrc9w.includes('.gd-buy') && styleSrc9w.includes('.gd-sell'));
-  /* 9w⑥（2026-10-08 桌面端适配）：浮窗按视口宽度分两档放大（手机端兜底值不变），
+    && /\.god-float \{[^}]*height: var\(--float-h, 64dvh\)/.test(styleSrc9w)
+    && /\.god-hm \{[^}]*height: var\(--hm-h, 240px\)/.test(styleSrc9w));
+  /* 9w⑥（2026-10-08 桌面端适配，同日「缩矮」三档下调）：浮窗按视口宽度分两档（手机端兜底值不变），
      `render.js` 的拖拽夹取与热力图级联读**同一份** CSS 变量 ⇒ 三处不会各说各话。 */
   check('9w⑥ 桌面端浮窗分档（1280px / 1680px）＋ 超宽容器 1520px ＋ render.js 读同一份变量',
-    styleSrc9w.includes('--float-w: 420px; --float-h: 78dvh; --hm-h: 320px')
-    && styleSrc9w.includes('--float-w: 480px; --float-h: 82dvh; --hm-h: 380px')
+    styleSrc9w.includes('--float-w: 420px; --float-h: 68dvh; --hm-h: 280px')
+    && styleSrc9w.includes('--float-w: 480px; --float-h: 72dvh; --hm-h: 330px')
     && styleSrc9w.includes('@media (min-width: 1280px)') && styleSrc9w.includes('@media (min-width: 1680px)')
     && styleSrc9w.includes('#app { max-width: 1520px; }')
-    && rendSrc9w.includes("px('--float-w', 340)") && rendSrc9w.includes("px('--float-h', ch * 0.72)")
-    && rendSrc9w.includes("px('--hm-h', 260)") && rendSrc9w.includes('cw - geo.w - 8')
-    && rendSrc9w.includes('const BAND = 0.35, HM_H = floatGeo().hm'));
+    && rendSrc9w.includes("px('--float-w', 340)") && rendSrc9w.includes("px('--float-h', ch * 0.64)")
+    && rendSrc9w.includes("px('--hm-h', 240)") && rendSrc9w.includes('cw - geo.w - 8')
+    && rendSrc9w.includes('const HM_H = floatGeo().hm'));
+  /* 9w⑥-bis（2026-10-08 用户反馈「桌面端有些文字、数字太小」）：浮窗字号桌面档整体上调一档
+     （密读数 11px / 热力图条 9.5px / 订单簿 10px ＋ 列宽同步）—— 只在 ≥1280px 媒体块内，
+     手机端「尽量小」拍板逐位不动。热力图条**行高 12px 不动**（级联 GAP 的锚，9x④ 单锚）。 */
+  check('9w⑥-bis 浮窗字号桌面档上调（11 / 9.5 / 10px ＋ gb 列宽 +6/+4/+6）＋ 手机端不动',
+    styleSrc9w.includes('.god-ftab, .god-fx, .god-frow2, .god-fnote { font-size: 11px; }')
+    && styleSrc9w.includes('.god-hm-bar { font-size: 9.5px; }')
+    && styleSrc9w.includes('.god-hm-now { font-size: 10px; }')
+    && styleSrc9w.includes('.gb-row, .gb-head { font-size: 10px; line-height: 14px; }')
+    && styleSrc9w.includes('.gb-row i, .gb-head i { flex: 0 0 72px; }')
+    && /\.god-hm-bar \{[^}]*font-size: 8\.5px/.test(styleSrc9w)
+    && /\.gb-row \{[^}]*font-size: 9px/.test(styleSrc9w));
   {
     /* `floatGeo` 里 px() 的行为复刻：px 直取、vh/dvh 按视口比换算、空值/垃圾值走兜底。
        （改档只写 CSS 变量，若解析写错就会静默退回手机端尺寸 ⇒ 这条把它钉住。） */
@@ -3320,21 +3299,17 @@ section('9w · tape 逐笔采样 ＋ NPC 双侧基底 ＋ 档名生效杠杆 ＋
   }
 }
 
-/* ═══════════════════ 9x · 浮窗分档精度 ＋ 24h 成交记录 ＋ 热力图级联去重叠 ═══════════════════
-   本批收口（2026-10-07，9w 后续三问）：
+/* ═══════════════════ 9x · 浮窗分档精度 ＋ 热力图级联去重叠 ═══════════════════
+   本批收口（2026-10-07，9w 后续三问；2026-10-08 修订——② tape24h 随成交页退役整块删除）：
      ① `fmtFloatPrice`：浮窗价格读数按量级分档（≥$1,000 一位 / ≥$1 两位 / <$1 委托 fmtPrice）——
         修「订单簿步进不随币价变化」：ETH 2016 在 $1.5 时档距只有 ~$0.04，旧 fmtLogPrice
         一位小数把相邻档舍成同一个号（两档都显「1.5」），玩家看到的步进恒为零。
         日志口径不动（fmtLogPrice 仍 1 位，2026-09-29 拍板）；
-     ② `tape24h`：拍板「成交保留 24 小时的记录」—— 本小时明细 ＋ 前 23 小时逐时汇总
-        （收价 / 量额 / 方向全部同源原始行情，仍是零状态纯函数，不进存档）；
      ③ 热力图像素级去重叠：条与现价线合并进同一场排序级联（行距恒 12px）——
         旧 gap 公式随条数变密反而缩水（n=10 时仅 5.3px），高杠杆档互相压字、100x 条压现价线；
      ④ 热力图条不再裁剪：`overflow: hidden` 会把窄条（$239.7K 的 100x 条只剩 26px）的文字啃掉。 */
-section('9x · 浮窗分档精度 fmtFloatPrice ＋ 24h 成交记录 tape24h ＋ 热力图级联去重叠');
+section('9x · 浮窗分档精度 fmtFloatPrice ＋ 热力图级联去重叠');
 {
-  const tape = await import('../src/core/tape.js');
-
   /* ── ① fmtFloatPrice：量级分档（对照旧口径演示病根） ── */
   check('9x① ≥$1,000 一位小数（千分位保留）：12,345.7',
     F.fmtFloatPrice(12345.67) === '12,345.7', F.fmtFloatPrice(12345.67));
@@ -3351,60 +3326,24 @@ section('9x · 浮窗分档精度 fmtFloatPrice ＋ 24h 成交记录 tape24h ＋
     F.fmtFloatPrice(-3.1416) === '-3.14'
     && F.fmtFloatPrice(NaN) === '--' && F.fmtFloatPrice(Infinity) === '--');
 
-  /* ── ② tape24h：24 小时成交记录（零状态 ＋ 同源 ＋ 跳行） ── */
-  const sX = await mk({ sym: 'BTC', cash: 1e6, i: idx(at(2021, 5, 10)) });
-  const tX = tape.tape24h(sX, 'BTC', 0.5, 96);
-  check('9x② tape24h 确定性：同状态两次调用逐位同一条（零状态红线不破）',
-    !!tX && JSON.stringify(tX) === JSON.stringify(tape.tape24h(sX, 'BTC', 0.5, 96)));
-  check('9x② 本小时明细与 tapeOf 逐位一致（同一把尺，不加不减）',
-    !!tX && JSON.stringify(tX.prints) === JSON.stringify(tape.tapeOf(sX, 'BTC', 0.5, 96).prints));
-  check('9x② 汇总 ≤ 23 行 · h 严格升序 · 全部 < s.i（只收已收盘小时）',
-    !!tX && tX.hours.length <= 23
-    && tX.hours.every((r, k) => r.h < sX.i && (k === 0 || r.h > tX.hours[k - 1].h)),
-    `实得 ${tX ? tX.hours.length : 0} 行`);
-  check('9x② 逐时行同源：close == rawCloseAt · usd == hourLiqRaw · qty == usd/close',
-    !!tX && tX.hours.every(r => {
-      const close = market.rawCloseAt('BTC', r.h);
-      const vol = engine.hourLiqRaw(sX, 'BTC', r.h);
-      return r.close === close && r.usd === vol && r.qty === vol / close;
-    }));
-  check('9x② 方向 = 该根 K 线自身涨跌（taker 偏斜式子的读数：跌 ⇒ 卖色）',
-    !!tX && tX.hours.every(r => {
-      const prev = market.rawCloseAt('BTC', r.h - 1);
-      return r.side === (prev > 0 && r.close < prev ? -1 : 1);
-    }));
-  check('9x② 2021-06 的 BTC 前 23 行全满（流动性充足段无跳行）',
-    !!tX && tX.hours.length === 23, `实得 ${tX ? tX.hours.length : 0}`);
-  const tX0 = tape.tape24h(sX, 'BTC', 0, 96);
-  check('9x② 小时刚开始（progress=0）：明细空窗但逐时汇总仍在（render 有货可画）',
-    !!tX0 && tX0.prints.length === 0 && tX0.hours.length > 0);
-  /* 早期跳行用 SOL（其包 2020-08 才开始且起点处即有量）—— BTC 的包从 GAME.start 之前就开始
-     （r0 < 0，2012-09-27），负小时也有数据；DOGE / ETH / XRP 起点附近的小时量份额为 0
-     （真实数据的洞），当前小时取不到量 ⇒ tape24h 整体为 null，同样构造不出用例。 */
-  const r0 = market.rangeOf('SOL')[0];
-  const sE = await mk({ sym: 'SOL', cash: 1e6, i: r0 + 10 });
-  const tE = tape.tape24h(sE, 'SOL', 0.5, 96);
-  check('9x② 早期跳行：SOL 数据起点后 10 小时 ⇒ 汇总 ≤ 10 行且 h ≥ r0（越界小时被跳过）',
-    !!tE && tE.hours.length <= 10 && tE.hours.every(r => r.h >= r0),
-    `r0=${r0} · ${tE ? tE.hours.length : 'null'} 行`);
-
-  /* ── ③④ render / style 接线锚 ── */
+  /* ── ③④ render / style 接线锚 ──
+     （旧 ② tape24h 块已随成交页退役删除——负向锚在 9w⑤。） */
   const rendSrc9x = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
   const styleSrc9x = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
-  check('9x③ render：成交页走 tape24h ＋ 逐时行时刻 = GAME.start + h×HOUR_MS',
-    rendSrc9x.includes('tape24h(s, s.sym, prog || 0)')
-    && rendSrc9x.includes('fmtHour(GAME.start + hh.h * HOUR_MS)'));
   const fbody = rendSrc9x.slice(rendSrc9x.indexOf('function floatBody'),
     rendSrc9x.indexOf('export function updateFloat'));
-  check('9x③ 浮窗五页价格读数全走 fmtFloatPrice（floatBody 区间内不再有 fmtLogPrice）',
-    fbody.includes('fmtFloatPrice') && (fbody.match(/fmtFloatPrice/g) || []).length >= 7
+  check('9x③ 浮窗四页价格读数全走 fmtFloatPrice（floatBody 区间内不再有 fmtLogPrice）',
+    fbody.includes('fmtFloatPrice') && (fbody.match(/fmtFloatPrice/g) || []).length >= 5
     && !fbody.includes('fmtLogPrice'),
     `floatBody 内 ${fbody ? (fbody.match(/fmtFloatPrice/g) || []).length : 0} 处`);
-  check('9x③ 热力图级联：条与现价线同一场排序 ＋ 行距恒 12px ＋ 旧 gap 公式已退役',
-    rendSrc9x.includes('rows.push({ y: 0.5, now: true })')
+  check('9x③ 热力图级联：条与现价线同一场排序 ＋ 行距恒 12px ＋ 旧 gap 公式已退役 ＋ 视窗自适应覆盖全部远档',
+    rendSrc9x.includes('rows.push({ y: yFrac(w.price), now: true })')
     && rendSrc9x.includes('const GAP = 12 / HM_H')
     && rendSrc9x.includes('rows.sort((a, b) => a.y - b.y)')
-    && !rendSrc9x.includes('Math.max(1, vis.length - 1) - 12'));
+    && rendSrc9x.includes('const pad = (hi - lo) * 0.06 || w.price * 0.04;')
+    && !rendSrc9x.includes('BAND = 0.35')
+    && !rendSrc9x.includes('Math.max(1, vis.length - 1) - 12')
+    && !rendSrc9x.includes('条远档强平在'));
   const styleNoCmt = styleSrc9x.replace(/\/\*[\s\S]*?\*\//g, '');
   check('9x④ 热力图条不裁剪：.god-hm-bar 无 overflow:hidden（窄条文字完整）＋ 行高 12px 与 GAP 同源',
     !/\.god-hm-bar \{[^}]*overflow\s*:\s*hidden/.test(styleNoCmt)
@@ -3422,7 +3361,7 @@ section('9x · 浮窗分档精度 fmtFloatPrice ＋ 24h 成交记录 tape24h ＋
   {
     /* 行为断言（不只锚源码）：逐字复刻 render.js 页 0 级联，跑密集数据集统计「同行重叠/越界」。
        回归场景（底部密集）旧正向级联最小行距 0px、21 对重叠；新布局四组数据集零问题。 */
-    const HM = 260, GP = 12 / HM, MG = 6 / HM, AV = 1 - 2 * MG;
+    const HM = 240, GP = 12 / HM, MG = 6 / HM, AV = 1 - 2 * MG;
     const layout = ys => {
       const r = ys.map(y => ({ y })).sort((a, b) => a.y - b.y);
       for (let i = 0; i < r.length; i++) r[i].t = i ? Math.max(r[i].y, r[i - 1].t + GP) : r[i].y;
@@ -3572,7 +3511,7 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
     chartSrc9y.includes('import { fmtAxisPrice, fmtMoneyShort }')
     && chartSrc9y.includes('const axisLabel = fmtAxisPrice;')
     && chartSrc9y.includes('axisLabel(p, span / 3)'));
-  check('9y⑤ render：订单簿档位 / mid 传 tick（基础档非墙前两行价差），热力图/巨鲸/成交页仍量级口径',
+  check('9y⑤ render：订单簿档位 / mid 传 tick（基础档非墙前两行价差），热力图/巨鲸页仍量级口径',
     rendSrc9y.includes('fmtFloatPrice(r.price, tick)')
     && rendSrc9y.includes('fmtFloatPrice(b.mid, tick)')
     && rendSrc9y.includes('Math.abs(baseAsks[1].price - baseAsks[0].price)'));

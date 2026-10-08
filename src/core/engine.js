@@ -17,7 +17,7 @@ import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, ra
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_SPOOF_NUDGE, addFlow, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, npcLevOf, playerFactor, sbOf, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_SPOOF_NUDGE, addFlow, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, npcLevOf, playerFactor, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -540,7 +540,16 @@ export const ruinLabelOf = s => (equity(s) <= 0 ? '账户归零' : '无力开仓
 /* ───────────────────────────── 滑点（P2-B1） ───────────────────────────── */
 
 /* σ 的缓存：键 = 币，值 = { day, v } —— 同一天内不必重扫 30 个日收盘。
-   装的是「日收益 σ」（滑点的 σ_30日），也是 NPC 热度里位移标准化的分母（§73.5）。 */
+   装的是「日收益 σ」（滑点的 σ_30日），也是 NPC 热度里位移标准化的分母（§73.5）。
+
+   ⚠️ **为什么写位移不用刷这份缓存**（2026-10-08 · 跳时间卡死第三刀，此前每次 `invalidateSigma()`
+      都整表清空 ⇒ 每次重算 39 个日收盘读全部冷扫，实测占跳全程的 ~60%）：
+      条目 `{day, v}` 在 day D 内的某小时 i₀ 创建，窗口只读 **d×24+23（d < D）** 的已收盘日收盘，
+      最新一根 = `D×24−1`；而位移写入恒 `at = 写入那一刻的 s.i ≥ D×24 > D×24−1`（god.js 的
+      「逐根台阶」硬纪律：`j < at` 的根一律不受影响）⇒ **创建条目时全部输入已冻结、之后的任何
+      写入都影响不到它们**。时间只前进 ⇒ 重算值与缓存值逐位相同，清空是纯浪费。
+      唯一的例外是**回退**（`rewindTo`）：`s.i` 跳回、位移池清零，同日条目可能带旧值命中
+      ⇒ 那里仍要 `invalidateSigma()`（仅此一处）。 */
 const daySigmaCache = new Map();
 
 /**
@@ -585,8 +594,8 @@ const daySigmaFastCache = new Map();
  *    F&G「当前波动率 vs 近月均值」的那条**偏离**。
  * ⚠️ **为什么不复用 `dailySigma`**：那个是 `σ_30日`，同时是滑点 / OTC 溢价的**分母** ——
  *    改它的窗口会连带改成交代价。两把尺子必须各留一份缓存。
- * ⚠️ 与 `dailySigma` 同一条纪律：它读 `closeAt`（**含位移**）⇒ `invalidateSigma()` 必须一起清，
- *    否则会算出「价格在动、短窗波动率不动」的不自洽热度。
+ * ⚠️ 与 `dailySigma` 同一条纪律：它读 `closeAt`（**含位移**）⇒ 只有回退（`rewindTo`）才需要
+ *    失效 —— 正常推进里窗口全是已冻结的历史日收盘（见 `daySigmaCache` 头注）。
  */
 function dailySigmaFast(sym, i) {
   const day = dayIndexOf(i);
@@ -1126,7 +1135,9 @@ function absorbedImpact(s, sym, dir, impact, eaten = null) {
  * 写一笔**行情位移** —— 开仓 / 平仓 / 强平 / 部分强平**四处共用**（改一处等于改四处）。
  *
  * 与改动前逐字相同的部分：`dir × SHOCK.share × permImpactFor(…)`、以及
- * 「`addFlow` 返真才 `invalidateSigma()`」。新增的只有中间那道历史压力位吸收。
+ * 「`addFlow` 返真才写池子」（Δ 为 0 不写）。新增的只有中间那道历史压力位吸收。
+ * ⚠️ 写完**不**刷 σ 缓存（2026-10-08，见 `daySigmaCache` 头注）—— 位移只影响 `at` 之后的根，
+ *    σ 窗口里的日收盘全是已冻结的历史 ⇒ 刷了也是白刷。
  * ⚠️ OTC 由各调用点自己在 `!otc` 分支里过滤（私下一口价不落公开盘口 —— 既有先例）。
  * @param {number} give **回吐比例**（2026-10-02）：开仓 / 加仓传 1（满额），**平仓 / 强平 /
  *   部分强平传 `SHOCK.closeGive`** —— 往返不再等量抵消，台阶永久留下 65%（见 `god.js`）。
@@ -1150,7 +1161,10 @@ function pushFlow(s, sym, dir, notional, give = 1, kind = 'fut', player = true, 
   const raw = hourLiqRaw(s, sym, s.i);
   const q = raw > 0 ? notional / raw : 0;
   const invMul = 1 + INV.kInv * Math.min(q, INV.qCap);
-  if (addFlow(s, sym, v, shockParamsOf(kind, invMul))) invalidateSigma();
+  /* ⚠️ 写完**不**调 `invalidateSigma()`（2026-10-08）：`addFlow` 恒 `at = s.i`，只影响它之后的
+     根，而 σ 缓存窗口里的日收盘全部早于创建时刻 ⇒ 缓存永不因这一笔而过时（见 daySigmaCache
+     的头注证明）。每次级联 ~4.5h 刷一次整缓存曾是跳时间卡死的大头（39 读 × 冷扫）。 */
+  addFlow(s, sym, v, shockParamsOf(kind, invMul));
   /* ⚠️ P1-2（2026-10-04 审计）：`pv` 只记**当前币** `s.sym` 的玩家成交。
      病根：结算（`m.pv` 读进热度后清零）只在 `tickMarket(s, s.sym)` 里发生，而写入这里是
      任何 `pos.sym` —— 玩家在 ETH 界面时一条**非当前币**（BTC）的仓位被强平 / ADL
@@ -1854,7 +1868,9 @@ function pushNpcShock(s, sym, m, dir, notional) {
   const n = tab.at.length;
   if (n && tab.at[n - 1] === s.i) tab.v[n - 1] += v;
   else { tab.at.push(s.i); tab.v.push(v); }
-  invalidateSigma();                                // 位移随级联变了 ⇒ 逐根 σ 失效（同 `pushFlow`）
+  shockAccForgetFile(tab);                          // 窗口和的惰性累加器已过时 ⇒ 下次读数冷启动重扫
+  /* ⚠️ 不刷 σ 缓存（2026-10-08，见 `daySigmaCache` 头注）：级联台阶 `at = s.i` 只影响它之后的
+     根，σ 窗口里的日收盘全是已冻结的历史 —— 以前每次级联刷一遍是跳时间卡死的大头。 */
 }
 
 /**
@@ -2734,11 +2750,11 @@ function refreshOverhang(s, sym, give = 0) {
 
   const v = hold + scar;
   if (!Number.isFinite(v)) return;                     // 同 R2 守卫：宁可不落这一级，也不写毒值
-  if (n === 0 && v === 0) return;                                 // 本来就没折价：不建表、不动 σ
-  if (n && prevTab.v[n - 1] === v && prevScar === scar) return;   // 值没变：不写、不动 σ
+  if (n === 0 && v === 0) return;                                 // 本来就没折价：不建表
+  if (n && prevTab.v[n - 1] === v && prevScar === scar) return;   // 值没变：不写
   const tab = prevTab || (s.overhang[sym] = { at: [], v: [], scar: [] });
   tab.at.push(s.i); tab.v.push(v); tab.scar.push(scar);
-  invalidateSigma();
+  /* ⚠️ 不刷 σ 缓存（2026-10-08，见 `daySigmaCache` 头注）：台阶 `at = s.i` 只影响它之后的根。 */
 }
 
 /**
@@ -4313,7 +4329,7 @@ export function advanceOneHour(s) {
      且**必然在它真的发生之后 1 小时**才播（判定与窗口口径见 `anchors.resultNewsStartAt`）。
      ⚠️ 同一个小时里两条都命中时，后 push 的结果条压在事件条上面 —— 那是对的：
         「结果」永远比「起因」更值得占着日志条那一行。 */
-  const rnews = resultNewsStartAt(s.i);
+  const rnews = resultNewsStartAt(s);
   if (rnews) pushLog(s, rnews.rt, 'news');
 
   /* **外部买盘的两条披露播报**（缺口 4 / 缺口 5 · 2026-10-08）：
@@ -4552,16 +4568,18 @@ export function rewindTo(s, to) {
 /* ───────────────────────── 资金费率与强平 ───────────────────────── */
 
 /**
- * 让 σ 缓存失效（订单冲击 · 方案 §2.6）。
+ * 让 σ 缓存失效 —— **2026-10-08 起只服务回退**（`rewindTo` 一处调用）。
  *
- * ⚠️ **这是必须的，不是保险**：价格位移的系数是**逐根**的（一笔单只影响它之后的行情、还按幂律回爬），
- *    所以它**不是**一个能从收益率里约掉的全局常数 —— 相邻收益率、σ_30日、滑点、以及 NPC 热度里
- *    那个「位移 ÷ σ」的标准化分母**全都会变**。不在写完 `s.flow` 之后清一次，就会算出
- *    「价格在动、波动率不动」这种不自洽的滑点。
+ * ⚠️ 正常推进（开仓 / 平仓 / 强平 / 级联 / 持仓折价落台阶）**不再**调这里：位移写入恒
+ *    `at = s.i`、只影响它之后的根，而 σ 缓存窗口里的日收盘在条目创建时全部已冻结
+ *    ⇒ 重算值与缓存值逐位相同，刷了是纯浪费（证明见 `daySigmaCache` 头注；
+ *    以前每次级联 ~4.5h 刷一遍、39 个日收盘读全部冷扫，是跳时间卡死的大头）。
+ * ⚠️ 回退必须清：`s.i` 跳回、`s.flow` / `s.overhang` / NPC 台阶整池清零，**同一天**的旧条目
+ *    会带着「回退前位移史」的值命中缓存 —— 那才是真正的脏读。
  */
 export function invalidateSigma() {
   daySigmaCache.clear();
-  daySigmaFastCache.clear();     // 短窗 σ 与 σ_30日 同源（都读 `closeAt`）⇒ 必须一起清
+  daySigmaFastCache.clear();     // 短窗 σ 与 σ_30日 同源（都读 `closeAt`）⇒ 一起清
 }
 
 /**
