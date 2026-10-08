@@ -1294,7 +1294,10 @@ export function shockAccForgetFile(tab) { SHOCK_ACC.delete(tab); }
  * 24 小时窗、结果新闻窗——都在 1024 根内）直读回环；**远距离倒退**（图表每帧从窗首重放、
  * 锚点回读多年前）才回落 `shockScan`，与旧成本持平。
  * ⚠️ 与 `SHOCK_ACC` 分开：那枚钉在最新两根上，游标会被倒退读不断打回，两者互相踩。
- */
+ * ⚠️ `pushNpcShock` 后**只**失效 `SHOCK_ACC`、不失效这枚，是有意为之：快路径把 j ≥ s.i−1
+ *    挡给 `SHOCK_ACC`（那边有 `shockAccForgetFile` 钩子）⇒ 游标只可能缓存 j ≤ s.i−2 的行，
+ *    而 push 恒写 `at = s.i`、只影响 j ≥ s.i 的根 ⇒ 缓存行永远不在爆炸半径内。
+ *    改快路径条件或 push 的 at 语义时，必须同步复核这条（2026-10-08 审查补注）。 */
 const SHOCK_CUR = new WeakMap();
 
 /* 回环缓冲：前滚时顺手把每根的 S 存下来（1024 根 ≈ 42 天，5 币共 40KB）。
