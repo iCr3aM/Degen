@@ -199,13 +199,24 @@ export function godWatchOf(s, sym = s.sym) {
   const liqDay = liqOf(sym, dayIndexOf(s.i)) || 0;
   const base = hourLiqBase(s, sym, s.i);
   const price = lastPrice(s, sym);
+  /* 同价聚合（2026-10-08 热力图改版 · 用户拍板 A）：六档共用一条均价 ＋ 同一倍率 ⇒ 同价
+     强平线逐位相等，六根条叠同一价位纯属冗余 ⇒ 按「侧|价」合并（名义累加、`w` 累加、
+     档名 join）——`sp` 梯度改版后各档均价本已离散，这只在「恰好同价」时兜底（如早年
+     全 3x 且个别档均价趋同）。巨鲸页 `tiers` 不聚合（逐档明细是那一页的本职）。 */
+  const byKey = new Map();
+  const liqsMerged = [];
+  for (const l of liqs) {
+    const t = byKey.get(`${l.side}|${l.price}`);
+    if (t) { t.notional += l.notional; t.w += l.w; t.name += `+${l.name}`; }
+    else { byKey.set(`${l.side}|${l.price}`, l); liqsMerged.push(l); }
+  }
   return {
     price, heat: m.heat || 0,
     /* 情绪读数 = 恐惧贪婪指数（0–100 · 日频轨，`settleFng` 写入；2026-10-08 起 `npcBuild`
        的散户接盘层也读它触发 —— 不再是纯显示）。旧字段 `mood` 从未被任何写路径赋值 ⇒ 恒 0
        （2026-10-07 用户抓到的「情绪恒为 0%」）。未结算过任何一天的格子（fngDay 缺）⇒ 中性 50。 */
     fng: Number.isFinite(m.fng) ? m.fng : 50,
-    liqs, tiers,
+    liqs: liqsMerged, tiers,
     book: bookForWatch(s, sym, price),
     depth: {
       liqDay, hourBase: base,
@@ -2534,11 +2545,30 @@ function npcBuild(s, sym, m, i) {
     const floor = liqDay * NPC.floor * w;
     const low = npcLevOf(t, NPC.ladder[k].lev) <= 10;
     const b = low ? liqDay * NPC.base * w : 0;
-    const dLow = low ? dipBuy * w : 0;
-    const dExtLong = low ? Math.max(0, extFlow) * w : 0;
-    const dExtShort = low ? Math.max(0, -extFlow) * w : 0;
-    npcRealisedSum += stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow + dExtLong, price, floor);
-    npcRealisedSum += stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w) + dExtShort, price, floor);
+    /* 动量＋基底走**档位速度**（`sp`，2026-10-08 热力图改版 · 用户拍板 B）：高杠杆人群换手快
+       ⇒ 均价贴现价，低杠杆慢 ⇒ 均价留在历史价位 —— 真实清算热力图「堆积带」的成因。 */
+    npcRealisedSum += stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp);
+    npcRealisedSum += stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp);
+    /* 护盘 / 外部买盘：**当根全量入仓**（不走趋近，2026-10-08 拆分时定的口径）——急购就是
+       砸市价单（对照 2025-10-10 实测锚：深度真空 35 分钟恢复九成，分钟级），原「并入靶心
+       按 speed 渐近」要 19h 才到位九成，反而失真；且拆两次趋近会引入 `0.15/sp` 的稳态
+       放大（低档 ×3.75），破坏总敞口守恒。方向性偏移（买加长侧、卖加短侧，同缺口 4/5
+       拍板），摊均价与 `stepNpc` 加仓分支**同一会计**；事件结束后由上面的趋近调用把
+       靶心外的余量自然平掉（减仓 ⇒ 已实现盈亏照常入池）。 */
+    if (low) {
+      const buy = (dipBuy + Math.max(0, extFlow)) * w;
+      const sell = Math.max(0, -extFlow) * w;
+      if (buy > 0) {
+        const c = m.npc[k].long || 0;
+        m.npc[k].long = c + buy;
+        m.npc[k].longAvg = ((m.npc[k].longAvg || 0) * c + price * buy) / (c + buy);
+      }
+      if (sell > 0) {
+        const c = m.npc[k].short || 0;
+        m.npc[k].short = c + sell;
+        m.npc[k].shortAvg = ((m.npc[k].shortAvg || 0) * c + price * sell) / (c + sell);
+      }
+    }
   }
   /* ③′ **做市盘**（缺口 6-A）：站到趋势盘**对面**；靶心取趋势盘六档的**实际净持仓**。
      ⚠️ 残尾阈值不乘权重（单个格子）；`speed` 用 `NPC.mm.speed`（更快）。

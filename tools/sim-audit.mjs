@@ -54,6 +54,16 @@ function check(name, cond, detail = '') {
 }
 const section = (t) => console.log(`\n${'═'.repeat(4)} ${t} ${'═'.repeat(4)}`);
 
+/* NPC 节奏冻结（2026-10-08 sp 梯度改版同步）：npcBuild 的建仓/减仓速度改读 `NPC.ladder[k].sp`
+   （档位速度，见 god.js ladder 注），旧探针只钉 `god.NPC.speed` 已冻结不住 ⇒ 六档 ＋ 做市
+   一起钉。返回恢复函数，配 finally 用。 */
+const npcFreeze = () => {
+  const save = god.NPC.ladder.map(r => r.sp), mm = god.NPC.mm.speed;
+  for (const r of god.NPC.ladder) r.sp = 0;
+  god.NPC.mm.speed = 0;
+  return () => { god.NPC.ladder.forEach((r, i) => { r.sp = save[i]; }); god.NPC.mm.speed = mm; };
+};
+
 /* ── 建一局可交易的档 ── */
 async function mk({ scen = 'classic', sym = 'BTC', mode = 'margin', cash = null, i = null } = {}) {
   const s = createState(scen);
@@ -2490,9 +2500,8 @@ section('9l–9o · 模拟深度：跨币危机共振 · 处置效应盈利侧 �
   g.longStopped = false; g.longTp = false;
   const L0 = g.long;
   /* ⚠️ 冻结 NPC 建仓（`stepNpc`）—— 否则① 建仓会同时改 `long`（污染「减半」读数）、
-     `syncNpcDrift` 还会挪动显示价。本段只想量 `flushSlot` 的止盈带，故把两个 speed 都钉 0。 */
-  const sp = god.NPC.speed, spMM = god.NPC.mm.speed;
-  god.NPC.speed = 0; god.NPC.mm.speed = 0;
+     `syncNpcDrift` 还会挪动显示价。本段只想量 `flushSlot` 的止盈带，故六档 ＋ 做市一起钉 0（npcFreeze）。 */
+  const unfreeze = npcFreeze();
   try {
     engine.tickMarket(s, 'BTC');
     check('9m 盈利的多单被止盈（落标志 ＋ 名义减半）',
@@ -2503,7 +2512,7 @@ section('9l–9o · 模拟深度：跨币危机共振 · 处置效应盈利侧 �
     engine.tickMarket(s, 'BTC');                 // 价格仍在带内 ⇒ 一次性，不再二次减半
     check('9m 止盈一次性（带内不再反复减半）', g.long >= L1 * 0.99,
       `第二次后 long ${f(g.long, 0)}（首减后 ${f(L1, 0)}）`);
-  } finally { god.NPC.speed = sp; god.NPC.mm.speed = spMM; }
+  } finally { unfreeze(); }
 }
 
 /* ── 9n · G3：NPC 也付费率（玩家零缴费时对手方池仍被市场净额补给） ── */
@@ -2527,11 +2536,10 @@ section('9l–9o · 模拟深度：跨币危机共振 · 处置效应盈利侧 �
   s.mkt.BTC.heat = god.HEAT.base;
   s.mkt.BTC.npcFund = 0;
   /* 冻结 NPC 建仓：让 `npcNet` 保持在我们摆好的净多头上（否则建仓会在结算前改动它）。 */
-  const sp = god.NPC.speed, spMM = god.NPC.mm.speed;
-  god.NPC.speed = 0; god.NPC.mm.speed = 0;
+  const unfreeze = npcFreeze();
   try {
     engine.advanceOneHour(s);
-  } finally { god.NPC.speed = sp; god.NPC.mm.speed = spMM; }
+  } finally { unfreeze(); }
   check('9n 玩家零缴费时对手方池仍被补给（NPC 净多头付费率）',
     Number.isFinite(s.mkt.BTC.npcFund) && s.mkt.BTC.npcFund > 0, `池 ${f(s.mkt.BTC.npcFund, 2)}`);
   check('9n 池余额恒 ≥ 0', s.mkt.BTC.npcFund >= 0, `池 ${f(s.mkt.BTC.npcFund, 2)}`);
@@ -2543,9 +2551,8 @@ section('9l–9o · 模拟深度：跨币危机共振 · 处置效应盈利侧 �
   /* 同一场景切换 `NPC.downAsym`，唯一变量就是那个倍数 —— 逐位比值即它本身。 */
   const shockOf = async (dir, amp) => {
     const old = god.NPC.downAsym;
-    const sp = god.NPC.speed, spMM = god.NPC.mm.speed;
     god.NPC.downAsym = amp;
-    god.NPC.speed = 0; god.NPC.mm.speed = 0;         // 冻结建仓 ⇒ 只有被摆弄的那一档会写冲击
+    const unfreeze = npcFreeze();                    // 冻结建仓 ⇒ 只有被摆弄的那一档会写冲击
     try {
       const s = await mk({ sym: 'BTC', i: T, mode: 'fut' });
       const price = engine.lastPrice(s, 'BTC');
@@ -2570,7 +2577,7 @@ section('9l–9o · 模拟深度：跨币危机共振 · 处置效应盈利侧 �
       let sum = 0;
       if (tab) for (const v of tab.v) sum += v;
       return sum;
-    } finally { god.NPC.downAsym = old; god.NPC.speed = sp; god.NPC.mm.speed = spMM; }
+    } finally { god.NPC.downAsym = old; unfreeze(); }
   };
   const d13 = await shockOf(-1, 1.3), d10 = await shockOf(-1, 1.0);
   const u13 = await shockOf(1, 1.3), u10 = await shockOf(1, 1.0);
@@ -2615,8 +2622,7 @@ section('9p · 上帝沙盒：旋钮归一 · 预设合法性 · shock 线性 ·
   /* ③ `shock` 旋钮对级联冲击**线性**放大（同一场景切倍率，唯一变量就是它） */
   const T = idx(at(2021, 5, 10));
   const shockOf = async (sbShock) => {
-    const sp = god.NPC.speed, spMM = god.NPC.mm.speed;
-    god.NPC.speed = 0; god.NPC.mm.speed = 0;        // 冻结建仓 ⇒ 只有被摆弄的那一档会写冲击
+    const unfreeze = npcFreeze();                   // 冻结建仓 ⇒ 只有被摆弄的那一档会写冲击
     try {
       const s = await mk({ sym: 'BTC', i: T, mode: 'fut' });
       for (let k = 1; k < s.mkt.BTC.npc.length; k++) {
@@ -2641,7 +2647,7 @@ section('9p · 上帝沙盒：旋钮归一 · 预设合法性 · shock 线性 ·
       let sum = 0;
       if (tab) for (const v of tab.v) sum += v;
       return sum;
-    } finally { god.NPC.speed = sp; god.NPC.mm.speed = spMM; }
+    } finally { unfreeze(); }
   };
   const s1 = await shockOf(1), s2 = await shockOf(2), s0 = await shockOf(0);
   check('9p shock 旋钮线性放大级联冲击（×2 ⇒ 幅度 ×2）',
@@ -2756,7 +2762,7 @@ section('9r · 上帝操盘台：吃单位移=预览 · 洗售零位移 · 幌�
      ⚠️ 消散**不咬「回到基点」**—— 真实行情本身就在推热度（实测平静窗口一周也能漂 ±0.1），
         那不是幌骗的锅。咬**双胞胎对照**：同一时刻、同一种子、同一行情的两份状态，
         唯一差别是 spoof 那一脚 ⇒ 两份的热度差只被 k2 衰减，168h（≈12 倍记忆时长）后必须几乎归零。
-     ⚠️ 冻结 NPC（`speed = 0` ＋ 清空建仓梯队，9p③ 同款）：不冻结的话 NPC 顺着被抬的热度建仓
+     ⚠️ 冻结 NPC（`npcFreeze` ＋ 清空建仓梯队，9p③ 同款）：不冻结的话 NPC 顺着被抬的热度建仓
         会把「幌骗的影响」通过级联固化成真实价格路径，消散就无从谈起。 */
   const freezeNpc = (s) => {
     for (let k = 0; k < s.mkt.BTC.npc.length; k++) {
@@ -2770,13 +2776,12 @@ section('9r · 上帝操盘台：吃单位移=预览 · 洗售零位移 · 幌�
       o.longStopped = false; o.shortStopped = false; o.longTp = false; o.shortTp = false;
     }
   };
-  const spNPC = god.NPC.speed, spMM = god.NPC.mm.speed;
   /* 两份都先在 NPC 活跃时建好（初始 tick 的随机流逐位一致），再一起冻结 ＋ 清残渣。 */
   const sA = await mk({ sym: 'BTC', i: T, mode: 'fut', cash: 1e9 });
   god.enableGod(sA);
   const sB = await mk({ sym: 'BTC', i: T, mode: 'fut', cash: 1e9 });
   god.enableGod(sB);
-  god.NPC.speed = 0; god.NPC.mm.speed = 0;
+  const unfreeze = npcFreeze();
   try {
     clean(sA); freezeNpc(sA);
     clean(sB); freezeNpc(sB);
@@ -2792,7 +2797,7 @@ section('9r · 上帝操盘台：吃单位移=预览 · 洗售零位移 · 幌�
     check('9r 幌骗热度 168h 后消散（双胞胎差 < 2 个百分点）',
       Math.abs(sA.mkt.BTC.heat - sB.mkt.BTC.heat) < 0.02,
       `A ${f(sA.mkt.BTC.heat, 4)} B ${f(sB.mkt.BTC.heat, 4)} 差 ${f(Math.abs(sA.mkt.BTC.heat - sB.mkt.BTC.heat), 5)}`);
-  } finally { god.NPC.speed = spNPC; god.NPC.mm.speed = spMM; }
+  } finally { unfreeze(); }
 
   /* ④ 闸门：五条全都要拦得住 */
   const sN = await mk({ sym: 'BTC', i: T, mode: 'fut' });          // 没开上帝
@@ -3186,22 +3191,28 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
      恒等式（代数镜像）：long 靶 = B + t⁺、short 靶 = B + t⁻（t = t⁺ − t⁻）⇒
      净敞口递推 netₙ₊₁ = netₙ + (t − netₙ)·speed，与无基底**逐位同轨** —— 基底只抬 OI 地板。 */
   {
-    const speed = god.NPC.speed, B = 1000, t = 2500;
-    let lonB = 0, shoB = 0, net0 = 0;
-    for (let n = 0; n < 40; n++) {
-      lonB += (B + Math.max(0, t) - lonB) * speed;
-      shoB += (B + Math.max(0, -t) - shoB) * speed;
-      net0 += (t - net0) * speed;
+    /* npcBuild 现读**档位速度** `NPC.ladder[k].sp`（2026-10-08 sp 改版）⇒ 恒等式要对**每一个
+       档位速度**都成立（两侧同速 ⇒ `lonB − shoB == net0`，与速度取值无关）。 */
+    const B = 1000, t = 2500;
+    let worst = 0;
+    for (const speed of god.NPC.ladder.map(r => r.sp)) {
+      let lonB = 0, shoB = 0, net0 = 0;
+      for (let n = 0; n < 40; n++) {
+        lonB += (B + Math.max(0, t) - lonB) * speed;
+        shoB += (B + Math.max(0, -t) - shoB) * speed;
+        net0 += (t - net0) * speed;
+      }
+      worst = Math.max(worst, Math.abs(lonB - shoB - net0));
     }
-    check('9w② 基底净敞口恒等：有基底 long−short == 无基底 net（40 步同轨）',
-      Math.abs(lonB - shoB - net0) < 1e-6, `差 ${f(lonB - shoB - net0, 12)}`);
+    check('9w② 基底净敞口恒等：有基底 long−short == 无基底 net（40 步同轨 × 六档 sp）',
+      worst < 1e-6, `最大差 ${f(worst, 12)}`);
   }
   const engSrc9w = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
-  check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 只给生效杠杆 ≤ 10x 档（恒等式前提）',
-    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow + dExtLong, price, floor)")
-    && engSrc9w.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w) + dExtShort, price, floor)")
+  check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 动量/基底走档位速度 sp ＋ 护盘/外部流当根入仓（恒等式前提）',
+    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp)")
+    && engSrc9w.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp)")
     && engSrc9w.includes('const b = low ? liqDay * NPC.base * w : 0')
-    && engSrc9w.includes('const dLow = low ? dipBuy * w : 0'));
+    && engSrc9w.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;'));
 
   /* ②′ 全币两侧常在（「怎么会无 NPC 持仓」的行为面）：72 小时烧入后逐币断言。
      地板 = 2 × base × Σw(生效≤10x) × 日流动性（×0.5 = 收敛 / 止损摩擦余量）。
@@ -3239,9 +3250,9 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
     !!capRow && capRow.lev === 3);
   check('9w③ 封顶年没有裸「100x / 50x / 20x」行（旧名 = 名实不符根源）',
     !wN.tiers.some(t => t.name === '100x' || t.name === '50x' || t.name === '20x'));
-  check('9w③ 封顶行强平价按**生效杠杆**算（drop = 1/3 − MMR，与 9u 同式）',
+  check('9w③ 封顶行强平价按**生效杠杆**算（drop = 1/3 − MMR；同价聚合 ⇒ 档名 join，用 includes）',
     capRow && capRow.long > 0 && capRow.longAvg > 0
-      ? wN.liqs.some(l => l.name === '100x→3x' && l.side === 'long'
+      ? wN.liqs.some(l => l.name.includes('100x→3x') && l.side === 'long'
         && Math.abs(l.price - capRow.longAvg * (1 - (1 / 3 - C.GAME.maintRate))) < 1e-6)
       : true,
     `long=${f(capRow ? capRow.long : 0, 0)}`);
@@ -3491,11 +3502,11 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
 
   /* ── ② 接线：方向性（只长侧）＋ 低杠杆判据 ＋ 全币覆盖 ── */
   const engSrc9y = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
-  check('9y② 接线：dipOf 导出 ＋ npcBuild 长侧 dipBuy（短侧不动）＋ npcOtherTick 复用（护盘覆盖全币）',
+  check('9y② 接线：dipOf 导出 ＋ npcBuild 长侧 dipBuy（买加长侧）＋ npcOtherTick 复用（护盘覆盖全币）',
     engSrc9y.includes('export function dipOf')
     && engSrc9y.includes('const dipBuy = d3.dipBuy;')
-    && engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w) + dLow + dExtLong, price, floor)")
-    && engSrc9y.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w) + dExtShort, price, floor)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp)")
+    && engSrc9y.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;')
     && engSrc9y.includes('npcBuild(s, sym, m, s.i);')
     && engSrc9y.includes('import { candleAt, closeAt, dayIndexOf'));
 
@@ -3836,13 +3847,13 @@ section('9ac · 巨鲸/机构队列 WHALES：逐位摊平 ＋ 买卖都含 ＋ �
   check('9ac④ 接线：npcBuild 读 extFlow = whaleFlowAt + etfFlowAt（按游戏日 dayIndexOf）',
     engSrc9ac.includes('const extFlow = whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx);')
     && engSrc9ac.includes('const dayIdx = dayIndexOf(i);'));
-  check('9ac④ 注入方式：买加长侧（dExtLong）/ 卖加短侧（dExtShort），只在 low（≤10x）档',
-    /stepNpc\(m\.npc\[k\], 'long', b \+ Math\.max\(0, target \* w\) \+ dLow \+ dExtLong/.test(engSrc9ac)
-    && /stepNpc\(m\.npc\[k\], 'short', b \+ Math\.max\(0, -target \* w\) \+ dExtShort/.test(engSrc9ac)
-    && engSrc9ac.includes("const dExtLong = low ? Math.max(0, extFlow) * w : 0;")
-    && engSrc9ac.includes("const dExtShort = low ? Math.max(0, -extFlow) * w : 0;"));
-  check('9ac④ 外部流量只进 NPC 靶心（stepNpc），不写玩家痕迹通道 s.flow',
-    !/dExt(Long|Short)[\s\S]{0,120}s\.flow/.test(engSrc9ac));
+  check('9ac④ 注入方式：买加长侧 / 卖加短侧（当根全量入仓 · 与 stepNpc 加仓同一会计），只在 low（≤10x）档',
+    engSrc9ac.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;')
+    && engSrc9ac.includes('const sell = Math.max(0, -extFlow) * w;')
+    && engSrc9ac.includes('m.npc[k].long = c + buy;')
+    && engSrc9ac.includes('m.npc[k].short = c + sell;'));
+  check('9ac④ 外部流量只进 NPC 账本（直接入仓），不写玩家痕迹通道 s.flow',
+    !/extFlow[\s\S]{0,120}s\.flow/.test(engSrc9ac));
   check('9ac④ god.js 两函数自 god.js 导入引擎',
     /import\s*\{[^}]*whaleFlowAt[^}]*\}\s*from\s*'\.\/god\.js'/.test(engSrc9ac)
     && /import\s*\{[^}]*etfFlowAt[^}]*\}\s*from\s*'\.\/god\.js'/.test(engSrc9ac));
@@ -4259,8 +4270,7 @@ section('14 · 交易涌现性：资金费双向 · 对手方池偿付上限 · 
 /* ── b/c · 真引擎：玩家能否**吃到**资金费 —— 双向 ＋ 池的偿付上限 ── */
 {
   const F = P.FUNDING.hours;
-  const speed0 = god.NPC.speed, mm0 = god.NPC.mm.speed;
-  /* 摆好 NPC 账本后**冻结建仓速度**（同 §9n）⇒ `tickMarket` 不再改动账本 ⇒ `npcNet` 与池的
+  /* 摆好 NPC 账本后**冻结建仓**（npcFreeze，同 §9n）⇒ `tickMarket` 不再改动账本 ⇒ `npcNet` 与池的
      进出一一可算。`ledger`：`netLong` = 六档只有第 0 档净多（npcN > 0）；`flat` = 六档多空各 n（npcN = 0）。 */
   const run = async ({ ledger, poolFrac = 0, frac = 0.06 }) => {
     const s = await mk({ scen: 'classic', sym: 'BTC', mode: 'fut', cash: 1e6, i: idx(at(2017, 4, 1)) });
@@ -4300,8 +4310,8 @@ section('14 · 交易涌现性：资金费双向 · 对手方池偿付上限 · 
     const qtyU = usdtHeldOf(s);
     const iN = s.i + 1;
     const markTerm = qtyU * (C.usdtPriceAt(C.GAME.start + iN * H) - C.usdtPriceAt(C.GAME.start + (iN - 1) * H));
-    god.NPC.speed = 0; god.NPC.mm.speed = 0;
-    try { engine.advanceOneHour(s); } finally { god.NPC.speed = speed0; god.NPC.mm.speed = mm0; }
+    const unfreeze = npcFreeze();
+    try { engine.advanceOneHour(s); } finally { unfreeze(); }
     return {
       s, pos, m, rate, npcN, mark, exp, before, markTerm,
       dm: pos.margin - before.margin,                  // 保证金变化（永续仓只受资金费影响）
