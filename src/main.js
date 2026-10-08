@@ -251,6 +251,7 @@ let floatOpen = false;      // 面板是否展开
 let floatPage = 0;          // 面板页码：0 热力 / 1 巨鲸 / 2 深度 / 3 订单（随模式夹取）
 let floatPos = null;        // 圆钮视口坐标 {x,y}；null = 走 CSS 默认（右下角）
 let bookStep = 1;           // 订单簿网格步进 ×1/×2/×3/×5/×8（2026-10-08；2026-10-09 收窄）：会话级，不进存档
+let logFilt = 0;            // 日志页过滤档（索引 0..4 → 0.1%/0.5%/1%/2%/5% 当日流动性，2026-10-09）：会话级，不进存档
 
 /* ── 市场浮窗（2026-10-07 拍板）：普通 / 挑战局的盘口浮窗 ──────────────────────
    浏览器偏好（独立 localStorage 键、默认**开**）—— 与 `degen_colors` 同一口径，不进存档。
@@ -1198,13 +1199,15 @@ function dispatch(node, ev) {
      `!s.god` 一刀切 ⇒ 既有 bug，2026-10-08 步进选择器要在普通局用，一并修正）。
      圆钮那一枚要**原始 pointer 事件**（bind.js 起转发）—— 拖拽的起点坐标。 */
   if (d.godfloat !== undefined || d.godalpha !== undefined || d.gofloat !== undefined
-    || d.goftab !== undefined || d.gofclose !== undefined || d.gofstep !== undefined) {
+    || d.goftab !== undefined || d.gofclose !== undefined || d.gofstep !== undefined
+    || d.goffilt !== undefined) {
     if (!s.god && !mktFloatOn) return;
     if (d.godfloat !== undefined) return onGodFloat();
     if (d.godalpha !== undefined) return onGodAlpha();
     if (d.gofloat !== undefined) return onGodFloatChip(ev);
     if (d.goftab !== undefined) return onGodFloatTab(node);
     if (d.gofstep !== undefined) return onGodFloatStep(node);
+    if (d.goffilt !== undefined) return onGodFloatFilt(node);
     return onGodFloatClose();
   }
 
@@ -1579,7 +1582,7 @@ function floatUi() {
   const menuUp = !!document.querySelector('.menu-box');
   return {
     on: !menuUp && (s.god ? godFloatOn : mktFloatOn), open: floatOpen, page: floatPage, pos: floatPos,
-    pages, mkt: !s.god, step: bookStep,
+    pages, mkt: !s.god, step: bookStep, filt: logFilt,
   };
 }
 
@@ -1644,6 +1647,14 @@ function onGodFloatTab(node) {
  *  按钮 ⇒ 闸门已放宽（见 dispatch 浮窗组）。纯显示偏好，不进存档。 */
 function onGodFloatStep(node) {
   bookStep = Number(node.dataset.gofstep) || 1;
+  after();
+}
+
+/** 日志页过滤档（`data-goffilt`，2026-10-09 用户拍板）：写会话级 `logFilt`（索引 0..4 →
+ *  0.1%/0.5%/1%/2%/5% 当日流动性 —— 与引擎 `FEED_STEPS` 同序），下一帧 `floatBody` 只留
+ *  `t ≥ logFilt` 的行。纯显示偏好，不进存档；与订单簿步进（`gofstep`）同一套闸门。 */
+function onGodFloatFilt(node) {
+  logFilt = Number(node.dataset.goffilt) || 0;
   after();
 }
 

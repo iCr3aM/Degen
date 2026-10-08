@@ -5150,7 +5150,7 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
 /* ═══════════════════ 9y · 大单日志 tape（aggr 式 · 2026-10-08 拍板⑤） ═══════════════════
    引擎侧会话级 `s.feed`（不进存档 / rewindTo 清空 / FEED_CAP 环形封顶）：
      · 六型：0 开多 ▲ / 1 开空 ▼ / 2 平多 △ / 3 平空 ▽ / 4 爆多 💥 / 5 爆空 💥；
-     · 分档 = 名义 ÷ 当日流动性 四档（0.1% / 0.5% / 2% / 5%，`feedTier`）；
+     · 分档 = 名义 ÷ 当日流动性 五档（0.1% / 0.5% / 1% / 2% / 5%，`feedTier` / `FEED_STEPS`）；
      · 挂点：NPC 六档建减仓（stepNpc）、护盘/巨鲸/ETF 急购、止损/止盈/强平（flushSlot，
        做市盘 quiet 不上 tape —— 对手盘流动性不是方向性合约单）、玩家被强平（事实流）；
      · 浮窗页 4「日志」（上帝 5 页 / 普通局 3 页），gfd-* 样式，装框不滚动。 */
@@ -5164,9 +5164,10 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
   const renderSrc9y = readSrc9y('src/ui/render.js');
   const styleSrc9y = readSrc9y('src/ui/style.css');
 
-  check('9ae① 引擎：feedPush / feedTier / FEED_CAP 定义 ＋ rewindTo 清空（会话级口径）',
+  check('9ae① 引擎：feedPush / feedTier / FEED_STEPS / FEED_CAP 定义 ＋ rewindTo 清空（会话级口径）',
     engSrc9y.includes('function feedPush(s, sym, k, price, notional)')
     && engSrc9y.includes('export function feedTier(notional, liqDay)')
+    && engSrc9y.includes('export const FEED_STEPS = [0.001, 0.005, 0.01, 0.02, 0.05]')
     && engSrc9y.includes('export const FEED_CAP = 240')
     && engSrc9y.includes('s.feed = [];'));
 
@@ -5185,9 +5186,9 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     && engSrc9y.includes('feedPush(s, sym, 1, price, sell)')
     && engSrc9y.split("feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional)").length >= 3);
 
-  check('9ae④ 分档行为锚：5%→3 · 2%→2 · 0.5%→1 · 0.1%→0 · 0.09%→−1（跨年代自适应的同一把尺）',
-    engine.feedTier(5, 100) === 3 && engine.feedTier(2, 100) === 2 && engine.feedTier(0.5, 100) === 1
-    && engine.feedTier(0.1, 100) === 0 && engine.feedTier(0.09, 100) === -1
+  check('9ae④ 分档行为锚：5%→4 · 2%→3 · 1%→2 · 0.5%→1 · 0.1%→0 · 0.09%→−1（跨年代自适应的同一把尺）',
+    engine.feedTier(5, 100) === 4 && engine.feedTier(2, 100) === 3 && engine.feedTier(1, 100) === 2
+    && engine.feedTier(0.5, 100) === 1 && engine.feedTier(0.1, 100) === 0 && engine.feedTier(0.09, 100) === -1
     && engine.feedTier(1, 0) === -1 && engine.feedTier(0, 100) === -1);
 
   /* 行为锚：大波动段（2020-10 → 2021-10，含 2021-05 崩盘）推进 720h —— 事件必有、字段完整、
@@ -5198,9 +5199,9 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     const f9ae = s9ae.feed || [];
     const kinds9ae = [0, 0, 0, 0, 0, 0];
     for (const e of f9ae) kinds9ae[e.k]++;
-    check('9ae⑤ 行为：720h 大波动段 feed 非空、字段完整（p>0/n>0/t∈0..3/合法币）、密度不刷屏（<2 条/h）',
+    check('9ae⑤ 行为：720h 大波动段 feed 非空、字段完整（p>0/n>0/t∈0..4/合法币）、密度不刷屏（<2 条/h）',
       f9ae.length > 0
-      && f9ae.every(e => e.p > 0 && e.n > 0 && e.t >= 0 && e.t <= 3
+      && f9ae.every(e => e.p > 0 && e.n > 0 && e.t >= 0 && e.t <= 4
         && C.COINS.some(c => c.sym === e.sym) && Number.isInteger(e.k))
       && f9ae.length < 720 * 2,
       `n=${f9ae.length}（${(f9ae.length / 720).toFixed(2)} 条/h）`);
@@ -5213,17 +5214,26 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
   check('9ae⑥ 存档 / 状态：EPHEMERAL 含 feed ＋ createState 带 feed:[]',
     saveSrc9y.includes("const EPHEMERAL = ['god', 'godRuined', 'feed']") && stateSrc9y.includes('feed: [],'));
 
-  check('9ae⑦ UI：页表（上帝 5 页 / 普通 3 页）＋ render 页 4 分支（gfd-*）＋ 样式（六型分色＋四档背景）',
+  check('9ae⑦ UI：页表（上帝 5 页 / 普通 3 页）＋ render 页 4 分支（gfd-*）＋ 样式（六型分色＋五档背景）',
     mainSrc9y.includes("const GOD_FLOAT_PAGES = [[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单'], [4, '日志']]")
     && mainSrc9y.includes("const MKT_FLOAT_PAGES = [[3, '订单'], [2, '深度'], [4, '日志']]")
     && renderSrc9y.includes('else if (page === 4)') && renderSrc9y.includes("'gfd-head'")
     && renderSrc9y.includes('gfd-lq') && renderSrc9y.includes('gfd-ls')
-    && styleSrc9y.includes('.gfd-row') && styleSrc9y.includes('.gfd-row.t3')
+    && styleSrc9y.includes('.gfd-row') && styleSrc9y.includes('.gfd-row.t3') && styleSrc9y.includes('.gfd-row.t4')
     && styleSrc9y.includes('.gfd-lq i, .gfd-lq span') && styleSrc9y.includes('#ec407a') && styleSrc9y.includes('#ff9800'));
   /* 桌面 ≥1280 的浮窗日志页字号与订单簿对齐（2026-10-09 用户报「桌面端字体偏小」）：`.gfd-*`
      原来漏了这档覆盖、停在手机 9px/13px，与同结构 `.gb-*`（11/15）不一致 —— 这里咬住修复。 */
   check('9ae⑦b style：桌面 ≥1280 补 `.gfd-*` 覆盖（11px/15px，与订单簿同口径）',
     styleSrc9y.includes('.gfd-head, .gfd-row { font-size: 11px; line-height: 15px; }'));
+  /* 2026-10-09 用户拍板⑥：日志页底部加**过滤档**（0.1% / 0.5% / 1% / 2% / 5% 当日流动性）——
+     五档按钮 ＋ 会话级 `logFilt` ＋ `goffilt` 三链路缺一即「点了没反应」。 */
+  check('9ae⑧ 日志页过滤档：五档按钮（feedPctLabel·goffilt）＋ 会话级 logFilt ＋ bind 收键 ＋ t4 底色',
+    renderSrc9y.includes('const feedPctLabel') && renderSrc9y.includes('b.dataset.goffilt = String(i)')
+    && renderSrc9y.includes('r.t >= lf') && renderSrc9y.includes('floatBody(s, ui.page, ui.step, ui.filt)')
+    && mainSrc9y.includes('let logFilt = 0;') && mainSrc9y.includes('function onGodFloatFilt(node)')
+    && mainSrc9y.includes('filt: logFilt,') && mainSrc9y.includes('if (d.goffilt !== undefined) return onGodFloatFilt(node);')
+    && readSrc9y('src/ui/bind.js').includes("'goffilt'")
+    && styleSrc9y.includes('.gfd-row.t4'));
 }
 
 /* ═══════════════════ 9af · NPC 限价单离散簿（2026-10-08 三批拍板⑦） ═══════════════════

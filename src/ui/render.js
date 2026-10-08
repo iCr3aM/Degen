@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtFloatPrice, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, FEED_STEPS, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -3401,7 +3401,9 @@ function floatGeo() {
  *             ⑥ 热力图条加**币量**读数；页 1 巨鲸多空**分组**列出。
  *  ⚠️ 旧页 4「逐笔成交」已退役（2026-10-08 用户拍板）：明细行数随本小时进度漂移（每帧跳变）、
  *     拖动浮窗时列表乱跳，且与订单簿 / 深度页信息重叠 —— 数据源 `tape.js` 一并删除。 */
-function floatBody(s, page, bookStep = 1) {
+/* 分档阈值 → 显示标签（0.001 → "0.1%"）—— 不靠 ×100 现算，避开 0.01×100 = 1.000…2 的浮点毛刺。 */
+const feedPctLabel = i => `${Math.round(FEED_STEPS[i] * 1000) / 10}%`;
+function floatBody(s, page, bookStep = 1, logFilt = 0) {
   const w = godWatchOf(s, s.sym);
   const box = el('div', 'god-fbody');
   if (page === 0) {
@@ -3621,19 +3623,23 @@ function floatBody(s, page, bookStep = 1) {
   } else if (page === 4) {
     /* 日志页（页 4 · 2026-10-08 用户拍板⑤）：aggr 式大单 tape —— 引擎侧 `s.feed`（会话级，
        rewindTo 清空），只显示本币、最新在上。六型分色（开多▲绿实 / 开空▼红实 / 平多△绿空 /
-       平空▽红空 / 爆多💥粉 / 爆空💥橙），行背景深浅 = 引擎 `feedTier` 的当日流动性比例四档
-       （0.1% / 0.5% / 2% / 5%）。玩家主动开/平不上 tape（主日志已有）；强平是全市场事实流。
-       与订单簿同一套装框纪律：行数按面板高算够就截到够（不滚动），数据仍在环形缓冲里。 */
+       平空▽红空 / 爆多💥粉 / 爆空💥橙），行背景深浅 = 引擎 `feedTier` 的当日流动性比例五档
+       （0.1% / 0.5% / 1% / 2% / 5%）。玩家主动开/平不上 tape（主日志已有）；强平是全市场事实流。
+       与订单簿同一套装框纪律：行数按面板高算够就截到够（不滚动），数据仍在环形缓冲里。
+       ⚠️ 2026-10-09 用户拍板⑥：底部加**过滤档**（与 `FEED_STEPS` 一一对应，选中第 i 档
+       ⇒ 只留 `t ≥ i` 的行）—— 数据仍全在 `s.feed` 环形缓冲里，过滤只作用在**显示**上
+       （与订单簿步进同一套会话级纪律，状态 `logFilt` 由 `main.js` 持有）。 */
+    const lf = Math.max(0, Math.min(FEED_STEPS.length - 1, logFilt | 0));
     const desk = window.matchMedia && window.matchMedia('(min-width: 1280px)').matches;
     const rowH = desk ? 15 : 13;
     const fh = floatGeo().h;
     const maxRows = Math.max(6, Math.floor((fh - 104) / rowH));
-    const rows = (s.feed || []).filter(r => r.sym === s.sym).slice(-maxRows).reverse();
+    const rows = (s.feed || []).filter(r => r.sym === s.sym && r.t >= lf).slice(-maxRows).reverse();
     const head = el('div', 'gfd-head');
     head.append(el('i'), el('span', null, '价格'), el('b', null, '名义'), el('em', null, '数量'), el('u', null, '时间'));
     box.append(head);
     if (!rows.length) {
-      box.append(el('div', 'god-fnote', '暂无大单 —— 超过当日流动性 0.1% 的合约开/平/爆仓会上这里。'));
+      box.append(el('div', 'god-fnote', `暂无大单 —— 超过当日流动性 ${feedPctLabel(lf)} 的合约开/平/爆仓会上这里。`));
     } else {
       /* 六型 → [字形, 类型类]：颜色走 --up/--down（红涨绿跌主题自动跟随），爆仓两色按拍板写死。 */
       const K = [['▲', 'gfd-ol'], ['▼', 'gfd-os'], ['△', 'gfd-cl'], ['▽', 'gfd-cs'], ['💥', 'gfd-lq'], ['💥', 'gfd-ls']];
@@ -3648,8 +3654,16 @@ function floatBody(s, page, bookStep = 1) {
           el('u', null, fmtHour(GAME.start + r.i * HOUR_MS)));
         box.append(row);
       }
-      box.append(el('div', 'god-fnote', '分档 0.1% · 0.5% · 2% · 5% 当日流动性 —— 背景越深单越大。'));
     }
+    /* 底部过滤档（2026-10-09 用户拍板⑥）：与订单簿步进同一族样式（`.gb-steps` / `.gb-step`），
+       标签走 `feedPctLabel`（与引擎阈值同源）；选中档高亮随每帧重画跟随。 */
+    const filtRow = el('div', 'gb-steps');
+    for (let i = 0; i < FEED_STEPS.length; i++) {
+      const b = el('button', `gb-step${i === lf ? ' on' : ''}`, feedPctLabel(i));
+      b.dataset.goffilt = String(i);
+      filtRow.append(b);
+    }
+    box.append(filtRow);
   } else {
     /* 深度页（页 2）。⚠️ 旧页 4「逐笔成交」已退役（2026-10-08）：明细行数随本小时进度漂移、
        拖动时乱跳 —— 页 4 现在是「日志」（大单 tape，与逐笔成交两回事），这里只服务页 2。 */
@@ -3676,7 +3690,7 @@ function floatBody(s, page, bookStep = 1) {
  * 每帧调用（`main.js` 的 `draw()` 全量路径）：按 `ui` 挂 / 摘圆钮与面板。
  * @param {object|null} s  游戏状态；`null`（回顾 / 浮窗关）⇒ 全部摘除
  * @param {{on:boolean,open:boolean,page:number,pos:{x:number,y:number}|null,
- *          pages:Array<[number,string]>,mkt:boolean,step:number}} ui main.js 持有的浮窗状态
+ *          pages:Array<[number,string]>,mkt:boolean,step:number,filt:number}} ui main.js 持有的浮窗状态
  *   —— `pages` 是**当前模式的页表**（上帝局 4 页 / 普通局订单簿＋深度 2 页），
  *      `mkt` = 普通局标记（决定圆钮副色，页签与内容都随 `pages` 走）。
  */
@@ -3717,7 +3731,7 @@ export function updateFloat(s, ui) {
     }));
   }
   for (const b of fPanel.querySelectorAll('[data-goftab]')) b.classList.toggle('on', Number(b.dataset.goftab) === ui.page);
-  fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page, ui.step));
+  fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page, ui.step, ui.filt));
   /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽由 `--float-w` 给，＋8px 余量）。
      高度由 `--float-h` 给（手机端兜底 64dvh）⇒ **两个方向**的 top 都要夹进
      「视口高 − 面板高 − 余量」（2026-10-08 三批修：旧版只夹了上弹支，钮在上半屏时面板向下

@@ -2158,16 +2158,20 @@ function npcRealised(long, mag, avg, price) {
  *   止损/止盈减仓、强平（含玩家自己被强平：现实里 forceOrder 是全市场可见的事实流）；
  *   玩家自己的主动开/平不进 tape（主日志已有，重复两遍只会吵）。
  * 六型：0 开多 ▲ / 1 开空 ▼ / 2 平多 △ / 3 平空 ▽ / 4 爆多 💥 / 5 爆空 💥（配色见 render.js）。
- * 分档按「当日流动性比例」四档（用户拍板）：0.1% / 0.5% / 2% / 5% —— 跨年代自适应
- * （2013 年的 $1m 与 2024 年的 $1m 不是一回事），低于 0.1% 不上日志。
+ * 分档按「当日流动性比例」五档（用户拍板；2026-10-09 补 1%）：0.1% / 0.5% / 1% / 2% / 5%
+ * —— 跨年代自适应（2013 年的 $1m 与 2024 年的 $1m 不是一回事），低于 0.1% 不上日志；
+ * 浮窗页 4 底部那排过滤档与 `FEED_STEPS` **一一对应**（选中第 i 档 ⇒ 只留 `t ≥ i` 的行）。
  * ⚠️ **不进存档**（save.js `EPHEMERAL`）、`rewindTo` 清空、`FEED_CAP` 环形封顶 ——
  *    tape 是「最近发生的事」，不是账本，不参与任何玩法判定。 */
 export const FEED_CAP = 240;
-/** 名义额 ÷ 当日流动性 → 档位（0..3，从浅到深）；低于 0.1% ⇒ −1（不上日志）。 */
+/** 分档阈值（名义 ÷ 当日流动性）—— 与浮窗日志页底部过滤档同序、同源（单一事实）。 */
+export const FEED_STEPS = [0.001, 0.005, 0.01, 0.02, 0.05];
+/** 名义额 ÷ 当日流动性 → 档位（0..4，从浅到深）；低于 0.1% ⇒ −1（不上日志）。 */
 export function feedTier(notional, liqDay) {
   if (!(liqDay > 0) || !(notional > 0)) return -1;
   const r = notional / liqDay;
-  return r >= 0.05 ? 3 : r >= 0.02 ? 2 : r >= 0.005 ? 1 : r >= 0.001 ? 0 : -1;
+  for (let i = FEED_STEPS.length - 1; i >= 0; i--) if (r >= FEED_STEPS[i]) return i;
+  return -1;
 }
 function feedPush(s, sym, k, price, notional) {
   if (!(price > 0) || !(notional > 0)) return;

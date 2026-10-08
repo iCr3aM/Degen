@@ -94,6 +94,8 @@ const STEPS = [
   ['订单档 ×8', '[data-gofstep="8"]'],
   ['订单档 ×1', '[data-gofstep="1"]'],
   ['浮窗页 · 日志', '[data-goftab="4"]'],
+  ['日志过滤档 · 5%', '[data-goffilt="4"]'],
+  ['日志过滤档 · 0.1%', '[data-goffilt="0"]'],
   ['浮窗页 · 热力', '[data-goftab="0"]'],
   ['浮窗页 · 巨鲸', '[data-goftab="1"]'],
   ['浮窗页 · 深度', '[data-goftab="2"]'],
@@ -163,6 +165,23 @@ const PROBES = {
   '订单档 ×1': [
     [`document.querySelectorAll('.gb-row').length === window.__gbN`,
       '切回 ×1 行数变了（装框跳动）'],
+  ],
+  /* ── 日志过滤档（2026-10-09 用户拍板⑥）：五档（0.1% / 0.5% / 1% / 2% / 5% 当日流动性）——
+     点 5% 后**第 5 档高亮**（`logFilt` 写进去、下一帧重画跟随），切回 0.1% 高亮跟随。 */
+  '日志过滤档 · 5%': [
+    [`(() => {
+       const steps = [...document.querySelectorAll('[data-goffilt]')];
+       const on = document.querySelector('[data-goffilt].on');
+       return steps.length === 5 && !!on && on.dataset.goffilt === '4';
+     })()`,
+      '日志过滤档不是五档 / 点了 5% 高亮没落到第 5 档（goffilt 链路断了？）'],
+  ],
+  '日志过滤档 · 0.1%': [
+    [`(() => {
+       const on = document.querySelector('[data-goffilt].on');
+       return !!on && on.dataset.goffilt === '0';
+     })()`,
+      '切回 0.1% 后高亮没跟随'],
   ],
   '上帝 · 含泪收摊(wipe)': [
     [`true`, '占位（boot 面板只在加载失败时出现）'],
