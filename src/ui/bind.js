@@ -120,6 +120,11 @@ export const ACTION_KEYS = [
   'godnews',
   'godliqov',
   'godreal',
+  /* `godback`（2026-10-09）：上帝终局「返回主菜单」遮罩上那枚**返回**（收起遮罩、露出三页只读）。
+     ⚠️ 与 `god`（入口）/ `home`（设置页回主菜单）不是一回事 —— 它只把 `godEndOpen` 置假。
+     **必须进这张表**：renderGodEnd 给它挂了 `data-godback`，漏了就是「点了没反应」那一类 bug
+     （审计 9q 咬这一条）。 */
+  'godback',
   /* 市场浮窗开关（2026-10-07 拍板）：普通 / 挑战局设置页那枚「市场浮窗 开/关」——
      详浮窗本体（上帝局）与这枚开关是两回事；分派见 `main.js` 的 `onMktFloat`。 */
   'mktfloat',

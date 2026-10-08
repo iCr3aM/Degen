@@ -5368,7 +5368,7 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     godSrc9ag.includes('export const MANIP_PIN = { qStep: 0.35, overshoot: 0.005, backTol: 0.004, maxN: 8, maxH: 36 };')
     && godSrc9ag.includes('export const MANIP_NEWS = {')
     && godSrc9ag.includes('good:') && godSrc9ag.includes('bad:')
-    && engSrc9ag.includes("replace('%S', sym)"));
+    && engSrc9ag.includes('fillNews(tpls[n % tpls.length], newsVars(s, sym))'));
   check('9ag① 接线：main 分派三键 ＋ 处理器 ＋ bind ACTION_KEYS ＋ render 三行按钮 ＋ chart 读取/着色 ＋ 置灰样式',
     mainSrc9ag.includes('if (d.godpin !== undefined)') && mainSrc9ag.includes('if (d.godnews !== undefined)')
     && mainSrc9ag.includes('if (d.godliqov !== undefined)') && mainSrc9ag.includes('function onGodPin')
@@ -5524,7 +5524,7 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
   check('9ah① M4d 结构：MANIP_NEWS_CD ＋ 模板各 16 条 ＋ 冷却 / 轮换 ＋ noRealNews 默认 true ＋ extFlow / 播报双闸',
     godSrc9ah.includes('export const MANIP_NEWS_CD = 8;')
     && /export const MANIP_NEWS = \{[\s\S]*?good: \[[\s\S]*?\],[\s\S]*?bad: \[[\s\S]*?\],\s*\};/.test(godSrc9ah)
-    && (godSrc9ah.match(/'快讯 ｜/g) || []).length >= 32
+    && (godSrc9ah.match(/'快讯 ｜/g) || []).length >= 80
     && godSrc9ah.includes('if (s.god.noRealNews == null) s.god.noRealNews = true;')
     && engSrc9ah.includes('const cd = s.i - last;')
     && engSrc9ah.includes('if (cd < MANIP_NEWS_CD) return { ok: false, why: `冷却中（还需 ${MANIP_NEWS_CD - cd} 小时）` };')
@@ -5626,9 +5626,98 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     check('9ah④ M4d 行为：连按 16 次 ⇒ 16 条播报两两不同（轮换计数去重）＋ 全部含币符号',
       seen.size === 16 && [...seen].every(t => t.includes('BTC')),
       `去重后 ${seen.size} 条`);
-    check('9ah④ M4d 常数：利好 / 利空各 16 条 ＋ 冷却 8h',
-      god.MANIP_NEWS.good.length === 16 && god.MANIP_NEWS.bad.length === 16 && god.MANIP_NEWS_CD === 8);
+    check('9ah④ M4d 常数：利好 / 利空各 40 条（6 类风格）＋ 冷却 8h',
+    god.MANIP_NEWS.good.length === 40 && god.MANIP_NEWS.bad.length === 40 && god.MANIP_NEWS_CD === 8,
+    `good=${god.MANIP_NEWS.good.length} bad=${god.MANIP_NEWS.bad.length}`);
   }
+}
+
+/* ═══════════════════ 9ai · 新闻占位符 / 上帝终局（2026-10-09） ═══════════════════
+   需求 1/2：新闻文案里的数字必须**取自此刻的真实状态**（含玩家位移）—— `newsVars` 是唯一产出处，
+   `fillNews` 单遍替换；本节点固化：① `title` 永远不含数字；② `rt` / 假新闻模板填充后无残留占位符、
+   无换行；③ `newsVars` 幂等、对表外 / 未加载币不抛、非上帝局偏离恒 0。
+   需求 3：上帝走完全程 ⇒ `s.god.ended`，**不结算 / 不档案 / 不海报**（`s.over` 保持 null），
+   且 `ended` 后 `advanceOneHour` 幂等（「继续」不可能续跑）；`rewindTo` 复位该旗标。 */
+section('9ai · 新闻占位符 newsVars / fillNews ＋ 上帝终局 s.god.ended');
+{
+  const A = await import('../src/core/anchors.js');
+  const all = A.allAnchors();
+
+  /* ① 全表 title 只讲事件、**不含价格 / 百分比符号**（红线：价格数字一律落 rt 结果条）。 */
+  const badTitle = all.filter(a => /[$%]/.test(a.title));
+  check('9ai① 全表 title 不含价格 / 百分比符号（[$%]；史实年份 / 枚数等事实数字不算）',
+    badTitle.length === 0, badTitle.map(a => a.title).join(' | '));
+
+  /* 建一局上帝板（有位移源），填充与终局一手测。 */
+  const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e8, i: idx(at(2021, 5, 10)) });
+  god.enableGod(s);
+
+  /* ② 结果条 rt（带占位符）经 `fillNews` 填充后：无残留 `%`、无换行、非空。 */
+  const filled = all.filter(a => a.rt)
+    .map(a => engine.fillNews(a.rt, engine.newsVars(s, (a.r && a.r.sym) || 'BTC', { r: a.r, at: a.at })));
+  const badFill = filled.filter(t => /%[A-Za-z]/.test(t) || t.includes('\n') || t.trim().length < 4);
+  check('9ai② 结果条 rt 填充后无残留占位符 / 无换行 / 非空',
+    filled.length >= 20 && badFill.length === 0, badFill.join(' | '));
+
+  /* 假新闻模板（40＋40）经 `fillNews` 填充后：无残留 `%`、无换行、全部含币符号。 */
+  const nv = engine.newsVars(s, 'BTC');
+  const fake = god.MANIP_NEWS.good.concat(god.MANIP_NEWS.bad).map(t => engine.fillNews(t, nv));
+  const badFake = fake.filter(t => /%[A-Za-z]/.test(t) || t.includes('\n') || !t.includes('BTC'));
+  check('9ai② 假新闻模板 80 条填充后无残留占位符 / 无换行 / 全部含币符号',
+    badFake.length === 0, badFake.join(' | '));
+
+  /* ③ `newsVars` 幂等（同状态两次调用逐键相等 ⇒ 重放确定性）；表外币不抛、价格走 `--`。 */
+  const nv2 = engine.newsVars(s, 'BTC');
+  check('9ai③ newsVars 幂等（两次调用逐键相等，重放确定性）',
+    JSON.stringify(nv) === JSON.stringify(nv2));
+  let threw = false, zz = null;
+  try { zz = engine.newsVars(s, 'ZZZ'); } catch { threw = true; }
+  check('9ai③ 表外币（ZZZ）调用不抛、价格走 `--` 兜底',
+    !threw && !!zz && zz['%L'] === '--', threw ? 'threw' : `${zz && zz['%L']}`);
+
+  /* ④ 偏离 `%M` 必须**逐位**等于现价相对史实的位移（`closeAt / rawCloseAt − 1`）——
+     这条是「新闻数字取自此刻真实状态」的算术锚（普通局的 NPC 漂移也让 %M ≠ 0，故不假定为 0）。 */
+  const n = await mk({ sym: 'BTC', i: idx(at(2021, 5, 10)) });
+  const nvN = engine.newsVars(n, 'BTC');
+  const lastN = market.closeAt('BTC', n.i), rawN = market.rawCloseAt('BTC', n.i);
+  check('9ai④ 偏离 %M 逐位 = closeAt / rawCloseAt − 1（位移口径正确）',
+    nvN['%M'] === F.fmtPct(lastN / rawN - 1),
+    `%M=${nvN['%M']} 实测=${F.fmtPct(lastN / rawN - 1)}`);
+
+  /* ⑤ 上帝终局：下一小时即到终点 ⇒ ended / paused 立起、`s.over` 保持 null（不调 endGame）。 */
+  s.i = s.endI - 1;
+  engine.advanceOneHour(s);
+  check('9ai⑤ 走完全程 ⇒ `s.god.ended` ＋ `s.paused` 立起，`s.over` 保持 null（不结算 / 不档案）',
+    s.god.ended === true && s.paused === true && s.over === null,
+    `ended=${s.god.ended} paused=${s.paused} over=${s.over}`);
+  /* 幂等闸：ended 后再推两小时 —— 时钟定型、日志不再增长。 */
+  const logN = s.log.length, iN = s.i;
+  engine.advanceOneHour(s);
+  engine.advanceOneHour(s);
+  check('9ai⑤ ended 后 advanceOneHour 幂等（`s.i` 不变、日志不增长）',
+    s.i === iN && s.log.length === logN, `Δi=${s.i - iN} Δlog=${s.log.length - logN}`);
+
+  /* ⑥ `rewindTo` 复位 ended（与它复位 over / paused 同一处理）。 */
+  engine.rewindTo(s, idx(at(2021, 1, 1)));
+  check('9ai⑥ rewindTo 复位 `s.god.ended = false`', s.god.ended === false, String(s.god.ended));
+
+  /* ⑦ 落盘剔除：`s.god` 属 EPHEMERAL ⇒ ended 随会话级状态一起不落盘。 */
+  const saveSrc = fs.readFileSync(path.join(ROOT, 'src/core/save.js'), 'utf8');
+  check('9ai⑦ save.js 的 EPHEMERAL 含 `god`（ended 不落盘 / 不升档位）',
+    /const EPHEMERAL = \[[^\]]*'god'/.test(saveSrc));
+
+  /* ⑧ 接线锚：真实结果条 / 假新闻都经 `fillNews(newsVars(…))`；终局走 ended 而非 endGame。 */
+  const engSrc = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  const rendSrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+  check('9ai⑧ 引擎：真实结果条与假新闻播报都走 `fillNews(…, newsVars(…))`（数值同源）',
+    engSrc.includes('fillNews(rnews.rt, newsVars(')
+    && engSrc.includes('fillNews(tpls[n % tpls.length], newsVars(s, sym))'));
+  check('9ai⑧ 上帝终局接线：engine 立 ended / main 见 ended 弹遮罩 / render 有独立 renderGodEnd',
+    engSrc.includes('if (s.over || s.pending || (s.god && s.god.ended)) return;')
+    && mainSrc.includes('s.god && s.god.ended')
+    && mainSrc.includes('godEndOpen = false')
+    && rendSrc.includes('export function renderGodEnd(root, s)'));
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

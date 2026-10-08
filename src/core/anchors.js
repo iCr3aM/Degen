@@ -43,7 +43,10 @@ const NEWS_DELAY = 1;
  *   `h`           **播报小时偏移**（可选，缺省 0）—— 事件真实发生时刻与 UTC 零点差得远时才填，
  *                 只挪新闻，不挪 K 线标记与拥堵（那两处要的是「事情发生在哪一天」）
  *   `title`       **第一条 · 事件**文案：只讲发生了什么，**一个价格数字都不许有**
- *   `rt`          **第二条 · 结果**文案（`r` 为空时无此项）
+ *   `rt`          **第二条 · 结果**文案（`r` 为空时无此项）。⚠️ 2026-10-09 起是**模板**：
+ *                 数字改用占位符（`%V` 触发阈值 / `%D` 隐含幅度 / `%C` 24h 涨跌幅 / `%L` 现价…），
+ *                 由 `engine.fillNews` ＋ `engine.newsVars` 在**播报那一刻**填成**游戏内实际数值**
+ *                 （玩家在上帝/普通局把价拉涨 100%，这里就报 100%，不再是写死的史实数）。
  *   `r`           **第二条的触发规格**（可选；空 ⇒ 这条只出一条新闻）：
  *                   `{ k:'lvl', sym, dir: 1|-1, v, w }`  首次上/下穿价位 `v`，窗口 `w` 天
  *                   `{ k:'mv',  sym, dir: 1|-1, pct, w }` 首次相对**事件日前一日收盘**涨/跌达 `pct`（0.30 = 三成）
@@ -68,60 +71,60 @@ const NEWS_DELAY = 1;
  */
 export const ANCHORS = [
   { t: Date.UTC(2013, 3, 10),  title: '塞浦路斯要对存款征税，资金开始寻找银行之外的去处',
-    rt: 'BTC 冲上 $250，四个月涨了近 20 倍',   r: { k: 'lvl', sym: 'BTC', dir: 1, v: 250, w: 30 },   chain: 'btc',  congestion: null },
+    rt: 'BTC 冲上 $%V，24 小时 %C',           r: { k: 'lvl', sym: 'BTC', dir: 1, v: 250, w: 30 },   chain: 'btc',  congestion: null },
   { t: Date.UTC(2013, 10, 18), title: '美国参议院听证会：虚拟货币「合法且可监管」',
-    rt: 'BTC 站上 $900，两周涨了近一倍',       r: { k: 'lvl', sym: 'BTC', dir: 1, v: 900, w: 30 },   chain: 'btc',  congestion: null },
+    rt: 'BTC 站上 $%V，24 小时 %C',           r: { k: 'lvl', sym: 'BTC', dir: 1, v: 900, w: 30 },   chain: 'btc',  congestion: null },
   { t: Date.UTC(2014, 1, 25),  title: '当时全球最大的交易所停机，85 万枚 BTC 蒸发',
-    rt: 'BTC 跌破 $400',                      r: { k: 'lvl', sym: 'BTC', dir: -1, v: 400, w: 30 },  chain: 'btc',  congestion: null, warn: true },
+    rt: 'BTC 跌破 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: -1, v: 400, w: 30 },  chain: 'btc',  congestion: null, warn: true },
   /* ── 监管事件锚点（2026-10-08 · 缺口 6）—— 只出新闻与 K 线标记，零人工涨跌幅（P2-C 红线）；
         不产生链上拥堵（`congestion` 一律 null）⇒ 不进 `congestionAnchors`。 ── */
   { t: Date.UTC(2014, 2, 25),  title: '美国国税局首次表态：虚拟货币按「财产」征税，不是货币',
-    rt: 'BTC 一个月里又跌去两成',              r: { k: 'mv', sym: 'BTC', dir: -1, pct: 0.20, w: 30 }, chain: 'btc',  congestion: null },
+    rt: 'BTC 一个月里跌去 %D',                r: { k: 'mv', sym: 'BTC', dir: -1, pct: 0.20, w: 30 }, chain: 'btc',  congestion: null },
   { t: Date.UTC(2015, 6, 7),   title: '有人用大量小额交易把区块塞满，内存池爆掉',
     rt: '一笔转账要等几十个块才确认',           r: { k: 'cong', w: 2 },                              chain: 'btc',  congestion: { add: 40, days: 10, ramp: 2,   fall: 4 } },
   { t: Date.UTC(2016, 5, 17),  title: '360 万枚 ETH 被转走，社区开始讨论硬分叉',
-    rt: 'ETH 跌破 $15',                       r: { k: 'lvl', sym: 'ETH', dir: -1, v: 15, w: 14 },  chain: 'eth',  congestion: null, warn: true },
+    rt: 'ETH 跌破 $%V',                      r: { k: 'lvl', sym: 'ETH', dir: -1, v: 15, w: 14 },  chain: 'eth',  congestion: null, warn: true },
   { t: Date.UTC(2016, 6, 9),   title: '比特币区块奖励减半：25 → 12.5',           chain: 'btc',  congestion: null },
   { t: Date.UTC(2016, 8, 18),  title: '攻击者用廉价交易塞满区块，出块与确认变慢', chain: 'eth',  congestion: null },
   { t: Date.UTC(2017, 4, 20),  title: '牛市资金涌入，BTC 链上首次大拥堵',
-    rt: 'BTC 站上 $2,000',                    r: { k: 'lvl', sym: 'BTC', dir: 1, v: 2000, w: 7 },  chain: 'btc',  congestion: { add: 40, days: 10, ramp: 2,   fall: 4 } },
+    rt: 'BTC 站上 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: 1, v: 2000, w: 7 },  chain: 'btc',  congestion: { add: 40, days: 10, ramp: 2,   fall: 4 } },
   { t: Date.UTC(2017, 7, 1),   title: '扩容谈崩，比特币现金从主链分叉出来',
-    rt: 'BTC 站上 $3,000',                    r: { k: 'lvl', sym: 'BTC', dir: 1, v: 3000, w: 30 }, chain: 'btc',  congestion: null },
+    rt: 'BTC 站上 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: 1, v: 3000, w: 30 }, chain: 'btc',  congestion: null },
   { t: Date.UTC(2017, 11, 1), title: '一只虚拟猫把以太坊堵到瘫痪，ICO 把资金推向 BTC',
-    rt: 'BTC 冲上 $19,000，刷新历史高点',      r: { k: 'lvl', sym: 'BTC', dir: 1, v: 19000, w: 30 }, chain: 'btc',  congestion: { add: 70, days: 10, ramp: 2,   fall: 4 } },
+    rt: 'BTC 冲上 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: 1, v: 19000, w: 30 }, chain: 'btc',  congestion: { add: 70, days: 10, ramp: 2,   fall: 4 } },
   { t: Date.UTC(2018, 1, 6),   h: 14,
     title: '美国参议院银行委员会听证，SEC 与 CFTC 主席就加密货币作证',
-    rt: 'BTC 盘中跌破 $6,000',                r: { k: 'lvl', sym: 'BTC', dir: -1, v: 6000, w: 7 },  chain: 'btc',  congestion: null },
+    rt: 'BTC 盘中跌破 $%V',                  r: { k: 'lvl', sym: 'BTC', dir: -1, v: 6000, w: 7 },  chain: 'btc',  congestion: null },
   { t: Date.UTC(2018, 11, 15), title: '上一轮泡沫彻底破裂，一年把牛市全部还了回去',
-    rt: 'BTC 跌破 $3,200',                    r: { k: 'lvl', sym: 'BTC', dir: -1, v: 3200, w: 14 }, chain: 'btc',  congestion: null, warn: true },
+    rt: 'BTC 跌破 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: -1, v: 3200, w: 14 }, chain: 'btc',  congestion: null, warn: true },
   { t: Date.UTC(2019, 6, 12),  title: '特朗普公开表态反对加密货币，国会同期围剿 Libra',
-    rt: 'BTC 一周里跌回 $10,000 下方',         r: { k: 'lvl', sym: 'BTC', dir: -1, v: 10000, w: 14 }, chain: 'btc',  congestion: null },
+    rt: 'BTC 一周里跌回 $%V 下方',             r: { k: 'lvl', sym: 'BTC', dir: -1, v: 10000, w: 14 }, chain: 'btc',  congestion: null },
   { t: Date.UTC(2020, 2, 12),  title: '全球资产一起被抛售换现金',
-    rt: 'BTC 单日跌去三成',                    r: { k: 'mv', sym: 'BTC', dir: -1, pct: 0.30, w: 3 }, chain: 'btc',  congestion: null, warn: true },
+    rt: 'BTC 单日跌去 %D',                    r: { k: 'mv', sym: 'BTC', dir: -1, pct: 0.30, w: 3 }, chain: 'btc',  congestion: null, warn: true },
   { t: Date.UTC(2020, 4, 11),  title: '第三次减半：区块奖励 12.5 → 6.25',        chain: 'btc',  congestion: null },
   { t: Date.UTC(2021, 3, 14),  title: 'Coinbase 上市，传统资金第一次大规模进场',
-    rt: 'BTC 突破 $64,000',                   r: { k: 'lvl', sym: 'BTC', dir: 1, v: 64000, w: 7 }, chain: 'btc',  congestion: { add: 45, days: 7,  ramp: 1.5, fall: 2.5 } },
+    rt: 'BTC 突破 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: 1, v: 64000, w: 7 }, chain: 'btc',  congestion: { add: 45, days: 7,  ramp: 1.5, fall: 2.5 } },
   { t: Date.UTC(2021, 8, 24),  title: '中国十部门联合发文，全面禁止加密货币交易与挖矿',
-    rt: 'BTC 当日跌约 7%',                    r: { k: 'mv', sym: 'BTC', dir: -1, pct: 0.07, w: 3 },  chain: null,   congestion: null },
+    rt: 'BTC 当日跌约 %D',                    r: { k: 'mv', sym: 'BTC', dir: -1, pct: 0.07, w: 3 },  chain: null,   congestion: null },
   { t: Date.UTC(2021, 10, 10), title: '通胀与 ETF 预期把资金推向 BTC',
-    rt: 'BTC 创下 $69,000 的历史新高',         r: { k: 'lvl', sym: 'BTC', dir: 1, v: 69000, w: 14 }, chain: 'btc',  congestion: null },
+    rt: 'BTC 冲上 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: 1, v: 69000, w: 14 }, chain: 'btc',  congestion: null },
   { t: Date.UTC(2022, 4, 9),   title: '算法稳定币 UST 脱锚，LUNA 几天内归零',
-    rt: 'BTC 跌破 $30,000',                   r: { k: 'lvl', sym: 'BTC', dir: -1, v: 30000, w: 14 }, chain: null,  congestion: null, warn: true },
+    rt: 'BTC 跌破 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: -1, v: 30000, w: 14 }, chain: null,  congestion: null, warn: true },
   { t: Date.UTC(2022, 7, 8),   title: '美国财政部首次制裁一个去中心化协议：Tornado Cash 上了黑名单',
     chain: 'eth',  congestion: null },
   { t: Date.UTC(2022, 10, 11), title: '曾经的第二大交易所一周内挤兑破产',
-    rt: 'BTC 跌破 $16,000',                   r: { k: 'lvl', sym: 'BTC', dir: -1, v: 16000, w: 21 }, chain: null,  congestion: null, warn: true },
+    rt: 'BTC 跌破 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: -1, v: 16000, w: 21 }, chain: null,  congestion: null, warn: true },
   { t: Date.UTC(2023, 4, 7),   title: '把图片刻进区块的玩法突然流行，手续费暴涨',
     rt: '内存池再次排满，转账要等几十个块',      r: { k: 'cong', w: 2 },                              chain: 'btc',  congestion: { add: 40, days: 14, ramp: 2,   fall: 4 } },
   { t: Date.UTC(2023, 5, 5),   title: '美国证监会起诉币安与 Coinbase，多个加密资产被列为证券',
-    rt: 'BTC 两周里从 $27,000 跌到 $25,000 下方', r: { k: 'lvl', sym: 'BTC', dir: -1, v: 25000, w: 14 }, chain: null, congestion: null },
+    rt: 'BTC 两周里跌到 $%V 下方',            r: { k: 'lvl', sym: 'BTC', dir: -1, v: 25000, w: 14 }, chain: null, congestion: null },
   { t: Date.UTC(2023, 10, 21), title: '币安与 DOJ 达成 43 亿美元和解，赵长鹏认罪',
-    rt: 'BTC 不跌反涨，站上 $38,000',          r: { k: 'lvl', sym: 'BTC', dir: 1, v: 38000, w: 14 }, chain: null,  congestion: null },
+    rt: 'BTC 站上 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: 1, v: 38000, w: 14 }, chain: null,  congestion: null },
   { t: Date.UTC(2024, 0, 10),  h: 20,
     title: '美国证监会放行 11 只现货 ETF',
-    rt: 'BTC 重回 $47,000 上方',               r: { k: 'lvl', sym: 'BTC', dir: 1, v: 47000, w: 7 }, chain: 'btc',  congestion: null },
+    rt: 'BTC 重回 $%V 上方',                 r: { k: 'lvl', sym: 'BTC', dir: 1, v: 47000, w: 7 }, chain: 'btc',  congestion: null },
   { t: Date.UTC(2024, 3, 20),  title: '第四次减半：奖励降到 3.125；同日 Runes 上线',
-    rt: 'BTC 减半后回落一成',                  r: { k: 'mv', sym: 'BTC', dir: -1, pct: 0.10, w: 21 }, chain: 'btc', congestion: { add: 45, days: 7,  ramp: 2,   fall: 4 } },
+    rt: 'BTC 减半后回落 %D',                  r: { k: 'mv', sym: 'BTC', dir: -1, pct: 0.10, w: 21 }, chain: 'btc', congestion: { add: 45, days: 7,  ramp: 2,   fall: 4 } },
 ];
 
 /**

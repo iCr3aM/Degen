@@ -13,10 +13,10 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtFloatPrice, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
-import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
+import { isLoaded, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
 import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
@@ -1848,6 +1848,33 @@ export function renderOver(root, s) {
 }
 
 /**
+ * 上帝终局的**「返回主菜单」遮罩**（2026-10-09 用户拍板）—— 上帝模式**不结算 / 不出档案 / 不出海报**：
+ * 走完全程只把时钟停住（`s.god.ended` ＋ `s.paused`），弹出这张只有一条主去路的遮罩。
+ *
+ * 两条出口（用户原话「只有返回主菜单或点击返回」）：
+ *   · **返回主菜单**（`data-home`）—— 收拾回主菜单；
+ *   · **返回**（`data-godback`）—— 只**收起本遮罩**，露出交易 / 资产 / 设置三页（只读，时钟停死、
+ *     无法继续）；再点顶栏「继续」会把这张遮罩**重新弹出**（`main.js` 拦「继续」，见其 `d.pause`）。
+ *
+ * ⚠️ 与 `renderOver` **分开写**、不是给它加分支：那条路要结算 / 档案 / 海报，这条**一条都不能要**
+ *    （用户拍板），混在一条函数里迟早会有人把结算逻辑漏进上帝局。
+ */
+export function renderGodEnd(root, s) {
+  root.querySelector('.over')?.remove();
+  const box = el('div', 'over');
+  box.append(el('b', 'up', '已走完全程'));
+  box.append(el('p', null, `你活到了 ${fmtDate(timeOf(s), false)}\n上帝模式不结算，只可返回主菜单`));
+  const btns = el('div', 'over-btns');
+  const home = el('button', null, '返回主菜单');
+  home.dataset.home = '';
+  const back = el('button', 'flat', '返回');
+  back.dataset.godback = '';
+  btns.append(home, back);
+  box.append(btns);
+  root.append(box);
+}
+
+/**
  * 救济金遮罩（Batch 5 · B30）—— 归零那一刻出现，**时钟已停**，等玩家二选一。
  * 复用 `.over` 外壳（居中、吃满屏、不透明底）：它不是「可以点外面关掉」的菜单，
  * 是一个必须回答的问题 —— 与开场叙事同一种语气。
@@ -2932,6 +2959,10 @@ export function openNodeCard(node) {
      说明退成次要的素色段落（`review.js` 那边也同步把复述标题的句子删掉了）。 */
   box.append(el('p', 'nodecard-title', node.title));
   if (node.note) box.append(el('p', 'nodecard-note', node.note));
+  /* 当时价（2026-10-09 沉浸增强）—— 走 `rawCloseAt`（回顾无位移，就是史实收盘）。
+     币种未上线 / 越界 ⇒ 取不到，这一行整行省略（不留 `--`）。 */
+  const px = rawCloseAt(node.sym || 'BTC', node.at);
+  if (Number.isFinite(px)) box.append(el('p', 'nodecard-note', `当时价 ${fmtLogPrice(px)}`));
 
   const go = el('button', 'act long', '继续');
   go.dataset.review = 'go';
@@ -3161,6 +3192,15 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
      ⚠️ 输入框照旧不挂 `data-*`（`bind.js` preventDefault）；预览随 `input` 事件即时重算。 */
   const rowsC = el('div', 'confirm-rows');
 
+  /* 常驻读数（2026-10-09 沉浸增强）—— **与新闻文案同源**：`newsVars` 正是新闻占位符的产出处，
+     这里印的 `现价 / 24h / 偏离 / 热度` 与史实新闻、假新闻里出现的数字**逐字一致**
+     （同一函数、同一时刻 ⇒ 改一处两处同变，杜绝「面板一个数、新闻又一个数」）。 */
+  {
+    const nv = newsVars(s, s.sym);
+    rowsC.append(el('p', 'god-prev',
+      `现价 ${nv['%L']} ｜ 24h ${nv['%C']} ｜ 偏离 ${nv['%M']} ｜ 热度 ${nv['%H']}`));
+  }
+
   /* 深度旋钮（2026-10-08 用户拍板）：市场分母的倍率 —— 拉盘后订单簿不再「越拉越薄」。
      自动档 = 位移偏离史实的倍数（clamp 1~8），手动档拍死；闸门在 `engine.hourLiqBase` 末尾
      一处 ⇒ 吃单 / 走簿 / 浮窗订单簿 / 量柱同一处放大、处处自洽。普通 / 挑战局没有 `s.god`
@@ -3251,6 +3291,11 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   if (newsCd < MANIP_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }
   newsRow.append(el('i', null, '假消息'), newsDn, newsUp);
   rowsC.append(newsRow);
+  /* 冷却读数（2026-10-09 沉浸增强）—— 置灰只说明「现在不能按」，这一行说明「还要等多久」
+     （`newsCd` 是距上次注入的小时数；从未注入 = `+Inf` ⇒ 条件假、不显示）。 */
+  if (newsCd < MANIP_NEWS_CD) {
+    rowsC.append(el('p', 'god-prev', `冷却中 · 还需 ${MANIP_NEWS_CD - newsCd} 小时`));
+  }
 
   /* 「新闻源」开关（2026-10-08 用户拍板）：进入上帝模式**默认关**真实新闻 —— 价格与播报只随
      玩家操作走；面板上可重新打开（引擎闸门见 `npcBuild` 的 `extFlow` 与 `advanceOneHour`）。 */

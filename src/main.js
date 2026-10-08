@@ -19,7 +19,7 @@ import { SB_DEFAULT, SB_KEYS, SB_PRESETS, enableGod, factorFor, sbOf } from './c
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct } from './core/format.js';
 import { canLiquidate, safetyOf } from './core/positions.js';
 import {
-  mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
+  mount, update, renderOver, renderLoan, renderWarn, renderGodEnd, clearOver, renderBoot, hideBoot,
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog, menuNote,
   renderReview, openNodeCard, openYearPick, openGuide, renderCareers, openPoster,
   isStandalone, toggleInstallGuide, menuRemoveInstall, closeMenuDlg, openSavePick, openScenPick,
@@ -631,6 +631,14 @@ let overDrawn = !!s.over;
    ⚠️ 变量按**真值**记（两种遮罩共用），具体画哪一个仍按 `s.pending` 的**值**分派。 */
 let pendingDrawn = !!s.pending;
 
+/* **上帝终局遮罩**（2026-10-09 用户拍板「不结算 / 不出海报」）的两个闩锁：
+   · `godEndDrawn` —— 同 `overDrawn` 的理由：置真 `s.paused` 的那一拍之后不会再有 `onFrame`，
+     那一帧若被 80ms 节流吞掉，遮罩就永远出不来；
+   · `godEndOpen` —— 玩家**当前是否正看着**这张遮罩（点「返回」收起后为 false）。
+     收起后只露交易 / 资产 / 设置三页（只读、时钟停死），点顶栏「继续」重新弹它（见 `d.pause`）。 */
+let godEndDrawn = !!(s.god && s.god.ended);
+let godEndOpen = true;
+
 /* **手势重绘合并 ＋ 只重画 K 线**（2026-10-04 性能修，两刀一起下）
  *
  * 病根有两层，原先只治了第一层：
@@ -897,7 +905,15 @@ function draw(force = false, chartOnly = false) {
     /* ⚠️ 这里**不再需要** `&& !arch`（2026-10-02 修）：档案页在上面就 `return` 了，
        走不到这一行 —— 该防的那件事改成在它自己那一支里 `clearOver`（见上）。
        原来那句 `!arch` 是一处**永远为真**的死守卫，只会让人以为档案页的覆盖问题已解决。 */
-    if (s.over) {
+    if (s.god && s.god.ended) {
+      /* 上帝终局（2026-10-09 用户拍板）：**不结算 / 不播结算音 / 只弹「返回主菜单」遮罩**。
+         `closePicker()` 每次都收掉任何残留弹层（含上帝操盘台 —— 终局后它不该再被看见）。
+         点「返回」收起后 `godEndOpen = false` ⇒ 只 `clearOver`，露出三页（只读、时钟已停死）。 */
+      closePicker();
+      if (!godEndDrawn) godEndDrawn = true;   // 首帧补画（同 `overDrawn` 的理由）；**不播任何音**
+      if (godEndOpen) renderGodEnd(root, s);
+      else clearOver(root);
+    } else if (s.over) {
       closePicker();
       renderOver(root, s);
       // 结束音只响一次（`overDrawn` 是「这一局结束的画面画过了没」）；震动与它同拍
@@ -922,6 +938,8 @@ function draw(force = false, chartOnly = false) {
     }
     overDrawn = !!s.over;
     pendingDrawn = !!s.pending;
+    /* 离开上帝终局（回退到终点之前 / 开新局）⇒ 两个闩锁复位，下次走到终点能重新弹。 */
+    if (!(s.god && s.god.ended)) { godEndDrawn = false; godEndOpen = true; }
   } catch (err) {
     renderBoot('渲染失败', err);
   }
@@ -1066,6 +1084,21 @@ function dispatch(node, ev) {
   /* 设置页「返回主菜单」（2026-10-01 用户要求）：停钟 ＋ 弹菜单，本局状态一个字不动。 */
   if (d.home !== undefined) return onHome();
   if (d.sclose !== undefined) return onClosePanel();
+
+  /* ── 上帝终局拦截（2026-10-09 用户拍板）──
+     走完全程后本局已「软结束」：时钟停死、账不再变。上帝入口（`god` 连点 / 面板）与全部操盘
+     （跳时间 / 填资金 / 沙盒 / 操盘 / 假消息 / 插针 / 深度旋钮 / 新闻源）一律失效 ——
+     否则「无法继续」会被跳时间 / 重开后门绕过。仅保留三页浏览、顶栏「继续」与「返回主菜单」。
+     ⚠️ 这一闸**只管上帝操作那一批键**（`god* / sb*`）：切页、设置项、`home`、`pause`、`godback`
+        都不在此列，照常派发。 */
+  if (s.god && s.god.ended && !rv && (d.god !== undefined || d.godcash !== undefined
+    || d.godyear !== undefined || d.godmon !== undefined || d.godgo !== undefined
+    || d.godtab !== undefined || d.godinf !== undefined || d.godliq !== undefined
+    || d.godpump !== undefined || d.godpin !== undefined || d.godnews !== undefined
+    || d.godliqov !== undefined || d.godreal !== undefined || d.sb !== undefined
+    || d.sbpreset !== undefined || d.sbseed !== undefined || d.sbroll !== undefined)) {
+    return;
+  }
 
   /* ── 上帝模式（隐藏入口 · 方案 §2）──
      `god` ＝ **主菜单图标连点 5 次直接进局**（2026-10-07 入口改型）；顶栏标题挂着同一枚键，
@@ -1257,6 +1290,9 @@ function dispatch(node, ev) {
     return;
   }
   if (d.pause !== undefined) {
+    /* 上帝终局（2026-10-09 用户拍板「无法继续」）：时钟已停死、本局不再推进 ——
+       「继续」不解除暂停，只把「返回主菜单」遮罩**重新弹出来**（点「返回」收起后露出的三页是只读的）。 */
+    if (s.god && s.god.ended) { godEndOpen = true; after(); return; }
     if (!s.over) {
       const was = s.paused;
       s.paused = !s.paused;
@@ -1267,6 +1303,9 @@ function dispatch(node, ev) {
     after();
     return;
   }
+  /* 上帝终局遮罩上的「返回」：只收起遮罩，露出交易 / 资产 / 设置三页（只读、时钟停死）。
+     再点「继续」会重新弹出它（见上面的 `d.pause`）。 */
+  if (d.godback !== undefined) { godEndOpen = false; after(); return; }
   /* 结束遮罩上的「重新开始」：本局都已经结束了，没有必要再问一遍（Batch 4 起彻底直通）。 */
   if (d.restart !== undefined) return doRestart();
   if (d.wipe !== undefined) return onWipe();
@@ -1438,7 +1477,7 @@ function onMarginAdjust(s, val) {
  */
 function onGodTap(node) {
   if (node && node.dataset.god === 'logo') return onGodLogo();
-  if (!s.god || s.over || s.pending) return;   // 未解锁 / 本局已结束 / 停在救济金遮罩：不理
+  if (!s.god || s.over || s.pending || s.god.ended) return;   // 未解锁 / 本局已结束（含上帝终局）/ 停在救济金遮罩：不理
   /* 面板记忆（2026-10-07 用户拍板）：重开**不重置** —— 页签停在上次所在页、日期选择器
      留在上次的目标上（`godSel` / `godPage` 是模块级变量，天然跨开合存活，只要别主动归零）。 */
   showGod();
@@ -1462,8 +1501,10 @@ function onGodLogo() {
   godTapAt = now;
   if (godTaps < GOD_TAPS) return;
   godTaps = 0;
-  /* 本局已结束：对局进不去（结算 / 菜单都一样），给一句提示而不是无声失败 */
-  if (s.over) { menuNote('本局已结束，没有可以进入的对局'); snd.deny(); return; }
+  /* 本局已结束：对局进不去（结算 / 菜单都一样），给一句提示而不是无声失败。
+     ⚠️ 上帝终局（2026-10-09）也走这一条 —— 否则连点会把 `s.paused` 解掉、时钟重新跑起来，
+        「无法继续」就被这条后门绕过了。 */
+  if (s.over || (s.god && s.god.ended)) { menuNote('本局已结束，没有可以进入的对局'); snd.deny(); return; }
   enableGod(s);
   closePicker();                      // 收掉主菜单（顺带任何残留弹层）
   tab = 'trade';                      // 进局落在交易页（与 `onSlot` 同槽分支同一条）
@@ -1811,6 +1852,11 @@ function onGodNews(node) {
   if (!r.ok) {
     pushLog(s, `假消息失败 · ${r.why}`, 'bad');
     snd.deny();
+  } else {
+    /* 成功时补一记**播报铃**（2026-10-09 沉浸增强）：引擎那两条假新闻日志的 `kind` 是
+       `ok`/`bad`（为红/绿上色），`soundFromTick` 只认 `kind==='news'` ⇒ 它认不出、
+       不会自动响；这里显式补上，与史实新闻同一记音。 */
+    snd.news();
   }
   showGod();
   after();
@@ -2277,6 +2323,7 @@ async function openNodeWhenReady(node) {
   if (!isLoaded(sym)) await ensureCoin(sym);
   if (!rv || !rv.paused || nodeAt(rv.i) !== node) return;
   draw(true);
+  snd.news();                                    // 命中节点的播报铃（2026-10-09 沉浸增强；旧版全程静音）
   openNodeCard(node);
 }
 
@@ -2757,7 +2804,9 @@ function runTabSwitch(name) {
   const go = () => {
     if (tab === 'settings') cancelReset();
     tab = name;
-    s.paused = name !== 'trade';   // 切回交易页 ⇒ 自动续跑
+    /* 切回交易页 ⇒ 自动续跑。⚠️ 上帝终局（2026-10-09）除外：本局已无法继续，
+       三个页面只是**只读浏览** —— 切回交易页**不许**把时钟重新放开，`s.paused` 恒为真。 */
+    if (!(s.god && s.god.ended)) s.paused = name !== 'trade';
     s.speed = 1;                   // ⚠️ 写进主状态（会落盘）：切一次页就丢掉 50x 的选择，这是拍板语义
     closePicker();
     after();

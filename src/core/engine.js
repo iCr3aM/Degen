@@ -17,7 +17,7 @@ import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, ra
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS, MANIP_NEWS_CD, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS, MANIP_NEWS_CD, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -4594,6 +4594,95 @@ export function godPinStop(s) {
   return { ok: true };
 }
 
+/* ═══════════ 新闻文案 · 数值绑定（2026-10-09 用户拍板「新闻里的数必须符合游戏实际数值」）═══════════
+ * 病根：真实新闻的结果条（`anchors.rt`）与假新闻模板（`god.MANIP_NEWS`）里的数字都是**写死的史实**，
+ * 与游戏内行情脱节 —— 玩家在上帝 / 普通 / 挑战局把某币拉涨 100%，新闻却仍报一个固定值。
+ * 修法：模板改用**占位符**，数值一律从**此刻的 `s`** 现算（同一个 `newsVars` 出口，与操盘台读数同源）。
+ *
+ * ⚠️ **纯派生**：只读 `s`、不写 `s`、不碰 DOM、**不读 `Math.random` / `Date.now`** —— 否则破坏
+ *    重放确定性（审计会咬）。所有取值**逐位来自 `closeAt`/`rawCloseAt`/`liqOf`/`fundingForecastOf`**。
+ * ⚠️ 未上线币 / 缺 `s.mkt` / `rawCloseAt` 为 null **一律兜底**（`'--'` / `'—'`），绝不抛错。
+ * ⚠️ 红线 A（不双重计价）一致：玩家自己的名义额不过 `gm` 闸；但 `%A` 是**市场**当日成交额，
+ *    属「市场规模」类 ⇒ 与 `hourLiqBase` 同源，要过 `godLiqMulOf`。
+ */
+
+/**
+ * 新闻模板占位符字典。键就是模板里要写的 `%X`；值一律是**此刻 `s` 的派生字符串**。
+ *
+ * | 键  | 含义 | 取值 |
+ * |-----|------|------|
+ * | `%S` | 币符号 | `sym` |
+ * | `%L` | 现价 | `closeAt(sym, s.i)` → `fmtLogPrice`（含玩家 + NPC 位移） |
+ * | `%C` / `%c` | 24h 涨跌幅（有符号 / 无符号） | `closeAt(i)/closeAt(i−24)−1` |
+ * | `%M` / `%m` | 本次操盘位移（有符号 / 无符号） | `closeAt(i)/rawCloseAt(i)−1`（上帝局非零） |
+ * | `%H` | 热度 | `s.mkt[sym].heat`（0–1 → 百分数） |
+ * | `%A` | 当日成交额 | `liqOf(sym, dayIndexOf(i)) × godLiqMulOf` → `amtOf`（X 亿 / X 万） |
+ * | `%R` | 预计资金费率 | `fundingForecastOf(s, sym).rate` → `fmtRate(·, 3)`；无 ⇒ `—` |
+ * | `%V` | 触发阈值（仅真实结果条） | `lvl` ⇒ 价位 `r.v`；`mv` ⇒ 幅度 `r.pct` |
+ * | `%D` | 事件隐含幅度（仅真实结果条，无符号） | `lvl` ⇒ `|r.v ÷ 事件前一日收盘 − 1|`；`mv` ⇒ `r.pct` |
+ *
+ * @param {object} s 状态
+ * @param {string} sym 币符号（模板里 `%S` 的取值）
+ * @param {{r?:object, at?:number}} [ctx] 真实结果条的规格与锚点时刻（假新闻不需要）
+ * @returns {Record<string,string>} 占位符 → 字符串
+ */
+export function newsVars(s, sym, ctx = {}) {
+  const r = ctx.r || null;
+  const v = { '%S': sym };
+
+  /* 现价（含位移）—— 与 `lastPrice` 同一口径 */
+  const last = closeAt(sym, s.i);
+  v['%L'] = Number.isFinite(last) ? fmtLogPrice(last) : '--';
+
+  /* 24 小时涨跌幅 */
+  const prev24 = closeAt(sym, s.i - 24);
+  const chg = (Number.isFinite(last) && Number.isFinite(prev24) && prev24 > 0) ? last / prev24 - 1 : null;
+  v['%C'] = chg == null ? '--' : fmtPct(chg);
+  v['%c'] = chg == null ? '--' : fmtRate(Math.abs(chg));
+
+  /* 本次操盘位移 = 位移后 ÷ 原始史实价（普通 / 挑战局恒 0 ⇒ `closeAt === rawCloseAt`） */
+  const raw = rawCloseAt(sym, s.i);
+  const disp = (Number.isFinite(raw) && raw > 0 && Number.isFinite(last)) ? last / raw - 1 : null;
+  v['%M'] = disp == null ? '--' : fmtPct(disp);
+  v['%m'] = disp == null ? '--' : fmtRate(Math.abs(disp));
+
+  /* 热度（不吃 `mktOf` 的懒建副作用 —— 缺格直接兜底） */
+  const m = s.mkt && s.mkt[sym];
+  v['%H'] = m && Number.isFinite(m.heat) ? fmtRate(m.heat, 0) : '--';
+
+  /* 当日成交额（市场规模类 ⇒ 过 `gm`，与 `hourLiqBase` 同源；非上帝局 `gm === 1` 逐位不变） */
+  const liqDay = liqOf(sym, dayIndexOf(s.i));
+  v['%A'] = liqDay > 0 ? amtOf(liqDay * godLiqMulOf(s, sym)) : '--';
+
+  /* 预计资金费率（有符号；无合约 / 分不出多空比 ⇒ `—`） */
+  const ff = fundingForecastOf(s, sym);
+  v['%R'] = ff ? fmtRate(ff.rate, 3) : '—';
+
+  /* 真实结果条的触发阈值与隐含幅度（假新闻不带 `ctx.r` ⇒ 保持兜底） */
+  v['%V'] = '--';
+  v['%D'] = '--';
+  if (r && r.sym) {
+    if (r.k === 'lvl') {
+      v['%V'] = fmtLogPrice(r.v);
+      const pc = closeAt(r.sym, (Number.isFinite(ctx.at) ? ctx.at : s.i) - 1);
+      if (Number.isFinite(pc) && pc > 0) v['%D'] = fmtRate(Math.abs(r.v / pc - 1), 0);
+    } else if (r.k === 'mv') {
+      v['%V'] = fmtRate(r.pct, 0);
+      v['%D'] = fmtRate(r.pct, 0);
+    }
+  }
+  return v;
+}
+
+/**
+ * 用 `newsVars` 的字典填模板里的占位符。**单遍** `replace`（不递归展开，避免值里含 `%` 时被二次解析）；
+ * 字典里没有的占位符**原样保留**（`%v` 这类不存在的不会被吞掉），`tpl` 非字符串则原样返回。
+ */
+export function fillNews(tpl, vars) {
+  if (typeof tpl !== 'string' || !vars) return tpl;
+  return tpl.replace(/%[SLCMHARVDcmd]/g, mm => (vars[mm] == null ? mm : vars[mm]));
+}
+
 /**
  * 操盘台「**假消息**」—— 真实操纵三件套之一（SEC/CFTC 起诉书里的标准动作）。游戏内三件套：
  *   ① 热度一脚（`MANIP_NEWS_RANGE`，比幌骗大 —— 新闻是全市场广播，不是盘口假单）；
@@ -4633,7 +4722,7 @@ export function godFakeNews(s, sym, dir) {
   const n = Number.isFinite(s.god.newsN[key]) ? s.god.newsN[key] : 0;
   s.god.newsN[key] = n + 1;
   s.god.newsAt = s.i;
-  pushLog(s, tpls[n % tpls.length].replace('%S', sym), dir > 0 ? 'ok' : 'bad', 'news');
+  pushLog(s, fillNews(tpls[n % tpls.length], newsVars(s, sym)), dir > 0 ? 'ok' : 'bad', 'news');
   return { ok: true, cost: p.cost };
 }
 
@@ -4961,12 +5050,22 @@ export function advanceOneHour(s) {
   /* ⚠️ `s.pending`（B30 待领救济金决策）也必须挡住：时钟那边虽然会因 `s.paused` 停下，
      但**同一次 `step()` 的 while 循环**里 `paused` 是刚被置上的，循环不会自己知道。
      没有这一行，`s.i += 1` 会继续跑，玩家在遮罩上犹豫的那一拍就白白流走几十个小时。 */
-  if (s.over || s.pending) return;
+  if (s.over || s.pending || (s.god && s.god.ended)) return;
   s.i += 1;
 
-  /* 本局终点（§73.7）：经典全程 = `GAME.candles`（与改动前逐位相同），挑战局 = `s.endI`。 */
+  /* 本局终点（§73.7）：经典全程 = `GAME.candles`（与改动前逐位相同），挑战局 = `s.endI`。
+     ⚠️ **上帝模式不结算**（2026-10-09 用户拍板「不结算 / 不档案 / 不海报」）：走到终点只把
+        `s.god.ended` 立起来 ＋ 时钟停住（`s.paused`），**不调 `endGame`** ⇒ 不 `settleCloseAll` /
+        不 `recordCareer` / 不 `wipe`，`s.over` 保持 `null`。`main.js` 见 `s.god.ended` 弹「返回主菜单」
+        遮罩；交易 / 资产 / 设置三页仍可看（只读），任何「继续」都被拦回该遮罩。 */
   if (s.i >= s.endI) {
     s.i = s.endI - 1;
+    if (s.god) {
+      s.god.ended = true;
+      s.paused = true;
+      pushLog(s, '上帝模式 ｜ 已走完全程，返回主菜单', 'info', 'mkt');
+      return;
+    }
     endGame(s, OVER.SETTLED);
     return;
   }
@@ -5030,7 +5129,7 @@ export function advanceOneHour(s) {
        ⚠️ 同一个小时里两条都命中时，后 push 的结果条压在事件条上面 —— 那是对的：
           「结果」永远比「起因」更值得占着日志条那一行。 */
     const rnews = resultNewsStartAt(s);
-    if (rnews) pushLog(s, rnews.rt, 'news');
+    if (rnews) pushLog(s, fillNews(rnews.rt, newsVars(s, rnews.r.sym || s.sym, { r: rnews.r, at: rnews.at })), 'news');
 
     /* **外部买盘的两条披露播报**（缺口 4 / 缺口 5 · 2026-10-08）：
        · 巨鲸/机构：命中披露日那根小时播一条（买卖都含），摊平窗口与靶心注入同一个表（`whaleFlowAt`）；
@@ -5245,6 +5344,9 @@ export function rewindTo(s, to) {
        否则跳时间后冷却可能落在未来（按钮永远灰着）。 */
     s.god.newsAt = null;
     s.god.newsN = null;
+    /* 上帝终局旗标（2026-10-09）同样作废 —— 回退到终点之前的世界就得能继续跑，
+       与上面 `s.over = null` 是同一件事（`ended` 是上帝局的「软结束」）。 */
+    s.god.ended = false;
   }
   s.over = null;
   s.paused = false;
