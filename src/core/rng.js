@@ -96,3 +96,20 @@ export function rand(seed, symHash, hour, tick, chanHash) {
   );
   return mulberry32(Number(h & 0xffffffffn));
 }
+
+/**
+ * **轻量通道**（2026-10-08 限价簿专用）—— 与 `rand` 同一种子口径、同样的无状态纯函数，
+ * 但混合层换成 **32 位整数乘法**（`Math.imul`），不走 BigInt ⇒ 单次取数快一个量级。
+ *
+ * 为什么必须有它：限价簿每小时每币要取几十个数（生成挂单），全周期重放 ≈ 10⁵ 小时 ×
+ * 多币 × 几十次 —— BigInt 版要十几秒，32 位版毫秒级。Ⓐ 只给**盘口挂单层**用
+ * （`engine.lobTick` 的生成 / 回填），行情路径 / NPC 决策 / 强平等既有通道**照旧走 `rand`**
+ * —— 两套通道用不同的 `chanHash` 天然隔离，互不污染（与文件头注同一纪律）。
+ */
+export function randFast(seed, symHash, hour, tick, chanHash) {
+  let h = (Math.imul(seed >>> 0, 0x1000193) ^ (symHash >>> 0) ^ Math.imul(hour | 0, 0x9e3779b1) ^ Math.imul(tick | 0, 0xc2b2ae3d) ^ (chanHash >>> 0)) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
+  h = (h ^ (h >>> 16)) >>> 0;
+  return mulberry32(h);
+}

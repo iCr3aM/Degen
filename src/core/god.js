@@ -1590,15 +1590,15 @@ export function enableGod(s) {
  *    而且 `s.seed` 的每一处用法（跨所价差 / 事件时刻 / 强平细路径）都发生在**当前小时**，
  *    改它**不会回头改写**已经画出的 K 线（K 线来自真实 OHLC ＋ 位移台阶，与种子无关）。
  */
-export const SB_KEYS = ['heat', 'mood', 'npc', 'shock', 'res'];
+export const SB_KEYS = ['heat', 'mood', 'npc', 'shock', 'res', 'lob'];
 
 /** 旋钮的显示名 —— 面板与日志**共用一份字**（LESS IS MORE）。 */
 export const SB_LABEL = {
-  heat: '情绪强度', mood: '情绪偏向', npc: '散户参与度', shock: '冲击强度', res: '跨币共振',
+  heat: '情绪强度', mood: '情绪偏向', npc: '散户参与度', shock: '冲击强度', res: '跨币共振', lob: '挂单密度',
 };
 
 /** 恒等默认：`1` = 不放大，`0` = 不偏移。 */
-export const SB_DEFAULT = { heat: 1, mood: 0, npc: 1, shock: 1, res: 1 };
+export const SB_DEFAULT = { heat: 1, mood: 0, npc: 1, shock: 1, res: 1, lob: 1 };
 
 /**
  * 预设 —— 每组是一整个「世界」的旋钮组合。
@@ -1608,13 +1608,13 @@ export const SB_DEFAULT = { heat: 1, mood: 0, npc: 1, shock: 1, res: 1 };
  * ⚠️ 预设**不含种子** —— 换世界不改随机数流（种子由面板上那一行单独控制）。
  */
 export const SB_PRESETS = [
-  { id: 'default', name: '默认', sb: { heat: 1, mood: 0, npc: 1, shock: 1, res: 1 } },
-  { id: 'bull', name: '火箭牛市', sb: { heat: 1.4, mood: 0.12, npc: 1.6, shock: 1.2, res: 1.1 } },
-  { id: 'bear', name: '深度熊市', sb: { heat: 1.4, mood: -0.15, npc: 1.8, shock: 1.5, res: 1.5 } },
-  { id: 'vol', name: '高波动', sb: { heat: 2.2, mood: 0, npc: 2, shock: 2, res: 2 } },
+  { id: 'default', name: '默认', sb: { heat: 1, mood: 0, npc: 1, shock: 1, res: 1, lob: 1 } },
+  { id: 'bull', name: '火箭牛市', sb: { heat: 1.4, mood: 0.12, npc: 1.6, shock: 1.2, res: 1.1, lob: 1 } },
+  { id: 'bear', name: '深度熊市', sb: { heat: 1.4, mood: -0.15, npc: 1.8, shock: 1.5, res: 1.5, lob: 1 } },
+  { id: 'vol', name: '高波动', sb: { heat: 2.2, mood: 0, npc: 2, shock: 2, res: 2, lob: 1 } },
 ];
 
-/** 读侧：把 `s.god.sb` 归一成**恒有 5 个有限数**的旋钮包（坏值 / 缺键一律回默认）。 */
+/** 读侧：把 `s.god.sb` 归一成**恒有 6 个有限数**的旋钮包（坏值 / 缺键一律回默认）。 */
 export function sbOf(s) {
   const b = (s && s.god && s.god.sb) || null;
   const n = (v, d) => (Number.isFinite(v) ? v : d);
@@ -1627,6 +1627,7 @@ export function sbOf(s) {
     npc: mul(b && b.npc, 1),
     shock: mul(b && b.shock, 1),
     res: mul(b && b.res, 1),
+    lob: mul(b && b.lob, 1),
   };
 }
 
@@ -1660,3 +1661,49 @@ export const MANIP_GOD_CAP = 1.0;
 /** 幌骗的一次性热度偏置（0–1 尺度上的一脚）。热度记忆 ≈ 14h（`HEAT` 头注），
  *  这一脚被 `HEAT.k2` 的均值回复以同一条曲线拉回靶心 ⇒ 「假信号几小时后消散」不需要新状态。 */
 export const MANIP_SPOOF_NUDGE = 0.18;
+
+/* ── 插针剧本（2026-10-08 三批拍板③「插针剧本」）─────────────────────────────
+ * 一键「吃穿最大的强平簇再回位」—— 真实庄家的猎杀剧本（hunt liquidations）：价格被推到
+ * 密集强平价位，级联爆仓的单子成为对手盘流动性，随后价格「若无其事」地回位，图上留一根长针。
+ * 引擎侧（`engine.godPinStart` / `godPinTick`）**复用操盘台的吃单物理**（每小时一笔真实吃单：
+ * 花手续费 ＋ 冲击成本、吃深度、被硬夹），没有「直接设价」通道 —— 与本节头注同一纪律。
+ * 簇检测的判据与 `flushSlot` 逐位同源（`godWatchOf.liqs` 的 price 就是 `longAvg×(1−drop)` /
+ * `shortAvg×(1+drop)`）⇒ 针尖推到哪、哪一簇真的爆，同一套公式说了算。 */
+
+/** 插针伺服参数：
+ *  · `qStep`    每小时推进的名义额 = 本时深度 × 0.35（顶格吃单会一次性打满 `MANIP_GOD_CAP`，
+ *               分小时伺服既贴真实猎杀「分批砸」的节奏，也给 NPC 反向流留出搏斗空间）；
+ *  · `overshoot` 针尖越过簇价 0.5%（吃穿，不是「贴到」，否则刚好差一口不爆）；
+ *  · `backTol`  回位完成判据：价格回到启动价 ±0.4%；
+ *  · `maxN`     累计推进名义额上限 = 启动时本时深度 × 8（约 23 小时的推进余量，防死循环）；
+ *  · `maxH`     总时长上限（小时）—— 回位阶段被 NPC 逆流顶住时强制收场，照样播报。 */
+export const MANIP_PIN = { qStep: 0.35, overshoot: 0.005, backTol: 0.004, maxN: 8, maxH: 36 };
+
+/* ── 假消息注入（2026-10-08 三批拍板③「假消息注入」）─────────────────────────
+ * 真实市场操纵的老三样之一（pump 集群造势 / 假新闻：SEC 与 CFTC 历年起诉书里的标准动作）。
+ * 游戏内三件套：热度一脚（比幌骗大 —— 新闻是全市场广播，不是盘口假单）＋ 一笔小额真实吃单
+ * （花钱，与「信的人真的去买」同一份物理）＋ 日志播报（`news` 金底芯片，与史实新闻同族）。
+ * 模板里的 `%S` 由引擎替换成币符号；选条与冲击幅度走 `randFast` 通道 `'news'`（确定性：
+ * 同一存档同一小时，消息与幅度永远同一条 —— 重放 / 审计不漂移）。 */
+
+/** 假消息的热度偏置范围（0–1 尺度）：比 `MANIP_SPOOF_NUDGE`（0.18）大一圈 —— 广播级造势。 */
+export const MANIP_NEWS_RANGE = { min: 0.2, max: 0.4 };
+
+/** 假消息配套跟风单：本时深度 × 0.08（真金白银的小推动，不足 `MANIP_MIN` 时取下限）。 */
+export const MANIP_NEWS_Q = 0.08;
+
+/** 利好 / 利空模板（`%S` = 币符号）。短句、单行 —— 日志行不换行是 UI 红线。 */
+export const MANIP_NEWS = {
+  good: [
+    '快讯 ｜ 某主权基金披露已建仓 %S',
+    '快讯 ｜ %S 现货 ETF 单日净流入创历史新高',
+    '快讯 ｜ 头部交易所宣布上线 %S 永续合约',
+    '快讯 ｜ %S 网络完成关键升级，手续费降八成',
+  ],
+  bad: [
+    '快讯 ｜ 某国监管机构拟全面禁止 %S 交易',
+    '快讯 ｜ 知名机构被曝巨量做空 %S',
+    '快讯 ｜ 安全公司预警：%S 合约持仓异常聚集',
+    '快讯 ｜ %S 主网故障，出块暂停两小时',
+  ],
+};

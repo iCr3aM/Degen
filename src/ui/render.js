@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtFloatPrice, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, exMarkPrice, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -1482,7 +1482,7 @@ export function update(refs, s, view) {
  *        （回顾页是市场史，恒缺省 1）；`×1` 走 IEEE 精确恒等 ⇒ 普通局逐位不变。
  * @returns {object} `windowFor` 的返回值（`mode` / `count` / `locked` / `right` 都要用）
  */
-function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns = '', levels = null, volMul = 1 }) {
+function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns = '', levels = null, volMul = 1, liqBars = null }) {
   const win = windowFor(sym, i, view.chartW, own, ns, volMul);
   /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
      日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
@@ -1522,6 +1522,9 @@ function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns
     mark,
     /* 历史压力位（ROADMAP §六十五）—— 只有回顾页会传进来（交易页恒 null，`chart.js` 自会跳过）。 */
     levels,
+    /* 强平叠加档位条（2026-10-08 三批拍板③）：上帝面板开了「强平图」才传 ——
+       回顾页恒缺省 null（那是市场史，不该混入本局的强平分布）。 */
+    liqBars,
     entry: cur ? cur.entry : null,
     side: cur ? cur.side : null,
     /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。1x 多头（无借入）没有强平价 ⇒ 传 null。 */
@@ -1594,6 +1597,8 @@ function syncChart(refs, s, view, sym, cur, mark) {
     /* 上帝局量柱市场份随深度旋钮放大（2026-10-08 拍板④）—— 与引擎撮合分母同一个函数同一
        个口径（`godLiqMulOf`）；普通 / 回顾页不传 ⇒ 恒 1，逐位不变。 */
     volMul: s.god ? godLiqMulOf(s) : 1,
+    /* 强平叠加（2026-10-08 三批拍板③）：开关开着才读（`godWatchOf` 不便宜，别白算）。 */
+    liqBars: s.god && s.god.liqOverlay ? godWatchOf(s, sym).liqs : null,
   });
 
   /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种（`main.js` 里定的目标档） */
@@ -3207,6 +3212,45 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   manipIn.addEventListener('input', updPrev);
   updPrev();
 
+  /* 插针剧本（2026-10-08 三批拍板③）：一键吃穿**最大的强平簇**再回位 —— 伺服走既有操盘台
+     吃单物理（engine.godPinStart / godPinTick，每小时一笔真实吃单）。激活时方向钮置灰、
+     「停」亮起（置灰与可按要一眼分得开），状态行报目标价与已推名义额；面板重开时刷新。 */
+  const pinRow = el('div', 'set-row');
+  const pinDn = el('button', 'set-btn on', '砸针');
+  pinDn.dataset.godpin = '-1';
+  pinDn.disabled = !!s.god.pin;
+  const pinUp = el('button', 'set-btn on', '拉针');
+  pinUp.dataset.godpin = '1';
+  pinUp.disabled = !!s.god.pin;
+  const pinStop = el('button', 'set-btn on', '停');
+  pinStop.dataset.godpin = '0';
+  pinStop.disabled = !s.god.pin;
+  pinRow.append(el('i', null, '插针'), pinDn, pinUp, pinStop);
+  rowsC.append(pinRow);
+  if (s.god.pin) {
+    const pin = s.god.pin;
+    rowsC.append(el('p', 'god-prev',
+      `插针中 ${pin.dir < 0 ? '↓' : '↑'} ${pin.sym} ｜ 目标 ${fmtLogPrice(pin.tip)} ｜ 已推 ${fmtMoneyShort(pin.n)}`));
+  }
+
+  /* 假消息注入（2026-10-08 三批拍板③）：热度一脚 ＋ 小额跟风吃单 ＋ 日志播报
+     （engine.godFakeNews 一体完成），两枚按钮即两个方向。 */
+  const newsRow = el('div', 'set-row');
+  const newsDn = el('button', 'set-btn on', '利空');
+  newsDn.dataset.godnews = '-1';
+  const newsUp = el('button', 'set-btn on', '利好');
+  newsUp.dataset.godnews = '1';
+  newsRow.append(el('i', null, '假消息'), newsDn, newsUp);
+  rowsC.append(newsRow);
+
+  /* 强平叠加（2026-10-08 三批拍板③）：主图右轴画当前币的强平档位条（多红空绿、宽∝名义额）。
+     纯显示开关（`s.god.liqOverlay`，会话级），读数每帧从 `godWatchOf.liqs` 现取。 */
+  const ovRow = el('div', 'set-row');
+  const ovBtn = el('button', s.god.liqOverlay ? 'set-btn on' : 'set-btn', s.god.liqOverlay ? '叠加 开' : '叠加 关');
+  ovBtn.dataset.godliqov = '';
+  ovRow.append(el('i', null, '强平图'), ovBtn);
+  rowsC.append(ovRow);
+
   /* 互斥显隐：改 `.confirm-rows`（`display:grid`）的 inline `display` —— 见本函数头注。 */
   rowsA.style.display = page === 1 || page === 2 ? 'none' : '';
   rowsB.style.display = page === 1 ? '' : 'none';
@@ -3384,34 +3428,19 @@ function floatBody(s, page, bookStep = 1) {
        浮窗巨鲸页不再显示（`w.fng` 数据轨保留 —— 审计 9x 仍锚定 godWatchOf 的读数域）。 */
     box.append(el('div', 'god-frow2 mut', `热度 ${fmtPct(w.heat)}`));
   } else if (page === 3) {
-    /* 订单簿（2026-10-08 二次改版 · 用户拍板「步进网格 ＋ 视野收窄 ±2~3% ＋ 远档汇总一行」）：
-       真实交易所的盘口钉在**固定 tick 网格**上 —— 档位是整数网格价（108,100 而非 108,507）、
-       价格动了只是边缘行轮转，中间的数字纹丝不动。旧版把 18 根σ梯直接列出 ⇒ 档价随
-       `price×(1±d)` 逐小时整体重锚、名义又挂小时流动性，三列数字像量化一样逐帧跳。
-       改版（**纯显示层**，撮合梯 `baseLadder` / `walkBook` 原样不动 ——「走簿 ≡ 连续式」
-       恒等式的承重结构，审计 9v①）：把**连续冲击曲线**分桶装进 `1-2-5×10ⁿ` 可读网格 ——
-       每格名义 = 内外缘价距上的连续深度差（`3σ√q` 的反函数），
-       数量 = 名义 ÷ 格价（`fmtQty` 无 $），金额 = 从贴中向外累计（coinglass「总计」同款）。
-       ⚠️ 2026-10-08 用户拍板「正常情况每个价格都有人挂单」：显示曲线**不夹断**（不再把滑点
-       顶格线 `cap` 误画成「更远处没挂单」）—— 真实 LOB 远场永远有单（Potters & Bouchaud 2002:
-       限价价距宽尾幂律 µ≈0.6~1.5；Tóth et al. 2011: 平均账本 V 形、远处尾部不枯竭），
-       累积深度随价距持续增长（二次律与文献 ζ≈1.6~2 同族）。`cap` 只是**吃单成本**的玩法
-       上限（撮合侧原样），与「挂单是否存在」是两回事。墙 = 真实历史
-       价位，**不吸附网格**（它就是要被撞的那条价），照插格间。
-       ⚠️ 三批（2026-10-08）拍板：「更远」汇总行删除（想看更远拨大步进）＋ 行数自适应装框
-       （手机 / 桌面都不滚动）＋ 买卖比从连续曲线直接积分。 */
+    /* 订单簿（2026-10-08 四批改版 · 用户拍板⑦「限价单系统只给 NPC」）：**直接读 NPC 限价簿**
+       （engine `s.lob` —— 行为级离散账：近场指数 / 远场幂律 / 关口加成 / 撤单 / 吃穿跳价回填），
+       每一行就是一笔真实挂单（同价已合并），不再是连续冲击曲线的分桶近似。沿用的拍板纪律：
+       步进选择器 ×1~×20（会话级）管「看多远」；行数自适应装框（手机 / 桌面都不滚动）；
+       买卖比改**真实簿量**口径（窗口内实挂名义 ＋ 窗口外离散墙）。
+       ⚠️ 撮合成本仍走连续曲线（`baseLadder` / `walkBook` 原样 —— 审计 9v①~④ 承重结构），
+       这页是「谁把单挂在哪」的行为事实，与「吃一口多贵」是两把分开的尺子（拍板口径 R1）。
+       ⚠️ 簿为空（挂单密度旋钮 0 / 尚未冷启动）⇒ `bookForWatch` 已回落旧连续合成，这里照画。 */
     const b = w.book;
     if (!b) { box.append(el('p', 'god-fnote', '盘口暂不可用')); return box; }
-    /* 可读步进：`1-2-5×10ⁿ` 里取最接近 `price×2e-3` 的一档 ⇒ ×1 时单格 ≈ 0.2%、
-       （BTC@108k→200 · ETH@3.9k→10 · XRP@2.3→0.005 · DOGE@0.16→0.0002），
-       步进旋钮 ×1~×20 负责「看多远」。 */
-    const niceStep = p => {
-      const raw = p * 2e-3;
-      const e = Math.pow(10, Math.floor(Math.log10(raw)));
-      const m = raw / e;
-      return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * e;
-    };
-    const step = niceStep(b.mid) * bookStep;   // ① 底部步进选择器（会话级）：×1 细看 / ×20 广看
+    /* 可读步进来自引擎 `niceStepOf`（1-2-5×10ⁿ，与 NPC 挂单落格同一把尺子 —— 四批上收），
+       ×1 时单格 ≈ 0.2%；步进旋钮 ×1~×20 负责「看多远」。 */
+    const step = niceStepOf(b.mid) * bookStep;   // ① 底部步进选择器（会话级）：×1 细看 / ×20 广看
     /* 行数自适应装框（2026-10-08 三批拍板「订单簿手机端和桌面端都不滚动，只通过步进调整
        显示口径」）：面板高 − 固定骨架（面板头 / 内边距 / 比条 / 步进行，估 76px＋一行）
        = 可用行空间 ÷ 行高 = 总行数；−1（mid 行）再对半 = 单侧格数，夹 6~22。
@@ -3422,73 +3451,50 @@ function floatBody(s, page, bookStep = 1) {
     const fh = floatGeo().h;
     const fitRows = Math.max(8, Math.floor((fh - 76 - rowH) / rowH));
     const VIEW = Math.min(22, Math.max(6, Math.floor((fitRows - 1) / 2)));
-    const qOf = x => { const t = x / (3 * b.sigma); return t * t; };   // 价距比例 x ⇒ 已吃名义 q
     const midIdx = Math.round(b.mid / step);
-    /* 第 k 格（贴中数起）的名义（q 单位）：外缘/内缘价距上的连续深度差 —— **不夹断**：
-       `qOf` 单调 ⇒ 差恒 ≥ 0；远处格子随价距继续增厚（远场一直有挂单，见上）。 */
-    const cellQ = (k, above) => {
-      const pOut = (midIdx + (above ? k + 0.5 : -k - 0.5)) * step;
-      const pIn = pOut - (above ? step : -step);
-      const xOut = Math.abs(pOut / b.mid - 1);
-      const xIn = Math.max(0, Math.abs(pIn / b.mid - 1));
-      return qOf(xOut) - qOf(xIn);
-    };
-    const side = above => {
-      const rows = [];
-      const xEdge = Math.abs((midIdx + (above ? VIEW + 0.5 : -VIEW - 0.5)) * step / b.mid - 1);
-      /* ② 远场稀疏化（2026-10-08 用户拍板）：单格名义 q 超过顶格线一半（cap/2）之后，
-         每格金额已经大到一屏写不下几行 —— 真实 LOB 的远场本就稀疏（Krause 2021,
-         arXiv:2106.11691 的「两类流动性」：近场致密、远场稀而不断）。隔档显示（偶数格隐藏）
-         —— 三批起 `gb-far` 已删，跳过格不再折行累计（买卖比的曲线积分口径天然包含它们）。 */
-      for (let k = 1; k <= VIEW; k++) {
-        const q = cellQ(k, above);
-        if (q <= 0) continue;
-        if (q > b.cap / 2 && k % 2 === 0) continue;
-        const kk = midIdx + (above ? k : -k);   // 网格序号（整数）—— 关口判定用，无浮点误差
-        /* 关口格（数值不动，只挂类名由 CSS 提亮）：网格步长的 10 倍格 = Tier1（整数关口，
-           Urquhart 2017 / Hu et al. 2019 的 round-number 聚集）、5 倍格 = Tier2。
-           10 | kk ⇒ 5 | kk，Tier1 恒比 Tier2 稀 ⇒ 强度分级在任何缩放档下都成立。 */
-        rows.push({
-          price: kk * step, notional: q * b.liq, wall: false,
-          gate: kk % 10 === 0 ? 1 : kk % 5 === 0 ? 2 : 0,
-        });
+    /* 可见窗口 = VIEW 格价距；簿行已按远近排序（asks 升序 / bids 降序，bookForWatch 保证）
+       ⇒ 从贴中往外直接取，超预算保近舍远（墙是真历史价位，必留、且不占近场预算）。
+       关口行：网格步长的 10 倍格 = Tier1（Urquhart 2017 / Hu et al. 2019 的 round-number
+       聚集）、5 倍格 = Tier2 —— 10 | kk ⇒ 5 | kk，强度分级在任何缩放档下都成立。 */
+    const edge = VIEW * step / b.mid;
+    const sideOf = rows => {
+      const vis = [];
+      let n = 0;
+      for (const r of rows) {
+        if (r.d > edge) break;
+        if (!r.wall && ++n > VIEW) continue;
+        const kk = Math.round(r.price / step);
+        vis.push({ ...r, gate: kk % 10 === 0 ? 1 : kk % 5 === 0 ? 2 : 0 });
       }
-      for (const r of above ? b.asks : b.bids) {
-        if (r.wall && Math.abs(r.price / b.mid - 1) < xEdge) {
-          rows.push({ price: r.price, notional: r.notional, wall: true });
-        }
-      }
-      rows.sort((a, z) => a.price - z.price);
-      return rows;
+      return vis;
     };
-    const A = side(true), B = side(false);
-    /* 装框裁剪（兜底）：两侧格行总数超出行预算时，从**最远端**裁非墙格（墙是真历史价位，
-       必须留）。正常不触发（VIEW 本就按面板高算）；两侧只剩墙的病态情形跳出，
-       `overflow-y: auto` 托底。 */
-    const trimFar = (rows, farIsTail) => {
+    const A = sideOf(b.asks);                 // asc：贴中在前
+    const B = sideOf(b.bids);                 // desc：贴中在前
+    /* 装框裁剪（兜底）：两侧行总数超出行预算时，从**最远端**裁非墙行（两侧都已按远近排序
+       ⇒ 最远端都在尾部）。正常不触发（预算本就按面板高算）；`overflow-y: auto` 托底。 */
+    const trimFar = rows => {
       for (let i = rows.length - 1; i >= 0; i--) {
-        const j = farIsTail ? i : rows.length - 1 - i;
-        if (!rows[j].wall) { rows.splice(j, 1); return true; }
+        if (!rows[i].wall) { rows.splice(i, 1); return true; }
       }
       return false;
     };
-    while (A.length + B.length + 2 > fitRows && (trimFar(A, true) || trimFar(B, false))) { /* 裁到装下 */ }
-    /* 买卖比（三批起改**连续曲线积分**口径）：两侧到「下一屏」边界（2×VIEW＋0.5 格）的
-       连续深度直接求和 —— 可见行、稀疏跳过格、被装框裁掉的格全在曲线里，与显示行数解耦；
+    while (A.length + B.length + 2 > fitRows && (trimFar(A) || trimFar(B))) { /* 裁到装下 */ }
+    /* 买卖比（四批起改**真实簿量**口径）：两侧到「下一屏」边界（2×VIEW＋0.5 格）的实挂
+       名义直接求和 —— 可见行、被装框裁掉的行、步进窗外的行全在簿里，与显示行数解耦；
        边界外的离散墙逐条补上。 */
     const xA = Math.abs(Math.max(0, (midIdx + 2 * VIEW + 0.5) * step) / b.mid - 1);
     const xB = Math.abs(Math.max(0, (midIdx - 2 * VIEW - 0.5) * step) / b.mid - 1);
-    let aUsd = qOf(xA) * b.liq, bUsd = qOf(xB) * b.liq;
-    for (const r of b.asks) if (r.wall && Math.abs(r.price / b.mid - 1) > xA) aUsd += r.notional;
-    for (const r of b.bids) if (r.wall && Math.abs(r.price / b.mid - 1) > xB) bUsd += r.notional;
-    /* 累计从**贴中格**出发向外累加：asks 升序（贴中在前）累计后反转显示（远档在上），
-       bids 反转成贴中在前再累计、原序显示（最近的买价贴着 mid）。 */
+    let aUsd = 0, bUsd = 0;
+    for (const r of b.asks) { if (r.d <= xA) aUsd += r.notional; else if (r.wall) aUsd += r.notional; }
+    for (const r of b.bids) { if (r.d <= xB) bUsd += r.notional; else if (r.wall) bUsd += r.notional; }
+    /* 累计从**贴中**出发向外累加：A 升序（贴中在前）累计后反转显示（远档在上）；
+       B 降序（贴中在前）直接累计、原序显示（最近的买价贴着 mid）。 */
     const decorate = rows => {
       let cum = 0;
       return rows.map(r => { cum += r.notional; return { ...r, qty: r.notional / r.price, cum }; });
     };
     const asks = decorate(A).reverse();
-    const bids = decorate(B.slice().reverse());
+    const bids = decorate(B);
     const maxQ = Math.max(1e-12, ...asks.map(r => r.qty), ...bids.map(r => r.qty));
     const head = el('div', 'gb-head');
     head.append(el('i', null, '价格'), el('span', 'gb-track'), el('em', null, '数量'), el('b', null, '金额'));
@@ -3522,7 +3528,7 @@ function floatBody(s, page, bookStep = 1) {
     }
     /* ① 步进选择器（2026-10-08 用户拍板；三批改档 ×1~×20）：挂在页底 —— 网格缩放档，
        点按写 `main.js` 的会话级 `bookStep`（`data-gofstep` 委托，不进存档）；
-       选中档高亮随每帧重画自动跟随。基础步长本身仍按价格自适应（上面的 `niceStep`）。 */
+       选中档高亮随每帧重画自动跟随。基础步长本身按价格自适应（`engine.niceStepOf`）。 */
     const stepRow = el('div', 'gb-steps');
     for (const v of [1, 2, 5, 10, 20]) {
       const b = el('button', `gb-step${Math.abs(bookStep - v) < 1e-9 ? ' on' : ''}`, `×${v}`);

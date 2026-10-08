@@ -2604,7 +2604,7 @@ section('9p · 上帝沙盒：旋钮归一 · 预设合法性 · shock 线性 ·
     w.heat === 0 && w.mood === -0.2 && w.npc === 1 && w.shock === 1 && w.res === 1,
     `heat ${w.heat} mood ${w.mood} npc ${w.npc} shock ${w.shock} res ${w.res}`);
 
-  /* ② 预设合法性：5 键齐全 · 倍率非负 · 四组 id / 名唯一 */
+  /* ② 预设合法性：6 键齐全 · 倍率非负 · 四组 id / 名唯一 */
   let ok = true, why = '';
   for (const p of god.SB_PRESETS) {
     for (const k of god.SB_KEYS) {
@@ -2614,7 +2614,7 @@ section('9p · 上帝沙盒：旋钮归一 · 预设合法性 · shock 线性 ·
   }
   const ids = new Set(god.SB_PRESETS.map(p => p.id));
   const names = new Set(god.SB_PRESETS.map(p => p.name));
-  check('9p 预设 5 枚旋钮齐全且倍率非负', ok, why);
+  check('9p 预设 6 枚旋钮齐全且倍率非负', ok, why);
   check('9p 预设四组（默认 / 火箭牛市 / 深度熊市 / 高波动）且 id / 名唯一',
     god.SB_PRESETS.length === 4 && ids.size === 4 && names.size === 4,
     god.SB_PRESETS.map(p => p.name).join(' / '));
@@ -3070,24 +3070,22 @@ section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源
   check('9v② 墙吸收手算：吃半 = 0.725', Math.abs(halfEat - 0.725) < 1e-12, f(halfEat, 4));
   check('9v② 墙吸收手算：墙在位移范围外 → 不折减（=1）', outEat === 1);
 
-  /* ③ 同源：浮窗订单簿 = 玩家下一笔会撞的簿（同一 σ / cap / liq / levels） */
+  /* ③ 同源：浮窗订单簿 = **NPC 限价簿**（2026-10-08 三批拍板⑦「行为级离散簿」）——
+     每行就是一笔真实挂单（同价已合并）；墙照插格间。基础档与 baseLadder 的逐位锚
+     已随离散簿改版退役（回落路径的 18 档逐位锚移到 9af⑤ 的旋钮归零用例）。 */
   {
     const sB = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+    for (let k = 0; k < 48; k++) engine.advanceOneHour(sB);   // 演化 48h：冷启动簿偏薄（老单已按寿命退场），活簿才是常态形态
     const bk = engine.godWatchOf(sB, 'BTC').book;
-    check('9v③ 上帝视角带订单簿（中价 / σ / cap / liq ＋ 两侧 ≥18 行）',
-      !!bk && bk.mid > 0 && bk.sigma > 0 && bk.cap > 0 && bk.liq > 0
+    check('9v③ 上帝视角带订单簿（离散簿：lob 标志 ＋ 中价 / σ / cap / liq ＋ 两侧 ≥18 行）',
+      !!bk && bk.lob === true && bk.mid > 0 && bk.sigma > 0 && bk.cap > 0 && bk.liq > 0
       && bk.asks.length >= 18 && bk.bids.length >= 18);
     if (bk) {
-      const lad = impact.baseLadder(bk.sigma, bk.cap);
-      const baseAsks = bk.asks.filter(r => !r.wall);
-      const baseBids = bk.bids.filter(r => !r.wall);
-      check('9v③ 基础档 = baseLadder 逐位复刻（asks 18 档价距与名义）',
-        baseAsks.length === 18
-        && lad.every((r, k) => Math.abs(baseAsks[k].price - bk.mid * (1 + r.d)) < 1e-9
-          && Math.abs(baseAsks[k].notional - r.nq * bk.liq) < 1e-6));
-      check('9v③ 基础档 = baseLadder 逐位复刻（bids 18 档镜像）',
-        baseBids.length === 18
-        && lad.every((r, k) => Math.abs(baseBids[k].price - bk.mid * (1 - r.d)) < 1e-9));
+      check('9v③ 离散簿契约：行价严格分居中价两侧 ＆ 同侧升/降序唯一 ＆ 名义为正',
+        bk.asks.every((r, k) => r.price > bk.mid && r.notional > 0
+          && (k === 0 || r.price > bk.asks[k - 1].price))
+        && bk.bids.every((r, k) => r.price < bk.mid && r.notional > 0
+          && (k === 0 || r.price < bk.bids[k - 1].price)));
       const lvB = levels.levelsOf('BTC', sB.i).filter(L => L.w > 0);
       const wallAsks = bk.asks.filter(r => r.wall);
       const wallBids = bk.bids.filter(r => r.wall);
@@ -3156,24 +3154,25 @@ section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源
     && /\.gb-ask b \{ color: var\(--down\)/.test(styleSrc9v)
     && /\.gb-bid b \{ color: var\(--up\)/.test(styleSrc9v));
   /* ── ⑥ 订单簿网格化（2026-10-08 用户拍板「步进网格 ＋ 视野收窄 ±2~3%」；三批修订）──
-     纯显示层改版：`niceStep` 取 1-2-5×10ⁿ 步进、连续冲击曲线分桶、墙不吸附网格。
+     纯显示层改版：`niceStepOf`（已上收进 engine，四批离散簿共用）取 1-2-5×10ⁿ 步进、
+     簿行直接读 NPC 限价簿、墙不吸附网格。
      三批（2026-10-08）：`gb-far` 汇总行删除（远场一直有单，靠步进 ×10/×20 翻看）＋
-     行数自适应装框（手机 / 桌面订单簿页都不滚动）＋ 买卖比改连续曲线积分。
+     行数自适应装框（手机 / 桌面订单簿页都不滚动）＋ 买卖比改读真实簿量。
      承重结构 `baseLadder` / `walkBook` 不动（9v①~④ 照旧）。 */
-  check('9v⑥ render：订单簿网格化（niceStep 步进 ＋ 装框行数/裁剪 ＋ gb-far 退役；旧逐档切窗 baseAsks/cut 退役）',
-    rendSrc9v.includes('const niceStep = p =>') && !rendSrc9v.includes("'gb-far'")
+  check('9v⑥ render：订单簿网格化（niceStepOf 步进 ＋ 装框行数/裁剪 ＋ gb-far 退役；旧逐档切窗 baseAsks/cut 退役）',
+    rendSrc9v.includes('const step = niceStepOf(b.mid)') && !rendSrc9v.includes("'gb-far'")
     && rendSrc9v.includes('const fitRows =') && rendSrc9v.includes('trimFar')
     && rendSrc9v.includes('const tot = aUsd + bUsd')
     && !rendSrc9v.includes('baseAsks') && !rendSrc9v.includes('const cut = rows'));
-  /* 行为锚不取副本：正则把 render.js 里的 niceStep 箭头函数**原样提取**成真函数再执行 ——
-     被测对象就是 shipped 源码，副本漂移无从谈起。 */
-  check('9v⑥ niceStep 行为锚（源码提取执行）：108k→200 · 3.9k→10 · 2.3→0.005 · 0.16→0.0002',
+  /* 行为锚不取副本：正则把 engine.js 里的 `niceStepOf` **原样提取**成真函数再执行 ——
+     被测对象就是 shipped 源码，副本漂移无从谈起。（四批：函数上收进 engine 供簿/图共用。） */
+  check('9v⑥ niceStepOf 行为锚（源码提取执行）：108k→200 · 3.9k→10 · 2.3→0.005 · 0.16→0.0002',
     (() => {
-      const body = rendSrc9v.match(/const niceStep = p => \{([\s\S]*?)\n    \};/)[1];
-      const niceStep = new Function('p', body);
+      const body = engSrc.match(/export function niceStepOf\(p\) \{([\s\S]*?)\n\}/)[1];
+      const niceStepOf = new Function('p', body);
       const near = (a, z) => Math.abs(a - z) <= Math.abs(z) * 1e-12;
-      return near(niceStep(108000), 200) && near(niceStep(3900), 10)
-        && near(niceStep(2.3), 0.005) && near(niceStep(0.16), 0.0002);
+      return near(niceStepOf(108000), 200) && near(niceStepOf(3900), 10)
+        && near(niceStepOf(2.3), 0.005) && near(niceStepOf(0.16), 0.0002);
     })());
   check('9v⑥ style：gb-far 退役 ＋ 1280px 档随订单簿行同步放大（11px/15px ＋ 三列 78/52/68）',
     !styleSrc9v.includes('.gb-far')
@@ -3549,8 +3548,8 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
     chartSrc9y.includes('import { fmtAxisPrice, fmtMoneyShort }')
     && chartSrc9y.includes('const axisLabel = fmtAxisPrice;')
     && chartSrc9y.includes('axisLabel(p, span / 3)'));
-  check('9y⑤ render：订单簿档位 / mid 传 step（niceStep 1-2-5 网格步进，2026-10-08 网格化改版），热力图/巨鲸页仍量级口径',
-    rendSrc9y.includes('const step = niceStep(b.mid)')
+  check('9y⑤ render：订单簿档位 / mid 传 step（niceStepOf 1-2-5 网格步进，2026-10-08 网格化改版），热力图/巨鲸页仍量级口径',
+    rendSrc9y.includes('const step = niceStepOf(b.mid)')
     && rendSrc9y.includes('fmtFloatPrice(r.price, step)')
     && rendSrc9y.includes('fmtFloatPrice(b.mid, step)'));
 }
@@ -5192,6 +5191,288 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     && renderSrc9y.includes('gfd-lq') && renderSrc9y.includes('gfd-ls')
     && styleSrc9y.includes('.gfd-row') && styleSrc9y.includes('.gfd-row.t3')
     && styleSrc9y.includes('.gfd-lq i, .gfd-lq span') && styleSrc9y.includes('#ec407a') && styleSrc9y.includes('#ff9800'));
+}
+
+/* ═══════════════════ 9af · NPC 限价单离散簿（2026-10-08 三批拍板⑦） ═══════════════════
+   「限价单系统，只给 NPC 加入」—— 行为级离散簿：每小时每币生成真实挂单（近场指数
+   e^(−kδ) ＋ 远场 Pareto α=1.8 ＋ 整数关口加成 ＋ 买侧不对称），按距离随时间撤单，
+   被行情吃穿的档 70% 概率跳价回填 ×1.5~3（做市商防御性补墙）。
+   红线 A（不双重计价）：连续曲线（baseLadder / walkBook）**原样保留**为玩家成本 ＋
+   总量基线 —— 簿只管显示（bookForWatch）＋ tape 播报（大档被吃穿）。
+   随机数走 randFast 32 位通道（chan 'lob'/'lobf'），不污染行情 / 决策通道；撤单抖动
+   用价签哈希（零随机数）⇒ 同一种子同一时刻 ⇒ 逐位同一本簿。 */
+section('9af · NPC 限价单离散簿（行为级 ＋ 显示/播报读簿 ＋ 连续曲线保留为基线）');
+{
+  const engSrc9af = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  const stateSrc9af = fs.readFileSync(path.join(ROOT, 'src/core/state.js'), 'utf8');
+  const godSrc9af = fs.readFileSync(path.join(ROOT, 'src/core/god.js'), 'utf8');
+  const saveSrc9af = fs.readFileSync(path.join(ROOT, 'src/core/save.js'), 'utf8');
+  const rendSrc9af = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+
+  /* ① 结构锚：簿四件套 ＋ 双钩子 ＋ 存档口径 ＋ 旋钮 */
+  check('9af① 引擎：LOB 常数表 ＋ randFast 导入 ＋ lob 专用双通道 ＋ lobOf/lobTick/bookForWatch 在位',
+    engSrc9af.includes('export const LOB = {')
+    && engSrc9af.includes("import { hashStr, rand, randFast } from './rng.js';")
+    && engSrc9af.includes("hashStr('lob')") && engSrc9af.includes("hashStr('lobf')")
+    && engSrc9af.includes('function lobOf(s, sym)')
+    && engSrc9af.includes('function lobTick(s, sym)')
+    && engSrc9af.includes('function bookForWatch(s, sym, price)'));
+  check('9af① 挂点：tickMarket / npcOtherTick 每币每小时一刻度（恰两处）＋ rewindTo 清簿 ＋ 冷启动兜底',
+    (engSrc9af.match(/lobTick\(s, sym\);/g) || []).length === 2
+    && engSrc9af.includes('s.lob = {};')
+    && engSrc9af.includes('if (!s.lob) s.lob = {};'));
+  check('9af① 状态 / 存档：createState 带 lob:{} ＋ 不进 EPHEMERAL（随 {...s} 落盘）＋ 不进 SHAPE（旧档不弃）',
+    stateSrc9af.includes('lob: {}')
+    && saveSrc9af.includes("const EPHEMERAL = ['god', 'godRuined', 'feed']")
+    && !/const SHAPE = \{[^}]*lob/.test(saveSrc9af));
+  check('9af① 旋钮：SB_KEYS 六键含 lob ＋ sbOf 归一 lob ＋ 四预设全带 lob=1',
+    godSrc9af.includes("SB_KEYS = ['heat', 'mood', 'npc', 'shock', 'res', 'lob']")
+    && godSrc9af.includes('lob: mul(b && b.lob, 1)')
+    && god.SB_PRESETS.every(p => p.sb.lob === 1));
+
+  /* ② 确定性：簿是 `(seed, sym, hour)` 的纯函数 ⇒ 两个**独立开局**走同一小时序列
+     ⇒ 逐位同一本簿。（rewindTo 跳时间重建的是「另一段历史的世界」，价格位移层不必与
+     全新局逐位同 —— 那是既有口径；这里只锁「同种子同时序 ⇒ 同簿」。） */
+  {
+    const run48 = async () => {
+      const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+      for (let k = 0; k < 48; k++) engine.advanceOneHour(s);
+      return engine.godWatchOf(s, 'BTC').book;
+    };
+    const bA = await run48(), bB = await run48();
+    check('9af② 确定性：双独立局同走 48h ⇒ 两侧逐位同一本簿（价 ＋ 名义 ＋ 行数）',
+      bA && bB && bA.lob === true && bB.lob === true
+      && bA.asks.length === bB.asks.length && bA.bids.length === bB.bids.length
+      && bA.asks.every((r, j) => r.price === bB.asks[j].price && r.notional === bB.asks[j].notional)
+      && bA.bids.every((r, j) => r.price === bB.bids[j].price && r.notional === bB.bids[j].notional),
+      `asks ${bA.asks.length}/${bB.asks.length} · bids ${bA.bids.length}/${bB.bids.length}`);
+    /* rewindTo 清簿（源码锚在 9af①）＋ 落点冷启动重长：契约完整即可（价距分居两侧 ＋ 非空） */
+    const sW = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+    for (let k = 0; k < 12; k++) engine.advanceOneHour(sW);
+    engine.rewindTo(sW, idx(at(2021, 5, 10)));
+    check('9af② rewindTo 清空 s.lob（跳时间后簿由种子重长，不携带跳前形态）',
+      (!sW.lob || !sW.lob.BTC || (sW.lob.BTC.asks.length === 0 && sW.lob.BTC.bids.length === 0)));
+    const bW = engine.godWatchOf(sW, 'BTC').book;
+    check('9af② rewindTo 后冷启动重长：lob 标志 ＋ 两侧非空 ＋ 价距严格分居',
+      bW && bW.lob === true && bW.asks.length > 0 && bW.bids.length > 0
+      && bW.asks.every(r => r.price > bW.mid) && bW.bids.every(r => r.price < bW.mid));
+  }
+
+  /* ③ 720h 行为：治理器把单侧簿质量锚在基线（capQ × 本小时基准深度）附近 ＋ 结构上限 */
+  {
+    const sQ = await mk({ i: idx(at(2020, 10, 1)) });
+    for (let k = 0; k < 720; k++) engine.advanceOneHour(sQ);
+    let coins = 0, expect = 0, qFail = '', sFail = '', miss = '';
+    for (const c of C.COINS) {
+      if (!market.hasCandle(c.sym, sQ.i)) continue;          // 数据窗口未覆盖 ⇒ 合法缺席
+      expect++;
+      const b = sQ.lob && sQ.lob[c.sym];
+      if (!b || !b.asks.length || !b.bids.length) { miss += `${c.sym}缺簿 `; continue; }
+      coins++;
+      const liq = engine.godWatchOf(sQ, c.sym).book.liq;   // hourLiqOf（含池回补折减）≤ 治理器的 base
+      for (const [nm, arr] of [['asks', b.asks], ['bids', b.bids]]) {
+        if (arr.length > engine.LOB.maxSide) sFail += `${c.sym}.${nm}=${arr.length}超顶 `;
+        let mass = 0;
+        for (const o of arr) mass += o.n;
+        const r = mass / (engine.LOB.capQ * liq);
+        if (!(r > 0.2) || !(r < 12)) qFail += `${c.sym}.${nm}=${f(r, 2)}× `;
+      }
+    }
+    check('9af③ 行为：720h 后活簿单侧 ≤ maxSide（防泄漏硬顶生效）', sFail === '', sFail || '全部达标');
+    check('9af③ 行为：单侧质量锚在基线附近（0.2~12× capQ×liq —— 治理器在位、不死不爆）',
+      qFail === '', qFail || '全部达标');
+    check('9af③ 行为：数据窗口覆盖的每个币两侧都长出活簿（近场指数保证贴中恒有单）',
+      expect > 0 && coins === expect, `coins=${coins}/${expect}${miss ? ' · ' + miss : ''}`);
+  }
+
+  /* ④ 旋钮归零 ⇒ 冷启动不生成、推进 24h 仍回落连续合成（2026-10-07 形态 18 档逐位保留） */
+  {
+    const sZ = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+    sZ.god = { lastFill: 0, sb: { ...god.SB_DEFAULT, lob: 0 } };
+    engine.rewindTo(sZ, idx(at(2021, 5, 10)));   // mk 热身已按默认密度建簿 ⇒ 清掉，让 lob=0 从第一刻生效
+    const bZ = engine.godWatchOf(sZ, 'BTC').book;
+    for (let k = 0; k < 24; k++) engine.advanceOneHour(sZ);
+    const bZ2 = engine.godWatchOf(sZ, 'BTC').book;
+    const ladZ = impact.baseLadder(bZ2.sigma, bZ2.cap);
+    const baseA = bZ2.asks.filter(r => !r.wall), baseB = bZ2.bids.filter(r => !r.wall);
+    check('9af④ 旋钮 lob=0 ⇒ 簿恒空、回落连续合成（无 lob 标志 ＋ 两侧 18 基础档 baseLadder 逐位复刻）',
+      bZ && bZ2 && !bZ.lob && !bZ2.lob
+      && baseA.length === 18 && baseB.length === 18
+      && ladZ.every((r, j) => Math.abs(baseA[j].price - bZ2.mid * (1 + r.d)) < 1e-9
+        && Math.abs(baseA[j].notional - r.nq * bZ2.liq) < 1e-6
+        && Math.abs(baseB[j].price - bZ2.mid * (1 - r.d)) < 1e-9)
+      && sZ.lob.BTC && sZ.lob.BTC.asks.length === 0 && sZ.lob.BTC.bids.length === 0);
+  }
+
+  /* ⑤ 存档往返 ＋ 旧档兼容 */
+  {
+    const sO = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+    for (let k = 0; k < 6; k++) engine.advanceOneHour(sO);
+    const round = JSON.parse(JSON.stringify({ ...sO }));   // save() 的 {...s}＋stringify 同款路径
+    check('9af⑤ 往返：lob 随档序列化（JSON 往返逐位同簿）',
+      round.lob && round.lob.BTC
+      && JSON.stringify(round.lob.BTC) === JSON.stringify(sO.lob.BTC));
+    delete round.lob;                                      // 旧档：根本没有这个键
+    const bO = engine.godWatchOf(round, 'BTC').book;
+    check('9af⑤ 旧档无 lob ⇒ 读侧惰性冷启动不炸（冷启动簿两侧 ≥18 行）',
+      bO && bO.lob === true && bO.asks.length >= 18 && bO.bids.length >= 18);
+  }
+
+  /* ⑥ render 锚：页 3 直接读簿行 ＋ 整数关口标记 ＋ 步进底栏 */
+  check('9af⑥ render：页 3 读簿（sideOf(asks/bids)）＋ 关口标记（kk%10/%5）＋ 步进底栏接线在位',
+    rendSrc9af.includes('const A = sideOf(b.asks)')
+    && rendSrc9af.includes('const B = sideOf(b.bids)')
+    && rendSrc9af.includes('kk % 10 === 0 ? 1 : kk % 5 === 0 ? 2 : 0')
+    && rendSrc9af.includes('b.dataset.gofstep = String(v)'));
+}
+
+/* ═══════════════════ 9ag · 插针剧本 ＋ 假消息 ＋ K线强平叠加（2026-10-08 三批拍板③） ═══════════════════
+   上帝操盘台第三批：① 插针 = 一键吃穿最大强平簇再回位 —— **没有直接设价通道**，每小时
+   伺服一笔真实吃单（godManipPush 同一物理：花钱 / 吃深度 / 被硬夹），簇检测与 flushSlot
+   的强平判定逐位同源（godWatchOf.liqs 的 price 就是 longAvg×(1−drop) / shortAvg×(1+drop)）
+   ⇒ 推到位的那一根 NPC 真的爆（tape k=4/k=5）；② 假消息 = 热度一脚 ＋ 小额跟风单 ＋
+   news 金底播报，选条/幅度走 randFast 通道 'news'（确定性）；③ 强平叠加 = 主图右轴档位条
+   （godWatchOf.liqs 同一份数据）。全部挂 s.god（不进存档）⇒ 不升 STATE_VERSION。 */
+section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃单物理 ＋ 全链路确定性）');
+{
+  const rd9ag = p => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const engSrc9ag = rd9ag('src/core/engine.js');
+  const godSrc9ag = rd9ag('src/core/god.js');
+  const mainSrc9ag = rd9ag('src/main.js');
+  const bindSrc9ag = rd9ag('src/ui/bind.js');
+  const rendSrc9ag = rd9ag('src/ui/render.js');
+  const chartSrc9ag = rd9ag('src/ui/chart.js');
+  const styleSrc9ag = rd9ag('src/ui/style.css');
+
+  /* ① 结构锚：状态机 ＋ 伺服挂点 ＋ 常数 ＋ UI 接线（bind.js 漏键 = 按钮没反应，9q 教训） */
+  check('9ag① 引擎：godPinStart/Tick/Stop/FakeNews 导出 ＋ 伺服挂点在 pending 检查后、tickMarket 前 ＋ rewindTo 作废',
+    engSrc9ag.includes('export function godPinStart(s, sym, dir)')
+    && engSrc9ag.includes('export function godPinTick(s)')
+    && engSrc9ag.includes('export function godPinStop(s)')
+    && engSrc9ag.includes('export function godFakeNews(s, sym, dir)')
+    && engSrc9ag.includes('if (s.pending) return;\n\n  /* 插针剧本伺服')
+    && engSrc9ag.includes('godPinTick(s);\n\n  /* NPC 情绪 / 踩踏级联')
+    && engSrc9ag.includes('if (s.god) s.god.pin = null;'));
+  check('9ag① god.js：MANIP_PIN 五参 ＋ MANIP_NEWS 利好/利空模板 ＋ %S 占位',
+    godSrc9ag.includes('export const MANIP_PIN = { qStep: 0.35, overshoot: 0.005, backTol: 0.004, maxN: 8, maxH: 36 };')
+    && godSrc9ag.includes('export const MANIP_NEWS = {')
+    && godSrc9ag.includes('good:') && godSrc9ag.includes('bad:')
+    && engSrc9ag.includes("replace('%S', sym)"));
+  check('9ag① 接线：main 分派三键 ＋ 处理器 ＋ bind ACTION_KEYS ＋ render 三行按钮 ＋ chart 读取/着色 ＋ 置灰样式',
+    mainSrc9ag.includes('if (d.godpin !== undefined)') && mainSrc9ag.includes('if (d.godnews !== undefined)')
+    && mainSrc9ag.includes('if (d.godliqov !== undefined)') && mainSrc9ag.includes('function onGodPin')
+    && mainSrc9ag.includes('function onGodNews')
+    && bindSrc9ag.includes("'godpin'") && bindSrc9ag.includes("'godnews'") && bindSrc9ag.includes("'godliqov'")
+    && rendSrc9ag.includes("pinDn.dataset.godpin = '-1'") && rendSrc9ag.includes("newsUp.dataset.godnews = '1'")
+    && rendSrc9ag.includes("ovBtn.dataset.godliqov = ''") && rendSrc9ag.includes('pinDn.disabled = !!s.god.pin')
+    && rendSrc9ag.includes('liqBars: s.god && s.god.liqOverlay ? godWatchOf(s, sym).liqs : null')
+    && chartSrc9ag.includes('right, levels, liqBars } = o;')
+    && chartSrc9ag.includes("L.side === 'long' ? T.DOWN : T.UP")
+    && styleSrc9ag.includes('.set-btn:disabled'));
+
+  /* ② 假消息：确定性（双局逐位同果）＋ 物理三件套 ＋ 资金闸 */
+  {
+    const mkNews = async () => {
+      const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+      s.god = { lastFill: 1e9, inf: true, sb: { ...god.SB_DEFAULT } };
+      s.mkt.BTC.heat = 0.3;                            // 归一低温：热度脚不被 clamp01 截断，断言稳定
+      return s;
+    };
+    const a = await mkNews(), b = await mkNews();
+    const hA = a.mkt.BTC.heat, hB = b.mkt.BTC.heat;
+    const pA = engine.lastPrice(a, 'BTC'), pB = engine.lastPrice(b, 'BTC');
+    const ra = engine.godFakeNews(a, 'BTC', 1), rb = engine.godFakeNews(b, 'BTC', 1);
+    const dA = a.mkt.BTC.heat - hA, dB = b.mkt.BTC.heat - hB;
+    check('9ag② 假消息确定性：双局热度脚/花费/播报文本逐位相同',
+      ra.ok && rb.ok && Math.abs(dA - dB) < 1e-12 && Math.abs(ra.cost - rb.cost) < 1e-9
+      && a.log[0].text === b.log[0].text);
+    check('9ag② 假消息物理：热度一脚 ∈ [0.2,0.4] ＋ 位移真动了 ＋ news 金底芯片 ＋ 模板含币符号',
+      dA >= 0.2 - 1e-9 && dA <= 0.4 + 1e-9 && engine.lastPrice(a, 'BTC') !== pA
+      && a.log[0].tag === 'news' && a.log[0].text.includes('BTC') && ra.cost > 0);
+    const c = await mkNews();
+    for (const bk of Object.values(c.books)) { bk.usd = 0; bk.usdt = 0; }
+    c.god.inf = false; c.god.lastFill = 0;
+    const rc = engine.godFakeNews(c, 'BTC', 1);
+    check('9ag② 假消息资金闸：无限资金关 ＋ 账户归零 ⇒ 拒绝且不播报',
+      !rc.ok && /资金不足/.test(rc.why) && c.log[0] == null);
+  }
+
+  /* ③ 插针全链路：强塞一档高杠杆多头（审计直改状态 = 「NPC 早已建仓」）→ 启动 →
+     伺服推进 → flushSlot 真爆（tape k=4）→ 回位收场；双局全程逐位确定。 */
+  const pinRun = async () => {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+    s.god = { lastFill: 1e9, inf: true, sb: { ...god.SB_DEFAULT } };
+    const cur = engine.lastPrice(s, 'BTC');
+    const t = engine.timeOf(s);
+    let kBest = -1, bestDrop = Infinity;             // 有效杠杆最高的档 ⇒ 簇离现价最近
+    for (let k = 0; k < s.mkt.BTC.npc.length; k++) {
+      const drop = 1 / god.npcLevOf(t, god.NPC.ladder[k].lev) - C.GAME.maintRate;
+      if (drop > 0 && drop < bestDrop) { bestDrop = drop; kBest = k; }
+    }
+    const g = s.mkt.BTC.npc[kBest];
+    g.long = 2e7; g.longAvg = cur; g.longStopped = false; g.longTp = false;
+    /* 预期针尖要用**引擎同源**的选择逻辑算：godPinStart 挑的是「名义最大的前方案」，预热期
+       其他档已有真实持仓 ⇒ 不能拿我强塞的那一档当预期（那是 9ag③ 首版的错口径）。 */
+    let best = null;
+    for (const l of engine.godWatchOf(s, 'BTC').liqs) {
+      if (l.side !== 'long' || !(l.price < cur)) continue;
+      if (!best || l.notional > best.notional) best = l;
+    }
+    const st = engine.godPinStart(s, 'BTC', -1);
+    let h = 0, sawK4 = false;
+    while (s.god.pin && h < god.MANIP_PIN.maxH + 10) {
+      engine.advanceOneHour(s);
+      h++;
+      if (s.feed.some(x => x.k === 4)) sawK4 = true;
+    }
+    return {
+      ok: st.ok, tip: st.tip, bestPrice: best ? best.price : 0, bestBelow: best ? best.price < cur : false,
+      h, sawK4, gone: !s.god.pin,
+      logs: s.log.map(l => l.text).join('|'),
+      feed: JSON.stringify(s.feed), mkt: JSON.stringify(s.mkt.BTC.npc),
+    };
+  };
+  {
+    const A = await pinRun(), B = await pinRun();
+    const tipTheoretical = A.bestPrice * (1 - god.MANIP_PIN.overshoot);
+    check('9ag③ 插针启动：簇 = 下方名义最大档（godWatchOf.liqs 同源）⇒ 针尖越过簇价 0.5%',
+      A.ok && A.bestBelow && A.h > 0 && Math.abs(A.tip - tipTheoretical) < 1e-9 * tipTheoretical);
+    check('9ag③ 全链路：伺服收场 ＋ 簇真爆了（tape k=4）＋ 日志有回位完成/中止',
+      A.gone && A.sawK4 && /回位完成|插针中止/.test(A.logs));
+    check('9ag③ 确定性：双独立局全程日志 / tape / NPC 持仓逐位相同',
+      A.logs === B.logs && A.feed === B.feed && A.mkt === B.mkt && A.h === B.h);
+  }
+
+  /* ④ 拉针镜像 ＋ 手动停 ＋ 跳时间作废 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+    s.god = { lastFill: 1e9, inf: true, sb: { ...god.SB_DEFAULT } };
+    const cur = engine.lastPrice(s, 'BTC');
+    const t = engine.timeOf(s);
+    let kBest = -1, bestDrop = Infinity;
+    for (let k = 0; k < s.mkt.BTC.npc.length; k++) {
+      const drop = 1 / god.npcLevOf(t, god.NPC.ladder[k].lev) - C.GAME.maintRate;
+      if (drop > 0 && drop < bestDrop) { bestDrop = drop; kBest = k; }
+    }
+    const g = s.mkt.BTC.npc[kBest];
+    g.short = 2e7; g.shortAvg = cur; g.shortStopped = false; g.shortTp = false;
+    /* 预期针尖与 9ag③ 同一口径：godWatchOf.liqs 同源选择（上方名义最大的空头簇）。 */
+    let best = null;
+    for (const l of engine.godWatchOf(s, 'BTC').liqs) {
+      if (l.side !== 'short' || !(l.price > cur)) continue;
+      if (!best || l.notional > best.notional) best = l;
+    }
+    const up = engine.godPinStart(s, 'BTC', 1);
+    const upTipOk = up.ok && best && Math.abs(up.tip - best.price * (1 + god.MANIP_PIN.overshoot)) < 1e-9 * up.tip;
+    const again = engine.godPinStart(s, 'BTC', 1);   // 进行中再启 ⇒ 拒绝
+    const stop = engine.godPinStop(s);
+    const stopped = stop.ok && !s.god.pin;
+    engine.godPinStart(s, 'BTC', 1);
+    const hadPin = !!s.god.pin;
+    engine.rewindTo(s, s.i - 1);
+    check('9ag④ 拉针镜像（tip = shortAvg×(1+drop)×(1+0.005)）＋ 进行中再启拒绝 ＋ 停 ＋ 跳时间作废',
+      upTipOk && !again.ok && stopped && hadPin && s.god.pin === null);
+  }
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

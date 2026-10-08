@@ -1200,6 +1200,9 @@ canvas.curve {
 }
 .set-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .set-btn:active { background: var(--line); }
+/* 不可用（2026-10-08 插针行首次用上）：与 `.ic:disabled` / `.opt:disabled` 同一套置灰语言
+   （虚线 ＋ 灰字），可按的是实心实线 —— 扫一眼就能分开。 */
+.set-btn:disabled { opacity: .38; color: var(--mut); border-color: var(--line); border-style: dashed; background: none; cursor: default; }
 /* 档位组（T-2 · 2026-10-01）：一排并排的 `.set-btn`（2–4 枚），当前档挂 `.on`。
    宽度**放开** —— 上面那条 64px 定宽是给「开 / 关」二态用的（防文案切换时抖动），
    四档并排 4 × 64 装不下，且各档文字长短不一，用 `auto ＋ 等内边距 ＋ 最小宽` 才不会挤变形。 */

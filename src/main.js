@@ -11,12 +11,12 @@ import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, exchangeOf, hasFinancingAt
 import { anyHeld, createState, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godManipPump } from './core/engine.js';
+import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godManipPump, godPinStart, godPinStop, godFakeNews } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
 import { SB_DEFAULT, SB_KEYS, SB_PRESETS, enableGod, factorFor, sbOf } from './core/god.js';
-import { fmtDate, fmtMoney, fmtMoneyShort, fmtPct } from './core/format.js';
+import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct } from './core/format.js';
 import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, clearOver, renderBoot, hideBoot,
@@ -1096,6 +1096,23 @@ function dispatch(node, ev) {
     if (!s.god) return;
     return onGodPump(node);
   }
+  /* ── 插针 / 假消息 / 强平叠加（2026-10-08 三批拍板③）── 同一处境：只出现在上帝面板里，
+     以 `s.god` 非空兜底（状态机不靠 DOM）。 */
+  if (d.godpin !== undefined) {
+    if (!s.god) return;
+    return onGodPin(node);
+  }
+  if (d.godnews !== undefined) {
+    if (!s.god) return;
+    return onGodNews(node);
+  }
+  if (d.godliqov !== undefined) {
+    if (!s.god) return;
+    s.god.liqOverlay = !s.god.liqOverlay;
+    showGod();
+    after();
+    return;
+  }
   /* ── 上帝沙盒（2026-10-05）── 与上面几枚同一处境：只出现在上帝面板里，
      同样以 `s.god` 非空兜底（状态机不靠 DOM）。 */
   if (d.sb !== undefined || d.sbpreset !== undefined || d.sbseed !== undefined || d.sbroll !== undefined) {
@@ -1705,6 +1722,39 @@ function onGodPump(node) {
 
 /** 上帝面板里输入框的值 —— 输入框没有动作键，只能从同一个面板里按类名找（两个框各有一个唯一类） */
 const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.value ?? null;
+
+/* ── 插针剧本（2026-10-08 三批拍板③）── 启动 / 停止的**点击反馈**在这里播报；
+   伺服过程（吃穿簇价 / 回位完成 / 中止）由引擎 `godPinTick` 自己逐小时播，
+   爆仓潮那一条归 `flushSlot` —— 各说各的事，不重复。 */
+function onGodPin(node) {
+  const dir = Number(node.dataset.godpin);
+  if (dir === 0) {
+    const r = godPinStop(s);
+    if (r.ok) pushLog(s, '插针 ｜ 已手动停止', 'sys');
+    else { pushLog(s, `插针失败 · ${r.why}`, 'bad'); snd.deny(); }
+  } else {
+    const r = godPinStart(s, s.sym, dir);
+    pushLog(s, r.ok
+      ? `插针 ｜ ${dir < 0 ? '砸' : '拉'}针 ${s.sym} → 目标 ${fmtLogPrice(r.tip)}（簇 ${fmtMoneyShort(r.cluster)}），伺服中`
+      : `插针失败 · ${r.why}`, r.ok ? 'ok' : 'bad');
+    if (!r.ok) snd.deny();
+  }
+  showGod();
+  after();
+}
+
+/* ── 假消息注入（2026-10-08 三批拍板③）── 成功时日志本身就是那条「新闻」（引擎播），
+   这里只拦失败；花费不另播一条（那条新闻就是这一脚的全部可见后果，LESS IS MORE）。 */
+function onGodNews(node) {
+  const dir = Number(node.dataset.godnews);
+  const r = godFakeNews(s, s.sym, dir);
+  if (!r.ok) {
+    pushLog(s, `假消息失败 · ${r.why}`, 'bad');
+    snd.deny();
+  }
+  showGod();
+  after();
+}
 
 /* ── 上帝沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）────────────
    5 枚旋钮 ＋ 4 组预设 ＋ 种子，全走 `s.god.sb`（种子例外，见 `onSbSeed`）。

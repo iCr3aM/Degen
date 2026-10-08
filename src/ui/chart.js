@@ -135,7 +135,7 @@ const axisLabel = fmtAxisPrice;
  *                   否则玩家一直往同一边拖时状态里的值会越滚越大，松手再按就从远处跳回来。
  */
 export function drawChart(canvas, o) {
-  const { candles, vols, pvols, mark, entry, side, liq, anchors, right, levels } = o;
+  const { candles, vols, pvols, mark, entry, side, liq, anchors, right, levels, liqBars } = o;
   const T = theme();
   const dpr = Math.min(3, (typeof devicePixelRatio === 'number' ? devicePixelRatio : 1) || 1);
   const W = Math.max(1, Math.round(o.cssW));
@@ -471,6 +471,26 @@ export function drawChart(canvas, o) {
       ctx.fillStyle = T.ON_DOWN;
       ctx.textAlign = 'left';
       ctx.fillText(ltag, 3, ly);
+    }
+  }
+
+  // ── 强平档位条（2026-10-08 三批拍板③「K线强平叠加」· 上帝面板开关） ──
+  // 画在**右轴沟槽**里：多头强平线（价格跌破爆多）用跌色、空头用涨色，宽 ∝ 名义额。
+  // 排在现价签之前 ⇒ 现价标签永远在最上层；3px 细条 ＋ 半透明，压到轴签也读得清。
+  // 数据 = `godWatchOf.liqs`（与强平页 / 插针簇检测同一份聚合，口径处处一致）。
+  if (liqBars && liqBars.length) {
+    let mx = 0;
+    for (const L of liqBars) if (L.notional > mx) mx = L.notional;
+    if (mx > 0) {
+      ctx.globalAlpha = 0.7;
+      for (const L of liqBars) {
+        const y = yOf(L.price);
+        if (y < top || y > bot) continue;      // 本帧价格带外的档位不画
+        const w = 4 + Math.round((PAD_R - 12) * clamp(L.notional / mx, 0, 1));
+        ctx.fillStyle = L.side === 'long' ? T.DOWN : T.UP;
+        ctx.fillRect(plotW + 3, Math.round(y) - 1.5, w, 3);
+      }
+      ctx.globalAlpha = 1;
     }
   }
 

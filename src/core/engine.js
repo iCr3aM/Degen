@@ -17,7 +17,7 @@ import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, ra
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_SPOOF_NUDGE, addFlow, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, npcLevOf, playerFactor, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, npcLevOf, playerFactor, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -28,7 +28,7 @@ import {
 } from './positions.js';
 import { blankBook, bookOf, cashOf, capturedOf, credit, debit, ensureBook, heldSyms, posOf, pushLog, spendableOf, usdtHeldOf } from './state.js';
 import { pathOf } from './simulate.js';
-import { hashStr, rand } from './rng.js';
+import { hashStr, rand, randFast } from './rng.js';
 import { addCareer, thinEq } from './careers.js';
 /* 结束本局时要把**本槽的档**清掉（2026-10-04 用户拍板）—— 已结束的局不许再被「读取存档」捞回来。
    与 `careers.js` 同一条分层豁免：两者都是「跨局/落盘」的事，收在 core 里比让 UI 反向记住更干净。 */
@@ -146,15 +146,232 @@ export function lastPrice(s, sym = s.sym) {
  *   · `tiers` 巨鲸：六档明细（杠杆 / 权重 / 双侧名义与均价）＋ 做市盘行 ＋ `heat` / `mood` 读数。
  *   · `depth` 深度：日流动性、本小时基准深度、瞬时深度池（已消耗 / 容量 `POOL.capK × 基准`）、
  *             滑点死区线（`SLIP.threshold × liqDay`）与单笔饱和线（`SLIP.cap × liqDay`）。
- *   · `book`  订单簿：基础 18 档 ＋ 压力位墙（`bookForWatch`，普通局浮窗也读这一份）。
+ *   · `book`  订单簿：**NPC 限价单离散簿**（`s.lob`，2026-10-08 三批拍板⑦）＋ 压力位墙
+ *             （`bookForWatch`，普通局浮窗也读这一份）。
  */
+
 /**
- * 订单簿**合成视图**（浮窗第 4 页 · 2026-10-07 拍板「压力位挂单墙并入订单簿」）——
- * 基础 18 档 ＝ `baseLadder(σ, cap)` 摊在中间价两侧（每档**等名义** `nq × liq`、档距取
- * `d` 的积分平均价，见 `impact.js`）；墙 ＝ `levelsOf` 的压力位按 `WALL_K × liq` 折成名义，
- * 只列**要被吃的那一侧**（买看上方卖墙、卖看下方买墙——反向的墙管不着这一笔）。
- * ⚠️ 与 `walkFillFor` **同源**：同一 σ / cap / liq / levels —— 玩家在这页看到的墙，
- *   就是下一笔成交真的会撞上的墙（审计 9v 逐位断言）。
+ * **盘口步长**（1-2-5×10ⁿ 可读网格）—— 订单簿页显示与 NPC 挂单落格**共用同一把尺子**：
+ * ×1 档单格 ≈ 0.2%（BTC@108k→200 · ETH@3.9k→10 · XRP@2.3→0.005 · DOGE@0.16→0.0002）。
+ * ⚠️ 2026-10-08 三批起从 render.js 上收到 engine：`lobTick` 要把挂单**吸附**到步长格上
+ *（真实交易所的限价单都钉在 tick 网格），显示与状态必须同源，不许各算各的。
+ */
+export function niceStepOf(p) {
+  const raw = p * 2e-3;
+  const e = Math.pow(10, Math.floor(Math.log10(raw)));
+  const m = raw / e;
+  return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * e;
+}
+
+/**
+ * **NPC 限价单离散簿**（2026-10-08 三批拍板⑦「限价单系统，只给 NPC 加入」）——
+ * 一本**行为级**的挂单账：每小时每币生成真实的离散限价单（近场指数 ＋ 远场幂律 ＋
+ * 整数关口加成），按距离随时间撤单，被行情吃穿的档**跳价回填**（做市商把墙补得更厚）。
+ *
+ * 为什么这样做（拍板口径 R1「行为级离散簿」）：
+ *   · **近场指数** λ(δ) ∝ e^(−kδ)：挂单密度随价距指数衰减（kB//近场致密），
+ *     占每小时新单的 ~80%；δ 以盘口步长格计（`niceStepOf`）。
+ *   · **远场幂律**：价值单（大额挂单）价距走 Pareto α≈1.8（Potters & Bouchaud 2002
+ *     的限价价距宽尾 µ≈0.6~1.5；价值单取 1.6~2 中值）——远场稀而不断。
+ *   · **大小**：对数正态 σ=1.2（文献挂单大小的对数正态主体）。
+ *   · **整数关口**：落格后若是 5/10 倍格（人类整数价）名义 ×3~10
+ *     （Urquhart 2017 / Hu et al. 2019 的 round-number 聚集）。
+ *   · **撤单**：寿命 = `life0/(1+δ/δc)`（即 θ(δ)=θ0(1+δ/δc) 的存活时间形式）——
+ *     近场单活得久（ ~14h）、远场单死得快（陈单被撤）。抖动用**价签哈希**（无随机数）。
+ *   · **买侧不对称** ×1.6：加密市场的买盘深度系统性偏厚（历史上「抄底墙」）。
+ *   · **吃穿跳价回填** ×1.5~3：被吃穿的档有 70% 概率在**更远一格**重新挂出、
+ *     名义更厚 —— 做市商的防御性补墙，正是「扫荡后墙变厚」的微观结构事实。
+ *
+ * ⚠️ **与成本模型的关系（红线 A · 不双重计价）**：连续曲线（`baseLadder` / `walkBook`）
+ *    **原样保留**，仍是玩家吃单成本与「总量基线」—— 簿的总名义被治理器（`lobTick` 内的
+ *    `sMul`）锚在 `LOB.capQ × 本小时基准深度` 附近，但**不进任何代价计算**；深度旋钮
+ *    / 审计口径逐位不变。簿只负责**显示**（`bookForWatch`）＋ **tape 播报**（大档被吃穿
+ *    时按主动方向进 `s.feed`，见下）。
+ * ⚠️ **tape 双层的自洽口径**：M2 的事件流播的是 NPC **主动决策单**（建/减/护/爆 —— 吃的是
+ *    连续层）；本簿播的是**被动挂单被行情吃穿**（吃的是挂单层）。同一小时两边都有 prints
+ *    不是重复计数 —— 在本作的本体论里它们是**两批不同的订单**（就像真实 tape 里
+ *    taker 单与被扫掉的 maker 挂单本就是两回事）。每小时每币上限 `LOB.feedMax` 条。
+ * ⚠️ **随机数**：走 `randFast`（32 位轻量通道，chan='lob'）—— 不污染行情/决策通道，
+ *    也不把全周期重放拖进 BigInt 的性能坑；撤单抖动用价签哈希（零随机数）。
+ *    同一存档同一时刻 ⇒ 同一本簿（`rewindTo` 清空后重放逐位复现）。
+ */
+export const LOB = {
+  capQ: SLIP.cap,      // 一侧总深基线（q = 名义 ÷ 本小时基准深度）—— 与玩家吃单顶格线同源
+  near: 8,             // 每小时每侧新生成的近场单数（× 沙盒旋钮 × 治理器）
+  kNear: 0.16,         // 近场指数衰减 k（每格；格 ≈ 0.2% 价距）
+  farP: 0.30,          // 每小时每侧出现远场价值单的概率
+  farD0: 15,           // 远场价距下限（格）
+  farA: 1.8,           // 远场价距幂律 α（Potters & Bouchaud 2002）
+  sizeSig: 1.2,        // 挂单大小对数正态 σ
+  nearQ: 0.0015,       // 近场单中位大小（q 单位）
+  farQ: 0.015,         // 远场单 Pareto 尺度（q 单位）
+  life0: 14,           // 撤单基线寿命（小时）—— θ0 ≈ 0.07/h
+  lifeDist: 30,        // δc（格）—— 寿命 = life0/(1+δ/δc)（θ 随距离增大）
+  gateMin: 3, gateMax: 10,   // 整数关口加成区间
+  bidEdge: 1.6,        // 买侧深度不对称（×1.2~2 的中值）
+  refillP: 0.7,        // 吃穿后回填概率
+  refillMin: 1.5, refillMax: 3,  // 回填名义倍数
+  maxQ: 0.02,          // 单档名义硬顶（q 单位）—— 防回填连乘把一格吹到天上去
+  maxSide: 400,        // 单侧最大档数（防泄漏硬顶，超出裁最远）
+  feedMax: 4,          // 每小时每币进 tape 的吃穿事件上限
+};
+
+const CH_LOB = hashStr('lob');   // randFast 的通道号（与行情/决策通道隔离）
+const CH_LOBF = hashStr('lobf'); // 回填/远场子通道
+
+/** 挂单条目：`{ p, n, t }` —— 绝对价格（限价单钉死不动）、美元名义、出生小时。
+ *  同价合并（同格多单求和 ⇒ 数组按价格升序（asks）/降序（bids）且价格唯一）；
+ *  ⚠️ 合并时 `t` 刷成**最新**出生小时 —— 格里还活着的是新单，寿命筛只该杀
+ *  「最后一笔补单也老化了」的格子（否则热门贴中格会因为最老贡献者的年龄被整格团灭）。 */
+const lobPut = (arr, p, n, t, desc) => {
+  if (!(p > 0) || !(n > 0)) return;
+  let lo = 0, hi = arr.length - 1, hit = -1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; const c = desc ? arr[mid].p > p : arr[mid].p < p; if (c) lo = mid + 1; else { hit = mid; hi = mid - 1; } }
+  const e = arr[hit];
+  if (e && e.p === p) { e.n += n; if (t > e.t) e.t = t; }
+  else arr.splice(hit < 0 ? arr.length : hit, 0, { p, n, t });
+};
+
+/** 价签哈希（撤单抖动用，零随机数）—— 同价同抖动、跨小时稳定。 */
+const lobHash = p => (Math.imul(Math.round(p * 1e6) | 0, 2654435761) >>> 0) / 4294967296;
+
+/**
+ * 该币的限价簿（惰性访问）—— 没有就**冷启动**：把过去 24 小时的生成器各跑一遍
+ *（出生小时回填到 i−23..i，撤单只按寿命筛一次），簿一开局就是「活过一天」的形状，
+ * 不存在空簿突变的尴尬帧。`rewindTo` 清空 `s.lob` 后第一次读到这里 ⇒ 逐位可复现。
+ */
+function lobOf(s, sym) {
+  if (!s.lob) s.lob = {};
+  let b = s.lob[sym];
+  if (b) return b;
+  const price = lastPrice(s, sym);
+  if (!(price > 0)) return null;
+  b = { i: s.i, bids: [], asks: [] };
+  s.lob[sym] = b;
+  const base = hourLiqBase(s, sym, s.i);
+  if (!(base > 0)) return b;
+  const lobMul = sbOf(s).lob;              // 挂单密度旋钮（沙盒）：0 = 连冷启动都不生成 ⇒ 簿恒空回落连续合成
+  if (lobMul <= 0) return b;
+  const step = niceStepOf(price);
+  const sy = hashStr(sym);
+  for (let k = 24; k >= 1; k--) {          // 回填出生小时：i−23..i（同 lobTick 的生成分布）
+    const h = s.i - k;
+    for (const side of [-1, 1]) {
+      const scale = side < 0 ? LOB.bidEdge : 1;
+      const nNear = 2 + Math.floor(randFast(s.seed, sy, h, 1, CH_LOB) * LOB.near * 2);
+      for (let j = 0; j < nNear; j++) {
+        const u1 = randFast(s.seed, sy, h, 10 + j * 3, CH_LOB);
+        const d = Math.max(1, Math.min(400, -Math.log(1 - u1 * 0.999) / LOB.kNear));
+        const z = Math.sqrt(-2 * Math.log(1 - randFast(s.seed, sy, h, 11 + j * 3, CH_LOB) * 0.999)) * Math.cos(6.283185307 * randFast(s.seed, sy, h, 12 + j * 3, CH_LOB));
+        const n = Math.min(LOB.maxQ, LOB.nearQ * Math.exp(LOB.sizeSig * z - LOB.sizeSig * LOB.sizeSig / 2) * scale) * base;
+        const kk = Math.round(price * (1 + side * d * step / price) / step);
+        lobPut(side < 0 ? b.bids : b.asks, kk * step, n * (kk % 10 === 0 ? LOB.gateMax : kk % 5 === 0 ? (LOB.gateMin + LOB.gateMax) / 2 : 1), h, side < 0);
+      }
+    }
+  }
+  /* 冷启动收尾：按寿命筛一次（出生最早的那批可能有该死的）—— 与 lobTick ② 同一公式 */
+  for (const arr of [b.bids, b.asks]) {
+    for (let j = arr.length - 1; j >= 0; j--) {
+      const o = arr[j];
+      const d = Math.abs(o.p / price - 1) / (step / price);
+      const life = LOB.life0 / (1 + d / LOB.lifeDist) * (0.6 + 0.8 * lobHash(o.p));
+      if (s.i - o.t > life || d > 400) arr.splice(j, 1);
+    }
+  }
+  return b;
+}
+
+/**
+ * 限价簿的**小时刻度**（`tickMarket` / `npcOtherTick` 末尾调用，每币每小时一次）：
+ *   ① 吃穿 —— 本根 K 线的高低价扫过的档：被动成交（大档按主动方向进 tape），70% 概率
+ *      在更远一格跳价回填、名义 ×1.5~3（防御性补墙）；
+ *   ② 撤单 —— 寿命 = `life0/(1+δ/δc) × 价签抖动`，远场陈单先死；
+ *   ③ 生成 —— 近场指数 ＋ 远场幂律 ＋ 关口加成 ＋ 买侧不对称，名义经**治理器**
+ *      （`sMul` = 目标深 ÷ 现存深，夹 0.25~4）锚在 `LOB.capQ × 本小时基准深度` 附近。
+ */
+function lobTick(s, sym) {
+  const price = lastPrice(s, sym);
+  if (!(price > 0) || !isLoaded(sym)) return;
+  const b = lobOf(s, sym);
+  if (b.i === s.i) return;                 // 同根重入（切币回来重画）幂等
+  b.i = s.i;
+  const base = hourLiqBase(s, sym, s.i);
+  if (!(base > 0)) return;
+  const step = niceStepOf(price);
+  const c = candleAt(sym, s.i);
+  if (!c) return;
+  const hi = c.h, lo = c.l;
+  const sy = hashStr(sym);
+  const eaten = [];
+  /* ① 吃穿（按本根高低价 —— 针扫挂单，与强平判定同一口径） */
+  for (const side of [-1, 1]) {
+    const arr = side < 0 ? b.bids : b.asks;
+    let i0 = 0;
+    while (i0 < arr.length && (side < 0 ? arr[i0].p >= lo : arr[i0].p <= hi)) i0++;
+    const swept = arr.splice(0, i0);       // asks 升序 = 从贴中被吃；bids 降序同
+    for (const o of swept) {
+      eaten.push({ side, ...o });
+      if (randFast(s.seed, sy, s.i, (Math.round(o.p * 1e6) | 0) + 7, CH_LOBF) < LOB.refillP) {
+        const rp = side < 0 ? Math.min(o.p, lo) - step : Math.max(o.p, hi) + step;
+        const mul = LOB.refillMin + randFast(s.seed, sy, s.i, (Math.round(o.p * 1e6) | 0) + 13, CH_LOBF) * (LOB.refillMax - LOB.refillMin);
+        lobPut(arr, rp, Math.min(LOB.maxQ * base, o.n * mul), s.i, side < 0);
+      }
+    }
+  }
+  /* ①′ 大档被吃 ⇒ 进 tape（主动方向：吃掉卖档 = 主动买 ▲；吃掉买档 = 主动卖 ▼），
+     名义阈内取最大的 `feedMax` 条 —— volatile 小时也不许刷屏（FEED_CAP 是全币共享的）。 */
+  eaten.sort((a, z) => z.n - a.n);
+  let fed = 0;
+  for (const e of eaten) {
+    if (fed >= LOB.feedMax) break;
+    if (feedTier(e.n, liqOf(sym, dayIndexOf(s.i))) < 0) continue;
+    feedPush(s, sym, e.side < 0 ? 1 : 0, e.p, e.n);
+    fed++;
+  }
+  /* ② 撤单 ＋ ③ 生成（一起过，避免两趟扫描） */
+  for (const side of [-1, 1]) {
+    const arr = side < 0 ? b.bids : b.asks;
+    for (let j = arr.length - 1; j >= 0; j--) {
+      const o = arr[j];
+      const d = Math.abs(o.p / price - 1) / (step / price);
+      const life = LOB.life0 / (1 + d / LOB.lifeDist) * (0.6 + 0.8 * lobHash(o.p));
+      if (s.i - o.t > life || d > 400) arr.splice(j, 1);
+    }
+    let mass = 0;
+    for (const o of arr) mass += o.n;
+    const sMul = Math.max(0.25, Math.min(4, LOB.capQ * base / (mass + LOB.capQ * base * 0.1)));
+    const scale = side < 0 ? LOB.bidEdge : 1;
+    const lobMul = sbOf(s).lob;            // 挂单密度旋钮（沙盒 · 2026-10-08 三批）：0 = 不再挂新单
+    if (lobMul > 0) {
+      const nNear = Math.max(1, Math.round((2 + Math.floor(randFast(s.seed, sy, s.i, side < 0 ? 31 : 32, CH_LOB) * LOB.near * 2)) * lobMul));
+      for (let j = 0; j < nNear; j++) {
+        const u1 = randFast(s.seed, sy, s.i, 40 + j * 3 + (side < 0 ? 300 : 0), CH_LOB);
+        const d = Math.max(1, Math.min(400, -Math.log(1 - u1 * 0.999) / LOB.kNear));
+        const z = Math.sqrt(-2 * Math.log(1 - randFast(s.seed, sy, s.i, 41 + j * 3 + (side < 0 ? 300 : 0), CH_LOB) * 0.999)) * Math.cos(6.283185307 * randFast(s.seed, sy, s.i, 42 + j * 3 + (side < 0 ? 300 : 0), CH_LOB));
+        const n = Math.min(LOB.maxQ, LOB.nearQ * Math.exp(LOB.sizeSig * z - LOB.sizeSig * LOB.sizeSig / 2) * scale * sMul) * base;
+        const kk = Math.round(price * (1 + side * d * step / price) / step);
+        lobPut(arr, kk * step, n * (kk % 10 === 0 ? LOB.gateMax : kk % 5 === 0 ? (LOB.gateMin + LOB.gateMax) / 2 : 1), s.i, side < 0);
+      }
+      if (randFast(s.seed, sy, s.i, side < 0 ? 61 : 62, CH_LOB) < LOB.farP * lobMul) {
+        const u1 = randFast(s.seed, sy, s.i, side < 0 ? 63 : 64, CH_LOB);
+        const d = Math.min(400, LOB.farD0 * Math.pow(1 - u1 * 0.999, -1 / LOB.farA));
+        const u2 = randFast(s.seed, sy, s.i, side < 0 ? 65 : 66, CH_LOB);
+        const n = Math.min(LOB.maxQ, LOB.farQ * Math.pow(1 - u2 * 0.999, -1 / 1.8) * scale * sMul) * base;
+        const kk = Math.round(price * (1 + side * d * step / price) / step);
+        lobPut(arr, kk * step, n * (kk % 10 === 0 ? LOB.gateMax : kk % 5 === 0 ? (LOB.gateMin + LOB.gateMax) / 2 : 1), s.i, side < 0);
+      }
+    }
+    if (arr.length > LOB.maxSide) arr.splice(LOB.maxSide);   // 裁最远（两端已按远近排序）
+  }
+}
+
+/**
+ * 订单簿**视图**（浮窗第 4 页）—— **直接读 NPC 限价簿**（`s.lob`，2026-10-08 三批拍板⑦）：
+ * 每一行就是一笔真实挂单（同价已合并），墙（`levelsOf` 压力位）照插格间。
+ * ⚠️ 簿为空（沙盒旋钮 0 / 尚未冷启动）⇒ 回落**旧连续曲线合成**（基础 18 档，
+ *    2026-10-07 形态逐位保留）—— 旋钮归零即回到拍板前的盘口。
+ * ⚠️ 与 `walkFillFor` 仍是**两把分开的尺子**（拍板口径）：玩家成本走连续曲线（审计 9v），
+ *    这页显示的是「谁把单挂在哪」—— 行为层的事实，不掺代价。
  * @returns {object|null} 行情不可用 ⇒ `null`（UI 显示「盘口暂不可用」）
  */
 function bookForWatch(s, sym, price) {
@@ -162,13 +379,26 @@ function bookForWatch(s, sym, price) {
   if (!(liq > 0) || !(price > 0)) return null;
   const sigma = dailySigma(sym, s.i);
   const cap = godCapOf(s);
-  const side = (dir) => {
+  const wallsOf = (dir) => {
     const rows = [];
-    for (const r of baseLadder(sigma, cap)) rows.push({ price: dir > 0 ? price * (1 + r.d) : price * (1 - r.d), d: r.d, notional: r.nq * liq, wall: false });
     for (const L of levelsOf(sym, s.i)) {
       if (!(L.w > 0) || (dir > 0 ? L.p <= price : L.p >= price)) continue;
       rows.push({ price: L.p, d: Math.abs(L.p / price - 1), notional: L.w * WALL_K * liq, wall: true, w: L.w });
     }
+    return rows;
+  };
+  const b = lobOf(s, sym);
+  if (b && (b.asks.length || b.bids.length)) {
+    const asks = b.asks.map(o => ({ price: o.p, d: o.p / price - 1, notional: o.n, wall: false })).concat(wallsOf(1));
+    const bids = b.bids.map(o => ({ price: o.p, d: o.p / price - 1, notional: o.n, wall: false })).concat(wallsOf(-1));
+    asks.sort((a, z) => a.price - z.price);
+    bids.sort((a, z) => z.price - a.price);
+    return { mid: price, sigma, cap, liq, lob: true, asks, bids };
+  }
+  const side = (dir) => {
+    const rows = [];
+    for (const r of baseLadder(sigma, cap)) rows.push({ price: dir > 0 ? price * (1 + r.d) : price * (1 - r.d), d: r.d, notional: r.nq * liq, wall: false });
+    rows.push(...wallsOf(dir));
     rows.sort((a, b) => a.d - b.d);
     return rows;
   };
@@ -2711,6 +2941,7 @@ function npcOtherTick(s) {
     npcBuild(s, sym, m, s.i);
     if (!(heldSyms(s).includes(sym) || adv[sym])) syncNpcDrift(s, sym, s.i, rawDailySigma(sym, s.i));
     stampede(s, sym, m, lastPrice(s, sym));
+    lobTick(s, sym);   // NPC 限价簿刻度（2026-10-08 三批⑦）—— 其余币也要有活盘口（无玩家自洽）
   }
 }
 
@@ -2789,6 +3020,9 @@ export function tickMarket(s, sym) {
   syncNpcDrift(s, sym, i, rawDailySigma(sym, i));
   /* ④ 踩踏级联。 */
   stampede(s, sym, m, lastPrice(s, sym));
+  /* ⑤ NPC 限价簿刻度（2026-10-08 三批⑦）：吃穿 / 撤单 / 生成 —— 每币每小时一次。
+     ⚠️ 放在**最后**：本根的全部位移流都已写完，`candleAt` 的高低价才是终值。 */
+  lobTick(s, sym);
 }
 
 /**
@@ -4109,6 +4343,127 @@ export function godManipPump(s, sym, dir, notional) {
   return { ok: true, impact: pu.impact, cost: pu.cost + (ws.ok ? ws.fee : 0), wash: ws.ok ? wash : 0 };
 }
 
+/* ── 插针剧本（2026-10-08 三批拍板③「插针剧本」）─────────────────────────────
+ * 一键「吃穿最大的强平簇再回位」：真实庄家的猎杀剧本（hunt liquidations）。**没有「直接设价」
+ * 通道** —— 推进完全复用操盘台的吃单物理（`godManipPush`：付手续费 ＋ 冲击成本、吃深度、
+ * 被硬夹、可被 NPC 逆流顶住），每小时伺服一笔；状态机挂在 `s.god.pin`（`god` 不进存档
+ * ⇒ 会话级，不升 `STATE_VERSION`），由 `advanceOneHour` 在本根成形前驱动（位移进本根 K 线，
+ * `flushSlot` 用含位移的 `lastPrice` 判强平 ⇒ 推到位的那一根 NPC 真的爆）。
+ * 簇检测与强平判定**逐位同源**：`godWatchOf.liqs` 的 price 就是 `flushSlot` 的
+ * `longAvg×(1−drop)` / `shortAvg×(1+drop)` —— 针尖吃穿哪一簇，哪一簇就真的爆。 */
+
+/**
+ * 插针**启动**：找 `dir` 侧名义最大的强平簇（砸针 = 下方多头簇，拉针 = 上方空头簇），
+ * 记下针尖（簇价越过 `MANIP_PIN.overshoot`）、锚定价（启动价）与名义额预算（本时深度 ×
+ * `MANIP_PIN.maxN`），交给 `godPinTick` 逐小时伺服。
+ * @param {number} dir −1 砸针（猎杀多头）/ +1 拉针（猎杀空头）
+ * @returns {{ok:true, tip:number, cluster:number}|{ok:false, why:string}}
+ */
+export function godPinStart(s, sym, dir) {
+  if (!s.god) return { ok: false, why: '非上帝模式' };
+  if (dir !== 1 && dir !== -1) return { ok: false, why: '方向非法' };
+  if (s.god.pin) return { ok: false, why: '插针进行中（先停）' };
+  const cur = lastPrice(s, sym);
+  const side = dir < 0 ? 'long' : 'short';
+  let best = null;
+  for (const l of godWatchOf(s, sym).liqs) {
+    if (l.side !== side) continue;
+    /* 只吃「前方」的簇：价格已经越过它的强平线的那一簇早该爆掉了（上一小时的 flushSlot
+       已经处理），留着只会挑中一个身后不存在的目标。 */
+    if (dir < 0 ? !(l.price < cur) : !(l.price > cur)) continue;
+    if (!best || l.notional > best.notional) best = l;
+  }
+  if (!best) return { ok: false, why: dir < 0 ? '下方没有强平簇' : '上方没有强平簇' };
+  const base = hourLiqBase(s, sym, s.i);
+  if (!(base >= MANIP_MIN * 10)) return { ok: false, why: '本时深度不足' };
+  s.god.pin = {
+    sym, dir,
+    tip: best.price * (1 + dir * MANIP_PIN.overshoot),
+    anchor: cur,
+    cap: MANIP_PIN.maxN * base,
+    n: 0, h: 0, back: false,
+  };
+  return { ok: true, tip: s.god.pin.tip, cluster: best.notional };
+}
+
+/**
+ * 插针**伺服**（`advanceOneHour` 每小时调用，排在本根 K 线成形之前）：
+ *   · 推进段：每根朝 `pin.dir` 吃 `本时深度 × qStep`，价格越过针尖转回位段；
+ *   · 回位段：反向吃到启动价 ±`backTol` 为止（长针的「针」就留在走过的这几根 K 线上）；
+ *   · 预算 / 时长 / 资金任一越界 ⇒ 收场并播报（状态机自清，不留半死不活的挂起态）。
+ * 爆仓潮本身**不在这里播报** —— `flushSlot` 的「爆仓潮」日志 ＋ tape k=4/k=5 就是那一声，
+ * 这里再播就是「同一事件描述一局内出现两次」。 */
+export function godPinTick(s) {
+  const pin = s.god && s.god.pin;
+  if (!pin) return;
+  pin.h += 1;
+  const cur = lastPrice(s, pin.sym);
+  if (!pin.back && (pin.dir < 0 ? cur <= pin.tip : cur >= pin.tip)) {
+    pin.back = true;
+    pushLog(s, `插针 ｜ 已吃穿簇价，回位中`, 'sys');
+  }
+  const done = pin.back && Math.abs(cur / pin.anchor - 1) <= MANIP_PIN.backTol;
+  if (done) {
+    s.god.pin = null;
+    pushLog(s, `插针 ｜ 回位完成 ${fmtLogPrice(cur)}`, 'ok');
+    return;
+  }
+  const q = Math.max(MANIP_MIN, MANIP_PIN.qStep * hourLiqBase(s, pin.sym, s.i));
+  const r = godManipPush(s, pin.sym, pin.back ? -pin.dir : pin.dir, q);
+  if (!r.ok) {
+    s.god.pin = null;
+    pushLog(s, `插针中止 ｜ ${r.why}`, 'bad');
+    return;
+  }
+  pin.n += q;
+  if (pin.n > pin.cap || pin.h > MANIP_PIN.maxH) {
+    s.god.pin = null;
+    pushLog(s, `插针中止 ｜ 预算用尽，已停止`, 'bad');
+  }
+}
+
+/**
+ * 插针**手动停止**（面板「停」）—— 状态机自清，已推进的部分不回滚（那些是真实花掉的钱
+ * ＋ 真实发生的位移，与操盘台同一口径）。
+ * @returns {{ok:true}|{ok:false, why:string}}
+ */
+export function godPinStop(s) {
+  if (!s.god) return { ok: false, why: '非上帝模式' };
+  if (!s.god.pin) return { ok: false, why: '没有进行中的插针' };
+  s.god.pin = null;
+  return { ok: true };
+}
+
+/**
+ * 操盘台「**假消息**」—— 真实操纵三件套之一（SEC/CFTC 起诉书里的标准动作）。游戏内三件套：
+ *   ① 热度一脚（`MANIP_NEWS_RANGE`，比幌骗大 —— 新闻是全市场广播，不是盘口假单）；
+ *   ② 一笔小额真实吃单（`MANIP_NEWS_Q × 本时深度`，走 `pushFlow` 全额物理 —— 「信的人
+ *      真的去买」；代价照付，无限资金同吃单先补后扣）；
+ *   ③ 日志播报（`news` 金底芯片，与史实新闻同族；模板见 `god.MANIP_NEWS`）。
+ * 确定性：选条与幅度走 `randFast` 通道 `'news'`（同一存档同一小时永远同一条 —— 重放不漂移）。
+ * @param {number} dir +1 利好 / −1 利空
+ * @returns {{ok:true, cost:number}|{ok:false, why:string}}
+ */
+export function godFakeNews(s, sym, dir) {
+  if (!s.god) return { ok: false, why: '非上帝模式' };
+  if (dir !== 1 && dir !== -1) return { ok: false, why: '方向非法' };
+  const r1 = randFast(s.seed, hashStr(sym), s.i, 0, hashStr('news'));
+  const r2 = randFast(s.seed, hashStr(sym), s.i, 1, hashStr('news'));
+  const tpls = dir > 0 ? MANIP_NEWS.good : MANIP_NEWS.bad;
+  const nudge = (MANIP_NEWS_RANGE.min + r1 * (MANIP_NEWS_RANGE.max - MANIP_NEWS_RANGE.min)) * dir;
+  const notional = Math.max(MANIP_MIN, MANIP_NEWS_Q * hourLiqBase(s, sym, s.i));
+  const p = manipPreview(s, sym, dir, notional);
+  if (!debit(s, p.cost)) {
+    if (!(s.god.inf && s.god.lastFill > 0)) return { ok: false, why: '资金不足（跟风单要付手续费＋冲击成本）' };
+    godFillCash(s, Math.max(s.god.lastFill, p.cost));
+    debit(s, p.cost);
+  }
+  pushFlow(s, sym, dir, notional, 1, 'fut', true);
+  mktOf(s, sym).heat = clamp01(mktOf(s, sym).heat + nudge);
+  pushLog(s, tpls[Math.min(tpls.length - 1, Math.floor(r2 * tpls.length))].replace('%S', sym), dir > 0 ? 'ok' : 'bad', 'news');
+  return { ok: true, cost: p.cost };
+}
+
 /**
  * 「归零」的**唯一出口**（Batch 5 · B30）—— 原来有 4 处各自 `isBankrupt → endGame`，
  * 现在全部走这里。收成一个口的好处不只是少写几遍：**这条规则以后只会有一个地方要改**。
@@ -4578,6 +4933,11 @@ export function advanceOneHour(s) {
   // ⚠️ 上一步可能已经进了「待领救济金」或「破产预警」的待决态：时钟停了，后续的资金费 / 强平都不该再跑。
   if (s.pending) return;
 
+  /* 插针剧本伺服（2026-10-08 三批拍板③）：排在本根成形之前 —— `godManipPush` 写的位移
+     进本根 K 线，随后 `liquidateAll` 的 `flushSlot` 用含位移的 `lastPrice` 判强平
+     ⇒ 推到位的那一根，NPC 的强平簇真的爆。待决态（上面 return）时钟停走 ⇒ 伺服自然暂停。 */
+  godPinTick(s);
+
   /* NPC 情绪 / 踩踏级联（§73.5）：基础行情（这一根的 K 线）算完之后跑一次 ——
      它自己会往 `s.flow` 写 NPC 的成交，所以必须排在资金费 / 强平之前、玩家的流之后。 */
   tickMarket(s, s.sym);
@@ -4697,6 +5057,7 @@ export function rewindTo(s, to) {
   s.warnAt = null;
   s.otcOff = false;
   s.godRuined = false;
+  if (s.god) s.god.pin = null;   // 插针状态机（2026-10-08）：目标价是「跳转前世界」的读数 ⇒ 跳时间一律作废
   s.over = null;
   s.paused = false;
   /* ⚠️ P0-2（2026-10-04 审计）：`s.lockI` 也要清掉。
@@ -4708,6 +5069,7 @@ export function rewindTo(s, to) {
   s.lockI = -1;
   s.log = [];
   s.feed = [];          // 大单日志（2026-10-08 tape）：会话级、「最近发生的事」⇒ 跳时间/回退一律清空重攒
+  s.lob = {};           // NPC 限价簿（2026-10-08 三批⑦）：可由种子逐位复现 ⇒ 清空后在落点冷启动重长
 
   /* ③ 时钟落到那一刻 —— **不重放**，见函数头 */
   s.i = to;

@@ -112,6 +112,11 @@ export const ACTION_KEYS = [
      会话级网格缩放，普通 / 挑战局的市场浮窗订单页同样有这排按钮
      （分派见 `main.js` 的 `onGodFloatStep`）。 */
   'gofstep',
+  /* 上帝操盘台第三批（2026-10-08 三批拍板③）：`godpin`（插针 砸/拉/停）、`godnews`
+     （假消息 利好/利空）、`godliqov`（K线强平叠加开关）—— 全在上帝面板里。 */
+  'godpin',
+  'godnews',
+  'godliqov',
   /* 市场浮窗开关（2026-10-07 拍板）：普通 / 挑战局设置页那枚「市场浮窗 开/关」——
      详浮窗本体（上帝局）与这枚开关是两回事；分派见 `main.js` 的 `onMktFloat`。 */
   'mktfloat',
