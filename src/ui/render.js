@@ -23,7 +23,7 @@ import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
 import { badgesOf, epitaphOf, multShown, overLabelOf, styleOf, titleOf } from '../core/titles.js';
-import { MANIP_MIN, SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
+import { MANIP_MIN, MANIP_NEWS_CD, SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
 import { drawChart, drawEquityCurve, curveWindow } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 import { vibSupported } from './sound.js';
@@ -187,10 +187,15 @@ function rollNumber(el, key, to, { sign = false, speed = 1, fx = 2, fmt = null }
 }
 
 /**
- * 日志条显示几行（2026-10-03 用户拍板 **2**）—— 见 `logline` 的构建处。
+ * 日志条显示几行 —— 手机 / 平板 **2**（2026-10-03 用户拍板）／桌面（≥1280px）**5**
+ * （2026-10-08 用户拍板「桌面端日志栏加高、显示更多日志」）。
  * ⚠️ 恒定行数（不是「有内容才长高」）：变高会带着 K 线区／下方内容一起跳。
+ * ⚠️ 断点与 CSS 的 `@media (min-width: 1280px)` **同源**（那一段把 `.logline` 高度 40 → 100px）；
+ *     `mount()` 开局只跑一次 ⇒ 窗口尺寸在会话中途跨过断点时行数不重算（与 `--ui` 缩放同一处境）。
+ * ⚠️ 行数变多只是把**最近的日志**多摊开几行（`s.log[0]` 最新）——`s.log` 本身的封顶不在这里。
  */
-const LOG_ROWS = 2;
+const LOG_ROWS = (typeof window !== 'undefined' && window.matchMedia
+  && window.matchMedia('(min-width: 1280px)').matches) ? 5 : 2;
 
 /** F&G **五档** → 文字 ＋ 三色桶（2026-10-04 用户拍板改 5 档，对齐 Coinglass 展示口径）。
  *  ⚠️ 档名出自 `engine` 的 `FNG_BANDS`（xfear / fear / mid / greed / xgreed）；
@@ -3240,8 +3245,20 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   newsDn.dataset.godnews = '-1';
   const newsUp = el('button', 'set-btn on', '利好');
   newsUp.dataset.godnews = '1';
+  /* 冷却置灰（2026-10-08 用户拍板）：距上次成功注入不足 `MANIP_NEWS_CD` 小时 ⇒ 两枚键一起灰掉
+     （与「插针」那排同一套手感：置灰与可按要一眼分得开）。 */
+  const newsCd = s.i - (Number.isFinite(s.god.newsAt) ? s.god.newsAt : -Infinity);
+  if (newsCd < MANIP_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }
   newsRow.append(el('i', null, '假消息'), newsDn, newsUp);
   rowsC.append(newsRow);
+
+  /* 「新闻源」开关（2026-10-08 用户拍板）：进入上帝模式**默认关**真实新闻 —— 价格与播报只随
+     玩家操作走；面板上可重新打开（引擎闸门见 `npcBuild` 的 `extFlow` 与 `advanceOneHour`）。 */
+  const realRow = el('div', 'set-row');
+  const realBtn = el('button', s.god.noRealNews ? 'set-btn' : 'set-btn on', s.god.noRealNews ? '真实新闻 关' : '真实新闻 开');
+  realBtn.dataset.godreal = '';
+  realRow.append(el('i', null, '新闻源'), realBtn);
+  rowsC.append(realRow);
 
   /* 强平叠加（2026-10-08 三批拍板③）：主图右轴画当前币的强平档位条（多红空绿、宽∝名义额）。
      纯显示开关（`s.god.liqOverlay`，会话级），读数每帧从 `godWatchOf.liqs` 现取。 */

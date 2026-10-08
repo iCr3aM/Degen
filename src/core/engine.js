@@ -17,7 +17,7 @@ import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, ra
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, npcLevOf, playerFactor, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS, MANIP_NEWS_CD, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -195,22 +195,42 @@ export function niceStepOf(p) {
  *    也不把全周期重放拖进 BigInt 的性能坑；撤单抖动用价签哈希（零随机数）。
  *    同一存档同一时刻 ⇒ 同一本簿（`rewindTo` 清空后重放逐位复现）。
  */
+/* ⚠️ 2026-10-08（M4a · 用户报「数量变动太快、像量化、100k → 几千」）—— 队列化改造：
+   病根三条（离线实测确认）：① 整格 `splice` 吃穿 ⇒ 该侧质量瞬间归零、下一小时又被治理器
+   批量重生成（`sMul` 夹到 4×）⇒ 30× 摆动；② 回填**跳到更远一格** ⇒ 贴中档消失、下一小时再重生成；
+   ③ 近场每小时仅 2~18 笔 × `sizeSig 1.2` ⇒ 单笔就是几千~十万的量级跳。
+   修法：吃穿改**部分消费**（余量留原价）＋ 回填**就地同格**＋ `sMul` 夹口 0.25~4→0.2~2 ＋
+   近场笔数 8→20（泊松噪声 ÷√2.5）＋ `sizeSig` 1.2→0.6（去掉十万级个例）＋ 关口加成 3~10→1.5~3。
+   终值（离线 720h 实测）：单侧总量 CV 52.5%→39.4%、逐小时单侧变动中位 4.5%、
+   **同一价格档**跨小时变动中位 2.8%（P90 45.5%）、簿总深/日量 93.6%→37.7%。 */
 export const LOB = {
-  capQ: SLIP.cap,      // 一侧总深基线（q = 名义 ÷ 本小时基准深度）—— 与玩家吃单顶格线同源
-  near: 8,             // 每小时每侧新生成的近场单数（× 沙盒旋钮 × 治理器）
+  /* 一侧总深上限（q = 名义 ÷ **当日成交量**）—— 这是治理器 `sMul` 的**设定点**，
+     校准到「簿总深（双边）≈ 日成交量 30~40%」（Donier & Bouchaud 2015 口径）。
+     实测（离线 `tools/tmp-m4-sim.mjs` · BTC 720h · 2026-10-08 M4a 终值）：0.056 ⇒ 双边 37.7%。
+     ⚠️ 只有当 `sMul` 夹口 0.2~2 **不触底**时它才是设定点（见 `lobTick` 治理器注）。 */
+  capQ: 0.056,
+  near: 20,            // 每小时每侧新生成的近场单数（× 沙盒旋钮 × 治理器）
   kNear: 0.16,         // 近场指数衰减 k（每格；格 ≈ 0.2% 价距）
   farP: 0.30,          // 每小时每侧出现远场价值单的概率
   farD0: 15,           // 远场价距下限（格）
   farA: 1.8,           // 远场价距幂律 α（Potters & Bouchaud 2002）
-  sizeSig: 1.2,        // 挂单大小对数正态 σ
-  nearQ: 0.0015,       // 近场单中位大小（q 单位）
-  farQ: 0.015,         // 远场单 Pareto 尺度（q 单位）
+  sizeSig: 0.6,        // 挂单大小对数正态 σ（1.2→0.6：去掉十万级个例）
+  nearQ: 0.00042,      // 近场单中位大小（q 单位）—— 0.0015→0.00042（M4a 校准：簿总深/日量 70.8%→35%）
+  farQ: 0.0039,        // 远场单 Pareto 尺度（q 单位）—— 0.015→0.0039（M4a 校准：与 nearQ 一起落到总深 35%）
   life0: 14,           // 撤单基线寿命（小时）—— θ0 ≈ 0.07/h
   lifeDist: 30,        // δc（格）—— 寿命 = life0/(1+δ/δc)（θ 随距离增大）
-  gateMin: 3, gateMax: 10,   // 整数关口加成区间
+  gateMin: 1.5, gateMax: 3,  // 整数关口加成区间（3~10 → 1.5~3：不再造 10× 巨档）
   bidEdge: 1.6,        // 买侧深度不对称（×1.2~2 的中值）
-  refillP: 0.7,        // 吃穿后回填概率
-  refillMin: 1.5, refillMax: 3,  // 回填名义倍数
+  refillP: 0.85,       // 吃穿后回填概率
+  /* 回填改为**期望刚好补平**被吃掉的那一份（2026-10-08 M4a v2）：原口径补 0.63× 吃掉量 ⇒
+     每被扫一次档位净减 ~22%，连续被扫十几小时就衰减到「几千」（用户报的 100k→几千），
+     再被新生补上时又弹回十万级 ⇒ 1.6e25% 那种离群。现在 `refillP × 中位倍数` = 0.85×1.15
+     ≈ 0.98 ⇒ 期望 `left ≈ 0.99 × o.n`：**同价档走中性游走**、不再系统性衰减，簿稳、尾也干净。
+     与真实盘口「被扫后同价补单、补得回原量级」一致；真要不补（15%）时档位自然变老被寿命筛清掉。 */
+  refillMin: 0.95, refillMax: 1.35,
+  /* 吃穿的消费比例区间（M4a，见 `lobTick` ①）：本根 K 线**刚碰到**那一档（在极值处）⇒ 0.35，
+     **价格远远扫过**那一档（在贴中一侧）⇒ 0.85 —— 越靠中、被吃掉的越多。 */
+  eatMin: 0.35, eatMax: 0.85,
   maxQ: 0.02,          // 单档名义硬顶（q 单位）—— 防回填连乘把一格吹到天上去
   maxSide: 400,        // 单侧最大档数（防泄漏硬顶，超出裁最远）
   feedMax: 4,          // 每小时每币进 tape 的吃穿事件上限
@@ -236,6 +256,25 @@ const lobPut = (arr, p, n, t, desc) => {
 const lobHash = p => (Math.imul(Math.round(p * 1e6) | 0, 2654435761) >>> 0) / 4294967296;
 
 /**
+ * 限价簿的**深度尺子**（2026-10-08 M4a）—— 锚在**日流动性**、不是逐小时深度。
+ *
+ * 病根：原实现锚 `hourLiqBase`（含 `hourShareK` 的日内形态，0.3~3 倍摆动）⇒ 目标质量逐小时
+ * 跳变，正是用户报的「变动太快、像量化」。真实盘口**日内深度远比成交量平稳**（成交量有 U 形、
+ * 挂单深度没有同等幅度）⇒ 锚日尺子既更贴现实、也**平滑一个数量级**。
+ * 仍保留两条市场级折减：对抗性撤深度（`advDepthMul`）与上帝深度旋钮（`godLiqMulOf`）——
+ * 两者都是「市场整体变大/变小」，簿该跟着变（与 M4b 的全套放大同源）。
+ */
+function lobScaleOf(s, sym, i) {
+  const dayLiq = liqOf(sym, dayIndexOf(i));
+  if (!(dayLiq > 0)) return 0;
+  const raw = hourLiqRaw(s, sym, i);
+  const adv = advDepthMul(s, sym, i, raw);
+  const gm = godLiqMulOf(s, sym);
+  const a = adv === 1 ? dayLiq : dayLiq * adv;
+  return gm === 1 ? a : a * gm;
+}
+
+/**
  * 该币的限价簿（惰性访问）—— 没有就**冷启动**：把过去 24 小时的生成器各跑一遍
  *（出生小时回填到 i−23..i，撤单只按寿命筛一次），簿一开局就是「活过一天」的形状，
  * 不存在空簿突变的尴尬帧。`rewindTo` 清空 `s.lob` 后第一次读到这里 ⇒ 逐位可复现。
@@ -248,8 +287,8 @@ function lobOf(s, sym) {
   if (!(price > 0)) return null;
   b = { i: s.i, bids: [], asks: [] };
   s.lob[sym] = b;
-  const base = hourLiqBase(s, sym, s.i);
-  if (!(base > 0)) return b;
+  const scale0 = lobScaleOf(s, sym, s.i);   // 深度尺子 = 日流动性（不是逐小时，见 `lobScaleOf`）
+  if (!(scale0 > 0)) return b;
   const lobMul = sbOf(s).lob;              // 挂单密度旋钮（沙盒）：0 = 连冷启动都不生成 ⇒ 簿恒空回落连续合成
   if (lobMul <= 0) return b;
   const step = niceStepOf(price);
@@ -263,7 +302,7 @@ function lobOf(s, sym) {
         const u1 = randFast(s.seed, sy, h, 10 + j * 3, CH_LOB);
         const d = Math.max(1, Math.min(400, -Math.log(1 - u1 * 0.999) / LOB.kNear));
         const z = Math.sqrt(-2 * Math.log(1 - randFast(s.seed, sy, h, 11 + j * 3, CH_LOB) * 0.999)) * Math.cos(6.283185307 * randFast(s.seed, sy, h, 12 + j * 3, CH_LOB));
-        const n = Math.min(LOB.maxQ, LOB.nearQ * Math.exp(LOB.sizeSig * z - LOB.sizeSig * LOB.sizeSig / 2) * scale) * base;
+        const n = Math.min(LOB.maxQ, LOB.nearQ * Math.exp(LOB.sizeSig * z - LOB.sizeSig * LOB.sizeSig / 2) * scale) * scale0;
         const kk = Math.round(price * (1 + side * d * step / price) / step);
         lobPut(side < 0 ? b.bids : b.asks, kk * step, n * (kk % 10 === 0 ? LOB.gateMax : kk % 5 === 0 ? (LOB.gateMin + LOB.gateMax) / 2 : 1), h, side < 0);
       }
@@ -295,7 +334,7 @@ function lobTick(s, sym) {
   const b = lobOf(s, sym);
   if (b.i === s.i) return;                 // 同根重入（切币回来重画）幂等
   b.i = s.i;
-  const base = hourLiqBase(s, sym, s.i);
+  const base = lobScaleOf(s, sym, s.i);   // 深度尺子 = 日流动性（见 `lobScaleOf`），不再是逐小时
   if (!(base > 0)) return;
   const step = niceStepOf(price);
   const c = candleAt(sym, s.i);
@@ -303,19 +342,34 @@ function lobTick(s, sym) {
   const hi = c.h, lo = c.l;
   const sy = hashStr(sym);
   const eaten = [];
-  /* ① 吃穿（按本根高低价 —— 针扫挂单，与强平判定同一口径） */
+  /* ① 吃穿 —— **部分消费**（2026-10-08 M4a，见 `LOB` 头注）：
+     凡价格落进本根 `[lo, hi]` 的档，只按「离贴中有多近」吃掉一部分，**余量留在原价上**；
+     再按 `refillP` 就地补回被吃量的一部分（0.6~1.2×）。整格不再消失 ⇒ 该侧质量不再归零、
+     治理器 `sMul` 不再被迫拉到 4× 批量重生成 —— 「100k → 几千」那种 30× 摆动就此消失。
+     · `u` = 本档离**本根极值**的归一距离（0 = 贴中，刚被碰到；1 = 最深，被吃穿）
+     · 消费比例 `cf` 由 `u` 线性插值：贴中 `eatMin`（0.35）→ 最深 `eatMax`（0.85） */
+  const span = Math.max(hi - lo, step);
   for (const side of [-1, 1]) {
     const arr = side < 0 ? b.bids : b.asks;
     let i0 = 0;
     while (i0 < arr.length && (side < 0 ? arr[i0].p >= lo : arr[i0].p <= hi)) i0++;
     const swept = arr.splice(0, i0);       // asks 升序 = 从贴中被吃；bids 降序同
     for (const o of swept) {
-      eaten.push({ side, ...o });
-      if (randFast(s.seed, sy, s.i, (Math.round(o.p * 1e6) | 0) + 7, CH_LOBF) < LOB.refillP) {
-        const rp = side < 0 ? Math.min(o.p, lo) - step : Math.max(o.p, hi) + step;
-        const mul = LOB.refillMin + randFast(s.seed, sy, s.i, (Math.round(o.p * 1e6) | 0) + 13, CH_LOBF) * (LOB.refillMax - LOB.refillMin);
-        lobPut(arr, rp, Math.min(LOB.maxQ * base, o.n * mul), s.i, side < 0);
-      }
+      const u = Math.max(0, Math.min(1, side < 0 ? (hi - o.p) / span : (o.p - lo) / span));
+      const cf = LOB.eatMin + (LOB.eatMax - LOB.eatMin) * (1 - u);
+      const eatenN = o.n * cf;
+      const pk = (Math.round(o.p * 1e6) | 0) + 7;
+      const back = randFast(s.seed, sy, s.i, pk, CH_LOBF) < LOB.refillP
+        ? eatenN * (LOB.refillMin + randFast(s.seed, sy, s.i, pk + 6, CH_LOBF) * (LOB.refillMax - LOB.refillMin))
+        : 0;
+      /* 余量 ＋ 就地在**原价**补回（`t` 刷成本小时 = 补的是新单，寿命筛按新单算）。
+         ⚠️ 只补**仍在正确一侧**的档（`stale` 闸，2026-10-08 M4a v2）：价格已**越过**这一档
+         （买档跑到现价上方 / 卖档跑到现价下方）⇒ 残量不该留（那一档已被吃掉、只剩「越过去」的
+         空价签）—— 留着会同时违反「簿两侧严格分居中价」这条 UI 契约（审计 9v③）。 */
+      const left = o.n - eatenN + back;
+      const stale = side < 0 ? o.p >= price : o.p <= price;
+      if (left > 0 && !stale) lobPut(arr, o.p, Math.min(LOB.maxQ * base, left), left > o.n - eatenN ? s.i : o.t, side < 0);
+      if (eatenN > 0) eaten.push({ side, p: o.p, n: eatenN, t: o.t });
     }
   }
   /* ①′ 大档被吃 ⇒ 进 tape（主动方向：吃掉卖档 = 主动买 ▲；吃掉买档 = 主动卖 ▼），
@@ -324,7 +378,7 @@ function lobTick(s, sym) {
   let fed = 0;
   for (const e of eaten) {
     if (fed >= LOB.feedMax) break;
-    if (feedTier(e.n, liqOf(sym, dayIndexOf(s.i))) < 0) continue;
+    if (feedTier(e.n, godScale(s, sym, liqOf(sym, dayIndexOf(s.i)))) < 0) continue;
     feedPush(s, sym, e.side < 0 ? 1 : 0, e.p, e.n);
     fed++;
   }
@@ -339,8 +393,18 @@ function lobTick(s, sym) {
     }
     let mass = 0;
     for (const o of arr) mass += o.n;
-    const sMul = Math.max(0.25, Math.min(4, LOB.capQ * base / (mass + LOB.capQ * base * 0.1)));
+    /* 治理器夹口（2026-10-08 M4a v2）：0.25~4 → 0.5~2 → **0.2~2**。
+       实测（离线 720h）单侧质量 ÷ 日流动性 = 0.44、远超目标 0.0675 ⇒ 减到 0.5 也被**下限夹住**、
+       治理器形同虚设、总深完全由生成量决定（67%≫35%）。下限放到 0.2 后 sMul 收敛到 ~0.37、
+       夹口**不再触底** ⇒ `capQ` 重新成为真正的设定点（实测总深落到 35~40%），且自动补偿
+       生成量的后续微调（M4b 起深度倍数联动也靠它保持自洽）。上限 2 不变（突发扫穿后的补生成本身
+       就是摆动源，不许再拉大）。 */
+    /* ⚠️ 目标随侧走（× `scale`）：治理器按**每侧自己的**现存质量收敛 ⇒ 若两侧共用同一个目标，
+       它会自动把两侧质量抹平、把买侧不对称（`bidEdge`）一起抹掉（实测比值从 1.6 掉到 1.24）。
+       目标乘上同一 `scale`，两侧各收敛到「自己的目标」 ⇒ `bidEdge` 保留。 */
     const scale = side < 0 ? LOB.bidEdge : 1;
+    const target = LOB.capQ * base * scale;
+    const sMul = Math.max(0.2, Math.min(2, target / (mass + target * 0.1)));
     const lobMul = sbOf(s).lob;            // 挂单密度旋钮（沙盒 · 2026-10-08 三批）：0 = 不再挂新单
     if (lobMul > 0) {
       const nNear = Math.max(1, Math.round((2 + Math.floor(randFast(s.seed, sy, s.i, side < 0 ? 31 : 32, CH_LOB) * LOB.near * 2)) * lobMul));
@@ -1000,7 +1064,13 @@ function advCurExposureOf(s, sym, raw) {
   const pos = s.positions[sym];
   if (!pos || (isMargin(pos) && pos.lev === 1)) return 0;
   const mark = lastPrice(s, sym);
-  return mark > 0 ? pos.size * mark / raw : 0;
+  /* M4b（2026-10-08 拍板②）：分母过 `gm` —— 市场整体放大 ⇒ 你相对市场的体量按同一倍数缩小。
+     否则「把市场调大 4 倍，ADV 仍认为你占了 4 倍体量」⇒ 撤深度 / OTC 点差与你刚拨的旋钮互相打
+     （旋钮本意就是「我的单子只推动 1/gm」）。**玩家名义额是绝对值、不过闸**（红线 A）。
+     ⚠️ 本函数是 `exposure` 的**唯一**入口 ⇒ `advDepthMul` / `advSpreadMul` / `advPushOf` /
+        `advAimAmp` / 浮窗深度页全部同源跟随，没有第二条尺子。`gm === 1` ⇒ 逐位不变。 */
+  const d = godScale(s, sym, raw);
+  return mark > 0 ? pos.size * mark / d : 0;
 }
 
 /**
@@ -1255,6 +1325,42 @@ export function godLiqMulOf(s, sym = s.sym) {
 }
 
 /**
+ * **市场放大**（M4b · 2026-10-08 拍板②「深度倍数 = 全套市场放大」）—— 把「市场规模」类的
+ * 基数（当日流动性、近 24h 成交额…）乘上上帝深度旋钮。
+ *
+ * 病根：旋钮原来只乘在 `hourLiqBase` 一处 ⇒ 玩家把市场调大 8 倍后，**分母**变大了（自己的单子
+ * 推动力变小），但 OI / 散户仓位 / 巨鲸页 / 爆仓阈值 / 量柱 / 基金池**全还是原来那么小** ⇒
+ * 两套规模口径打架（「市场 8 倍大，OI 却一动不动」）。
+ *
+ * 修法：凡「市场规模」进入**除式分母**或**读数分子**的地方一律过这里 —— 一处函数、同一个 `gm`。
+ * 与之配套的是**玩家自己的仓位不放大**（红线 A · 不双重计价）：玩家的名义额是**绝对值**，
+ * 市场变大 ⇒ 他相对市场的体量**自动**缩小，这正是「×8 ⇒ 我的单子只推动 1/8」的语义。
+ *
+ * ⚠️ `gm === 1`（非上帝局 / 旋钮未动）⇒ **早退返回原值** ⇒ 与改动前逐位相同（审计红线）。
+ * @param {object} s 状态
+ * @param {string} sym 币种
+ * @param {number} v 「市场规模」类基数
+ * @returns {number} 放大后的基数（`gm === 1` 时恒等于 `v`）
+ */
+function godScale(s, sym, v) {
+  const gm = godLiqMulOf(s, sym);
+  return gm === 1 ? v : v * gm;
+}
+
+/**
+ * **爆仓潮 / ADL 阈值的市场放大系数**（M4c · 2026-10-08 拍板⑤⑥）＝ `godLiqMulOf × sbOf.npc`：
+ *   · `godLiqMulOf`（M4b）：市场规模整体放大 ⇒ 强平额同倍放大 —— 阈值不跟着抬，
+ *     「把市场调大 ×8」就等于把爆仓潮频率也调大 8 倍（用户实测的「很频繁」）；
+ *   · `sbOf.npc`：沙盒「散户规模」把六档靶心直接放大多少倍，强平额就放大多少倍。
+ * ⚠️ 默认（普通 / 挑战局，或沙盒全默认）⇒ `1 × 1` ⇒ **恰好 1**（IEEE 恒等）⇒ 逐位不变。
+ * ⚠️ **不含** `heat` / `mood` / `shock`：那三个改的是市场的**行为**（涨跌的方向与剧烈度），
+ *    不是**规模** —— 它们带来的日志变密由冷却（`NPC.liqEventCd`）兜住，不在这里重复计价。
+ */
+function liqEventScaleOf(s, sym) {
+  return godLiqMulOf(s, sym) * sbOf(s).npc;
+}
+
+/**
  * 该小时的**基准深度分母** ＝ `hourLiqRaw × 对抗性深度乘数 × 上帝深度旋钮`
  * —— **不含**瞬时深度池（池容量要拿它当基数 ⇒ 不能在它里面自洽引用，见 `poolFactorOf`）。
  * ⚠️ 上帝旋钮乘在**末尾**（2026-10-08）：`×1` 走 IEEE 精确恒等 ⇒ 普通局逐位不变。
@@ -1441,8 +1547,10 @@ function pushFlow(s, sym, dir, notional, give = 1, kind = 'fut', player = true, 
      库存越多 ⇒ 回补越急（`betaFast` 越快）。口径见 `god.INV`：
        `betaFast = 基准 × (1 + kInv × min(q, qCap))`，`q = 本笔名义 ÷ hourLiqRaw`
      ⇒ `q = 0`（小额单 / 深度取不到）时倍率恰为 1，逐位等于改动前；`q ≥ qCap` 时到上界 2×。
-     分母用的就是**滑点 / 对抗性流动性那同一把尺子**（`hourLiqRaw`，折减前的基准深度）⇒ 不新开刻度。 */
-  const raw = hourLiqRaw(s, sym, s.i);
+     分母用的就是**滑点 / 对抗性流动性那同一把尺子**（`hourLiqRaw`，折减前的基准深度）⇒ 不新开刻度。
+     M4b：再叠一道 `gm`（市场规模）—— 市场放大 ⇒ 这笔单子相对做市的库存压力按比例缩小。
+     `gm === 1` ⇒ 逐位不变。 */
+  const raw = godScale(s, sym, hourLiqRaw(s, sym, s.i));
   const q = raw > 0 ? notional / raw : 0;
   const invMul = 1 + INV.kInv * Math.min(q, INV.qCap);
   /* ⚠️ 写完**不**调 `invalidateSigma()`（2026-10-08）：`addFlow` 恒 `at = s.i`，只影响它之后的
@@ -1688,9 +1796,11 @@ export function reviewVolUsdOf(sym, i) {
  * **不进**多空比、不参与级联。理由与标定见 `god.OI`。
  * @returns {number} 名义额（USD）；成交额取不到（未上线 / 越界）⇒ 0
  */
-function baseBookOiOf(sym, i) {
-  const v = reviewVolUsdOf(sym, i);
-  return Number.isFinite(v) && v > 0 ? OI.bookTurn * v : 0;
+function baseBookOiOf(s, sym) {
+  const v = reviewVolUsdOf(sym, s.i);
+  /* M4b：市场规模过 `gm` —— 市场放大 ⇒ 常年在线的做市 / 对冲库存按同一倍数放大（OI 读数
+     与「巨鲸页」口径才一致）。`gm === 1` ⇒ 逐位不变。 */
+  return godScale(s, sym, Number.isFinite(v) && v > 0 ? OI.bookTurn * v : 0);
 }
 
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -1796,7 +1906,7 @@ export function openInterestOf(s, sym) {
   let oi = 0;
   if (m && m.npc) for (const g of m.npc) oi += g.long + g.short;
   if (m && m.mm) oi += m.mm.long + m.mm.short;      // 缺口 6-A：做市盘也计入 OI
-  oi += baseBookOiOf(sym, s.i);                     // F2（2026-10-04）：非散户簿基础仓（见 `god.OI`）
+  oi += baseBookOiOf(s, sym);                       // F2（2026-10-04）：非散户簿基础仓（见 `god.OI`）
   /* 玩家 ＋ **其对手方**（1:1 配对 · 2026-10-03 拍板）：用户审计指出「玩家做空，那必然有人做多」——
      OI 的定义是「市场上所有未平仓头寸」，一张合约**两侧各算一次**。原来只加玩家这一侧（`pn`），
      巨鲸 $45B 的仓在读数上「没有对手方」；补上镜像的 `pn` 之后，巨鲸开一单 OI 涨两倍名义，
@@ -2041,7 +2151,9 @@ export function feedTier(notional, liqDay) {
 }
 function feedPush(s, sym, k, price, notional) {
   if (!(price > 0) || !(notional > 0)) return;
-  const tier = feedTier(notional, liqOf(sym, dayIndexOf(s.i)));
+  /* M4b：档位阈值同样过 `gm` —— 市场放大 ⇒ 同一笔名义的「分量」按比例缩水（与 `lobTick` 里
+     那条取值同源）。`gm === 1` ⇒ 逐位不变。 */
+  const tier = feedTier(notional, godScale(s, sym, liqOf(sym, dayIndexOf(s.i))));
   if (tier < 0) return;
   if (!s.feed) s.feed = [];                        // 旧档 / 回退后惰性补建（不升存档版）
   s.feed.push({ i: s.i, sym, k, p: price, n: notional, t: tier });
@@ -2101,6 +2213,28 @@ function stepNpc(slot, side, target, price, floor, speed = NPC.speed, fS = null,
   return realised;
 }
 
+/** 沙盒「世界偏向」台阶的落级门槛（位移量）：0.05% —— 比显示精度还细，够挡浮点抖动。 */
+const SB_BIAS_EPS = 0.0005;
+
+/**
+ * 把沙盒「世界偏向」（`mood × SB_MOOD_PUSH`，见 `god.SB_MOOD_PUSH`）落一级台阶。
+ *
+ * ⚠️ **只在写路径调用**（`tickMarket` 每小时一次）—— 与 `syncNpcDrift` 同一纪律：
+ *    `at` 只许等于写入那一刻的 `s.i`，改预设**不回头重标定历史**。
+ * ⚠️ 无 `s.god` / `mood = 0` ⇒ 恒等：不建表、不落级，`factorFor` 里那一项恒 0。
+ * @returns {void}
+ */
+function syncSbBias(s) {
+  if (!s.god) return;
+  const v = sbBiasTargetOf(s);
+  if (!Number.isFinite(v)) return;
+  const tab = s.god.sbBias || (v === 0 ? null : (s.god.sbBias = { at: [], v: [] }));
+  if (!tab) return;
+  const n = tab.at.length;
+  if (n && Math.abs(v - tab.v[n - 1]) < SB_BIAS_EPS) return;
+  tab.at.push(s.i); tab.v.push(v);
+}
+
 /**
  * 把散户**净持仓**折算成一根**有界**的价位偏移台阶（`s.mkt[sym].npcDrift`）。
  *
@@ -2128,7 +2262,9 @@ function stepNpc(slot, side, target, price, floor, speed = NPC.speed, fS = null,
 function syncNpcDrift(s, sym, i, sig) {
   const m = mktOf(s, sym);
   const net = npcNet(m);
-  const liqDay = liqOf(sym, dayIndexOf(i));
+  /* M4b：与 `npcBuild` 同一个 `gm` —— 分子（净持仓）已随市场放大，分母不同源就会把净持仓的
+     价位偏移整体放大 `gm` 倍（手动档就不再是「纯缩放」）。`gm === 1` ⇒ 逐位不变。 */
+  const liqDay = godScale(s, sym, liqOf(sym, dayIndexOf(i)));
   const q = liqDay > 0 ? Math.abs(net) / liqDay : 0;
   /* 缺口 6-B（2026-10-03）：同一张台阶表里再叠一层**档 2 有向推价**（玩家持仓逆向）——
      与 NPC 净持仓偏移**相加**后落一级，共用同一条「差 ≥ `NPC.driftEps` 才落级」的纪律。
@@ -2200,7 +2336,8 @@ function pushNpcShock(s, sym, m, dir, notional) {
  *    （`seedFund`）—— ADL 的触发已改由级联烈度给（见 `stampede`），故本值不影响 ADL 频率。
  */
 function fundBaseOf(s, sym) {
-  const liq = liqOf(sym, dayIndexOf(s.i));
+  /* M4b：基金水位与市场同源缩放（散户账面 PnL 已随市场放大 ⇒ 兜底水位也得跟着）。 */
+  const liq = godScale(s, sym, liqOf(sym, dayIndexOf(s.i)));
   return liq > 0 ? liq * INSURE.seed : 0;
 }
 
@@ -2221,7 +2358,8 @@ function seedFund(s, sym) {
  * 2013 与 2025 同一条线。流动性取不到（0）⇒ 上限 0（池不吸收，全部溢出进基金）。
  */
 function poolCapOf(s, sym) {
-  const liq = liqOf(sym, dayIndexOf(s.i));
+  /* M4b：对手方池的上限与市场同源缩放（NPC 的已实现盈亏已随市场放大 ⇒ 池容量也得跟着）。 */
+  const liq = godScale(s, sym, liqOf(sym, dayIndexOf(s.i)));
   return liq > 0 ? liq * CPOOL.capFrac : 0;
 }
 
@@ -2577,15 +2715,25 @@ function stampede(s, sym, m, price) {
   if (liqNotional > 0) {
     s.stat.liqNotional += liqNotional;
     const liqDay = liqOf(sym, dayIndexOf(s.i));
-    if (liqDay > 0 && liqNotional >= liqDay * NPC.liqEventFrac) {
-      /* 补 `@ 价格`（2026-10-03 用户要求）：只报金额时玩家看不出这一波砸在什么价位上，
-         也就无法把「爆仓潮」与 K 线上那根长阴对上号。
-         ⚠️ 价格与下面的 ADL 都读**级联后的最终价**（2026-10-08）：逐档重读判定价后，
-            本根内的止损波 / 强平已经把 `closeAt(s.i)` 推走了 —— 日志报的 `@ 价格` 要和
-            K 线上那根长阴的收盘对得上，就得用推完之后的那一个。 */
-      pushLog(s, `爆仓潮 ${sym} ｜ ${fmtMoneyShort(liqNotional)} @ ${fmtLogPrice(lastPrice(s, sym))}`, 'bad', 'mkt');
+    /* M4c：阈值随**市场规模**同源放大（`gm × sb.npc`）—— 旋钮把市场 / 散户盘调大多少倍，
+       「爆仓潮」的门槛就抬多少倍 ⇒ 频率不随玩家的规模设置漂移。默认 ⇒ ×1 逐位不变。 */
+    const thr = liqDay > 0 ? liqDay * NPC.liqEventFrac * liqEventScaleOf(s, sym) : 0;
+    if (thr > 0 && liqNotional >= thr) {
+      /* M4c · 日志冷却：同一币 `NPC.liqEventCd` 小时内只播一条。**只压日志**（`adl` 照旧），
+         免得日志策略反过来改写「十余年 8 次」的 ADL 标定。旧档没有 `m.liqEventAt` ⇒ 视作
+         「从没播过」（`-Infinity`），首条必出。 */
+      const last = Number.isFinite(m.liqEventAt) ? m.liqEventAt : -Infinity;
+      if (s.i - last >= NPC.liqEventCd) {
+        m.liqEventAt = s.i;
+        /* 补 `@ 价格`（2026-10-03 用户要求）：只报金额时玩家看不出这一波砸在什么价位上，
+           也就无法把「爆仓潮」与 K 线上那根长阴对上号。
+           ⚠️ 价格与下面的 ADL 都读**级联后的最终价**（2026-10-08）：逐档重读判定价后，
+              本根内的止损波 / 强平已经把 `closeAt(s.i)` 推走了 —— 日志报的 `@ 价格` 要和
+              K 线上那根长阴的收盘对得上，就得用推完之后的那一个。 */
+        pushLog(s, `爆仓潮 ${sym} ｜ ${fmtMoneyShort(liqNotional)} @ ${fmtLogPrice(lastPrice(s, sym))}`, 'bad', 'mkt');
+      }
       /* 缺口 5 ③（2026-10-03 ADL 审计重标定）—— **ADL 的触发就是「爆仓潮」成立的那一刻**，
-         触发闸门与上面这条日志**共用同一个常数**（`NPC.liqEventFrac`）。
+         触发闸门与上面这条日志**共用同一个常数**（`NPC.liqEventFrac`，以及 M4c 加的市场放大项）。
          ⚠️ **为什么不用「基金水位」当触发**（旧实现，实测 5556 次）：基金在这套市场模型里
             **结构性失血** —— 12 年强平盈余 $165M vs 穿仓 $39.6B（1:240），基金自 2016 年起
             永久为负 ⇒「跌破触发线」要么退化成「永久处于线下 ⇒ 每根都触发」，要么
@@ -2834,8 +2982,15 @@ export function dipBuyOf(liqDay, dip, res, fng, seed = NPC.dip.seedBase.BTC, rat
  * ⚠️ 方案 A ②：减仓的已实现盈亏累加后一次性入池（`settlePool` 只在池余额内兑付）。
  */
 function npcBuild(s, sym, m, i) {
-  const liqDay = liqOf(sym, dayIndexOf(i));
+  /* M4b（2026-10-08 拍板②）：散户盘的**规模**（靶心 / 基底 / 残尾阈值 / 护盘储备）与深度分母
+     共用同一个 `gm` —— 市场整体放大时，散户的仓位簿 / 巨鲸页 / OI 读数必须一起放大，
+     否则「市场 8 倍大，OI 却一动不动」。玩家自己的仓位**不过这道闸**（绝对值，见 `godScale`）。
+     `gm === 1` ⇒ 逐位不变。 */
+  const liqDay = godScale(s, sym, liqOf(sym, dayIndexOf(i)));
   if (!(liqDay > 0)) return;
+  /* ⚠️ **不是**整本簿都严格 ×`gm`：`extFlow`（巨鲸 / ETF 的**真实美元额**）不过闸 —— 它是外部
+     披露的历史事实，与「市场规模旋钮」无关（诚实读数：2020 年无 ETF / 巨鲸流 ⇒ 簿严格 ×8.00；
+     2021 年有巨鲸流 ⇒ ×7.36）。这是**有意**的口径差，不是漏改。 */
   const target = sbOf(s).npc * NPC.mom * (m.heat - HEAT.base) * liqDay;
   const price = lastPrice(s, sym);
   const t = timeOf(s);                 // 机构护盘的年代系数要读它（`instSeedOf`）
@@ -2866,7 +3021,9 @@ function npcBuild(s, sym, m, i) {
      ⚠️ 位移仍走既有链路（`npcNet` → `syncNpcDrift` × `NPC.synthGive`）—— 真实行情已含涨幅，
         这一层只让「玩家此刻在跟谁对着干」在盘口可见，不写 `s.flow`、零新状态（不升存档版）。 */
   const dayIdx = dayIndexOf(i);
-  const extFlow = whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx);
+  /* ⚠️ 上帝模式「关闭真实新闻」（2026-10-08，`s.god.noRealNews` 默认 true）⇒ `extFlow` 归零：
+     巨鲸 / ETF 的**有向买盘**不再注入靶心，价格只随玩家操作走。普通局无 `s.god` ⇒ 逐位不变。 */
+  const extFlow = (s.god && s.god.noRealNews) ? 0 : (whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx));
   let npcRealisedSum = 0;
   for (let k = 0; k < NPC.ladder.length; k++) {
     const w = NPC.ladder[k].w;
@@ -2958,6 +3115,9 @@ function npcOtherTick(s) {
 export function tickMarket(s, sym) {
   const m = mktOf(s, sym);
   const i = s.i;
+  /* 沙盒「世界偏向」台阶（2026-10-08 · 见 `god.SB_MOOD_PUSH`）：每小时把 `mood` 的目标位移落一级，
+     供 `factorFor` 从本根起读取 —— 排在一切价格读数之前（本根 K 线就已含它）。 */
+  syncSbBias(s);
   seedFund(s, sym);   // v30 · 缺口 5：保险基金**惰性播种**（开局日流动性 × INSURE.seed，只播一次）
   /* ① 价格项 `x` = **近 24h 收益 ÷ 日σ**（2026-10-02 拍板，取代原来的「本根累积位移 ÷ σ」）。
      ⚠️ 两条口径都很关键：
@@ -4440,16 +4600,24 @@ export function godPinStop(s) {
  *   ② 一笔小额真实吃单（`MANIP_NEWS_Q × 本时深度`，走 `pushFlow` 全额物理 —— 「信的人
  *      真的去买」；代价照付，无限资金同吃单先补后扣）；
  *   ③ 日志播报（`news` 金底芯片，与史实新闻同族；模板见 `god.MANIP_NEWS`）。
- * 确定性：选条与幅度走 `randFast` 通道 `'news'`（同一存档同一小时永远同一条 —— 重放不漂移）。
+ * 确定性：**幅度**走 `randFast` 通道 `'news'`（同一存档同一小时同一条 —— 重放不漂移）。
+ * ⚠️ **选条**改为逐方向**轮换计数**（`s.god.newsN`，2026-10-08 用户报「会重复显示新闻」）：
+ *    每按一次取下一条、取满一整轮才回第一条 ⇒ 连按 16 次不重样；计数是会话级、不落盘。
+ * ⚠️ **冷却**（`MANIP_NEWS_CD`）：距上次成功注入不足 `MANIP_NEWS_CD` 小时就拒绝 ——
+ *    公告连发既不真实也会刷屏（面板两枚按钮由 `render.js` 现算置灰）。
  * @param {number} dir +1 利好 / −1 利空
  * @returns {{ok:true, cost:number}|{ok:false, why:string}}
  */
 export function godFakeNews(s, sym, dir) {
   if (!s.god) return { ok: false, why: '非上帝模式' };
   if (dir !== 1 && dir !== -1) return { ok: false, why: '方向非法' };
+  /* 冷却闸：`newsAt` 未写过 ⇒ `−Infinity` ⇒ 恒可发（旧局 / 首次点击逐位不变）。 */
+  const last = Number.isFinite(s.god.newsAt) ? s.god.newsAt : -Infinity;
+  const cd = s.i - last;
+  if (cd < MANIP_NEWS_CD) return { ok: false, why: `冷却中（还需 ${MANIP_NEWS_CD - cd} 小时）` };
   const r1 = randFast(s.seed, hashStr(sym), s.i, 0, hashStr('news'));
-  const r2 = randFast(s.seed, hashStr(sym), s.i, 1, hashStr('news'));
-  const tpls = dir > 0 ? MANIP_NEWS.good : MANIP_NEWS.bad;
+  const key = dir > 0 ? 'good' : 'bad';
+  const tpls = MANIP_NEWS[key];
   const nudge = (MANIP_NEWS_RANGE.min + r1 * (MANIP_NEWS_RANGE.max - MANIP_NEWS_RANGE.min)) * dir;
   const notional = Math.max(MANIP_MIN, MANIP_NEWS_Q * hourLiqBase(s, sym, s.i));
   const p = manipPreview(s, sym, dir, notional);
@@ -4460,7 +4628,12 @@ export function godFakeNews(s, sym, dir) {
   }
   pushFlow(s, sym, dir, notional, 1, 'fut', true);
   mktOf(s, sym).heat = clamp01(mktOf(s, sym).heat + nudge);
-  pushLog(s, tpls[Math.min(tpls.length - 1, Math.floor(r2 * tpls.length))].replace('%S', sym), dir > 0 ? 'ok' : 'bad', 'news');
+  /* 轮换选条：取第 n 条、n+1 存档（坏值 / 缺键回 0）。 */
+  if (!s.god.newsN) s.god.newsN = { good: 0, bad: 0 };
+  const n = Number.isFinite(s.god.newsN[key]) ? s.god.newsN[key] : 0;
+  s.god.newsN[key] = n + 1;
+  s.god.newsAt = s.i;
+  pushLog(s, tpls[n % tpls.length].replace('%S', sym), dir > 0 ? 'ok' : 'bad', 'news');
   return { ok: true, cost: p.cost };
 }
 
@@ -4846,23 +5019,28 @@ export function advanceOneHour(s) {
      ⚠️ 顺序即日志条的**先后**：`pushLog` 把最新的插在队首，同一个小时里最后写的那句才是
         日志条上显示的那句。新闻放在最前 —— 它是个 24 小时的「填充态」，该让位给同一小时里
         更具体的事件（与 P2-C「新闻让位于更新的日志」同一条口径）。 */
-  const news = newsStartAt(s.i);
-  if (news) pushLog(s, news.title, 'news');
-  /* **第二条 · 结果**（2026-10-01 拍板）：第一条只讲事件、不带数字；数字全部由这里给，
-     且**必然在它真的发生之后 1 小时**才播（判定与窗口口径见 `anchors.resultNewsStartAt`）。
-     ⚠️ 同一个小时里两条都命中时，后 push 的结果条压在事件条上面 —— 那是对的：
-        「结果」永远比「起因」更值得占着日志条那一行。 */
-  const rnews = resultNewsStartAt(s);
-  if (rnews) pushLog(s, rnews.rt, 'news');
+  /* ⚠️ 上帝模式「关闭真实新闻」（2026-10-08，`s.god.noRealNews` 默认 true）⇒ 下面 4 条真实新闻
+     的日志**一律不播**，配合 `extFlow` 归零一起让价格与播报都只随玩家操作走。
+     普通局无 `s.god` ⇒ 闸门不生效，逐位不变。 */
+  if (!(s.god && s.god.noRealNews)) {
+    const news = newsStartAt(s.i);
+    if (news) pushLog(s, news.title, 'news');
+    /* **第二条 · 结果**（2026-10-01 拍板）：第一条只讲事件、不带数字；数字全部由这里给，
+       且**必然在它真的发生之后 1 小时**才播（判定与窗口口径见 `anchors.resultNewsStartAt`）。
+       ⚠️ 同一个小时里两条都命中时，后 push 的结果条压在事件条上面 —— 那是对的：
+          「结果」永远比「起因」更值得占着日志条那一行。 */
+    const rnews = resultNewsStartAt(s);
+    if (rnews) pushLog(s, rnews.rt, 'news');
 
-  /* **外部买盘的两条披露播报**（缺口 4 / 缺口 5 · 2026-10-08）：
-     · 巨鲸/机构：命中披露日那根小时播一条（买卖都含），摊平窗口与靶心注入同一个表（`whaleFlowAt`）；
-     · 现货 ETF：每月 1 日播上月 BTC/ETH 净额（月初才拿得到月报）。
-     两者都用 `===` / 日号判等，一局内天然只说一次，不需要状态位。 */
-  const wnews = whaleNewsAt(s.i);
-  if (wnews) pushLog(s, wnews, 'news', 'mkt');
-  const enews = etfNewsAt(s.i);
-  if (enews) pushLog(s, enews, 'news', 'mkt');
+    /* **外部买盘的两条披露播报**（缺口 4 / 缺口 5 · 2026-10-08）：
+       · 巨鲸/机构：命中披露日那根小时播一条（买卖都含），摊平窗口与靶心注入同一个表（`whaleFlowAt`）；
+       · 现货 ETF：每月 1 日播上月 BTC/ETH 净额（月初才拿得到月报）。
+       两者都用 `===` / 日号判等，一局内天然只说一次，不需要状态位。 */
+    const wnews = whaleNewsAt(s.i);
+    if (wnews) pushLog(s, wnews, 'news', 'mkt');
+    const enews = etfNewsAt(s.i);
+    if (enews) pushLog(s, enews, 'news', 'mkt');
+  }
 
   for (const ex of EXCHANGES) {
     /* 开张：只报「开局之后才开」的所 —— Bitfinex 在 2013-01-01 就在，
@@ -5057,7 +5235,17 @@ export function rewindTo(s, to) {
   s.warnAt = null;
   s.otcOff = false;
   s.godRuined = false;
-  if (s.god) s.god.pin = null;   // 插针状态机（2026-10-08）：目标价是「跳转前世界」的读数 ⇒ 跳时间一律作废
+  /* 插针状态机（2026-10-08）：目标价是「跳转前世界」的读数 ⇒ 跳时间一律作废；
+     沙盒「世界偏向」台阶（2026-10-08）同理 —— 台阶的 `at` 是跳转前的小时序号，留着会落进未来，
+     `stepValueAt` 在跳到那根之前读不到 ⇒ 世界偏向会「迟到」。清空后在下一根按当前旋钮重落。 */
+  if (s.god) {
+    s.god.pin = null;
+    s.god.sbBias = null;
+    /* 假消息冷却与轮换计数（2026-10-08）也是「跳转前世界」的读数 ⇒ 一并作废，
+       否则跳时间后冷却可能落在未来（按钮永远灰着）。 */
+    s.god.newsAt = null;
+    s.god.newsN = null;
+  }
   s.over = null;
   s.paused = false;
   /* ⚠️ P0-2（2026-10-04 审计）：`s.lockI` 也要清掉。

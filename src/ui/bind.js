@@ -113,10 +113,13 @@ export const ACTION_KEYS = [
      （分派见 `main.js` 的 `onGodFloatStep`）。 */
   'gofstep',
   /* 上帝操盘台第三批（2026-10-08 三批拍板③）：`godpin`（插针 砸/拉/停）、`godnews`
-     （假消息 利好/利空）、`godliqov`（K线强平叠加开关）—— 全在上帝面板里。 */
+     （假消息 利好/利空）、`godliqov`（K线强平叠加开关）—— 全在上帝面板里。
+     M4d（2026-10-08）：`godreal` ＝「新闻源」开关（真实新闻 开/关，默认关）—— 关掉后
+     4 条真实新闻播报与 `extFlow` 一起熄火，价格只随玩家操作走。 */
   'godpin',
   'godnews',
   'godliqov',
+  'godreal',
   /* 市场浮窗开关（2026-10-07 拍板）：普通 / 挑战局设置页那枚「市场浮窗 开/关」——
      详浮窗本体（上帝局）与这枚开关是两回事；分派见 `main.js` 的 `onMktFloat`。 */
   'mktfloat',

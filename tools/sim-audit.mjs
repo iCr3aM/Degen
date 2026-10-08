@@ -2654,10 +2654,15 @@ section('9p · 上帝沙盒：旋钮归一 · 预设合法性 · shock 线性 ·
     s1 !== 0 && Math.abs(s2 / s1 - 2) < 1e-9, `×1 ${f(s1, 0)} ×2 ${f(s2, 0)} ⇒ 比 ${f(s2 / s1, 4)}`);
   check('9p shock = 0 ⇒ 级联冲击归零', s0 === 0, `×0 ${f(s0, 0)}`);
 
-  /* ④ 恒等默认 ⇒ 与**不开沙盒**逐位一致（显式写一份 1 / 0 不该改变任何东西） */
+  /* ④ 恒等默认 ⇒ 与**不开沙盒**逐位一致（显式写一份 1 / 0 不该改变任何东西）
+     ⚠️ 2026-10-08（M4b）把这局的**深度旋钮**钉到 `liqMul: 1`：`identOf(false)` 根本没有 `s.god`
+     ⇒ `godLiqMulOf` 恒 1；而 `identOf(true)` 若缺 `liqMul`，`enableGod` / 读侧补的是 **`'auto'`**
+     —— 那是 2026-10-08 引入的**有意行为**（价移比跟随，拉盘后自动放大深度并同源放大 OI / 散户簿 /
+     基金池），一旦有位移就不再是恒等。本断言咬的是「**沙盒旋钮**（`sb`）显式写默认值不改变任何
+     东西」，不是「深度旋钮恒等」⇒ 把深度旋钮钉成 1，让变量只剩 `sb`，断言仍然咬它该咬的。 */
   const identOf = async (withSb) => {
     const s = await mk({ sym: 'BTC', i: T, mode: 'fut' });
-    if (withSb) s.god = { lastFill: 0, sb: { ...god.SB_DEFAULT } };
+    if (withSb) s.god = { lastFill: 0, sb: { ...god.SB_DEFAULT }, liqMul: 1 };
     engine.tickMarket(s, 'BTC');
     return `${s.mkt.BTC.heat}|${s.mkt.BTC.npc[0].long}|${s.mkt.BTC.npc[0].short}`;
   };
@@ -3852,7 +3857,7 @@ section('9ac · 巨鲸/机构队列 WHALES：逐位摊平 ＋ 买卖都含 ＋ �
   /* ④ 接线：npcBuild 注入 extFlow（whaleFlowAt + etfFlowAt），买加长侧 / 卖加短侧，只给 ≤10x 档 */
   const engSrc9ac = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   check('9ac④ 接线：npcBuild 读 extFlow = whaleFlowAt + etfFlowAt（按游戏日 dayIndexOf）',
-    engSrc9ac.includes('const extFlow = whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx);')
+    engSrc9ac.includes('const extFlow = (s.god && s.god.noRealNews) ? 0 : (whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx));')
     && engSrc9ac.includes('const dayIdx = dayIndexOf(i);'));
   check('9ac④ 注入方式：买加长侧 / 卖加短侧（当根全量入仓 · 与 stepNpc 加仓同一会计），只在 low（≤10x）档',
     engSrc9ac.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;')
@@ -5331,7 +5336,7 @@ section('9af · NPC 限价单离散簿（行为级 ＋ 显示/播报读簿 ＋ �
    伺服一笔真实吃单（godManipPush 同一物理：花钱 / 吃深度 / 被硬夹），簇检测与 flushSlot
    的强平判定逐位同源（godWatchOf.liqs 的 price 就是 longAvg×(1−drop) / shortAvg×(1+drop)）
    ⇒ 推到位的那一根 NPC 真的爆（tape k=4/k=5）；② 假消息 = 热度一脚 ＋ 小额跟风单 ＋
-   news 金底播报，选条/幅度走 randFast 通道 'news'（确定性）；③ 强平叠加 = 主图右轴档位条
+   news 金底播报，**幅度**走 randFast 通道 'news'（确定性）、**选条**走轮换计数（M4d）；③ 强平叠加 = 主图右轴档位条
    （godWatchOf.liqs 同一份数据）。全部挂 s.god（不进存档）⇒ 不升 STATE_VERSION。 */
 section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃单物理 ＋ 全链路确定性）');
 {
@@ -5352,7 +5357,13 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     && engSrc9ag.includes('export function godFakeNews(s, sym, dir)')
     && engSrc9ag.includes('if (s.pending) return;\n\n  /* 插针剧本伺服')
     && engSrc9ag.includes('godPinTick(s);\n\n  /* NPC 情绪 / 踩踏级联')
-    && engSrc9ag.includes('if (s.god) s.god.pin = null;'));
+    /* 2026-10-08 M4k：作废行扩成对象体（插针 ＋ 沙盒世界偏向台阶 `sbBias` 一起清）；
+       M4d：再并进假消息的冷却 / 轮换计数（`newsAt` / `newsN`）。 */
+    && engSrc9ag.includes('if (s.god) {')
+    && engSrc9ag.includes('s.god.pin = null;')
+    && engSrc9ag.includes('s.god.sbBias = null;')
+    && engSrc9ag.includes('s.god.newsAt = null;')
+    && engSrc9ag.includes('s.god.newsN = null;'));
   check('9ag① god.js：MANIP_PIN 五参 ＋ MANIP_NEWS 利好/利空模板 ＋ %S 占位',
     godSrc9ag.includes('export const MANIP_PIN = { qStep: 0.35, overshoot: 0.005, backTol: 0.004, maxN: 8, maxH: 36 };')
     && godSrc9ag.includes('export const MANIP_NEWS = {')
@@ -5386,8 +5397,9 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     check('9ag② 假消息确定性：双局热度脚/花费/播报文本逐位相同',
       ra.ok && rb.ok && Math.abs(dA - dB) < 1e-12 && Math.abs(ra.cost - rb.cost) < 1e-9
       && a.log[0].text === b.log[0].text);
-    check('9ag② 假消息物理：热度一脚 ∈ [0.2,0.4] ＋ 位移真动了 ＋ news 金底芯片 ＋ 模板含币符号',
-      dA >= 0.2 - 1e-9 && dA <= 0.4 + 1e-9 && engine.lastPrice(a, 'BTC') !== pA
+    /* ⚠️ 2026-10-08 M4d：热度脚区间随 `MANIP_NEWS_RANGE` 上调（0.2~0.4 → 0.28~0.55）。 */
+    check('9ag② 假消息物理：热度一脚 ∈ [0.28,0.55] ＋ 位移真动了 ＋ news 金底芯片 ＋ 模板含币符号',
+      dA >= 0.28 - 1e-9 && dA <= 0.55 + 1e-9 && engine.lastPrice(a, 'BTC') !== pA
       && a.log[0].tag === 'news' && a.log[0].text.includes('BTC') && ra.cost > 0);
     const c = await mkNews();
     for (const bk of Object.values(c.books)) { bk.usd = 0; bk.usdt = 0; }
@@ -5472,6 +5484,150 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     engine.rewindTo(s, s.i - 1);
     check('9ag④ 拉针镜像（tip = shortAvg×(1+drop)×(1+0.005)）＋ 进行中再启拒绝 ＋ 停 ＋ 跳时间作废',
       upTipOk && !again.ok && stopped && hadPin && s.god.pin === null);
+  }
+}
+
+/* ═══════════════════ 9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新闻（2026-10-08） ═══════════════════
+   M4b：上帝「深度」旋钮（`godLiqMulOf`）⇒ 一处 `gm` 闸门（`godScale`）贯通市场规模类分母 / 读数
+        （NPC 靶心 / 基底 / OI / 量柱 / 簿 / 基金池 / 对抗性暴露）；玩家自己的名义额**不过闸**（红线 A）；
+   M4c：爆仓潮 / ADL 阈值同源放大（`liqEventScaleOf = gm × npc`）＋ 日志冷却（`NPC.liqEventCd`）；
+   M4d：上帝新闻（模板各 16 条 ＋ 冷却 `MANIP_NEWS_CD` ＋ 轮换去重 ＋ 「关闭真实新闻」开关）；
+   M4f：桌面日志条 2 → 5 行（`LOG_ROWS` 断点与 CSS 同源）。
+   ⚠️ 全部在 `gm === 1` / 缺键时**逐位早退** ⇒ 普通 / 挑战局零回归（9p 恒等断言咬住这一条）。 */
+section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新闻（结构锚 ＋ 行为锚）');
+{
+  const rd9ah = p => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const engSrc9ah = rd9ah('src/core/engine.js');
+  const godSrc9ah = rd9ah('src/core/god.js');
+  const mainSrc9ah = rd9ah('src/main.js');
+  const bindSrc9ah = rd9ah('src/ui/bind.js');
+  const rendSrc9ah = rd9ah('src/ui/render.js');
+  const cssSrc9ah = rd9ah('src/ui/style.css');
+
+  /* ① 结构锚：两枚缩放闸 ＋ 七处接入点 ＋ 爆仓潮阈值 / 冷却 ＋ 新闻闸 ＋ UI 接线 */
+  check('9ah① M4b 结构：godScale / liqEventScaleOf 定义 ＋ NPC 靶心 / OI / 暴露 / 做市 / feedTier / 基金池 同源接入',
+    engSrc9ah.includes('function godScale(s, sym, v) {')
+    && engSrc9ah.includes('return gm === 1 ? v : v * gm;')
+    && engSrc9ah.includes('function liqEventScaleOf(s, sym) {')
+    && engSrc9ah.includes('return godLiqMulOf(s, sym) * sbOf(s).npc;')
+    && engSrc9ah.includes('function baseBookOiOf(s, sym)')
+    && engSrc9ah.includes('return godScale(s, sym, Number.isFinite(v) && v > 0 ? OI.bookTurn * v : 0);')
+    && engSrc9ah.includes('const d = godScale(s, sym, raw);')
+    && engSrc9ah.includes('const raw = godScale(s, sym, hourLiqRaw(s, sym, s.i));')
+    && engSrc9ah.includes('feedTier(notional, godScale(s, sym, liqOf(sym, dayIndexOf(s.i))))')
+    && engSrc9ah.includes('const liq = godScale(s, sym, liqOf(sym, dayIndexOf(s.i)));'));
+  check('9ah① M4c 结构：阈值同源放大（liqEventScaleOf）＋ 日志冷却（NPC.liqEventCd）＋ 冷却不动 ADL',
+    godSrc9ah.includes('liqEventCd: 12,')
+    && engSrc9ah.includes('const thr = liqDay > 0 ? liqDay * NPC.liqEventFrac * liqEventScaleOf(s, sym) : 0;')
+    && engSrc9ah.includes('if (s.i - last >= NPC.liqEventCd) {')
+    && /if \(s\.i - last >= NPC\.liqEventCd\) \{[\s\S]*?pushLog\(s, `爆仓潮[\s\S]*?adl\(s, sym, m,/.test(engSrc9ah));
+  check('9ah① M4d 结构：MANIP_NEWS_CD ＋ 模板各 16 条 ＋ 冷却 / 轮换 ＋ noRealNews 默认 true ＋ extFlow / 播报双闸',
+    godSrc9ah.includes('export const MANIP_NEWS_CD = 8;')
+    && /export const MANIP_NEWS = \{[\s\S]*?good: \[[\s\S]*?\],[\s\S]*?bad: \[[\s\S]*?\],\s*\};/.test(godSrc9ah)
+    && (godSrc9ah.match(/'快讯 ｜/g) || []).length >= 32
+    && godSrc9ah.includes('if (s.god.noRealNews == null) s.god.noRealNews = true;')
+    && engSrc9ah.includes('const cd = s.i - last;')
+    && engSrc9ah.includes('if (cd < MANIP_NEWS_CD) return { ok: false, why: `冷却中（还需 ${MANIP_NEWS_CD - cd} 小时）` };')
+    && engSrc9ah.includes('s.god.newsN[key] = n + 1;')
+    && engSrc9ah.includes('const extFlow = (s.god && s.god.noRealNews) ? 0 : (whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx));')
+    && engSrc9ah.includes('if (!(s.god && s.god.noRealNews)) {')
+    && engSrc9ah.includes('s.god.newsAt = null;')
+    && engSrc9ah.includes('s.god.newsN = null;'));
+  check('9ah① M4d/M4e/M4f 接线：godreal 三处 ＋ 冷却置灰 ＋ 长按连发 ＋ 日志条 5 行',
+    bindSrc9ah.includes("'godreal'")
+    && mainSrc9ah.includes('if (d.godreal !== undefined)') && mainSrc9ah.includes('s.god.noRealNews = !s.god.noRealNews;')
+    && rendSrc9ah.includes("realBtn.dataset.godreal = ''")
+    && rendSrc9ah.includes('if (newsCd < MANIP_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }')
+    && mainSrc9ah.includes('const PUMP_REPEAT_MS = 200;')
+    && mainSrc9ah.includes('function pumpStop()') && mainSrc9ah.includes('pumpAcc.timer = setInterval(')
+    && mainSrc9ah.includes('window.addEventListener(\'pointerup\', pumpStop);')
+    && mainSrc9ah.includes('return onGodPump(node, ev);')
+    && rendSrc9ah.includes("&& window.matchMedia('(min-width: 1280px)').matches) ? 5 : 2;")
+    && cssSrc9ah.includes('.logline { height: calc(100px * var(--ui)); }'));
+
+  /* ② M4b 行为：深度 ×1/×4/×8 ⇒ 本时深度严格成比例、OI / 散户簿近似成比例（纯缩放） */
+  const scaleProbe = async (mul) => {
+    const s = await mk({ sym: 'BTC', i: idx(at(2021, 1, 1)) });
+    god.enableGod(s);
+    s.god.sb = { ...god.SB_DEFAULT };
+    s.god.liqMul = mul;
+    let oi = 0, bk = 0, dep = 0, n = 0;
+    for (let k = 0; k < 240; k++) {
+      engine.advanceOneHour(s);
+      if (s.over || s.pending) break;
+      const m = s.mkt.BTC;
+      let b = 0;
+      for (const g of m.npc) b += g.long + g.short;
+      if (m.mm) b += m.mm.long + m.mm.short;
+      oi += engine.openInterestOf(s, 'BTC'); bk += b;
+      dep += engine.godWatchOf(s, 'BTC').depth.hourBase; n++;
+    }
+    return { oi: oi / n, bk: bk / n, dep: dep / n };
+  };
+  {
+    const r1 = await scaleProbe(1), r4 = await scaleProbe(4), r8 = await scaleProbe(8);
+    const near = (a, b, tol) => Math.abs(a / b - 1) <= tol;
+    check('9ah② M4b 行为：本时深度严格 ×1/×4/×8 ＋ OI / 散户簿同倍放大（纯缩放、玩家仓位不过闸）',
+      near(r4.dep, r1.dep * 4, 1e-6) && near(r8.dep, r1.dep * 8, 1e-6)
+      && near(r8.oi / r1.oi, 8, 0.25) && near(r4.oi / r1.oi, 4, 0.25)
+      && near(r8.bk / r1.bk, 8, 0.25) && near(r4.bk / r1.bk, 4, 0.25),
+      `dep ${f(r4.dep / r1.dep, 3)}/${f(r8.dep / r1.dep, 3)} · oi ${f(r8.oi / r1.oi, 2)} · bk ${f(r8.bk / r1.bk, 2)}`);
+  }
+
+  /* ③ M4c 行为：阈值闸门 —— 「不联动」列随倍数暴涨（×8 ⇒ ×8 刷屏）；「联动」列保持同量级。
+     口径：逐小时 `r = Δstat.liqNotional ÷ 当日流动性`；老规则 `r ≥ frac`、新规则 `r ≥ frac×gm×npc`。 */
+  const thrProbe = async (mul, npc) => {
+    const s = await mk({ sym: 'BTC', i: idx(at(2020, 3, 1)) });
+    god.enableGod(s);
+    s.god.sb = { ...god.SB_DEFAULT, npc };
+    s.god.liqMul = mul;
+    const frac = god.NPC.liqEventFrac;
+    let prev = s.stat.liqNotional || 0, oldN = 0, newN = 0;
+    for (let k = 0; k < 720; k++) {
+      engine.advanceOneHour(s);
+      if (s.over || s.pending) break;
+      const now = s.stat.liqNotional || 0, d = now - prev; prev = now;
+      const liqDay = market.liqOf('BTC', Math.floor(s.i / 24)) || 0;
+      if (liqDay > 0 && d > 0) {
+        const r = d / liqDay, thr = frac * engine.godLiqMulOf(s, 'BTC') * god.sbOf(s).npc;
+        if (r >= frac) oldN++;
+        if (r >= thr) newN++;
+      }
+    }
+    return { oldN, newN };
+  };
+  {
+    const base = await thrProbe(1, 1), big = await thrProbe(8, 30);
+    check('9ah③ M4c 行为：深度×8 ＋ 散户×30 ⇒ 旧阈值刷屏、新阈值自适应抑制',
+      base.oldN === 0 && big.oldN >= 10 && big.newN <= 1,
+      `不联动 ${base.oldN}→${big.oldN} 条 · 联动 ${base.newN}→${big.newN} 条`);
+  }
+
+  /* ④ M4d 行为：noRealNews 默认 true ＋ 冷却拒发 ＋ 16 连发轮换不重样 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e8, i: idx(at(2021, 5, 10)) });
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e9;
+    const defOff = s.god.noRealNews === true;
+    const a = engine.godFakeNews(s, 'BTC', 1);
+    /* ⚠️ 播报文本必须**当场**取 —— `advanceOneHour` 每小时会插别的日志把队首顶掉。 */
+    const seen = new Set([s.log[0].text]);
+    engine.advanceOneHour(s);
+    const b = engine.godFakeNews(s, 'BTC', 1);              // 1h 后仍在 8h 冷却里 ⇒ 拒
+    check('9ah④ M4d 行为：进入上帝模式默认关真实新闻 ＋ 冷却期内拒发',
+      defOff && a.ok && !b.ok && /冷却/.test(b.why),
+      `noRealNews=${s.god.noRealNews} · 二次 ${b.ok ? 'ok' : b.why}`);
+    /* 16 连发（每次隔 9h > 冷却）⇒ 16 条文本两两不同（轮换去重生效） */
+    for (let k = 0; k < 15; k++) {
+      for (let h = 0; h < 9; h++) engine.advanceOneHour(s);
+      const r = engine.godFakeNews(s, 'BTC', 1);
+      if (r.ok) seen.add(s.log[0].text);
+    }
+    check('9ah④ M4d 行为：连按 16 次 ⇒ 16 条播报两两不同（轮换计数去重）＋ 全部含币符号',
+      seen.size === 16 && [...seen].every(t => t.includes('BTC')),
+      `去重后 ${seen.size} 条`);
+    check('9ah④ M4d 常数：利好 / 利空各 16 条 ＋ 冷却 8h',
+      god.MANIP_NEWS.good.length === 16 && god.MANIP_NEWS.bad.length === 16 && god.MANIP_NEWS_CD === 8);
   }
 }
 
