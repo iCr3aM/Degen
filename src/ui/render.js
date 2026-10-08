@@ -3377,12 +3377,14 @@ function floatBody(s, page) {
        每格名义 = 内外缘价距上的连续深度差 `liq×[(x₂/3σ)² − (x₁/3σ)²]`（`3σ√q` 的反函数），
        与真实成交成本同一条曲线、到外缘恰收敛于 `cap` ⇒ 不发明深度；数量 = 名义 ÷ 格价
        （`fmtQty` 无 $），金额 = 从贴中向外累计（coinglass「总计」同款）。墙 = 真实历史
-       价位，**不吸附网格**（它就是要被撞的那条价），照插格间；视野外（单侧 18 格 ≈ ±2~3%）
-       的梯与墙折成一行 `gb-far` 汇总 —— 热力图页管全景，这页管近场，与真实盘口同构。 */
+       价位，**不吸附网格**（它就是要被撞的那条价），照插格间；视野外（单侧 12~18 格，
+       ≈ ±1.3~4.7% 随断点）的梯与墙折成一行 `gb-far` 汇总 —— 热力图页管全景，这页管
+       近场，与真实盘口同构。 */
     const b = w.book;
     if (!b) { box.append(el('p', 'god-fnote', '盘口暂不可用')); return box; }
-    /* 可读步进：`1-2-5×10ⁿ` 里取最接近 `price×2e-3` 的一档 ⇒ 18 格视野 ≈ ±2~4.7%，
-       正是真实盘口视野的量级（BTC@108k→200 · ETH@3.9k→10 · XRP@2.3→0.005 · DOGE@0.16→0.0002）。 */
+    /* 可读步进：`1-2-5×10ⁿ` 里取最接近 `price×2e-3` 的一档 ⇒ 手机 12 格 ≈ ±1.3~3.1%／
+       桌面 18 格 ≈ ±1.9~4.7%，正是真实盘口视野的量级
+       （BTC@108k→200 · ETH@3.9k→10 · XRP@2.3→0.005 · DOGE@0.16→0.0002）。 */
     const niceStep = p => {
       const raw = p * 2e-3;
       const e = Math.pow(10, Math.floor(Math.log10(raw)));
@@ -3390,7 +3392,10 @@ function floatBody(s, page) {
       return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * e;
     };
     const step = niceStep(b.mid);
-    const VIEW = 18;                                   // 单侧视野格数
+    /* 单侧视野格数（2026-10-08 · 用户拍板）：<1280px 12 档 —— 手机 39 行 ≈ 507px 矮屏必滚，
+       27 行 ≈ 351px 免滚动；≥1280px 三档桌面 18 档不动（断点对齐 `--float-w` 的 media query）。
+       远档 `gb-far` 汇总线随之自动收窄。 */
+    const VIEW = (window.matchMedia && window.matchMedia('(min-width: 1280px)').matches) ? 18 : 12;
     const qOf = x => { const t = x / (3 * b.sigma); return t * t; };   // 价距比例 x ⇒ 已吃名义 q
     const midIdx = Math.round(b.mid / step);
     /* 第 k 格（贴中数起）的名义（q 单位）：外缘/内缘价距上的连续深度差，q 在 `cap` 处夹断。 */
@@ -3455,7 +3460,10 @@ function floatBody(s, page) {
     const row = (k, v) => { const r = el('div', 'god-frow2'); r.append(el('i', null, k), el('b', null, v)); return r; };
     box.append(row('日流动性', fmtMoneyShort(d.liqDay)));
     box.append(row('本时深度', fmtMoneyShort(d.hourBase)));
+    /* 深度乘数 / 池回补（2026-10-08 · 用户拍板「深度页加读数」）：折减残值 ＋ 池子回补进度。 */
+    box.append(row('深度乘数', `${Math.round(d.depthMul * 100)}%`));
     box.append(row('深度池', `${fmtMoneyShort(Math.max(0, d.poolCap - d.poolUsed))} / ${fmtMoneyShort(d.poolCap)}`));
+    box.append(row('池回补', `${Math.round(d.refillPct * 100)}%`));
     box.append(row('免滑点 ≤', fmtMoneyShort(d.dead)));
     box.append(row('单笔顶格 ≥', fmtMoneyShort(d.sat)));
     /* 压力位墙汇总（2026-10-07 拍板「在簿上/深度页露出」）：逐条在页 3，这里给一个总读数。 */
@@ -3514,7 +3522,7 @@ export function updateFloat(s, ui) {
   for (const b of fPanel.querySelectorAll('[data-goftab]')) b.classList.toggle('on', Number(b.dataset.goftab) === ui.page);
   fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page));
   /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽由 `--float-w` 给，＋8px 余量）。
-     高度由 `--float-h` 给（手机端 72dvh）⇒ 上弹时 top 还要夹进「视口高 − 面板高 − 余量」，
+     高度由 `--float-h` 给（手机端兜底 64dvh）⇒ 上弹时 top 还要夹进「视口高 − 面板高 − 余量」，
      否则矮视口下面板底边会探出屏幕外（2026-10-08 扩容后尤其明显）。 */
   const geo = floatGeo();
   const cw = geo.cw, ch = geo.ch;

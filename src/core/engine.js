@@ -198,6 +198,7 @@ export function godWatchOf(s, sym = s.sym) {
   }
   const liqDay = liqOf(sym, dayIndexOf(s.i)) || 0;
   const base = hourLiqBase(s, sym, s.i);
+  const rawBase = hourLiqRaw(s, sym, s.i);   // 未折减分母（ADV 口径）—— 深度页「深度乘数」读数用
   const price = lastPrice(s, sym);
   /* 同价聚合（2026-10-08 热力图改版 · 用户拍板 A）：六档共用一条均价 ＋ 同一倍率 ⇒ 同价
      强平线逐位相等，六根条叠同一价位纯属冗余 ⇒ 按「侧|价」合并（名义累加、`w` 累加、
@@ -218,10 +219,16 @@ export function godWatchOf(s, sym = s.sym) {
     fng: Number.isFinite(m.fng) ? m.fng : 50,
     liqs: liqsMerged, tiers,
     book: bookForWatch(s, sym, price),
+    /* 深度乘数 / 池回补（2026-10-08 · 深度页加两行读数 · 用户拍板）：depthMul = 对抗性
+       折减残值（已折进上面的「本时深度」，这行让玩家看清折了多少）；refillPct = 深度池
+       在途消耗的回补进度 `1 − poolRefill(e)`，无在途消耗 ⇒ 1（满）。纯派生，不写状态。 */
     depth: {
       liqDay, hourBase: base,
       poolUsed: poolConsumedAt(s, sym, s.i), poolCap: POOL.capK * base,
       dead: liqDay * SLIP.threshold, sat: liqDay * SLIP.cap,
+      depthMul: rawBase > 0 ? advDepthMul(s, sym, s.i, rawBase) : 1,
+      refillPct: (s.pool && s.pool[sym] && s.pool[sym].v > 0)
+        ? Math.max(0, 1 - poolConsumedAt(s, sym, s.i) / s.pool[sym].v) : 1,
     },
   };
 }
@@ -2250,11 +2257,24 @@ function stampede(s, sym, m, price) {
   if (!(price > 0)) return;
   const fund0 = s.fund;                             // 本小时级联**之前**的基金（量出这次穿仓了多少）
   let liqNotional = 0;                              // 本小时被**强平**的名义（缺口 16 口径：不含止损波）
+  /* ⚠️ 每档判定价**逐档重读** `lastPrice`（2026-10-08 · 无玩家自洽审计修）：
+     循环内止损波 / 强平会 `pushNpcShock` 写出 `at = s.i` 的同根条目，`closeAt(s.i)` 当根即变
+     （DECAY[0] = 1 全额计入）。旧实现全档共用调用点那一个 `price`：越靠后的档（100x → 做市，
+     恰好最脆弱）看到的越是**没被踩踏过**的价格 —— 实测（2021-06 BTC）：50x 止损波同根砸
+     −0.75%，显示收盘 37447 已穿 100x 强平线 37585，但 100x 按推前价 37728 判定存活、
+     拖到下一根才清算 ⇒ 热力图出现「击穿一整根仍未清算」。逐档重读 ⇒ 每档按**自己被判定
+     那一刻**的价格判定，级联在本根内向后真实传导（下跌 → 止损 → 砸盘 → 更高杠杆档强平）。
+     ⚠️ **已知残差（有意保留）**：本档自己的止损波 / 强平推价发生在本档判定**之后**，
+        可能把收盘推穿自己剩余半仓的线 —— 该半仓下一根清算（实测 48h 窗口 1/48 小时，
+        因果叙事自洽：「止损波把价砸穿了我的强平线，下一根保证金电话到了」）。
+        多趟扫描到不动点可完全闭合，但会把同根级联幅度放大约 2 倍 ⇒ 隐性重标定全部
+        按单趟语义调校的数值（SHOCK.share / 爆仓潮频率 / ADL 锚点），故不采。
+     `price` 参数退化为入口守卫（npcOtherTick / tickMarket 的调用点不用改）。 */
   for (let k = 0; k < m.npc.length; k++) {
     /* 缺口 17：强平线读**年代封顶后**的杠杆（2016-05-13 前全市场最高只有 3.33x） */
-    liqNotional += flushSlot(s, sym, m, m.npc[k], npcLevOf(timeOf(s), NPC.ladder[k].lev), price);
+    liqNotional += flushSlot(s, sym, m, m.npc[k], npcLevOf(timeOf(s), NPC.ladder[k].lev), lastPrice(s, sym));
   }
-  if (m.mm) liqNotional += flushSlot(s, sym, m, m.mm, NPC.mm.lev, price);
+  if (m.mm) liqNotional += flushSlot(s, sym, m, m.mm, NPC.mm.lev, lastPrice(s, sym));
   /* 缺口 16：把本小时被强平的名义记进统计；达到「当日流动性 × NPC.liqEventFrac」播一条事件日志。
      ⚠️ 只含**强平潮**，不含上面的自愿止损波 —— 对齐 Coinglass 的公告口径。 */
   if (liqNotional > 0) {
@@ -2262,8 +2282,11 @@ function stampede(s, sym, m, price) {
     const liqDay = liqOf(sym, dayIndexOf(s.i));
     if (liqDay > 0 && liqNotional >= liqDay * NPC.liqEventFrac) {
       /* 补 `@ 价格`（2026-10-03 用户要求）：只报金额时玩家看不出这一波砸在什么价位上，
-         也就无法把「爆仓潮」与 K 线上那根长阴对上号。 */
-      pushLog(s, `爆仓潮 ${sym} ｜ ${fmtMoneyShort(liqNotional)} @ ${fmtLogPrice(price)}`, 'bad', 'mkt');
+         也就无法把「爆仓潮」与 K 线上那根长阴对上号。
+         ⚠️ 价格与下面的 ADL 都读**级联后的最终价**（2026-10-08）：逐档重读判定价后，
+            本根内的止损波 / 强平已经把 `closeAt(s.i)` 推走了 —— 日志报的 `@ 价格` 要和
+            K 线上那根长阴的收盘对得上，就得用推完之后的那一个。 */
+      pushLog(s, `爆仓潮 ${sym} ｜ ${fmtMoneyShort(liqNotional)} @ ${fmtLogPrice(lastPrice(s, sym))}`, 'bad', 'mkt');
       /* 缺口 5 ③（2026-10-03 ADL 审计重标定）—— **ADL 的触发就是「爆仓潮」成立的那一刻**，
          触发闸门与上面这条日志**共用同一个常数**（`NPC.liqEventFrac`）。
          ⚠️ **为什么不用「基金水位」当触发**（旧实现，实测 5556 次）：基金在这套市场模型里
@@ -2279,7 +2302,7 @@ function stampede(s, sym, m, price) {
             `adl` 直接早退（该崩盘的穿仓已被盈余抵掉，无洞可补）。
          ⚠️ 浮盈**如实入池**（`adl` 内 `s.fund += take`）—— 不再有旧实现那句 `s.fund = 0`
             硬清零（它把缺口「抹掉」而不是「填上」，下一根必然再触发）。 */
-      adl(s, sym, m, price, Math.max(0, fund0 - s.fund));
+      adl(s, sym, m, lastPrice(s, sym), Math.max(0, fund0 - s.fund));
     }
   }
 }
