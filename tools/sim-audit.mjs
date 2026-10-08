@@ -3705,6 +3705,51 @@ section('9z · 深跌护盘三层 dipBuyOf ＋ 做市相位');
   }
 }
 
+/* ═══════════════════ 9aa · 监管事件锚点（2026-10-08 · 缺口 6） ═══════════════════
+   7 条监管/合规锚点进 `anchors.js` —— **只出新闻与 K 线标记，零人工涨跌幅**（P2-C 红线）；
+   结果新闻的判定走 `candleAt`（含玩家位移）⇒ 动态；不产生链上拥堵（`congestion` 全 null）。
+   同时固化两件事：① 全表相邻锚点 ≥ 24h（24h 新闻窗不叠）；② 与 `review.js` EXTRA 的回顾节点**不撞 `at`**。 */
+section('9aa · 监管事件锚点 7 条 ＋ 回顾节点去重');
+{
+  const A = await import('../src/core/anchors.js');
+  const RV = await import('../src/core/review.js');
+  const all = A.allAnchors();
+  const NEW = [
+    Date.UTC(2014, 2, 25), Date.UTC(2018, 1, 6), Date.UTC(2019, 6, 12),
+    Date.UTC(2021, 8, 24), Date.UTC(2022, 7, 8), Date.UTC(2023, 5, 5), Date.UTC(2023, 10, 21),
+  ];
+  const got = NEW.map(t => all.find(a => a.t === t));
+
+  check('9aa① 锚点表 20 → 27 条（新增 7 条监管事件）', all.length === 27, `实得 ${all.length}`);
+  check('9aa① 7 条新锚点按 `t` 全部落表', got.every(Boolean), NEW.filter((t, k) => !got[k]).join(','));
+  check('9aa① `at` 逐位 = (t − GAME.start) ÷ 1h',
+    NEW.every((t, k) => got[k] && got[k].at === Math.round((t - C.GAME.start) / H)));
+  check('9aa① 形态：chain ∈ {btc, eth, null}；监管事件不产生链上拥堵（congestion 全 null）',
+    got.every(a => a && (a.chain === 'btc' || a.chain === 'eth' || a.chain === null) && a.congestion === null));
+  check('9aa① 首条新闻只讲事件、不含价格数字（标题无「$」无「%」）',
+    got.every(a => a && !/[$%]/.test(a.title)));
+  check('9aa① 全部落在行程内（早于 GAME.end = 2025-01-01）', NEW.every(t => t < Date.UTC(2025, 0, 1)));
+
+  check('9aa② 结果新闻规格合法：带 `rt` 的必有 `r`，k ∈ {lvl, mv}、w ≥ 1、sym 与 dir 齐备',
+    got.every(a => a && (!a.rt || (a.r && (a.r.k === 'lvl' || a.r.k === 'mv')
+      && a.r.w >= 1 && !!a.r.sym && (a.r.dir === 1 || a.r.dir === -1)))));
+  const ats = all.map(a => a.at).sort((x, y) => x - y);
+  check('9aa② 全表相邻锚点至少相隔 24h（24h 新闻窗不叠）',
+    ats.every((x, k) => k === 0 || x - ats[k - 1] >= 24));
+  check('9aa② 每条新锚点的首条新闻在自己的播报时刻命中（`===` 判等 ⇒ 恰一次）',
+    got.every(a => { const hit = A.newsStartAt(a.at + (a.h || 0) + 1); return hit && hit.t === a.t; }));
+
+  const rv = RV.RV_NODES;
+  const rvAt = rv.map(n => n.at);
+  const dup = rvAt.filter((x, k) => rvAt.indexOf(x) !== k);
+  check('9aa③ 回顾节点无重复 `at`（anchors 27 ＋ EXTRA 25 互不撞车）', dup.length === 0, dup.join(','));
+  check('9aa③ 回顾节点总数 = 27 ＋ 25 = 52', rv.length === 52, `实得 ${rv.length}`);
+  check('9aa③ 7 条新锚点在回顾里都有节点、且 note 非空',
+    got.every(a => { const n = rv.find(v => v.at === a.at); return n && typeof n.note === 'string' && n.note.length > 0; }));
+  check('9aa③ Tornado Cash 回顾切到 ETH（事件在以太坊上）',
+    (rv.find(v => v.at === Math.round((Date.UTC(2022, 7, 8) - C.GAME.start) / H)) || {}).sym === 'ETH');
+}
+
 /* ═══════════════════ 13 · 回归护栏（2026-10-05 · 「确认已修 bug 不复发」） ═══════════════════
    这一节**不跑引擎**，只对上一轮修好的几处做**源码 / 数据面**的固化断言 —— 谁把修复删回去，这里立刻红。
    目标五件事：
