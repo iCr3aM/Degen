@@ -5165,7 +5165,7 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
   const styleSrc9y = readSrc9y('src/ui/style.css');
 
   check('9ae① 引擎：feedPush / feedTier / FEED_STEPS / FEED_CAP 定义 ＋ rewindTo 清空（会话级口径）',
-    engSrc9y.includes('function feedPush(s, sym, k, price, notional)')
+    engSrc9y.includes('function feedPush(s, sym, k, price, notional, minTier = -1)')
     && engSrc9y.includes('export function feedTier(notional, liqDay)')
     && engSrc9y.includes('export const FEED_STEPS = [0.001, 0.005, 0.01, 0.02, 0.05]')
     && engSrc9y.includes('export const FEED_CAP = 240')
@@ -5184,7 +5184,7 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     && engSrc9y.split('if (!quiet) feedPush(s, sym, 3, price, cut)').length >= 3
     && engSrc9y.includes('feedPush(s, sym, 0, price, buy)')
     && engSrc9y.includes('feedPush(s, sym, 1, price, sell)')
-    && engSrc9y.split("feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional)").length >= 3);
+    && engSrc9y.split("feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0)").length >= 3);
 
   check('9ae④ 分档行为锚：5%→4 · 2%→3 · 1%→2 · 0.5%→1 · 0.1%→0 · 0.09%→−1（跨年代自适应的同一把尺）',
     engine.feedTier(5, 100) === 4 && engine.feedTier(2, 100) === 3 && engine.feedTier(1, 100) === 2
@@ -5901,6 +5901,57 @@ section('9ak · 上帝「新闻源与事件」总闸：普通/挑战照常 · �
     check('9ak⑨ 上帝关事件：同一时刻不弹预警（遮罩也是史实利空事件的播报）',
       G.pending == null && G.warnAt == null,
       `pending=${G.pending} warnAt=${G.warnAt}`);
+  }
+}
+
+/* ═══════════════════ 9al · 玩家仓位可见性 ＋ 插针预算同源（2026-10-09） ═══════════════════
+   用户四问落地的三条改动：① 插针「预算用尽」根因 = 预算冻结在启动时刻、而 q 逐根随深度
+   旋钮（自动档 ×1~×8）重算 ⇒ 自动档几根烧穿；修为预算与 q 同源取**当前**本时深度，且
+   「预算用尽 / 时长用尽」分开播报。② 玩家仓位上浮窗：热力图「你」条 / 巨鲸置顶行 /
+   订单页强平价格标记（playerPosOf 与持仓条同源）。③ 玩家自己的强平 minTier=0 强制上 tape
+   （小仓在深市年代永远够不着 0.1% 阈值 ⇒ 旧口径日志页看不到自己爆仓）。 */
+section('9al · 玩家仓位可见性（热力图/巨鲸/订单/tape）＋ 插针预算同源');
+{
+  const readSrcAl = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const engSrcAl = readSrcAl('src/core/engine.js');
+  const renderSrcAl = readSrcAl('src/ui/render.js');
+  const styleSrcAl = readSrcAl('src/ui/style.css');
+
+  /* ① 结构：插针预算与 q 同源 ＋ 两类中止分开播报 ＋ 启动态不再带冻结 cap */
+  check('9al① 插针预算：逐根取当前 hourLiqBase（深度旋钮不再提前烧穿）＋ 预算/时长分开播报',
+    engSrcAl.includes('const base = hourLiqBase(s, pin.sym, s.i);\n  const q = Math.max(MANIP_MIN, MANIP_PIN.qStep * base);')
+    && engSrcAl.includes('pin.n > MANIP_PIN.maxN * base')
+    && engSrcAl.includes('插针中止 ｜ 预算用尽，已停止')
+    && engSrcAl.includes('插针中止 ｜ 时长用尽，已停止')
+    && !engSrcAl.includes('cap: MANIP_PIN.maxN * base'));
+
+  /* ② 结构：playerPosOf 派生 ＋ 三页标记 ＋ 样式三族 ＋ 沙盒标签带当前值 */
+  check('9al② 玩家仓位上浮窗：热力图「你」条 / 巨鲸置顶行 / 订单页强平格标记 ＋ you 样式',
+    renderSrcAl.includes('function playerPosOf(s)')
+    && renderSrcAl.includes('god-hm-bar ${r.l.side} you')
+    && renderSrcAl.includes("'god-frow2 you'")
+    && renderSrcAl.includes("r.you ? '你 '")
+    && renderSrcAl.includes('you: k === youK')
+    && styleSrcAl.includes('.god-hm-bar.you') && styleSrcAl.includes('.god-frow2.you')
+    && styleSrcAl.includes('.gb-row.you i'));
+  check('9al③ 沙盒旋钮标签带当前值（预设的非档位值如 ×1.4 / +0.12 玩家可见）',
+    renderSrcAl.includes("const sbLabel = key === 'mood'")
+    && renderSrcAl.includes("row.append(el('i', null, sbLabel));"));
+
+  /* ③ 行为：玩家小仓强平也上 tape（2021-04-14 开 10x 多 $100K 名义 ⇒ 04-18 崩盘打爆；
+     名义 ≪ 0.1% 日流动性（≈$10M+）⇒ 旧口径 tier=−1 被丢，新口径 minTier=0 强制入带 t=0）。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e5, i: idx(at(2021, 3, 14)) });
+    s.lev = 10;
+    const o = engine.openTrade(s, 'long', 1);
+    let saw = false;
+    for (let h = 0; h < 24 * 30 && !saw; h++) {
+      engine.advanceOneHour(s);
+      if (s.over || s.pending) { if (s.pending) s.pending = null; }
+      saw = (s.feed || []).some(x => x.k === 4 && x.n < 2e6 && x.t === 0);
+    }
+    check('9al④ 行为：玩家 $1M 小仓爆仓上 tape（k=4 · n<2M · t=0 强制档）—— 旧口径会被 0.1% 阈值丢掉',
+      saw && o.ok, o.ok ? (saw ? 'feed 命中' : '30 天内未爆仓（行情判据漂移，查 2021-04 K 线）') : `开仓拒(${o.why})`);
   }
 }
 

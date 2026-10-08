@@ -2189,11 +2189,16 @@ export function feedTier(notional, liqDay) {
   for (let i = FEED_STEPS.length - 1; i >= 0; i--) if (r >= FEED_STEPS[i]) return i;
   return -1;
 }
-function feedPush(s, sym, k, price, notional) {
+function feedPush(s, sym, k, price, notional, minTier = -1) {
   if (!(price > 0) || !(notional > 0)) return;
   /* M4b：档位阈值同样过 `gm` —— 市场放大 ⇒ 同一笔名义的「分量」按比例缩水（与 `lobTick` 里
-     那条取值同源）。`gm === 1` ⇒ 逐位不变。 */
-  const tier = feedTier(notional, godScale(s, sym, liqOf(sym, dayIndexOf(s.i))));
+     那条取值同源）。`gm === 1` ⇒ 逐位不变。
+     ⚠️ `minTier`（2026-10-09）：**玩家自己的强平**（k=4/5 传 0）无论名义多小都强制上 tape
+        —— 它是「你的仓被市场看到」的那条事实流；低于 0.1% 日流动性的小仓在深市年代
+        （2024 BTC ≈ $30M 阈值）永远够不着阈值 ⇒ 按旧口径玩家的爆仓在日志页根本不出现
+        （用户拍板「日志（爆仓）应该显示玩家的仓位」）。其余调用缺省 −1 ⇒ 行为逐位不变。 */
+  let tier = feedTier(notional, godScale(s, sym, liqOf(sym, dayIndexOf(s.i))));
+  if (tier < minTier) tier = minTier;
   if (tier < 0) return;
   if (!s.feed) s.feed = [];                        // 旧档 / 回退后惰性补建（不升存档版）
   s.feed.push({ i: s.i, sym, k, p: price, n: notional, t: tier });
@@ -4262,8 +4267,9 @@ function forceLiquidate(s, pos, atPrice) {
      NPC 侧（`stampede` 里那个局部量），因为「爆仓潮」是市场级事件、不该被玩家单人引爆。 */
   s.stat.liqNotional += notional;
   /* tape（2026-10-08）：玩家自己被强平也是全市场可见的事实流（现实里 forceOrder 对所有人推送）
-     ⇒ 照发爆多/爆空；玩家**主动**开/平则不进 tape（主日志已有）。 */
-  feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional);
+     ⇒ 照发爆多/爆空；玩家**主动**开/平则不进 tape（主日志已有）。
+     2026-10-09：传 `minTier = 0` ⇒ 无论名义多小都上 tape（小仓在深市年代够不着 0.1% 阈值）。 */
+  feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0);
   delete s.positions[pos.sym];
   refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：爆掉的杠杆实物多头同 `closeGive` 比例释放折价
 }
@@ -4583,7 +4589,6 @@ export function godPinStart(s, sym, dir) {
     sym, dir,
     tip: best.price * (1 + dir * MANIP_PIN.overshoot),
     anchor: cur,
-    cap: MANIP_PIN.maxN * base,
     n: 0, h: 0, back: false,
   };
   return { ok: true, tip: s.god.pin.tip, cluster: best.notional };
@@ -4611,7 +4616,8 @@ export function godPinTick(s) {
     pushLog(s, `插针 ｜ 回位完成 ${fmtLogPrice(cur)}`, 'ok');
     return;
   }
-  const q = Math.max(MANIP_MIN, MANIP_PIN.qStep * hourLiqBase(s, pin.sym, s.i));
+  const base = hourLiqBase(s, pin.sym, s.i);
+  const q = Math.max(MANIP_MIN, MANIP_PIN.qStep * base);
   const r = godManipPush(s, pin.sym, pin.back ? -pin.dir : pin.dir, q);
   if (!r.ok) {
     s.god.pin = null;
@@ -4619,9 +4625,18 @@ export function godPinTick(s) {
     return;
   }
   pin.n += q;
-  if (pin.n > pin.cap || pin.h > MANIP_PIN.maxH) {
+  /* 预算上限与 q **同源取当前本时深度**（2026-10-09 修）：深度旋钮自动档随价移放大深度
+     （×1~×8），预算若冻结在启动时刻，同样的 maxN=8 会在几根内被烧穿 —— 用户报
+     「拉针动辄预算用尽」的主因。maxN × base ≈ 23 根推进余量的设计意图不变。
+     两个上限**分开播报**：名义预算用尽 ≠ 时长用尽（旧版都报「预算用尽」，误导排查）。 */
+  if (pin.n > MANIP_PIN.maxN * base) {
     s.god.pin = null;
     pushLog(s, `插针中止 ｜ 预算用尽，已停止`, 'bad');
+    return;
+  }
+  if (pin.h > MANIP_PIN.maxH) {
+    s.god.pin = null;
+    pushLog(s, `插针中止 ｜ 时长用尽，已停止`, 'bad');
   }
 }
 
@@ -5750,7 +5765,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   if (!pos.liqCounted) s.stat.liq += 1;
   r.pos.liqCounted = true;                 // 落在这笔仓位身上 ⇒ `{...pos}` 会一路带着它
   s.stat.liqNotional += notional;          // §17.3（2026-10-04）：部分强平的成交名义同口径计入（与 `forceLiquidate` 一致）
-  feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional);   // tape：部分强平同发爆多/爆空
+  feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0);   // tape：部分强平同发爆多/爆空（minTier 0：玩家自己的仓，小名义也上）
   /* 清算费（2026-10-07 用户拍板 · 补漏）：**部分强平同样按「已平名义」收费**。
      现实里交易所对部分强平也照收 liquidation fee（与整条强平同一张费率表）；旧实现只有
      `forceLiquidate` 扣费 ⇒ 「被削十几档」这条最惨的路反而一分不罚（实测累计 0.2%~0.5% 原始名义）。

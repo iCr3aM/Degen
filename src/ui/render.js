@@ -3156,7 +3156,15 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   };
   for (const key of SB_KEYS) {
     const row = el('div', 'set-row god-sbrow');
-    row.append(el('i', null, SB_LABEL[key]));
+    /* 标签带**当前值**（2026-10-09 · 用户拍板「我不知道火箭牛市的各项倍数是哪些」）：预设里有
+       1.4 / 0.12 这类非档位值 ⇒ 点完预设档位按钮不高亮，玩家无从知道现在开的是多大的世界。
+       值直接缀在标签上（`情绪强度 ×1.4` / `情绪偏向 +0.12`），手动微调 / 预设 / 坏值三种
+       来源都如实显示 —— 与选中态高亮互补，不多占一行。 */
+    const cur = sb[key];
+    const sbLabel = key === 'mood'
+      ? `${SB_LABEL[key]} ${cur > 0 ? '+' : ''}${cur}`
+      : `${SB_LABEL[key]} ×${cur}`;
+    row.append(el('i', null, sbLabel));
     const grp = el('div', 'god-pick');
     for (const v of SB_STEPS[key]) {
       const b = el('button', Math.abs(v - sb[key]) < 1e-9 ? 'set-btn on' : 'set-btn',
@@ -3411,6 +3419,16 @@ function floatGeo() {
  *     拖动浮窗时列表乱跳，且与订单簿 / 深度页信息重叠 —— 数据源 `tape.js` 一并删除。 */
 /* 分档阈值 → 显示标签（0.001 → "0.1%"）—— 不靠 ×100 现算，避开 0.01×100 = 1.000…2 的浮点毛刺。 */
 const feedPctLabel = i => `${Math.round(FEED_STEPS[i] * 1000) / 10}%`;
+/**
+ * 玩家当前币的**仓位速览**（2026-10-09 · 用户拍板「热力图/巨鲸/订单/日志要显示玩家的仓位」）：
+ * 方向 / 生效杠杆 / 开仓价 / 强平价 —— 三页共用同一份派生，`liquidationPrice` / `effLevOf`
+ * 与交易页持仓条**同源**（同一把尺子，不会两套口径）。无仓（或仓位已平空）⇒ null。
+ */
+function playerPosOf(s) {
+  const pos = s.positions && s.positions[s.sym];
+  if (!(pos && pos.notional > 0 && pos.size > 0)) return null;
+  return { pos, lp: liquidationPrice(pos), lev: effLevOf(pos), side: pos.side };
+}
 function floatBody(s, page, bookStep = 1, logFilt = 0) {
   const w = godWatchOf(s, s.sym);
   const box = el('div', 'god-fbody');
@@ -3438,6 +3456,19 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const avail = 1 - 2 * MARGIN;
     const clampT = v => Math.min(1 - MARGIN, Math.max(MARGIN, v));
     const rows = w.liqs.map(l => ({ y: yFrac(l.price), l }));
+    /* 玩家自己的强平线（2026-10-09 · 用户拍板）：有仓就画一条「你」的条。纵轴**不**为它
+       延展（1x 仓的强平价 ≈ 0，会把整个视窗拉爆）—— 越界时夹到边缘照画，精确数字在巨鲸页。
+       条宽 = 玩家名义占「NPC 合计 ＋ 玩家」的份额（与 NPC 行同一把尺）。 */
+    const you = playerPosOf(s);
+    if (you) {
+      let sum = 0;
+      for (const l of w.liqs) sum += l.notional;
+      rows.push({
+        y: clampT(yFrac(you.lp)),
+        you: true,
+        l: { price: you.lp, notional: you.pos.notional, side: you.side, w: sum + you.pos.notional > 0 ? you.pos.notional / (sum + you.pos.notional) : 1 },
+      });
+    }
     rows.push({ y: yFrac(w.price), now: true });   // 现价线在真实比例位置，参与同一场级联
     rows.sort((a, b) => a.y - b.y);
     /* 双向级联（2026-10-08 bug 修）：旧版只做**正向**（自顶向下推），底部密集条目（多头强平
@@ -3470,6 +3501,13 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
         const now = el('div', 'god-hm-now', fmtFloatPrice(w.price));
         now.style.top = `${clampT(r.t) * 100}%`;
         hm.append(now);
+      } else if (r.you) {
+        /* 玩家条（2026-10-09）：缀「·你」与强平字样 ＋ accent 高亮（CSS `.god-hm-bar.you`）。 */
+        const bar = el('div', `god-hm-bar ${r.l.side} you`,
+          `强平 ${fmtFloatPrice(r.l.price)} ${fmtQty(r.l.notional / r.l.price)} ${s.sym} ${fmtMoneyShort(r.l.notional)}·你`);
+        bar.style.top = `${clampT(r.t) * 100}%`;
+        bar.style.width = `${Math.min(92, 10 + r.l.w * 82)}%`;
+        hm.append(bar);
       } else {
         /* 数量读数（2026-10-08 三批拍板）：名义 ÷ 强平价 = 币量，缀在价格后 —— 与订单簿页
            的「数量」列同源（fmtQty），宽度窄的条照旧允许横向溢出（行距级联钉死 ≥12px）。 */
@@ -3491,7 +3529,14 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
         `${name} ${fmtMoneyShort(notional)}@${fmtFloatPrice(avg)} ｜ 强平 ${fmtFloatPrice(lp)} (${fmtPct(lp / t - 1)})`);
     };
     /* 多空分组（2026-10-08 三批拍板「巨鲸的 tab 多空要分开」）：多头一行头、空头一行头，
-       各档逐条列在各自组下 —— 行内不再缀「多 / 空」字（组头已表达方向，LESS IS MORE）。 */
+       各档逐条列在各自组下 —— 行内不再缀「多 / 空」字（组头已表达方向，LESS IS MORE）。
+       玩家自己的仓位（2026-10-09 · 用户拍板）置顶一行：方向 / 生效杠杆 / 名义@开仓价 / 强平价
+       （距%）—— 与 NPC 行同一套读数，accent 高亮（CSS `.god-frow2.you`）标明「这是你」。 */
+    const you = playerPosOf(s);
+    if (you) {
+      box.append(el('div', 'god-frow2 you',
+        `你·${you.side === 'long' ? '多' : '空'} ${Math.round(you.lev * 10) / 10}x ｜ ${fmtMoneyShort(you.pos.notional)}@${fmtFloatPrice(you.pos.entry)} ｜ 强平 ${fmtFloatPrice(you.lp)} (${fmtPct(you.lp / t - 1)})`));
+    }
     const longs = [], shorts = [];
     for (const tr of w.tiers) {
       if (tr.long > 0) longs.push(sideRow(tr.name, true, tr.long, tr.longAvg, tr.lev));
@@ -3539,6 +3584,11 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
        桶内名义求和（同价单引擎 `lobPut` 已并，跨网格线同理并）；墙（`levelsOf`，真历史价位）照并、
        并标 `wall`。空桶留空行（价格照显、量为 0、不画量条）—— 盘口阶梯的常态，也是「装框恒定」的前提。 */
     const midK = Math.floor(b.mid / step + 1e-9);
+    /* 玩家强平价所在格（2026-10-09 · 用户拍板「订单页要标强平价位置」）：落在可见窗口内就给
+       那一行挂 `you` 标记（价格列缀「你」＋ accent 高亮，与「墙」同一套行内标记语言）；
+       精确数字在巨鲸页，窗口外不标（步进拨大就能看到）。 */
+    const you = playerPosOf(s);
+    const youK = you ? Math.floor(you.lp / step + 1e-9) : null;
     const bucketOf = rows => {
       const m = new Map();
       for (const r of rows) {
@@ -3561,6 +3611,7 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
         vis.push({
           price: o.price, notional: o.notional, wall: o.wall, qty: 0, cum: 0,
           gate: k % 10 === 0 ? 1 : k % 5 === 0 ? 2 : 0,
+          you: k === youK,
         });
       }
       return vis;
@@ -3589,8 +3640,9 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const gbRow = (r, cls) => {
       /* ② 关口格只提亮价格列（CSS `.gb-row.gate` / `.gate2`），数值与量条一字不动；墙行不参与。 */
       const gateCls = r.wall ? '' : r.gate === 1 ? ' gate' : r.gate === 2 ? ' gate2' : '';
-      const row = el('div', `gb-row ${cls}${gateCls}${r.wall ? ' wall' : ''}`);
-      row.append(el('i', null, (r.wall ? '墙 ' : '') + fmtFloatPrice(r.price, step)));
+      const row = el('div', `gb-row ${cls}${gateCls}${r.wall ? ' wall' : ''}${r.you ? ' you' : ''}`);
+      /* 「你」＝ 玩家强平价落在这一格（2026-10-09）—— 与「墙」同一套行内标记语言。 */
+      row.append(el('i', null, `${r.you ? '你 ' : ''}${r.wall ? '墙 ' : ''}${fmtFloatPrice(r.price, step)}`));
       const u = el('u');
       /* 空档（本格无单）**不画量条**（2026-10-09 用户拍板）—— 旧实现 `Math.max(3, …)` 给
          qty=0 也画 3% 短条 ⇒ 满屏「凑数的假条」，与「远处为 0」的真相打架。 */
