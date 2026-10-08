@@ -17,7 +17,7 @@ import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, ra
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS, MANIP_NEWS_CD, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS_CD, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, manipTplsOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -4750,6 +4750,8 @@ export function fillNews(tpl, vars) {
  * 确定性：**幅度**走 `randFast` 通道 `'news'`（同一存档同一小时同一条 —— 重放不漂移）。
  * ⚠️ **选条**改为逐方向**轮换计数**（`s.god.newsN`，2026-10-08 用户报「会重复显示新闻」）：
  *    每按一次取下一条、取满一整轮才回第一条 ⇒ 连按 16 次不重样；计数是会话级、不落盘。
+ *    2026-10-09 起选条前先过**年代门控**（`manipTplsOf`）：早期年代只从「当时可能存在」的
+ *    模板里轮换 —— 2013 年不会播「现货 ETF 净流入」这类穿帮快讯（`god.MANIP_NEWS` 头注）。
  * ⚠️ **冷却**（`MANIP_NEWS_CD`）：距上次成功注入不足 `MANIP_NEWS_CD` 小时就拒绝 ——
  *    公告连发既不真实也会刷屏（面板两枚按钮由 `render.js` 现算置灰）。
  * @param {number} dir +1 利好 / −1 利空
@@ -4764,7 +4766,9 @@ export function godFakeNews(s, sym, dir) {
   if (cd < MANIP_NEWS_CD) return { ok: false, why: `冷却中（还需 ${MANIP_NEWS_CD - cd} 小时）` };
   const r1 = randFast(s.seed, hashStr(sym), s.i, 0, hashStr('news'));
   const key = dir > 0 ? 'good' : 'bad';
-  const tpls = MANIP_NEWS[key];
+  /* 年代门控（2026-10-09 审计「假新闻年代口径」）：选条前按此刻过滤 —— 2013 年不会出现
+     「现货 ETF 净流入」这类穿帮快讯；轮换计数在过滤后子序列上取模（跨年代边界跳条可接受）。 */
+  const tpls = manipTplsOf(key, timeOf(s));
   const nudge = (MANIP_NEWS_RANGE.min + r1 * (MANIP_NEWS_RANGE.max - MANIP_NEWS_RANGE.min)) * dir;
   const notional = Math.max(MANIP_MIN, MANIP_NEWS_Q * hourLiqBase(s, sym, s.i));
   const p = manipPreview(s, sym, dir, notional);

@@ -5664,8 +5664,8 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     check('9ah④ M4d 行为：连按 16 次 ⇒ 16 条播报两两不同（轮换计数去重）＋ 全部含币符号',
       seen.size === 16 && [...seen].every(t => t.includes('BTC')),
       `去重后 ${seen.size} 条`);
-    check('9ah④ M4d 常数：利好 / 利空各 40 条（6 类风格）＋ 冷却 8h',
-    god.MANIP_NEWS.good.length === 40 && god.MANIP_NEWS.bad.length === 40 && god.MANIP_NEWS_CD === 8,
+    check('9ah④ M4d 常数：利好 / 利空各 46 条（6 类风格 ＋ 早期年代风味）＋ 冷却 8h',
+    god.MANIP_NEWS.good.length === 46 && god.MANIP_NEWS.bad.length === 46 && god.MANIP_NEWS_CD === 8,
     `good=${god.MANIP_NEWS.good.length} bad=${god.MANIP_NEWS.bad.length}`);
   }
 }
@@ -5697,11 +5697,13 @@ section('9ai · 新闻占位符 newsVars / fillNews ＋ 上帝终局 s.god.ended
   check('9ai② 结果条 rt 填充后无残留占位符 / 无换行 / 非空',
     filled.length >= 20 && badFill.length === 0, badFill.join(' | '));
 
-  /* 假新闻模板（40＋40）经 `fillNews` 填充后：无残留 `%`、无换行、全部含币符号。 */
+  /* 假新闻模板（46＋46，混合类型：裸字符串全期可用 / `{t, from}` 年代门控）经 `fillNews` 填充后：
+     无残留 `%`、无换行、全部含币符号。⚠️ 2026-10-09 年代门控：先抹平成字符串再填充。 */
   const nv = engine.newsVars(s, 'BTC');
-  const fake = god.MANIP_NEWS.good.concat(god.MANIP_NEWS.bad).map(t => engine.fillNews(t, nv));
+  const flat = tpl => (typeof tpl === 'string' ? tpl : tpl.t);
+  const fake = god.MANIP_NEWS.good.concat(god.MANIP_NEWS.bad).map(tpl => engine.fillNews(flat(tpl), nv));
   const badFake = fake.filter(t => /%[A-Za-z]/.test(t) || t.includes('\n') || !t.includes('BTC'));
-  check('9ai② 假新闻模板 80 条填充后无残留占位符 / 无换行 / 全部含币符号',
+  check('9ai② 假新闻模板 92 条填充后无残留占位符 / 无换行 / 全部含币符号',
     badFake.length === 0, badFake.join(' | '));
 
   /* ③ `newsVars` 幂等（同状态两次调用逐键相等 ⇒ 重放确定性）；表外币不抛、价格走 `--`。 */
@@ -5952,6 +5954,55 @@ section('9al · 玩家仓位可见性（热力图/巨鲸/订单/tape）＋ 插�
     }
     check('9al④ 行为：玩家 $1M 小仓爆仓上 tape（k=4 · n<2M · t=0 强制档）—— 旧口径会被 0.1% 阈值丢掉',
       saw && o.ok, o.ok ? (saw ? 'feed 命中' : '30 天内未爆仓（行情判据漂移，查 2021-04 K 线）') : `开仓拒(${o.why})`);
+  }
+}
+
+/* ═══════════════════ 9am · 假新闻年代门控（2026-10-09 审计「假新闻年代口径」§四） ═══════════════════
+   选条前 `manipTplsOf(key, timeOf(s))` 过滤 —— 裸字符串全期可用，`{ t, from }` 锚定史实首发日。
+   审计锚（§四.4）：① 四采样点过滤池无越期禁词；② 池大小下限（保「连按不重样」的量）；
+   ③ 条目唯一；④ 引擎行为：2013 年播报不含越期词；⑤ 门控边界逐位判定。 */
+section('9am · 假新闻年代门控：四采样点禁词 ＋ 池下限 ＋ 唯一性 ＋ 引擎行为');
+{
+  /* 禁词按采样点分级：越期词 = 该时刻「按史实还不可能出现」的叙事关键词。
+     ⚠️ 「链上」不作禁词 —— 2013-03 双花分叉事故即史实，链上检测叙事不算穿帮（god.js ⑤组注）。 */
+  const SAMPLES = [
+    { at: Date.UTC(2013, 5, 15), ban: ['ETF', '永续', '资金费率', '上市公司', '巨鲸地址', '活跃地址', '交易所储备', '支付巨头', '评级机构', '零手续费', '主网', '对冲基金', '主流指数', '官方采用', '储备方案', '稳定币'] },
+    { at: Date.UTC(2015, 5, 15), ban: ['ETF', '永续', '资金费率', '上市公司', '巨鲸地址', '活跃地址', '交易所储备', '支付巨头', '评级机构', '零手续费', '主网', '对冲基金', '主流指数', '官方采用', '储备方案'] },
+    { at: Date.UTC(2019, 5, 15), ban: ['ETF', '上市公司', '支付巨头', '官方采用', '储备方案', '主流指数'] },
+    { at: Date.UTC(2023, 5, 15), ban: ['ETF 单日净流入', 'ETF 单日净流出', 'ETF 审批'] },
+  ];
+  for (const { at, ban } of SAMPLES) {
+    for (const key of ['good', 'bad']) {
+      const pool = god.manipTplsOf(key, at);
+      const hit = ban.filter(w => pool.some(t => t.includes(w)));
+      check(`9am① ${key} @ ${new Date(at).toISOString().slice(0, 10)}：过滤池无越期禁词 ＋ 池 ≥20 ＋ 条目唯一`,
+        hit.length === 0 && pool.length >= 20 && new Set(pool).size === pool.length,
+        hit.length ? `越期词 ${hit.join('/')}` : `池 ${pool.length} 条`);
+    }
+  }
+  /* ② 引擎行为：2013-06 开上帝连发 6 条假新闻（利好利空交替），播报全过门控。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e8, i: idx(at(2013, 6, 15)) });
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e9;
+    const ban = SAMPLES[0].ban;
+    const texts = [];
+    for (let k = 0; k < 6; k++) {
+      const r = engine.godFakeNews(s, 'BTC', k % 2 ? -1 : 1);
+      if (r.ok) texts.push(s.log[0].text);        // 播报必须当场取（同 9ah④）
+      for (let h = 0; h < 9; h++) engine.advanceOneHour(s);
+    }
+    const hit = texts.filter(t => ban.some(w => t.includes(w)));
+    check('9am② 引擎行为：2013 年连发 6 条假新闻全部过门控（无越期词 ＋ 含币符号）',
+      texts.length === 6 && hit.length === 0 && texts.every(t => t.includes('BTC')),
+      hit.length ? hit.join(' | ') : `${texts.length} 条全净`);
+  }
+  /* ③ 门控边界：`time == from` 可出场、`from − 1ms` 不出场（`>=` 判定，逐位）。 */
+  {
+    const g = god.MANIP_NEWS.good.find(e => typeof e !== 'string' && e.from === Date.UTC(2016, 4, 13));
+    const before = god.manipTplsOf('good', Date.UTC(2016, 4, 13) - 1).includes(g.t);
+    const on = god.manipTplsOf('good', Date.UTC(2016, 4, 13)).includes(g.t);
+    check('9am③ 边界：`time == from` 可出场、`from − 1ms` 不出场（`>=` 判定）', !before && on);
   }
 }
 
