@@ -248,6 +248,7 @@ let godAlpha = (() => {
 let godFloatOn = true;      // 浮窗开关（上帝面板浮窗行那枚），会话级，默认开
 let floatOpen = false;      // 面板是否展开
 let floatPage = 0;          // 面板页码：0 热力 / 1 巨鲸 / 2 深度 / 3 订单（随模式夹取）
+let floatPos = null;        // 圆钮视口坐标 {x,y}；null = 走 CSS 默认（右下角）
 
 /* ── 市场浮窗（2026-10-07 拍板）：普通 / 挑战局的盘口浮窗 ──────────────────────
    浏览器偏好（独立 localStorage 键、默认**开**）—— 与 `degen_colors` 同一口径，不进存档。
