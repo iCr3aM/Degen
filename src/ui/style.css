@@ -2197,6 +2197,27 @@ button { user-select: none; -webkit-user-select: none; }
 }
 .gb-step.on { color: var(--accent); background: var(--accent-soft); }
 
+/* 日志页（2026-10-08 · 用户拍板⑤）：aggr 式大单 tape —— 六型分色 ＋ 流动性比例四档背景。
+   列全部固定宽不换行（用户红线）：类型 14px / 价格弹性 / 名义 56px / 数量 52px / 时间 38px，
+   与 .gb-row 同一套 9px/13px 字号纪律。分色：开平多空走 --up/--down（红涨绿跌主题跟随），
+   爆多 #EC407A / 爆空 #FF9800 按拍板写死；行背景 t0 透明 → t3 最深（档位 = feedTier）。 */
+.gfd-head { display: flex; align-items: center; gap: 4px; font-size: 9px; line-height: 13px; color: var(--mut); }
+.gfd-head i { flex: 0 0 14px; }
+.gfd-head span { flex: 1 1 auto; }
+.gfd-head b, .gfd-row b { flex: 0 0 56px; font-weight: 600; text-align: right; overflow: hidden; white-space: nowrap; }
+.gfd-head em, .gfd-row em { flex: 0 0 52px; font-style: normal; text-align: right; overflow: hidden; white-space: nowrap; }
+.gfd-head u, .gfd-row u { flex: 0 0 38px; text-decoration: none; text-align: right; color: var(--mut); }
+.gfd-row { display: flex; align-items: center; gap: 4px; font-size: 9px; line-height: 13px; overflow: hidden; }
+.gfd-row i { flex: 0 0 14px; font-style: normal; }
+.gfd-row span { flex: 1 1 auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.gfd-row.t1 { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+.gfd-row.t2 { background: color-mix(in srgb, var(--fg) 8%, transparent); }
+.gfd-row.t3 { background: color-mix(in srgb, var(--fg) 14%, transparent); }
+.gfd-ol i, .gfd-ol span, .gfd-cl i, .gfd-cl span { color: var(--up); }
+.gfd-os i, .gfd-os span, .gfd-cs i, .gfd-cs span { color: var(--down); }
+.gfd-lq i, .gfd-lq span, .gfd-row.gfd-lq b { color: #ec407a; }
+.gfd-ls i, .gfd-ls span, .gfd-row.gfd-ls b { color: #ff9800; }
+
 /* ══════════════ 桌面端分档：详情浮窗扩大 ＋ 容器再放宽（2026-10-08 用户拍板）══════════════
    用户原话「做桌面端（桌面网页版）适配，详细适配，比如详情浮窗可以扩大」。浮窗那三档尺寸改由
    `:root` 变量给（`--float-w` / `--float-h` / `--hm-h`），基础规则里的 `var()` 兜底值就是手机端的

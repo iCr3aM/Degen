@@ -3214,8 +3214,8 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
   }
   const engSrc9w = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 动量/基底走档位速度 sp ＋ 护盘/外部流当根入仓（恒等式前提）',
-    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp)")
-    && engSrc9w.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp)")
+    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym)")
+    && engSrc9w.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp, s, sym)")
     && engSrc9w.includes('const b = low ? liqDay * NPC.base * w : 0')
     && engSrc9w.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;'));
 
@@ -3285,9 +3285,9 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
   const mainSrc9w = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
   const rendSrc9w = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
   const styleSrc9w = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
-  check('9w⑤ main：浮窗页表 4 页 / 2 页（成交页已退役）＋ prog 接线已摘',
-    mainSrc9w.includes("[[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单']]")
-    && mainSrc9w.includes("[[3, '订单'], [2, '深度']]")
+  check('9w⑤ main：浮窗页表 5 页 / 3 页（成交页已退役；页 4 = 日志 tape）＋ prog 接线已摘',
+    mainSrc9w.includes("[[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单'], [4, '日志']]")
+    && mainSrc9w.includes("[[3, '订单'], [2, '深度'], [4, '日志']]")
     && !mainSrc9w.includes("'成交'") && !mainSrc9w.includes('prog:'));
   check('9w⑤ render/style：tape ＋ gd 行结构全链路退役（不许再回来）＋ 圆钮「详」仍在',
     !fs.existsSync(path.join(ROOT, 'src/core/tape.js'))
@@ -3513,7 +3513,7 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
   check('9y② 接线：dipOf 导出 ＋ npcBuild 长侧 dipBuy（买加长侧）＋ npcOtherTick 复用（护盘覆盖全币）',
     engSrc9y.includes('export function dipOf')
     && engSrc9y.includes('const dipBuy = d3.dipBuy;')
-    && engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym)")
     && engSrc9y.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;')
     && engSrc9y.includes('npcBuild(s, sym, m, s.i);')
     && engSrc9y.includes('import { candleAt, closeAt, dayIndexOf'));
@@ -5117,6 +5117,81 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
       okBtc === false && okDoge === true,
       `BTC=${okBtc} DOGE=${okDoge} lev=${levFut} cash=${f(cashProbe, 4)} needBTC=${f(needBtc, 4)} needDOGE=${f(needDoge, 4)}`);
   }
+}
+
+/* ═══════════════════ 9y · 大单日志 tape（aggr 式 · 2026-10-08 拍板⑤） ═══════════════════
+   引擎侧会话级 `s.feed`（不进存档 / rewindTo 清空 / FEED_CAP 环形封顶）：
+     · 六型：0 开多 ▲ / 1 开空 ▼ / 2 平多 △ / 3 平空 ▽ / 4 爆多 💥 / 5 爆空 💥；
+     · 分档 = 名义 ÷ 当日流动性 四档（0.1% / 0.5% / 2% / 5%，`feedTier`）；
+     · 挂点：NPC 六档建减仓（stepNpc）、护盘/巨鲸/ETF 急购、止损/止盈/强平（flushSlot，
+       做市盘 quiet 不上 tape —— 对手盘流动性不是方向性合约单）、玩家被强平（事实流）；
+     · 浮窗页 4「日志」（上帝 5 页 / 普通局 3 页），gfd-* 样式，装框不滚动。 */
+{
+  section('9ae · 大单日志 tape（aggr 式）');
+  const readSrc9y = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const engSrc9y = readSrc9y('src/core/engine.js');
+  const saveSrc9y = readSrc9y('src/core/save.js');
+  const stateSrc9y = readSrc9y('src/core/state.js');
+  const mainSrc9y = readSrc9y('src/main.js');
+  const renderSrc9y = readSrc9y('src/ui/render.js');
+  const styleSrc9y = readSrc9y('src/ui/style.css');
+
+  check('9ae① 引擎：feedPush / feedTier / FEED_CAP 定义 ＋ rewindTo 清空（会话级口径）',
+    engSrc9y.includes('function feedPush(s, sym, k, price, notional)')
+    && engSrc9y.includes('export function feedTier(notional, liqDay)')
+    && engSrc9y.includes('export const FEED_CAP = 240')
+    && engSrc9y.includes('s.feed = [];'));
+
+  check('9ae② 挂点：六档建减仓发事件（s, sym）＋ 做市盘两处**不带**（对手盘不上 tape）',
+    engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp, s, sym)")
+    && engSrc9y.includes("stepNpc(m.mm, 'long', targetMM, price, floorMM, NPC.mm.speed)")
+    && engSrc9y.includes('flushSlot(s, sym, m, m.mm, NPC.mm.lev, lastPrice(s, sym), true)'));
+
+  check('9ae③ 挂点：flushSlot 止损/止盈/强平六处（quiet 闸门）＋ 护盘/巨鲸急购 ＋ 玩家强平（事实流）',
+    engSrc9y.includes('if (!quiet) feedPush(s, sym, 4, price, g.long)')
+    && engSrc9y.includes('if (!quiet) feedPush(s, sym, 5, price, g.short)')
+    && engSrc9y.split('if (!quiet) feedPush(s, sym, 2, price, cut)').length >= 3
+    && engSrc9y.split('if (!quiet) feedPush(s, sym, 3, price, cut)').length >= 3
+    && engSrc9y.includes('feedPush(s, sym, 0, price, buy)')
+    && engSrc9y.includes('feedPush(s, sym, 1, price, sell)')
+    && engSrc9y.split("feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional)").length >= 3);
+
+  check('9ae④ 分档行为锚：5%→3 · 2%→2 · 0.5%→1 · 0.1%→0 · 0.09%→−1（跨年代自适应的同一把尺）',
+    engine.feedTier(5, 100) === 3 && engine.feedTier(2, 100) === 2 && engine.feedTier(0.5, 100) === 1
+    && engine.feedTier(0.1, 100) === 0 && engine.feedTier(0.09, 100) === -1
+    && engine.feedTier(1, 0) === -1 && engine.feedTier(0, 100) === -1);
+
+  /* 行为锚：大波动段（2020-10 → 2021-10，含 2021-05 崩盘）推进 720h —— 事件必有、字段完整、
+     六型至少三种、rewindTo 清空（会话级）。推进成本 ~0.05ms/h（feedPush 是纯算术＋环形 push）。 */
+  {
+    const s9ae = await mk({ i: idx(at(2020, 10, 1)) });
+    for (let k = 0; k < 720; k++) engine.advanceOneHour(s9ae);
+    const f9ae = s9ae.feed || [];
+    const kinds9ae = [0, 0, 0, 0, 0, 0];
+    for (const e of f9ae) kinds9ae[e.k]++;
+    check('9ae⑤ 行为：720h 大波动段 feed 非空、字段完整（p>0/n>0/t∈0..3/合法币）、密度不刷屏（<2 条/h）',
+      f9ae.length > 0
+      && f9ae.every(e => e.p > 0 && e.n > 0 && e.t >= 0 && e.t <= 3
+        && C.COINS.some(c => c.sym === e.sym) && Number.isInteger(e.k))
+      && f9ae.length < 720 * 2,
+      `n=${f9ae.length}（${(f9ae.length / 720).toFixed(2)} 条/h）`);
+    check('9ae⑤ 行为：六型至少三种（开/平/爆都有机会发生）', kinds9ae.filter(n => n > 0).length >= 3,
+      `kinds=[${kinds9ae.join(',')}]`);
+    engine.rewindTo(s9ae, idx(at(2017, 1, 1)));
+    check('9ae⑤ 行为：rewindTo 清空 feed ＋ 跳后照常推进', Array.isArray(s9ae.feed) && s9ae.feed.length === 0);
+  }
+
+  check('9ae⑥ 存档 / 状态：EPHEMERAL 含 feed ＋ createState 带 feed:[]',
+    saveSrc9y.includes("const EPHEMERAL = ['god', 'godRuined', 'feed']") && stateSrc9y.includes('feed: [],'));
+
+  check('9ae⑦ UI：页表（上帝 5 页 / 普通 3 页）＋ render 页 4 分支（gfd-*）＋ 样式（六型分色＋四档背景）',
+    mainSrc9y.includes("const GOD_FLOAT_PAGES = [[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单'], [4, '日志']]")
+    && mainSrc9y.includes("const MKT_FLOAT_PAGES = [[3, '订单'], [2, '深度'], [4, '日志']]")
+    && renderSrc9y.includes('else if (page === 4)') && renderSrc9y.includes("'gfd-head'")
+    && renderSrc9y.includes('gfd-lq') && renderSrc9y.includes('gfd-ls')
+    && styleSrc9y.includes('.gfd-row') && styleSrc9y.includes('.gfd-row.t3')
+    && styleSrc9y.includes('.gfd-lq i, .gfd-lq span') && styleSrc9y.includes('#ec407a') && styleSrc9y.includes('#ff9800'));
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

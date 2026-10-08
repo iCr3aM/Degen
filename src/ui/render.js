@@ -3530,9 +3530,41 @@ function floatBody(s, page, bookStep = 1) {
       stepRow.append(b);
     }
     box.append(stepRow);
+  } else if (page === 4) {
+    /* 日志页（页 4 · 2026-10-08 用户拍板⑤）：aggr 式大单 tape —— 引擎侧 `s.feed`（会话级，
+       rewindTo 清空），只显示本币、最新在上。六型分色（开多▲绿实 / 开空▼红实 / 平多△绿空 /
+       平空▽红空 / 爆多💥粉 / 爆空💥橙），行背景深浅 = 引擎 `feedTier` 的当日流动性比例四档
+       （0.1% / 0.5% / 2% / 5%）。玩家主动开/平不上 tape（主日志已有）；强平是全市场事实流。
+       与订单簿同一套装框纪律：行数按面板高算够就截到够（不滚动），数据仍在环形缓冲里。 */
+    const desk = window.matchMedia && window.matchMedia('(min-width: 1280px)').matches;
+    const rowH = desk ? 15 : 13;
+    const fh = floatGeo().h;
+    const maxRows = Math.max(6, Math.floor((fh - 104) / rowH));
+    const rows = (s.feed || []).filter(r => r.sym === s.sym).slice(-maxRows).reverse();
+    const head = el('div', 'gfd-head');
+    head.append(el('i'), el('span', null, '价格'), el('b', null, '名义'), el('em', null, '数量'), el('u', null, '时间'));
+    box.append(head);
+    if (!rows.length) {
+      box.append(el('div', 'god-fnote', '暂无大单 —— 超过当日流动性 0.1% 的合约开/平/爆仓会上这里。'));
+    } else {
+      /* 六型 → [字形, 类型类]：颜色走 --up/--down（红涨绿跌主题自动跟随），爆仓两色按拍板写死。 */
+      const K = [['▲', 'gfd-ol'], ['▼', 'gfd-os'], ['△', 'gfd-cl'], ['▽', 'gfd-cs'], ['💥', 'gfd-lq'], ['💥', 'gfd-ls']];
+      for (const r of rows) {
+        const [gl, cls] = K[r.k] || ['·', ''];
+        const row = el('div', `gfd-row ${cls} t${r.t}`);
+        row.append(
+          el('i', null, gl),
+          el('span', null, fmtFloatPrice(r.p)),
+          el('b', null, fmtMoneyShort(r.n)),
+          el('em', null, fmtQty(r.n / r.p)),
+          el('u', null, fmtHour(GAME.start + r.i * HOUR_MS)));
+        box.append(row);
+      }
+      box.append(el('div', 'god-fnote', '分档 0.1% · 0.5% · 2% · 5% 当日流动性 —— 背景越深单越大。'));
+    }
   } else {
     /* 深度页（页 2）。⚠️ 旧页 4「逐笔成交」已退役（2026-10-08）：明细行数随本小时进度漂移、
-       拖动时乱跳 —— 页表里不再有 4，这里只服务页 2。 */
+       拖动时乱跳 —— 页 4 现在是「日志」（大单 tape，与逐笔成交两回事），这里只服务页 2。 */
     const d = w.depth;
     const row = (k, v) => { const r = el('div', 'god-frow2'); r.append(el('i', null, k), el('b', null, v)); return r; };
     box.append(row('日流动性', fmtMoneyShort(d.liqDay)));

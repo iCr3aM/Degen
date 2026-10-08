@@ -105,7 +105,7 @@ export const ACTION_KEYS = [
   /* 上帝浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开」）：
      `godfloat` ＝ 上帝面板详情行那枚「浮窗 开/关」；`godalpha` ＝ 透明档位按钮（循环 100→80→60→40）；
      `gofloat` ＝ 浮在图上的小圆钮本体（点按 = 展开/收起，拖拽逻辑在 `main.js` 的 onGodFloatChip）；
-     `goftab` ＝ 浮窗面板页签（热力 / 巨鲸 / 深度 / 订单 / 成交）；`gofclose` ＝ 面板右上角「✕」。
+     `goftab` ＝ 浮窗面板页签（热力 / 巨鲸 / 深度 / 订单 / 日志）；`gofclose` ＝ 面板右上角「✕」。
      ⚠️ 与 `godtab`（上帝面板页签）是**两套**页签 —— 浮窗的用 `goftab`，别混。 */
   'godfloat', 'godalpha', 'gofloat', 'goftab', 'gofclose',
   /* `gofstep`（2026-10-08）：订单簿页底部的步进档（×1/×2/×5/×10/×20；三批改档）——

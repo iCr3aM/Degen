@@ -23,8 +23,9 @@
 import { STATE_VERSION } from './state.js';
 import { isChallenge } from './config.js';
 
-/** 不落盘的**会话级**键：上帝本体 ＋ 归零补满的提示闩锁（后者离开 god 就没有意义）。 */
-const EPHEMERAL = ['god', 'godRuined'];
+/** 不落盘的**会话级**键：上帝本体 ＋ 归零补满的提示闩锁（后者离开 god 就没有意义）
+    ＋ 大单事件流（2026-10-08 tape：「最近发生的事」，读档重攒，不进存档）。 */
+const EPHEMERAL = ['god', 'godRuined', 'feed'];
 
 const KEY_OF = {
   normal: 'degen_save_normal',

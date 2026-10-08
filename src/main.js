@@ -261,9 +261,11 @@ let mktFloatOn = (() => {
   try { return localStorage.getItem(MKT_FLOAT_KEY) !== '0'; }
   catch { return true; }
 })();
-/** 浮窗页表：上帝局 4 页 / 普通局 2 页 —— `floatUi()` 按模式取，`updateFloat` 据此建页签。 */
-const GOD_FLOAT_PAGES = [[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单']];
-const MKT_FLOAT_PAGES = [[3, '订单'], [2, '深度']];
+/** 浮窗页表：上帝局 5 页 / 普通局 3 页 —— `floatUi()` 按模式取，`updateFloat` 据此建页签。
+ *  ⚠️ 页 4「日志」（2026-10-08 · 用户拍板⑤）：aggr 式大单 tape（开/平/爆六型），
+ *     普通局也在 —— NPC 市场永远在跑，看盘不必开上帝。 */
+const GOD_FLOAT_PAGES = [[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单'], [4, '日志']];
+const MKT_FLOAT_PAGES = [[3, '订单'], [2, '深度'], [4, '日志']];
 const applyGodAlpha = () => document.documentElement.style.setProperty('--god-alpha', String(godAlpha));
 applyGodAlpha();
 
