@@ -4825,7 +4825,8 @@ export function autoNewsSym(s) {
  *     下次时刻 = 本根 ＋ **12~36h 随机**（`randFast` 确定性 —— 断点续跑可复现），
  *     天然大于 `MANIP_NEWS_CD`(8h) 冷却。
  *   · **自动拉盘**（`s.god.autoPump` = ±1）：每根一次组合拳（幌骗→洗售→吃单），
- *     名义 = 面板记忆 `lastPush`（与手动行同源）——真实 P&D 的 pump 阶段就是连续数小时推。
+ *     名义 = `min(lastPush ?? 下限×10, 本时深度)`（与手动行同源，但**每根封顶在深度** ——
+ *     真实 P&D 的 pump 阶段是连续数小时推，不是一小时跳完；见函数内注）。
  *   · **自动造量**（`s.god.autoWash`）：每根一次洗售，名义 = `min(lastWash ?? 下限×10, 本时深度)`
  *     （与组合拳的洗售配比同一条口径——喂饱热度放大器即止，多洗纯烧费）。
  *
@@ -4838,8 +4839,17 @@ export function godAutoTick(s) {
   const g = s.god;
   if (!g) return;
   if (!g.pin && g.autoPump) {
-    const n = g.lastPush ?? MANIP_MIN * 10;
-    godManipPump(s, g.autoPumpSym ?? s.sym, g.autoPump, n);
+    const sym = g.autoPumpSym ?? s.sym;
+    /* ⚠️ **每根名义封顶在「本时深度」**（2026-10-10 性能 ＋ 口径修）：`lastPush` 是上一次
+       手动「拉到 / 砸到」二分反解出来的名义（可能极大），直接每根照推会让价格一小时一跳、
+       把级联风暴打成常态 —— 实测 2013 局 autoPump 把 `advanceOneHour` 从 0.04ms 拉到
+       0.73ms/根，**且与名义额无关**（1e4 与 1e6 同价）⇒ 成本全在「推完之后的市场连锁反应」
+       （级联 / 强平 / 热度重算），不在推这一笔本身（`godManipPump` 只 0.05ms）。
+       封顶后 = 「一小时最多吃掉一小时的深度」：物理上再多也吃不下（与组合拳的洗售配比
+       `min(N, 本时深度)` 同一条尺子），位移回到连续档、级联回到偶发。深度旋钮 ×N 会同比
+       抬高这个上限（`hourLiqBase` 已含旋钮）。 */
+    const n = Math.max(MANIP_MIN, Math.min(g.lastPush ?? MANIP_MIN * 10, hourLiqBase(s, sym, s.i)));
+    godManipPump(s, sym, g.autoPump, n);
   }
   if (!g.pin && !g.autoPump && g.autoWash) {
     const deep = hourLiqBase(s, g.autoWashSym ?? s.sym, s.i);

@@ -2699,11 +2699,13 @@ section('9q · 上帝面板分页接线（data-godtab ⇄ ACTION_KEYS ⇄ onGodT
        `heat` = `.chart-heat[data-heat=…]` 的着色桶（greedy/panic/缺省三档）；
        `pages` = 浮窗页签骨架的键串（`fPanel` 上给 `updateFloat` 判断「页签要不要随模式重建」，
        不是点击目标 —— 页签点击走 `goftab`，2026-10-07 市场浮窗复用骨架时新增）。
-       `lvnews` / `lvcd` / `lveta` / `lvpin` / `lvwash` = god 浮窗**盘中轻刷新**（`syncGodLive`）
-       的定点查询标记（2026-10-10 code review：冷却倒计时 / 自动新闻 eta / 插针置灰是时间驱动，
-       不能只靠「打开那一刻」的渲染；这些标记只给 `querySelector` 用，不是点击目标）。
+       `lvnews` / `lvcd` / `lveta` / `lvpin` / `lvwash` / `lvprice` / `lvnow` / `lvpintext` = god 浮窗
+       **盘中轻刷新**（`syncGodLive`）的定点查询标记（2026-10-10 code review：冷却倒计时 / 自动新闻
+       eta / 插针置灰是时间驱动，不能只靠「打开那一刻」的渲染；2026-10-10 用户拍板「面板数据要
+       实时更新」再补读数行 `lvprice` / 资金页当前日期 `lvnow` / 插针状态行 `lvpintext`。
+       这些标记只给 `querySelector` 用，不是点击目标）。
      新增状态标记要在这里补一行并说明用途；新增**按钮**漏注册则此断言当场咬死。 */
-  const STATE_MARKS = new Set(['pf', 'heat', 'pages', 'lvnews', 'lvcd', 'lveta', 'lvpin', 'lvwash']);
+  const STATE_MARKS = new Set(['pf', 'heat', 'pages', 'lvnews', 'lvcd', 'lveta', 'lvpin', 'lvwash', 'lvprice', 'lvnow', 'lvpintext']);
   /* 只抓 `export const ACTION_KEYS = [ ... ];` **数组本体** —— 不扫全文：全文抓会把
      注释里提到的旧键 / 别的字符串也当「已注册」，护栏假绿。
      ⚠️ 数组本体里还夹着大量**解释性注释**（含 `'toggle'` / 旧键名的字面量）—— 必须**先剥注释**
@@ -5421,17 +5423,26 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     && godSrc9ag.includes('export const MANIP_NEWS = {')
     && godSrc9ag.includes('good:') && godSrc9ag.includes('bad:')
     && engSrc9ag.includes('fillNews(tpls[n % tpls.length], newsVars(s, sym))'));
-  check('9ag① 接线：main 分派三键 ＋ 处理器 ＋ bind ACTION_KEYS ＋ render 三行按钮 ＋ chart 读取/着色 ＋ 置灰样式',
+  check('9ag① 接线：main 分派两键 ＋ 处理器 ＋ bind ACTION_KEYS ＋ render 按钮 ＋ 置灰样式',
     mainSrc9ag.includes('if (d.godpin !== undefined)') && mainSrc9ag.includes('if (d.godnews !== undefined)')
-    && mainSrc9ag.includes('if (d.godliqov !== undefined)') && mainSrc9ag.includes('function onGodPin')
+    && mainSrc9ag.includes('function onGodPin')
     && mainSrc9ag.includes('function onGodNews')
-    && bindSrc9ag.includes("'godpin'") && bindSrc9ag.includes("'godnews'") && bindSrc9ag.includes("'godliqov'")
+    && bindSrc9ag.includes("'godpin'") && bindSrc9ag.includes("'godnews'")
     && rendSrc9ag.includes("pinDn.dataset.godpin = '-1'") && rendSrc9ag.includes("newsUp.dataset.godnews = '1'")
-    && rendSrc9ag.includes("ovBtn.dataset.godliqov = ''") && rendSrc9ag.includes('pinDn.disabled = !!s.god.pin')
-    && rendSrc9ag.includes('liqBars: s.god && s.god.liqOverlay ? godWatchOf(s, sym).liqs : null')
-    && chartSrc9ag.includes('right, levels, liqBars } = o;')
-    && chartSrc9ag.includes("L.side === 'long' ? T.DOWN : T.UP")
+    && rendSrc9ag.includes('pinDn.disabled = !!s.god.pin')
     && styleSrc9ag.includes('.set-btn:disabled'));
+  /* ⚠️ 2026-10-10 用户拍板「强平图开关无用」⇒ 整条退役：开关行 / 分派 / 键表 / K 线绘制块
+     四处一起摘（缺一处 = 死键或残留死代码）。 */
+  check('9ag① 「强平图」叠加退役：四链清零（render 行 / main 分派 / bind 键 / chart 绘制）',
+    !rendSrc9ag.includes('godliqov') && !rendSrc9ag.includes('liqBars')
+    && !mainSrc9ag.includes('godliqov') && !mainSrc9ag.includes('liqOverlay')
+    && !bindSrc9ag.includes("'godliqov'")
+    && !chartSrc9ag.includes('liqBars'));
+  /* ⚠️ 2026-10-10 用户拍板「点浮动按钮就能收起面板」⇒ 底部「关闭」行退役（三链清零）。 */
+  check('9ag① 底部「关闭」行退役：render 函数 / main 分派与处理器 / bind 键三链清零',
+    !rendSrc9ag.includes('godCloseRow') && !rendSrc9ag.includes("dataset.sclose")
+    && !mainSrc9ag.includes('onClosePanel') && !mainSrc9ag.includes('d.sclose')
+    && !bindSrc9ag.includes("'sclose'"));
 
   /* ② 假消息：确定性（双局逐位同果）＋ 物理三件套 ＋ 资金闸 */
   {
@@ -5596,7 +5607,7 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     && !mainSrc9ah.includes('const PUMP_REPEAT_MS = 200;')
     && !rendSrc9ah.includes("el('input', 'god-in god-manip')")
     && !bindSrc9ah.includes("'godpump'")
-    && rendSrc9ah.includes("autoRow.append(el('i', null, '自动操盘'), autoWashBtn, apDn, apUp, apStop);")
+    && rendSrc9ah.includes("autoRow.append(autoLabel('自动操盘', !!s.god.autoWash || !!s.god.autoPump), autoWashBtn, apDn, apUp, apStop);")
     && rendSrc9ah.includes("&& window.matchMedia('(min-width: 1280px)').matches) ? 6 : 2;")
     && cssSrc9ah.includes('.logline { height: calc(120px * var(--ui)); }'));
 
@@ -6497,6 +6508,90 @@ section('9at · 假新闻禁「可证伪数据断言」（禁词 ＋ 硬编码 �
   check('9at④ 结构：autoNewsSym 过滤 unlock/已加载 ＋ npcOtherTick 跳过未上市币',
     srcAt.includes('return !!c && t >= c.unlock && isLoaded(sym);')
     && srcAt.includes('if (sym === s.sym || !isLoaded(sym) || t < c.unlock) continue;'));
+}
+
+/* ═══════════════════ 9au · 面板精简 ＋ 实时刷新 ＋ 「开着没有」标识（2026-10-10 用户拍板） ═══════════════════
+   三项拍板：① 深度旋钮从操盘页搬到沙盒页；② 强平图叠加 / 底部「关闭」行退役（见 9ag①）；
+   ③ god 面板数据**实时更新**（`syncGodLive` 定点改，不重建整块）+ 自动化行首缀 `●`。
+   本节咬「搬家后各处只剩一份」「实时刷新钩子齐全」「标识样式在位」三条不变量。 */
+section('9au · 深度旋钮搬家 ＋ 面板实时刷新 ＋ 自动化行首标识');
+{
+  const rend = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
+  /* ① 深度旋钮**只在沙盒页**（`godSandboxPage` 段内），操盘页不再创建它。 */
+  const iSand = rend.indexOf('function godSandboxPage(');
+  const iManip = rend.indexOf('function godManipPage(');
+  const iDetail = rend.indexOf('function godDetailRow(');
+  const inSandbox = rend.slice(iSand, iManip);
+  const inManip = rend.slice(iManip, iDetail);
+  check('9au① 深度旋钮只在沙盒页（操盘页不再创建 `dataset.godliq`）',
+    iSand > 0 && iManip > iSand && iDetail > iManip
+    && inSandbox.includes('b.dataset.godliq = v;') && !inManip.includes('dataset.godliq'));
+  /* ② 实时刷新钩子：syncGodLive 里三条定点查询 ＋ 渲染侧对应的 data 标记。 */
+  const iSync = rend.indexOf('function syncGodLive(');
+  const syncBody = rend.slice(iSync, iSync + 3000);
+  check('9au② 面板实时刷新：syncGodLive 定点改读数行 / 当前日期 / 插针状态（不重建整块）',
+    iSync > 0
+    && syncBody.includes("panel.querySelector('[data-lvprice]')")
+    && syncBody.includes("panel.querySelector('[data-lvnow]')")
+    && syncBody.includes("panel.querySelector('[data-lvpintext]')")
+    && rend.includes('priceP.dataset.lvprice = \'\';')
+    && rend.includes('nowB.dataset.lvnow = \'\';')
+    && rend.includes('pinP.dataset.lvpintext = \'\';'));
+  /* ③ 「自动操作开着没有」一眼可辨：行首标签 `●` ＋ accent 样式。 */
+  check('9au③ 自动化行首标识：autoLabel 装置 ＋ `.set-row i.on` 样式 ＋ 三处挂载',
+    rend.includes('const autoLabel = (text, on) => el(\'i\', on ? \'on\' : null, on ? `${text} ●` : text);')
+    && rend.includes("autoLabel('扫单', !!s.god.eat)")
+    && rend.includes("autoLabel('自动新闻', s.god.autoNews != null)")
+    && rend.includes("autoLabel('自动操盘', !!s.god.autoWash || !!s.god.autoPump)")
+    && rend.includes("autoLabel('插针', !!s.god.pin)")
+    && css.includes('.set-row i.on { color: var(--accent); font-weight: 600; }'));
+}
+
+/* ═══════════════════ 9av · 自动伺服的性能修（2026-10-10 用户报「组合拳开启后卡」） ═══════════════════
+   实测（tools 探针）：2013 局开自动拉盘跑 3000 根后 `decay ＋ residualAt` 吃掉 **91%** CPU
+   （0.04 → 4.8 ms/根，越跑越慢）—— 病根是 `residualAt` 对**永不设上界**的 `s.flow` 列表
+   逐项做 `Math.pow`，而作图时每根可见 K 线都要算一次。修法：
+     ① `residualAt` 逐根记忆（`WeakMap` 键 = flow 数组本体，失效判据 = `length` ＋ `tailV`）；
+     ② 自动拉盘每根名义封顶在「本时深度」（`lastPush` 可能极大，逐根照推 = 级联风暴常态）。
+   本节咬：记忆的**正确性**（含失效）＋ 封顶结构 ＋ 不再「越跑越慢」。 */
+section('9av · residualAt 记忆 ＋ 自动拉盘深度封顶（性能修）');
+{
+  const gsrc = fs.readFileSync(path.join(ROOT, 'src/core/god.js'), 'utf8');
+  const esrc = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('9av① 结构：`residualCache` 键 = flow 数组 ＋ 失效判据 = length/tailV ＋ 自动拉盘按本时深度封顶',
+    gsrc.includes('const residualCache = new WeakMap();')
+    && gsrc.includes('c.n !== list.length || c.tailV !== tail.v')
+    && esrc.includes('const n = Math.max(MANIP_MIN, Math.min(g.lastPush ?? MANIP_MIN * 10, hourLiqBase(s, sym, s.i)));'));
+
+  /* ② 记忆正确性：同一 j 连问两次逐位相等；写入新流后**必须**反映出来（失效生效）。 */
+  const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2019, 6, 1)) });
+  god.enableGod(s);
+  for (let k = 1; k <= 6; k++) { s.i += 3; god.addFlow(s, 'BTC', -0.02 * k, { perm: god.SHOCK.perm, betaFast: god.SHOCK.betaFast }); }
+  const j = s.i;
+  const a1 = god.factorFor(s, 'BTC', j), a2 = god.factorFor(s, 'BTC', j);
+  check('9av② 记忆命中：同一 `(sym, j)` 连问两次逐位相等（纯函数记忆）', a1 === a2, `${a1}`);
+  const before = god.factorFor(s, 'BTC', j);
+  god.addFlow(s, 'BTC', 0.05, { perm: god.SHOCK.perm, betaFast: god.SHOCK.betaFast });
+  const after = god.factorFor(s, 'BTC', j);
+  check('9av② 失效生效：写入新流后同一 `j` 的读数**变了**（缓存不会盖住新状态）',
+    after !== before, `${before} → ${after}`);
+
+  /* ③ 不再「越跑越慢」：`s.flow` 列表随成交小时数增长 ⇒ 若 `residualAt` 仍逐项扫描，
+     后段单根成本会随列表线性抬升（实测无缓存时 ≈ 5~8×）。这里比「前 200 根」与
+     「1200 根之后那 200 根」，阈值 3×（留足机器抖动余量）。 */
+  const s2 = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2019, 6, 1)) });
+  god.enableGod(s2);
+  s2.god.inf = true; s2.god.lastFill = 1e12;
+  s2.god.autoPump = 1; s2.god.autoPumpSym = 'BTC'; s2.god.lastPush = 1e8;
+  s2.god.autoWash = true; s2.god.autoWashSym = 'BTC';
+  const timeBlock = (st, n) => { const t0 = performance.now(); for (let k = 0; k < n; k++) engine.advanceOneHour(st); return performance.now() - t0; };
+  timeBlock(s2, 100);                                  // 预热（让 flow 列表起步）
+  const t1 = timeBlock(s2, 200);
+  timeBlock(s2, 1000);                                 // 长跑：列表长度 ×6
+  const t2 = timeBlock(s2, 200);
+  check('9av③ 长跑不劣化：1200 根之后那 200 根 ≤ 起始 200 根 × 3（流程表长了 6 倍仍不该变慢）',
+    t2 <= t1 * 3, `前 ${t1.toFixed(1)}ms / 后 ${t2.toFixed(1)}ms`);
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

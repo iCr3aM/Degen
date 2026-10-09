@@ -1164,6 +1164,23 @@ function decay(e, p) {
 }
 
 /**
+ * `residualAt` 的**逐根记忆**（2026-10-10 性能修）—— 键 = `s.flow[sym]` 那个数组本身
+ * （`WeakMap`，回退 / 换局时旧表自动可回收）。
+ *
+ * ⚠️ **为什么必须缓存**：`residualAt` 是 O(列表长度)，而列表长度 = 「有成交的小时数」且
+ *    **永不设上界**（见 `addFlow` 的硬纪律）。作图时每根可见 K 线都要 `factorFor` 一次 ⇒
+ *    列表 3000 项 × 视野 300 根 = 每帧 90 万次 `decay`（各含 2 次 `Math.pow`）。实测
+ *    2013 局开着「自动拉盘」跑 3000 根后，`case` 里 `decay ＋ residualAt` 吃掉 **91%** 的
+ *    CPU（0.04ms/根 → 4.8ms/根，越跑越慢）—— 这正是用户报的「自动操作开启后有性能问题」。
+ *
+ * 失效判据：列表内容只可能被两种写法定更 —— ① **追加**（`length` 变）② **合并进尾项**
+ *   （`tail.v` 变，见 `addFlow` 的同根合并）；`at` / `perm` / `betaFast` 写入后永不改。
+ *   两者一比对即知缓存是否过期；过期就**整表换新**（不是增量清理）⇒ 键数恒等于「上一次写入
+ *   之后问过的根数」（视野量级，几百），内存有界、不会随游戏时长膨胀。
+ */
+const residualCache = new WeakMap();   // flow 数组 → { n, tailV, bySym: Map<sym, Map<j, v>> }
+
+/**
  * 某个币在**第 j 根**上残存的订单冲击量（0 = 没有冲击、j 早于写入时刻）。
  *
  * C1（2026-09-29）：池子由「单池」改成**逐笔的 propagator 列表** ——
@@ -1171,15 +1188,27 @@ function decay(e, p) {
  *   单池模型的毛病：分 10 笔买进去，第 2 笔会把第 1 笔的衰减进度**吃掉**
  *   （一笔 1 小时前的单和一笔 100 小时前的单被合并成「刚刚发生的一笔」）。
  * ⚠️ 不导出（2026-10-04 审计 R5）：仅本模块 `factorFor` 用，外部一律走 `factorFor`。
+ * ⚠️ 结果走 `residualCache` 记忆（2026-10-10）——**纯函数记忆，不改变任何数值**。
  */
 function residualAt(s, sym, j) {
   const list = s.flow && s.flow[sym];
   if (!list || !list.length) return 0;
+  const tail = list[list.length - 1];
+  let c = residualCache.get(list);
+  if (!c || c.n !== list.length || c.tailV !== tail.v) {
+    c = { n: list.length, tailV: tail.v, bySym: new Map() };
+    residualCache.set(list, c);
+  }
+  let byJ = c.bySym.get(sym);
+  if (!byJ) { byJ = new Map(); c.bySym.set(sym, byJ); }
+  const hit = byJ.get(j);
+  if (hit !== undefined) return hit;
   let v = 0;
   for (const p of list) {
     if (!p.v || j < p.at) continue;
     v += p.v * decay(j - p.at, p);      // 每笔自带 `perm` / `betaFast`（§73.6 三模式形态）
   }
+  byJ.set(j, v);
   return v;
 }
 

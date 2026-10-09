@@ -1188,6 +1188,10 @@ canvas.curve {
   font-size: calc(12px * var(--ui));
 }
 .set-row i { font-style: normal; color: var(--mut); }
+/* 行首标签的「已开启」态（2026-10-10 用户拍板「看不清楚自动操作到底开启没有」）：
+   该行任一自动化生效 ⇒ 标签缀 `●`（render 侧拼）＋ 转 accent 加粗 —— 与 `.set-btn.on` 叠加，
+   扫一眼就知道哪几行在跑。 */
+.set-row i.on { color: var(--accent); font-weight: 600; }
 /* 开关：与 `.opt` / `.ic` 同档的 32px 高，宽度锁死 64px —— 文案在「开 / 关」之间切换时不抖
    ⚠️ `width: 64px` 曾是裸值（2026-10-03 补 `var(--ui)`）：同一枚控件高度跟着缩放旋钮走、
       宽度却不跟 —— 桌面端放大后变成一个又窄又高的长方形。 */

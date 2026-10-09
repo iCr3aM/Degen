@@ -11,12 +11,15 @@
 /** 所有动作键。渲染出的 `data-*` 必须落在这里，否则点了没反应。 */
 export const ACTION_KEYS = [
   'sym', 'ex', 'exok', 'exno', 'frac', 'lev', 'speed', 'act', 'pause', 'restart', 'wipe', 'mode',
-  /* Batch 4：`settings`（顶栏第三枚）/ `reset`（面板内重开）/ `sclose`（关面板）
+  /* Batch 4：`settings`（顶栏第三枚）/ `reset`（面板内重开）
      / `intro`（开场弹窗的「开始交易」）
+     ⚠️ `sclose`（上帝面板底部那枚「关闭」）已随 2026-10-10 用户拍板「点浮动按钮就能收起面板」
+        整条退役 —— 收起 god 浮窗改由**圆钮「神」点按**（`gofloat`）与面板右上角 ✕（`gofclose`）
+        两处承担，不再重复放一枚大按钮（`main.onClosePanel` 一并删除）。
      Batch 5（B30）：`loan`（归零遮罩上的「借续命」/「就此收摊」）
      ⚠️ 原来的 `snd`（音效开关）已随 T-2 的「音量四档」整体删除（2026-10-01）——
         它被 `vol` 取代（`data-vol="0|1|2|3"`），所以这一条不再留在表里。 */
-  'settings', 'market', 'reset', 'sclose', 'intro', 'loan',
+  'settings', 'market', 'reset', 'intro', 'loan',
   /* A6（方案 §6.4）：`tab` ＝ 底部 Tab 三条（交易 / 资产 / 设置）。
      ⚠️ `settings` **保留**（§9 B8）：顶栏那枚「设置」按钮已随 A6 撤掉，但设置页里
         将来仍可能复用它做一个「关」的出口 —— 现在页的出口就是底部 Tab，所以没有任何 DOM 挂它。 */
@@ -118,13 +121,14 @@ export const ACTION_KEYS = [
      `onGodFloatFilt`。 */
   'goffilt',
   /* 上帝操盘台第三批（2026-10-08 三批拍板③）：`godpin`（插针 砸/拉/停）、`godnews`
-     （假消息 利好/利空）、`godliqov`（K线强平叠加开关）—— 全在上帝面板里。
+     （假消息 利好/利空）—— 全在上帝面板里。
+     ⚠️ `godliqov`（K 线强平叠加开关）已随 2026-10-10 用户拍板「此功能无用」整条退役
+        （render 开关行 / main 分派 / chart 绘制块一并摘除）。
      M4d（2026-10-08）：`godreal` ＝「新闻源与事件」开关（2026-10-09 由「新闻源」扩名；
      默认关）—— 关掉后真实新闻播报、巨鲸/ETF 买盘、交易所停机/被盗/归零、破产预警、
      K 线锚点刻度**全部熄火**（总闸 = 引擎 `eventsOff`），价格只随玩家操作走。 */
   'godpin',
   'godnews',
-  'godliqov',
   'godreal',
   /* 上帝操盘台第四批（2026-10-09 用户拍板「一键吃单开关 ＋ 目标涨幅档」）：`godeat`（扫单
      吃买盘/吃卖盘）、`godeatauto`（自动扫单单钮循环 关→↓→↑）、`godtgt`（拉/砸到 ±1/3/5/10%

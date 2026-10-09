@@ -1110,7 +1110,6 @@ function dispatch(node, ev) {
   if (d.reset !== undefined) return onReset(node);
   /* 设置页「返回主菜单」（2026-10-01 用户要求）：停钟 ＋ 弹菜单，本局状态一个字不动。 */
   if (d.home !== undefined) return onHome();
-  if (d.sclose !== undefined) return onClosePanel();
 
   /* ── 上帝终局拦截（2026-10-09 用户拍板）──
      走完全程后本局已「软结束」：时钟停死、账不再变。上帝入口（`god` 连点 / 面板）与全部操盘
@@ -1123,7 +1122,7 @@ function dispatch(node, ev) {
     || d.godtab !== undefined || d.godinf !== undefined || d.godliq !== undefined
     || d.godpin !== undefined || d.godnews !== undefined
     || d.godeat !== undefined || d.godeatauto !== undefined || d.godtgt !== undefined
-    || d.godliqov !== undefined || d.godreal !== undefined || d.sb !== undefined
+    || d.godreal !== undefined || d.sb !== undefined
     || d.godautonews !== undefined || d.godautonewsoff !== undefined
     || d.godautowash !== undefined || d.godautopump !== undefined
     || d.sbpreset !== undefined || d.sbseed !== undefined || d.sbroll !== undefined)) {
@@ -1172,13 +1171,6 @@ function dispatch(node, ev) {
   if (d.godnews !== undefined) {
     if (!s.god) return;
     return onGodNews(node);
-  }
-  if (d.godliqov !== undefined) {
-    if (!s.god) return;
-    s.god.liqOverlay = !s.god.liqOverlay;
-    showGod();
-    after();
-    return;
   }
   /* ── 上帝面板「新闻源与事件」开关（2026-10-08 用户拍板；2026-10-09 扩名）：翻 `s.god.noRealNews`
      （默认 true = 关）—— 关掉后 4 条真实新闻播报 ＋ `extFlow`（巨鲸/ETF 有向买盘）＋ 交易所停机
@@ -2844,7 +2836,7 @@ function onLogClose() {
  *     回来就该接着玩，不必再点一次「继续」。原来那条「切回仍然暂停」的手感是多余的。
  *   - 结束 / 救济金待决时不许切页（与顶栏那两枚按钮的 `lockedUI` 同一条判据；遮罩本来就盖住了 Tab 条）
  * ⚠️ 离开设置页要撤销「重开本局」的武装态：那个按钮是静态 DOM，不还原的话切回来它还是红的，
- *    一点就真重开（`cancelReset` 是超时 / 关面板 / 切页三条路共用的还原口）。
+ *    一点就真重开（`cancelReset` 是超时 / 切页两条路共用的还原口）。
  * ⚠️ 暂停闸门（`dispatch` 顶部那条）仍然管用：切回交易页后**只有这一瞬间**是自动运行的，
  *    玩家随时可以点顶栏「暂停」把下单 / 换所挡住。
  */
@@ -3012,15 +3004,6 @@ function onFx(v) {
  */
 function onHintToggle() {
   s.hintOn = !s.hintOn;
-  after();
-}
-
-function onClosePanel() {
-  /* ⚠️ 现在只剩**上帝面板**用 `data-sclose`（设置已改成页，出口是底部 Tab）。
-     2026-10-10 浮窗化：面板搬进 god 浮窗 ⇒ 「关闭」＝**收起 god 浮窗**（不再走 `#overlay`）。
-     顺手撤销重开的武装态：上帝面板在任意页都能开（连点标题），多这一句不亏。 */
-  cancelReset();
-  godFloatOpen = false;
   after();
 }
 

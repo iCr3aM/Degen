@@ -1490,7 +1490,7 @@ export function update(refs, s, view) {
  *        回顾页 / 普通局缺省真 —— 历史照画。
  * @returns {object} `windowFor` 的返回值（`mode` / `count` / `locked` / `right` 都要用）
  */
-function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns = '', levels = null, volMul = 1, liqBars = null, anchors = true }) {
+function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns = '', levels = null, volMul = 1, anchors = true }) {
   const win = windowFor(sym, i, view.chartW, own, ns, volMul);
   /* 锚点刻度（P2-C · 裁决 ④）：把锚点的**小时序号**换算成视野的**显示单位序号** ——
      日线模式下一根 = 一天，`floor(at / 24)` 才是它所在的槽位。越界的锚点交给 `chart.js` 丢掉
@@ -1531,9 +1531,6 @@ function chartOpts({ canvas, head, heat, sym, i, view, mark, cur, own = true, ns
     mark,
     /* 历史压力位（ROADMAP §六十五）—— 只有回顾页会传进来（交易页恒 null，`chart.js` 自会跳过）。 */
     levels,
-    /* 强平叠加档位条（2026-10-08 三批拍板③）：上帝面板开了「强平图」才传 ——
-       回顾页恒缺省 null（那是市场史，不该混入本局的强平分布）。 */
-    liqBars,
     entry: cur ? cur.entry : null,
     side: cur ? cur.side : null,
     /* 强平价交给图上的**开仓线左端标签**（Batch 2 · B9）。1x 多头（无借入）没有强平价 ⇒ 传 null。 */
@@ -1606,8 +1603,6 @@ function syncChart(refs, s, view, sym, cur, mark) {
     /* 上帝局量柱市场份随深度旋钮放大（2026-10-08 拍板④）—— 与引擎撮合分母同一个函数同一
        个口径（`godLiqMulOf`）；普通 / 回顾页不传 ⇒ 恒 1，逐位不变。 */
     volMul: s.god ? godLiqMulOf(s) : 1,
-    /* 强平叠加（2026-10-08 三批拍板③）：开关开着才读（`godWatchOf` 不便宜，别白算）。 */
-    liqBars: s.god && s.god.liqOverlay ? godWatchOf(s, sym).liqs : null,
     /* 历史锚点刻度（2026-10-09）：上帝局「新闻源与事件」关 ⇒ 不画。 */
     anchors: !eventsOff(s),
   });
@@ -3061,7 +3056,9 @@ export function godBody(s, page, gx = {}) {
   else if (page === 1) box.append(godSandboxPage(s, gx));
   else box.append(godManipPage(s, gx));
   box.append(godDetailRow(gx));       // 详情行（透明档 / mkt 浮窗开关）—— 三页之外，哪页都改得到
-  box.append(godCloseRow());          // 「关闭」＝收起 god 浮窗
+  /* ⚠️ 底部「关闭」行已删除（2026-10-10 用户拍板「点浮动按钮就能收起面板」）——
+     收起浮窗的入口只剩两处：**圆钮「神」点按**（`data-gofloat`）与面板右上角 **✕**
+     （`data-gofclose`），语义等价、不再重复放一枚大按钮。 */
   return box;
 }
 
@@ -3102,7 +3099,9 @@ function godCashPage(s, gx) {
   };
 
   const dRow = el('div', 'set-row');
-  dRow.append(el('i', null, '当前'), el('b', 'num', fmtDate(now, false)));
+  const nowB = el('b', 'num', fmtDate(now, false));
+  nowB.dataset.lvnow = '';                 // 实时刷新：时钟在走，打开面板后这格也会过期（syncGodLive）
+  dRow.append(el('i', null, '当前'), nowB);
   rows.append(dRow);
 
   const tRow = el('div', 'set-row');
@@ -3173,6 +3172,25 @@ function godSandboxPage(s) {
     rows.append(row);
   }
 
+  /* 深度旋钮（2026-10-08 拍板；2026-10-10 用户拍板**从操盘页搬到沙盒页** —— 它本质是
+     市场分母倍率，与上面六枚旋钮同类）：拉盘后订单簿不再「越拉越薄」。自动档 = 位移偏离
+     史实的倍数（clamp 1~8），手动档拍死；闸门在 `engine.hourLiqBase` 末尾一处 ⇒
+     吃单 / 走簿 / 浮窗订单簿 / 量柱同一处放大、处处自洽。普通 / 挑战局没有 `s.god` ⇒ 恒 ×1。
+     标签带当前值（同上面六枚的口径：预设 / 手动两种来源都如实显示）。 */
+  {
+    const lqCur = s.god.liqMul == null ? 'auto' : String(s.god.liqMul);
+    const lqRow = el('div', 'set-row god-sbrow');
+    lqRow.append(el('i', null, `深度 ${lqCur === 'auto' ? '自动' : `×${lqCur}`}`));
+    const lqGrp = el('div', 'god-pick');
+    for (const [v, label] of [['auto', '自动'], ['1', '×1'], ['2', '×2'], ['4', '×4'], ['8', '×8']]) {
+      const b = el('button', lqCur === v ? 'set-btn on' : 'set-btn', label);
+      b.dataset.godliq = v;
+      lqGrp.append(b);
+    }
+    lqRow.append(lqGrp);
+    rows.append(lqRow);
+  }
+
   /* 预设 —— 一整套「世界」；选中态按 5 枚旋钮**逐键相等**判定（手动微调后自然全灭）。 */
   const pRow = el('div', 'set-row god-sbrow');
   pRow.append(el('i', null, '预设'));
@@ -3204,9 +3222,16 @@ function godSandboxPage(s) {
   return rows;
 }
 
-/** 页 2「操盘」—— 手动操盘 / 目标价 / 插针 / 假消息 / 新闻源 / 强平图 ＋ 自动化伺服三行（原 `openGod` 的 `rowsC` 逐段搬）。 */
+/** 页 2「操盘」—— 常驻读数 / 扫单 / 自动新闻 / 自动操盘 / 目标价 / 插针 / 假消息 / 新闻源与事件。
+ *  ⚠️ 2026-10-10 用户拍板精简：手动填数字拉砸盘行、强平图叠加开关、底部「关闭」行三处退役；
+ *     深度旋钮搬到沙盒页。 */
 function godManipPage(s, gx) {
   const rows = el('div', 'confirm-rows');
+
+  /* 「开着没有」一眼可辨（2026-10-10 用户拍板「看不清楚功能 / 自动操作到底开启了没有」）：
+     该行任一自动化生效时，**行首标签缀 `●` 并转 accent 色**（`.set-row i.on`）；关闭态不缀点
+     （留白本身就是「没开」）。按钮态仍走 `.set-btn.on` 高亮 —— 两种信号叠加、不互相替代。 */
+  const autoLabel = (text, on) => el('i', on ? 'on' : null, on ? `${text} ●` : text);
 
   /* ④ 操盘（2026-10-07 用户拍板「上帝模式可以操纵市场，但要真实化」）——
      三枚动作全部走既有市场物理（`engine.godManipPush` / `godManipWash` / `godManipSpoof`），
@@ -3215,28 +3240,19 @@ function godManipPage(s, gx) {
 
   /* 常驻读数（2026-10-09 沉浸增强）—— **与新闻文案同源**：`newsVars` 正是新闻占位符的产出处，
      这里印的 `现价 / 24h / 偏离 / 热度` 与史实新闻、假新闻里出现的数字**逐字一致**
-     （同一函数、同一时刻 ⇒ 改一处两处同变，杜绝「面板一个数、新闻又一个数」）。 */
+     （同一函数、同一时刻 ⇒ 改一处两处同变，杜绝「面板一个数、新闻又一个数」）。
+     ⚠️ 2026-10-10 用户拍板「面板数据要实时更新」：这行挂 `data-lvprice`，由 `syncGodLive`
+     每帧用 `newsVars` 重算写入（不重建整块 ⇒ 不打断输入框）。 */
   {
     const nv = newsVars(s, s.sym);
-    rows.append(el('p', 'god-prev',
-      `现价 ${nv['%L']} ｜ 24h ${nv['%C']} ｜ 偏离 ${nv['%M']} ｜ 热度 ${nv['%H']}`));
+    const priceP = el('p', 'god-prev',
+      `现价 ${nv['%L']} ｜ 24h ${nv['%C']} ｜ 偏离 ${nv['%M']} ｜ 热度 ${nv['%H']}`);
+    priceP.dataset.lvprice = '';
+    rows.append(priceP);
   }
 
-  /* 深度旋钮（2026-10-08 用户拍板）：市场分母的倍率 —— 拉盘后订单簿不再「越拉越薄」。
-     自动档 = 位移偏离史实的倍数（clamp 1~8），手动档拍死；闸门在 `engine.hourLiqBase` 末尾
-     一处 ⇒ 吃单 / 走簿 / 浮窗订单簿 / 量柱同一处放大、处处自洽。普通 / 挑战局没有 `s.god`
-     ⇒ 恒 ×1（引擎逐位不变）。按钮高亮靠重开面板刷新（静态 DOM，同页签的理由）。 */
-  const lqRow = el('div', 'set-row god-sbrow');
-  lqRow.append(el('i', null, '深度'));
-  const lqGrp = el('div', 'god-pick');
-  const lqCur = s.god.liqMul == null ? 'auto' : String(s.god.liqMul);
-  for (const [v, label] of [['auto', '自动'], ['1', '×1'], ['2', '×2'], ['4', '×4'], ['8', '×8']]) {
-    const b = el('button', lqCur === v ? 'set-btn on' : 'set-btn', label);
-    b.dataset.godliq = v;
-    lqGrp.append(b);
-  }
-  lqRow.append(lqGrp);
-  rows.append(lqRow);
+  /* ⚠️ **深度旋钮已搬到「沙盒」页**（2026-10-10 用户拍板）—— 它本质是**市场分母倍率**，
+     与沙盒那六枚旋钮同类；操盘页只留「动作」，页高再降一行。 */
 
   /* ⚠️ **手动操盘行已删除**（2026-10-10 用户拍板「优先删除手动操盘＝填数字拉盘砸盘那一行」）：
      原来那行「数值输入框 ＋ 拉盘 / 砸盘」与它的预览行整条退役 —— 手动推价改由下面
@@ -3260,7 +3276,7 @@ function godManipPage(s, gx) {
   eatAuto.dataset.godeatauto = '';
   eatAuto.dataset.lvpin = '';
   eatAuto.disabled = !!s.god.pin;
-  eatRow.append(el('i', null, '扫单'), eatBid, eatAsk, eatAuto);
+  eatRow.append(autoLabel('扫单', !!s.god.eat), eatBid, eatAsk, eatAuto);
   rows.append(eatRow);
 
   /* ── 自动化伺服两行（2026-10-10 用户拍板「自动新闻 ＋ 自动造量 ＋ 自动拉盘」；
@@ -3272,7 +3288,7 @@ function godManipPage(s, gx) {
         · 自动新闻与它们无互斥。 */
   const pinOn = !!s.god.pin;
   const autoNewsRow = el('div', 'set-row');
-  autoNewsRow.append(el('i', null, '自动新闻'));
+  autoNewsRow.append(autoLabel('自动新闻', s.god.autoNews != null));
   for (const [v, label] of [['0', '混合'], ['1', '利好'], ['-1', '利空']]) {
     const b = el('button', s.god.autoNews === Number(v) ? 'set-btn on' : 'set-btn', label);
     b.dataset.godautonews = v;
@@ -3310,10 +3326,10 @@ function godManipPage(s, gx) {
   apUp.dataset.godautopump = '1';
   apUp.dataset.lvpin = '';
   apUp.disabled = pinOn;
-  const apStop = el('button', !s.god.autoPump ? 'set-btn on' : 'set-btn', '停');
+  const apStop = el('button', 'set-btn', '停');
   apStop.dataset.godautopump = '0';
   apStop.disabled = !s.god.autoPump;
-  autoRow.append(el('i', null, '自动操盘'), autoWashBtn, apDn, apUp, apStop);
+  autoRow.append(autoLabel('自动操盘', !!s.god.autoWash || !!s.god.autoPump), autoWashBtn, apDn, apUp, apStop);
   rows.append(autoRow);
 
   /* 目标价（2026-10-09 用户拍板「目标涨幅档」）：把「拉/砸到 ±X%」交给引擎反解名义
@@ -3338,7 +3354,10 @@ function godManipPage(s, gx) {
 
   /* 插针剧本（2026-10-08 三批拍板③）：一键吃穿**最大的强平簇**再回位 —— 伺服走既有操盘台
      吃单物理（engine.godPinStart / godPinTick，每小时一笔真实吃单）。激活时方向钮置灰、
-     「停」亮起（置灰与可按要一眼分得开），状态行报目标价与已推名义额；面板重开时刷新。 */
+     「停」可按（置灰与可按要一眼分得开），状态行报目标价与已推名义额。
+     ⚠️ 2026-10-10：状态行改**常驻 ＋ `data-lvpintext` 定点刷新**（插针可能被引擎自己收掉，
+     原来只在开面板那一刻条件渲染 ⇒ 会留一条过期读数）；「停」不再挂 `.on`（它已置灰表示空转，
+     再挂高亮会像「正在停」）。 */
   const pinRow = el('div', 'set-row');
   const pinDn = el('button', 'set-btn on', '砸针');
   pinDn.dataset.godpin = '-1';
@@ -3348,16 +3367,15 @@ function godManipPage(s, gx) {
   pinUp.dataset.godpin = '1';
   pinUp.dataset.lvpin = '';
   pinUp.disabled = !!s.god.pin || !!s.god.eat;
-  const pinStop = el('button', 'set-btn on', '停');
+  const pinStop = el('button', 'set-btn', '停');
   pinStop.dataset.godpin = '0';
   pinStop.disabled = !s.god.pin;
-  pinRow.append(el('i', null, '插针'), pinDn, pinUp, pinStop);
+  pinRow.append(autoLabel('插针', !!s.god.pin), pinDn, pinUp, pinStop);
   rows.append(pinRow);
-  if (s.god.pin) {
-    const pin = s.god.pin;
-    rows.append(el('p', 'god-prev',
-      `插针中 ${pin.dir < 0 ? '↓' : '↑'} ${pin.sym} ｜ 目标 ${fmtLogPrice(pin.tip)} ｜ 已推 ${fmtMoneyShort(pin.n)}`));
-  }
+  const pinP = el('p', 'god-prev', '');
+  pinP.dataset.lvpintext = '';
+  if (!s.god.pin) pinP.style.display = 'none';
+  rows.append(pinP);
 
   /* 假消息注入（2026-10-08 三批拍板③）：热度一脚 ＋ 小额跟风吃单 ＋ 日志播报
      （engine.godFakeNews 一体完成），两枚按钮即两个方向。 */
@@ -3393,18 +3411,14 @@ function godManipPage(s, gx) {
   realRow.append(el('i', null, '新闻源与事件'), realBtn);
   rows.append(realRow);
 
-  /* 强平叠加（2026-10-08 三批拍板③）：主图右轴画当前币的强平档位条（多红空绿、宽∝名义额）。
-     纯显示开关（`s.god.liqOverlay`，会话级），读数每帧从 `godWatchOf.liqs` 现取。 */
-  const ovRow = el('div', 'set-row');
-  const ovBtn = el('button', s.god.liqOverlay ? 'set-btn on' : 'set-btn', s.god.liqOverlay ? '叠加 开' : '叠加 关');
-  ovBtn.dataset.godliqov = '';
-  ovRow.append(el('i', null, '强平图'), ovBtn);
-  rows.append(ovRow);
+  /* ⚠️ 「强平图」叠加开关已删除（2026-10-10 用户拍板「此功能无用」）—— K 线右轴那排
+     强平档位条与它的会话开关一起退役（render 入参 / chart 绘制块同批摘除，见审计 9ag①）。
+     强平价位本身仍在「详情」浮窗的清算热力图页可见（那里才是它的主场）。 */
 
   return rows;
 }
 
-/* 详情行 / 「关闭」行 —— 挂在三页**之外**（哪页都改得到），原 `openGod` 尾部逐段搬。 */
+/* 详情行 —— 挂在三页**之外**（哪页都改得到），原 `openGod` 尾部逐段搬。 */
 
 /** 详情行（2026-10-07 用户拍板「浮窗＋透明度」）—— mkt 浮窗开关 ＋ 透明档位按钮。
  *  透明度循环 100 → 80 → 60 → 40 → 100，按钮上的字就是当前档；写 `--god-alpha` 全局变量，
@@ -3417,15 +3431,6 @@ function godDetailRow(gx = {}) {
   aBtn.dataset.godalpha = '';
   fRow.append(el('i', null, '详情'), fBtn, aBtn);
   return fRow;
-}
-
-/** 「关闭」（`sclose`）—— 关的是浮窗，不是模式（2026-10-07 拍板：上帝模式会话级一次性，无「退出」）。 */
-function godCloseRow() {
-  const close = el('button', 'act flat', '关闭');
-  close.dataset.sclose = '';
-  const btns = el('div', 'confirm-btns');
-  btns.append(close);
-  return btns;
 }
 
 /* ══════════════ 浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开，尽量小」；2026-10-10 实例化） ══════════════
@@ -3919,6 +3924,24 @@ function syncGodLive(panel, s) {
   const pinOn = !!g.pin;
   for (const b of panel.querySelectorAll('[data-lvpin]')) b.disabled = pinOn;
   for (const b of panel.querySelectorAll('[data-lvwash]')) b.disabled = pinOn || !!g.autoPump;
+  /* ── 实时读数（2026-10-10 用户拍板「面板数据要实时更新」）─────────────────────────
+     全部**定点改文本 / 显隐**，绝不重建整块（重建会抹掉输入框里的字、也会丢掉焦点）。
+     ① 操盘页常驻读数行（现价 / 24h / 偏离 / 热度）—— 与新闻文案同一产出处（`newsVars`）。 */
+  const prEl = panel.querySelector('[data-lvprice]');
+  if (prEl) {
+    const nv = newsVars(s, s.sym);
+    prEl.textContent = `现价 ${nv['%L']} ｜ 24h ${nv['%C']} ｜ 偏离 ${nv['%M']} ｜ 热度 ${nv['%H']}`;
+  }
+  /* ② 资金页「当前」日期 —— 时钟在走（`s.i` 每根 +1）⇒ 打开面板后它也会过期。 */
+  const nowEl = panel.querySelector('[data-lvnow]');
+  if (nowEl) nowEl.textContent = fmtDate(timeOf(s), false);
+  /* ③ 插针状态行 —— 插针可能被引擎自己收掉（预算 / 时长用尽）⇒ 常驻 ＋ 每帧重算显隐。 */
+  const pinEl = panel.querySelector('[data-lvpintext]');
+  if (pinEl) {
+    const pin = g.pin;
+    pinEl.style.display = pin ? '' : 'none';
+    if (pin) pinEl.textContent = `插针中 ${pin.dir < 0 ? '↓' : '↑'} ${pin.sym} ｜ 目标 ${fmtLogPrice(pin.tip)} ｜ 已推 ${fmtMoneyShort(pin.n)}`;
+  }
 }
 
 /** 渲染单个实例（`bodyFn` 缺省走实例的 `ui.body`）。 */
