@@ -1609,6 +1609,8 @@ function syncChart(refs, s, view, sym, cur, mark) {
 
   /* 粒度小字（Batch 3 · B12）：字面是当前粒度，点一下切到另一种（`main.js` 里定的目标档） */
   refs.modeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
+  /* 与「盘口 / OTC」键同一口径（2026-10-10）：非默认档（1日）描主色，默认档（1h）不着色。 */
+  refs.modeBtn.classList.toggle('on', win.mode === '1d');
   /* 锁视野提示（Batch 3 · B14）：拖动/缩放之后才出现，双击复位后自己消失 */
   refs.chartLock.hidden = !win.locked;
 
@@ -1668,6 +1670,7 @@ function reviewChartSync(refs, rv, view) {
     levels: levelsOf(sym, rv.i),
   });
   refs.rvModeBtn.textContent = win.mode === '1d' ? '1日' : '1h';
+  refs.rvModeBtn.classList.toggle('on', win.mode === '1d');   // 同交易页（非默认档描主色）
 }
 
 /**
@@ -1950,6 +1953,40 @@ export function clearOver(root) {
 let picker = null;
 
 /**
+ * **换所行的「此刻该怎么画」**（2026-10-10 提炼）—— `pickExchange` 建行 与 `syncOverlays`
+ * 刷新行**共用同一份口径**（禁用判据 / 当前所高亮 / 费率串 / 下面那句原因），免得两处慢慢漂开。
+ * @returns {{disabled:boolean, isCur:boolean, feeTxt:string, note:string}}
+ */
+function exRowState(s, ex, t) {
+  const notYet = t < ex.open;
+  const dead = ex.close != null && t >= ex.close;
+  const isCur = ex.id === s.ex;
+  const holding = heldSyms(s).length > 0;
+  const { rail, n } = transferPlan(s, ex.id);
+  /* ⚠️ 合约那一档只在**该所此刻真有合约**时显示（`futSteps` 首档已开）—— 直接调
+     `feeRateOf(..., 'fut')` 会在没有合约的年份回落到杠杆值（2013 的 BitMEX 会凭空多一行合约费）。 */
+  const futOn = ex.futSteps != null && ex.futSteps[0].from <= t;
+  const feeTxt = `费率 ${fmtRate(feeRateOf(ex.id, t, 'margin'), 2)}`
+    + (futOn ? `｜合约 ${fmtRate(feeRateOf(ex.id, t, 'fut'), 2)}` : '');
+  const lackFut = s.mode === 'fut' && !hasLeverageKindAt(t, ex.id, 'fut');
+  const lackFin = s.mode === 'margin' && !hasFinancingAt(t, ex.id);
+  /* 到账口径跟着通道走（§11.6）：链上通道报「确认数 ＋ 小时」，电汇时代报「通道 ＋ 天数」。
+     目标所此刻有没有「我正在用的那件工具」也提前写在这一行（2026-10-04 用户反馈
+     「切过去才说没有融资」）—— ⚠️ 排在 `holding` 之后：有持仓时这些行本来就点不动。 */
+  const note = notYet ? '还没开业'
+    : dead ? '已归零'
+      : s.transfer ? '转账在途'
+        : isCur ? '当前所'
+          : holding ? '有持仓，先平仓'
+            : lackFut ? '该所此刻无合约'
+              : lackFin ? '该所此刻无融资 · 只能 1x 做多'
+                : rail.hours ? `${rail.label} · ${Math.round(n / 24)} 天`
+                  : `${confirmationsOf(ex.id)} 确认 · 预估 ${n}h`;
+  /* 在途时**所有行都不可点**（同时在途只允许一笔）—— 让点不动的按钮先于错误日志表达这件事。 */
+  return { disabled: notYet || dead || !!s.transfer || (holding && !isCur), isCur, feeTxt, note };
+}
+
+/**
  * 打开选所弹层（GDD §7.2）。挂 `#overlay` 而不是 `#app`：
  * `#app` 每帧都在被重写，建在里面会被立刻擦掉（见 index.html 的注释）。
  * 三家全部列出，没开业的置灰 —— 顺带把时间线讲给玩家听。
@@ -1969,59 +2006,25 @@ export function pickExchange(s, anchor) {
   const congestion = congestionOf(s);
   const back = el('div', 'pick-back');
   const panel = el('div', 'pick');
+  panel.dataset.expick = '';                       // 每帧同步的定位标记（见 `syncOverlays`）
 
   // 表头：只说状态词，不给 0–100 的数字（拍板 ③）
   const label = congestionLabel(congestion);
   const head = el('div', 'pick-head', `拥堵 ${label}`);
+  head.dataset.exhead = '';
   head.classList.add(congestion > 80 ? 'down' : congestion > 50 ? 'gold' : 'mut');
   panel.append(head);
 
-  /* 有持仓时**除「当前所」以外的每一行都点不动**（2026-10-02 审计修 · 用户拍板）：
-     `engine.switchExchange` 的硬规矩是「有持仓必须先全部平掉」（仓位挂在这一家所上、搬不走），
-     原来弹层里的行**照样是可点的**——玩家点一下只换来一条错误日志。现在提前置灰，
-     并让每行自己把原因写出来（「有持仓，先平仓」）。 */
-  const holding = heldSyms(s).length > 0;
-
+  /* 行内容全部走 `exRowState`（同一份口径，与每帧刷新共用）。 */
   for (const ex of EXCHANGES) {
-    const notYet = t < ex.open;
-    const dead = ex.close != null && t >= ex.close;
-    const isCur = ex.id === s.ex;
+    const st = exRowState(s, ex, t);
     const row = el('button', 'pick-row');
     row.dataset.ex = ex.id;
-    // 在途时**所有行都不可点**（同时在途只允许一笔）—— 让点不动的按钮先于错误日志表达这件事
-    row.disabled = notYet || dead || !!s.transfer || (holding && !isCur);
-    row.classList.toggle('on', isCur);
-
-    /* 上行：名字 ＋ **两张费率**（v12 · 方案 §11.3）；下行：这家所自己的事
-       （通道 / 到账预估 / 为什么不能选）。
-       ⚠️ 合约那一档只在**该所此刻真有合约**时显示（`futSteps` 首档已开）——
-          直接调 `feeRateOf(..., 'fut')` 会在没有合约的年份回落到杠杆值，
-          于是 2013 年的 BitMEX 会凭空显示一行「合约 0.05%」。 */
-    const { rail, n } = transferPlan(s, ex.id);
-    const futOn = ex.futSteps != null && ex.futSteps[0].from <= t;
-    const feeTxt = `费率 ${fmtRate(feeRateOf(ex.id, t, 'margin'), 2)}`
-      + (futOn ? `｜合约 ${fmtRate(feeRateOf(ex.id, t, 'fut'), 2)}` : '');
+    row.disabled = st.disabled;
+    row.classList.toggle('on', st.isCur);
     const l1 = el('div', 'pick-l1');
-    l1.append(el('b', null, ex.name), el('u', null, feeTxt));
-    /* 到账口径跟着通道走（§11.6）：链上通道仍报「确认数 ＋ 小时」，电汇时代改成「通道 ＋ 天数」
-       —— 2013 年那行「2 确认 · 预估 3h」是链上才有的说法，电汇根本不吃拥堵。 */
-    /* 目标所此刻有没有「我正在用的那件工具」（2026-10-04 用户反馈「切过去才说没有融资」）：
-       换所本身是**能成功**的，问题是切之前没人说这家所在这个年代只做 1x / 还没上合约 ——
-       切过去才看到杠杆行置灰、还配一句像报错的话。这里把这件事**提前写到行上**。
-       ⚠️ 排在 `holding` 之后：有持仓时这些行本来就点不动，先讲清「为什么不能选」更要紧。 */
-    const lackFut = s.mode === 'fut' && !hasLeverageKindAt(t, ex.id, 'fut');
-    const lackFin = s.mode === 'margin' && !hasFinancingAt(t, ex.id);
-    const note = notYet ? '还没开业'
-      : dead ? '已归零'
-        : s.transfer ? '转账在途'
-          : isCur ? '当前所'
-            : holding ? '有持仓，先平仓'
-              : lackFut ? '该所此刻无合约'
-                : lackFin ? '该所此刻无融资 · 只能 1x 做多'
-                  : rail.hours ? `${rail.label} · ${Math.round(n / 24)} 天`
-                    : `${confirmationsOf(ex.id)} 确认 · 预估 ${n}h`;
-    row.append(l1, el('em', 'pick-note', note));
-
+    l1.append(el('b', null, ex.name), el('u', null, st.feeTxt));
+    row.append(l1, el('em', 'pick-note', st.note));
     panel.append(row);
   }
 
@@ -2126,23 +2129,26 @@ export function openMarginDlg(s, sym) {
 
   const back = el('div', 'pick-back');
   const box = el('div', 'confirm');
+  box.dataset.mgdial = sym;               // 每帧同步的定位标记（见 `syncOverlays`）
   box.append(el('h3', null, `${sym} 调整保证金`));
 
-  const line = (k, v) => {
+  const line = (k, v, key) => {
     const d = el('div', 'confirm-row');
-    d.append(el('i', null, k), el('span', 'num', v));
+    const val = el('span', 'num', v);
+    if (key) val.dataset.mgv = key;       // 每帧同步的定位标记（价格每根在动 ⇒ 这四个读数会过期）
+    d.append(el('i', null, k), val);
     return d;
   };
   const rows = el('div', 'confirm-rows');
   rows.append(
-    line('保证金', moneySlot('mgm:' + sym, pos.margin)),
+    line('保证金', moneySlot('mgm:' + sym, pos.margin), 'margin'),
     /* **实际杠杆** = 名义 ÷ 保证金（2026-10-05）：开仓 1x 抽走保证金后这里会写成 2x、5x…
        —— 让玩家一眼看到「减保证金 ⇒ 杠杆上升」，与下面那行保证金率 / 强平价同源不打架。
        口径与持仓条 / 资产页一致（`effLevOf`，保留 1 位小数）。 */
-    line('实际杠杆', `${Math.round(effLevOf(pos) * 10) / 10}x`),
-    line('保证金率', liquidatable ? fmtRate(marginRateOf(pos, price)) : '--'),
+    line('实际杠杆', `${Math.round(effLevOf(pos) * 10) / 10}x`, 'lev'),
+    line('保证金率', liquidatable ? fmtRate(marginRateOf(pos, price)) : '--', 'rate'),
     /* 强平价：不可强平的仓（1x 多头）没有这一说 —— 与交易页持仓条同一口径（填 `--`）。 */
-    line('强平价', liquidatable ? fmtLogPrice(liquidationPrice(pos)) : '--'),
+    line('强平价', liquidatable ? fmtLogPrice(liquidationPrice(pos)) : '--', 'liq'),
   );
   box.append(rows);
 
@@ -3902,6 +3908,56 @@ export function updateFloat(s, ui) {
   if (!(s && ui)) { detachFloat(FLOATS.mkt); detachFloat(FLOATS.god); return; }
   renderInst(FLOATS.mkt, s, ui.mkt, floatBody);
   renderInst(FLOATS.god, s, ui.god, null);
+}
+
+/**
+ * **打开中的弹层读数同步**（2026-10-10 用户拍板「数据要实时更新」）—— `#overlay` 里有两张
+ * 「读实时数」的弹层，原来的通病是**只在打开那一刻渲染一次**，而时钟没停、价格每根在动：
+ *   ① **调整保证金**（`data-mgdial`）：保证金 / 实际杠杆 / 保证金率 / 强平价 —— 价格一动全过期；
+ *   ② **换所**（`data-expick`）：拥堵词 ＋ 每行的费率 / 到账小时 / 「为什么不能选」。
+ * 口径**不另写一份**：行内容走 `exRowState`（与建行同一个函数），读数走同一批引擎函数。
+ * ⚠️ 只**定点改文本 / 属性**，绝不重建（重建会丢按钮焦点、也会把滚动位置弹回顶部）；
+ *    弹层不在（`closePicker` 已收）⇒ 整段 no-op，每帧成本 ≈ 一次 `querySelector`。
+ */
+export function syncOverlays(s) {
+  const ov = document.getElementById('overlay');
+  if (!ov || !s) return;
+  /* ① 调整保证金 */
+  const mg = ov.querySelector('[data-mgdial]');
+  if (mg) {
+    const caps = marginCapsOf(s, mg.dataset.mgdial);
+    if (caps) {
+      const { pos, price } = caps;
+      const liq = canLiquidate(pos);
+      const put = (k, v) => setText(mg.querySelector(`[data-mgv="${k}"]`), v);
+      put('margin', moneySlot('mgm:' + pos.sym, pos.margin));
+      put('lev', `${Math.round(effLevOf(pos) * 10) / 10}x`);
+      put('rate', liq ? fmtRate(marginRateOf(pos, price)) : '--');
+      put('liq', liq ? fmtLogPrice(liquidationPrice(pos)) : '--');
+    }
+  }
+  /* ② 换所 */
+  const pick = ov.querySelector('[data-expick]');
+  if (pick) {
+    const t = timeOf(s);
+    const cg = congestionOf(s);
+    const head = pick.querySelector('[data-exhead]');
+    if (head) {
+      setText(head, `拥堵 ${congestionLabel(cg)}`);
+      head.classList.toggle('down', cg > 80);
+      head.classList.toggle('gold', cg > 50 && cg <= 80);
+      head.classList.toggle('mut', cg <= 50);
+    }
+    for (const row of pick.querySelectorAll('[data-ex]')) {
+      const ex = exchangeOf(row.dataset.ex);
+      if (!ex) continue;
+      const st = exRowState(s, ex, t);
+      row.disabled = st.disabled;
+      row.classList.toggle('on', st.isCur);
+      setText(row.querySelector('.pick-l1 u'), st.feeTxt);
+      setText(row.querySelector('.pick-note'), st.note);
+    }
+  }
 }
 
 /**

@@ -23,7 +23,7 @@ import {
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, showPage, openLog, menuNote,
   renderReview, openNodeCard, openYearPick, openGuide, renderCareers, openPoster,
   isStandalone, toggleInstallGuide, menuRemoveInstall, closeMenuDlg, openSavePick, openScenPick,
-  openAbout, redrawChart, openMarginDlg, updateFloat, focusFloat, godBody,
+  openAbout, redrawChart, openMarginDlg, updateFloat, focusFloat, godBody, syncOverlays,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -928,6 +928,9 @@ function draw(force = false, chartOnly = false) {
     /* 浮窗（2026-10-07）：跟整屏帧走 —— 圆钮挂 / 摘、面板内容刷新都在这里。
        手势快路（chartOnly）不进来：拖图几毫秒内数字旧一点无所谓，DOM 不跟着抖。 */
     updateFloat(s, floatUi());
+    /* 打开中的弹层读数（调整保证金 / 换所）也跟着帧走（2026-10-10）——
+       它们挂在 `#overlay`、不归 `updateFloat` 管，但同样是「打开那一刻的快照会过期」。 */
+    syncOverlays(s);
     /* ⚠️ 这里**不再需要** `&& !arch`（2026-10-02 修）：档案页在上面就 `return` 了，
        走不到这一行 —— 该防的那件事改成在它自己那一支里 `clearOver`（见上）。
        原来那句 `!arch` 是一处**永远为真**的死守卫，只会让人以为档案页的覆盖问题已解决。 */

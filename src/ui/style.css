@@ -255,7 +255,7 @@ b, strong { font-weight: 600; }
 /* 不可用（`disabled`）：**边框转虚线 ＋ 灰字**，与 `.act:disabled`（主操作键）同一套置灰语言 ——
    原来只压到 .45 透明度、实边框与粗体都保留 ⇒ 顶栏「暂停 / 交易所」在结束 / 暂停时**仍像可点**。
    可按的是实心实线、不可用的是虚线，扫一眼就能分开（与 `.opt:disabled` / `.sym:disabled` 一致）。 */
-.ic:disabled { border-style: dashed; color: var(--mut); opacity: .55; cursor: default; }
+.ic:disabled { border-style: dashed; color: var(--mut); opacity: .45; cursor: default; }
 
 /* 顶栏三枚按钮**定宽**（2026-09-28）—— 约束 ②「列宽固定不跳」在这一行的落点。
    「重开」进入确认态时文案会变，而 `.ic` 只有 `min-width: 42px`：四个字「确认重开」= 4×12 = 48px
@@ -472,6 +472,10 @@ b, strong { font-weight: 600; }
   border-radius: 0;
 }
 .chart-head .chip:active { border-color: var(--accent); color: var(--accent); }
+/* 「非默认档」的选中态（2026-10-10）：粒度小字 `1h / 1日` 以前只换文字、从不描边，
+   而语义相同的「盘口 / OTC」键（`.act.chan`）在 OTC 时是描主色的 —— 两处口径不一。
+   默认档（1h）不着色，切到 1日 才亮 ⇒ 「我改过粒度」一眼可见。 */
+.chart-head .chip.on { border-color: var(--accent); color: var(--accent); }
 
 /* K 线**左下角**那一列浮字（Batch 4 · B16 从右上角搬来；内部仍装两枚）：
    都用半透底压在画布上，合起来仍是**绝对定位的一列**，不占布局高度。
@@ -742,10 +746,15 @@ b, strong { font-weight: 600; }
 .opt:active { background: var(--line); }
 /* 不可用（`disabled`）：**压得更暗 ＋ 灰字 ＋ 边框转虚线**（2026-10-02 审计修，本轮 B3 补复位）——
    原来 .45 与可按的那一档（`.opt` 的 `--fg` 正文色）差得太小，一排小方格里看不出哪一格能按。
-   ⚠️ **必须复位 `border` 与 `background`**：`.opt.on` 会给选中档描主色边 ＋ 铺主色淡底，
-      一个「既选中又被禁用」的金额档（如持仓到某个档、或杠杆被降档）若不复位，
-      仍带着主色淡底、比邻格更显眼 —— 复位后回到未选中的中性态，只留虚线 ＋ 置灰。 */
+   ⚠️ **复位 `border` 与 `background`**：`.opt.on` 会给选中档描主色边 ＋ 铺主色淡底
+      —— 复位掉**淡底**与透明度，避免「既选中又被禁用」的格子比邻格更显眼。
+   ⚠️ **但主色描边要留**（2026-10-10 改）：整条描边一起复位 ⇒ 「选中了哪一档」这条线索被抹掉
+      （持仓期的金额档 / 被降档的杠杆档 / 买 U 档 / 币种键都会同时命中这两态）。
+      现在的口径 = **只留主色描边**（淡底照旧复位、虚线照旧、透明度照旧压低）：
+      既压得住「更显眼」，又保得住「选中的是它」。 */
 .opt:disabled { opacity: .32; color: var(--mut); background: none; border-color: var(--line); border-style: dashed; }
+.opt.on:disabled { border-color: var(--accent); }
+.sym.on:disabled { border-color: var(--accent); color: var(--accent); }
 /* 「有、但此刻点不动」的档位（v10 · ②，用户定稿）：比通用禁用（.32，含义是「条件没到」）
    再暗一档，并额外加**点线边框** —— 它是「这个功能在此刻根本不存在」。
    ⚠️ **R30（2026-10-04 审计）**：原来是 `.28 ＋ dashed`，与 `:disabled`（`.32 ＋ dashed`）

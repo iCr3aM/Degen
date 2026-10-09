@@ -2699,13 +2699,16 @@ section('9q · 上帝面板分页接线（data-godtab ⇄ ACTION_KEYS ⇄ onGodT
        `heat` = `.chart-heat[data-heat=…]` 的着色桶（greedy/panic/缺省三档）；
        `pages` = 浮窗页签骨架的键串（`fPanel` 上给 `updateFloat` 判断「页签要不要随模式重建」，
        不是点击目标 —— 页签点击走 `goftab`，2026-10-07 市场浮窗复用骨架时新增）。
-       `lvnews` / `lvcd` / `lveta` / `lvpin` / `lvwash` / `lvprice` / `lvnow` / `lvpintext` = god 浮窗
+       `lvnews` / `lvcd` / `lveta` / `lvpin` / `lvwash` / `lvprice` / `lvnow` / `lvpintext` /
+       `lvpinstop` / `lvpinlabel` = god 浮窗
        **盘中轻刷新**（`syncGodLive`）的定点查询标记（2026-10-10 code review：冷却倒计时 / 自动新闻
        eta / 插针置灰是时间驱动，不能只靠「打开那一刻」的渲染；2026-10-10 用户拍板「面板数据要
        实时更新」再补读数行 `lvprice` / 资金页当前日期 `lvnow` / 插针状态行 `lvpintext`。
-       这些标记只给 `querySelector` 用，不是点击目标）。
+       这些标记只给 `querySelector` 用，不是点击目标）；
+       `mgdial` / `mgv` / `expick` / `exhead` = **打开中的弹层读数同步**（`syncOverlays`，
+       2026-10-10）的定点查询标记（调整保证金的四个读数 / 换所弹层的表头与每行）。
      新增状态标记要在这里补一行并说明用途；新增**按钮**漏注册则此断言当场咬死。 */
-  const STATE_MARKS = new Set(['pf', 'heat', 'pages', 'lvnews', 'lvcd', 'lveta', 'lvpin', 'lvwash', 'lvprice', 'lvnow', 'lvpintext', 'lvpinstop', 'lvpinlabel']);
+  const STATE_MARKS = new Set(['pf', 'heat', 'pages', 'lvnews', 'lvcd', 'lveta', 'lvpin', 'lvwash', 'lvprice', 'lvnow', 'lvpintext', 'lvpinstop', 'lvpinlabel', 'mgdial', 'mgv', 'expick', 'exhead']);
   /* 只抓 `export const ACTION_KEYS = [ ... ];` **数组本体** —— 不扫全文：全文抓会把
      注释里提到的旧键 / 别的字符串也当「已注册」，护栏假绿。
      ⚠️ 数组本体里还夹着大量**解释性注释**（含 `'toggle'` / 旧键名的字面量）—— 必须**先剥注释**
@@ -6608,6 +6611,42 @@ section('9av · residualAt 记忆 ＋ 自动拉盘深度封顶（性能修）');
   const t2 = timeBlock(s2, 200);
   check('9av③ 长跑不劣化：1200 根之后那 200 根 ≤ 起始 200 根 × 3（流程表长了 6 倍仍不该变慢）',
     t2 <= t1 * 3, `前 ${t1.toFixed(1)}ms / 后 ${t2.toFixed(1)}ms`);
+}
+
+/* ═══════════════════ 9aw · 弹层读数实时刷新 ＋ 「选中＋置灰」不再丢失选中态（2026-10-10） ═══════════════════
+   用户拍板「数据要实时更新」的**第二批**（第一批是 god 浮窗，见 9au②）＋ 交互可读性收尾：
+     ① `syncOverlays` 把 `#overlay` 两张「读实时数」的弹层（调整保证金 / 换所）挂到帧上；
+     ② 弹层口径**不另写一份**：换所行内容由 `exRowState` 一处产出（建行与刷新共用）；
+     ③ 「选中 ＋ 置灰」的格子：主色描边要留（`.opt.on:disabled` / `.sym.on:disabled`），
+        否则「选中的是哪一档」被置灰样式整个抹掉；
+     ④ 粒度小字 `1h / 1日` 与「盘口 / OTC」同口径：非默认档描主色（`.chip.on`）。
+   本节只做**结构断言**（render 依赖 DOM，Node 侧拿不到；行为面由真机手测）。 */
+section('9aw · 弹层读数实时刷新 ＋ 选中态/置灰共存 ＋ 粒度键高亮');
+{
+  const rend = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  const main = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
+  check('9aw① `syncOverlays` 导出 ＋ main.draw 每帧调用 ＋ 两张弹层的定位标记',
+    rend.includes('export function syncOverlays(s) {')
+    && main.includes('import') && main.includes('syncOverlays,')
+    && main.includes('syncOverlays(s);')
+    && rend.includes("box.dataset.mgdial = sym;")
+    && rend.includes("val.dataset.mgv = key;")
+    && rend.includes("panel.dataset.expick = '';")
+    && rend.includes("head.dataset.exhead = '';"));
+  check('9aw② 换所行口径单点：`exRowState` 建行与刷新共用（弹层里不再各写一份）',
+    rend.includes('function exRowState(s, ex, t) {')
+    && (rend.match(/exRowState\(s, ex, t\)/g) || []).length === 3
+    && !rend.includes('const holding = heldSyms(s).length > 0;\n\n  for (const ex of EXCHANGES)'));
+  check('9aw③ 「选中 ＋ 置灰」保留主色描边（金额档 / 币种键）',
+    css.includes('.opt.on:disabled { border-color: var(--accent); }')
+    && css.includes('.sym.on:disabled { border-color: var(--accent); color: var(--accent); }')
+    /* ⚠️ 淡底必须仍然复位 —— 只留描边，别把「比邻格更显眼」那个老毛病带回来 */
+    && css.includes('.opt:disabled { opacity: .32; color: var(--mut); background: none;'));
+  check('9aw④ 粒度小字与「盘口 / OTC」同口径：非默认档（1日）描主色',
+    css.includes('.chart-head .chip.on { border-color: var(--accent); color: var(--accent); }')
+    && rend.includes("refs.modeBtn.classList.toggle('on', win.mode === '1d');")
+    && rend.includes("refs.rvModeBtn.classList.toggle('on', win.mode === '1d');"));
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */
