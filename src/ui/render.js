@@ -3077,7 +3077,11 @@ function godCashPage(s, gx) {
   cashIn.min = '0';
   cashIn.step = '1000';
   cashIn.value = String(s.god.lastFill);
-  const cBtn = el('button', 'set-btn on', '填入');
+  /* ⚠️ 面板内**动作键不挂 `.on`**（2026-10-10 用户拍板「看不清楚自动操作到底开启了没有」）：
+     `.on` 是**状态**语言（亮着 = 该档生效 / 该自动化在跑）。「填入 / 跳到 / 吃买盘 / 砸针 /
+     利空 / 拉到…」是**动作**，按下即执行、没有「开着」这回事 —— 以前它们与状态键同挂 `.on`，
+     于是一页里全是高亮，真正的状态反而看不出来。 */
+  const cBtn = el('button', 'set-btn', '填入');
   cBtn.dataset.godcash = '';
   const infBtn = el('button', s.god.inf ? 'set-btn on' : 'set-btn', s.god.inf ? '无限 开' : '无限 关');
   infBtn.dataset.godinf = '';
@@ -3107,7 +3111,7 @@ function godCashPage(s, gx) {
   const tRow = el('div', 'set-row');
   const tBox = el('div', 'god-target');
   tBox.append(el('i', null, '目标'), el('b', 'num', fmtDate(Date.UTC(pick.y, pick.m - 1, 1), false)));
-  const gBtn = el('button', 'set-btn on', '跳到');
+  const gBtn = el('button', 'set-btn', '跳到');
   gBtn.dataset.godgo = '';
   tRow.append(tBox, gBtn);
   rows.append(tRow);
@@ -3212,7 +3216,7 @@ function godSandboxPage(s) {
   seedIn.min = '0';
   seedIn.step = '1';
   seedIn.value = String(s.seed);
-  const seedBtn = el('button', 'set-btn on', '应用');
+  const seedBtn = el('button', 'set-btn', '应用');
   seedBtn.dataset.sbseed = '';
   const seedRoll = el('button', 'set-btn', '随机');
   seedRoll.dataset.sbroll = '';
@@ -3264,15 +3268,16 @@ function godManipPage(s, gx) {
      [自动] 单钮循环 关→自动↓→自动↑→关 —— 开着时每根由 `godEatTick` 伺服（方向随状态，
      label 自明：`自动↓` = 每根吃买盘砸、`自动↑` = 每根吃卖盘拉）。手动两枚走即时执行。 */
   const eatRow = el('div', 'set-row');
-  const eatBid = el('button', 'set-btn on', '吃买盘');
+  const eatBid = el('button', 'set-btn', '吃买盘');
   eatBid.dataset.godeat = '-1';
   eatBid.dataset.lvpin = '';                        // 盘中轻刷新：插针结束 ⇒ 解灰
   eatBid.disabled = !!s.god.pin;                    // 审查 Minor 1：插针伺服中与扫单互斥（同根双推）
-  const eatAsk = el('button', 'set-btn on', '吃卖盘');
+  const eatAsk = el('button', 'set-btn', '吃卖盘');
   eatAsk.dataset.godeat = '1';
   eatAsk.dataset.lvpin = '';
   eatAsk.disabled = !!s.god.pin;
-  const eatAuto = el('button', 'set-btn on', s.god.eat ? (s.god.eat.dir < 0 ? '自动↓' : '自动↑') : '自动');
+  /* 「自动」是**状态**键（循环 关→↓→↑）⇒ 三态里只有「开着」挂 `.on`；关着时是普通键。 */
+  const eatAuto = el('button', s.god.eat ? 'set-btn on' : 'set-btn', s.god.eat ? (s.god.eat.dir < 0 ? '自动↓' : '自动↑') : '自动');
   eatAuto.dataset.godeatauto = '';
   eatAuto.dataset.lvpin = '';
   eatAuto.disabled = !!s.god.pin;
@@ -3338,7 +3343,7 @@ function godManipPage(s, gx) {
   const tgtRow = el('div', 'set-row');
   tgtRow.append(el('i', null, '拉到'));
   for (const pct of [1, 3, 5, 10]) {
-    const b = el('button', 'set-btn on', `+${pct}%`);
+    const b = el('button', 'set-btn', `+${pct}%`);
     b.dataset.godtgt = `1:${pct / 100}`;
     tgtRow.append(b);
   }
@@ -3346,7 +3351,7 @@ function godManipPage(s, gx) {
   const tgtRow2 = el('div', 'set-row');
   tgtRow2.append(el('i', null, '砸到'));
   for (const pct of [1, 3, 5, 10]) {
-    const b = el('button', 'set-btn on', `-${pct}%`);
+    const b = el('button', 'set-btn', `-${pct}%`);
     b.dataset.godtgt = `-1:${pct / 100}`;
     tgtRow2.append(b);
   }
@@ -3359,18 +3364,23 @@ function godManipPage(s, gx) {
      原来只在开面板那一刻条件渲染 ⇒ 会留一条过期读数）；「停」不再挂 `.on`（它已置灰表示空转，
      再挂高亮会像「正在停」）。 */
   const pinRow = el('div', 'set-row');
-  const pinDn = el('button', 'set-btn on', '砸针');
+  const pinDn = el('button', 'set-btn', '砸针');
   pinDn.dataset.godpin = '-1';
   pinDn.dataset.lvpin = '';                         // 盘中轻刷新：pin 结束（预算/时长用尽）⇒ 解灰
   pinDn.disabled = !!s.god.pin || !!s.god.eat;      // 审查 Minor 1：与自动扫单互斥（同根双推）
-  const pinUp = el('button', 'set-btn on', '拉针');
+  const pinUp = el('button', 'set-btn', '拉针');
   pinUp.dataset.godpin = '1';
   pinUp.dataset.lvpin = '';
   pinUp.disabled = !!s.god.pin || !!s.god.eat;
   const pinStop = el('button', 'set-btn', '停');
   pinStop.dataset.godpin = '0';
+  /* ⚠️ 单独一枚标记（不能挂 `data-lvpin`）：`data-lvpin` 那一组的语义是「插针**进行中**
+     才置灰」，而「停」恰好相反（**没有**插针时才置灰）。 */
+  pinStop.dataset.lvpinstop = '';
   pinStop.disabled = !s.god.pin;
-  pinRow.append(autoLabel('插针', !!s.god.pin), pinDn, pinUp, pinStop);
+  const pinLabel = autoLabel('插针', !!s.god.pin);
+  pinLabel.dataset.lvpinlabel = '';                 // 盘中轻刷新：● 跟着 `s.god.pin` 起落
+  pinRow.append(pinLabel, pinDn, pinUp, pinStop);
   rows.append(pinRow);
   const pinP = el('p', 'god-prev', '');
   pinP.dataset.lvpintext = '';
@@ -3380,9 +3390,9 @@ function godManipPage(s, gx) {
   /* 假消息注入（2026-10-08 三批拍板③）：热度一脚 ＋ 小额跟风吃单 ＋ 日志播报
      （engine.godFakeNews 一体完成），两枚按钮即两个方向。 */
   const newsRow = el('div', 'set-row');
-  const newsDn = el('button', 'set-btn on', '利空');
+  const newsDn = el('button', 'set-btn', '利空');
   newsDn.dataset.godnews = '-1';
-  const newsUp = el('button', 'set-btn on', '利好');
+  const newsUp = el('button', 'set-btn', '利好');
   newsUp.dataset.godnews = '1';
   /* 冷却置灰（2026-10-08 用户拍板）：距上次成功注入不足 `MANIP_NEWS_CD` 小时 ⇒ 两枚键一起灰掉
      （与「插针」那排同一套手感：置灰与可按要一眼分得开）。 */
@@ -3924,6 +3934,8 @@ function syncGodLive(panel, s) {
   const pinOn = !!g.pin;
   for (const b of panel.querySelectorAll('[data-lvpin]')) b.disabled = pinOn;
   for (const b of panel.querySelectorAll('[data-lvwash]')) b.disabled = pinOn || !!g.autoPump;
+  const stopEl = panel.querySelector('[data-lvpinstop]');
+  if (stopEl) stopEl.disabled = !pinOn;
   /* ── 实时读数（2026-10-10 用户拍板「面板数据要实时更新」）─────────────────────────
      全部**定点改文本 / 显隐**，绝不重建整块（重建会抹掉输入框里的字、也会丢掉焦点）。
      ① 操盘页常驻读数行（现价 / 24h / 偏离 / 热度）—— 与新闻文案同一产出处（`newsVars`）。 */
@@ -3935,12 +3947,17 @@ function syncGodLive(panel, s) {
   /* ② 资金页「当前」日期 —— 时钟在走（`s.i` 每根 +1）⇒ 打开面板后它也会过期。 */
   const nowEl = panel.querySelector('[data-lvnow]');
   if (nowEl) nowEl.textContent = fmtDate(timeOf(s), false);
-  /* ③ 插针状态行 —— 插针可能被引擎自己收掉（预算 / 时长用尽）⇒ 常驻 ＋ 每帧重算显隐。 */
+  /* ③ 插针状态行 ＋ 行首 `●` —— 插针可能被引擎自己收掉（预算 / 时长用尽）⇒ 常驻 ＋ 每帧重算。 */
   const pinEl = panel.querySelector('[data-lvpintext]');
   if (pinEl) {
     const pin = g.pin;
     pinEl.style.display = pin ? '' : 'none';
     if (pin) pinEl.textContent = `插针中 ${pin.dir < 0 ? '↓' : '↑'} ${pin.sym} ｜ 目标 ${fmtLogPrice(pin.tip)} ｜ 已推 ${fmtMoneyShort(pin.n)}`;
+  }
+  const plEl = panel.querySelector('[data-lvpinlabel]');
+  if (plEl) {
+    plEl.classList.toggle('on', pinOn);
+    plEl.textContent = pinOn ? '插针 ●' : '插针';
   }
 }
 

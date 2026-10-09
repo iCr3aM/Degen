@@ -2705,7 +2705,7 @@ section('9q · 上帝面板分页接线（data-godtab ⇄ ACTION_KEYS ⇄ onGodT
        实时更新」再补读数行 `lvprice` / 资金页当前日期 `lvnow` / 插针状态行 `lvpintext`。
        这些标记只给 `querySelector` 用，不是点击目标）。
      新增状态标记要在这里补一行并说明用途；新增**按钮**漏注册则此断言当场咬死。 */
-  const STATE_MARKS = new Set(['pf', 'heat', 'pages', 'lvnews', 'lvcd', 'lveta', 'lvpin', 'lvwash', 'lvprice', 'lvnow', 'lvpintext']);
+  const STATE_MARKS = new Set(['pf', 'heat', 'pages', 'lvnews', 'lvcd', 'lveta', 'lvpin', 'lvwash', 'lvprice', 'lvnow', 'lvpintext', 'lvpinstop', 'lvpinlabel']);
   /* 只抓 `export const ACTION_KEYS = [ ... ];` **数组本体** —— 不扫全文：全文抓会把
      注释里提到的旧键 / 别的字符串也当「已注册」，护栏假绿。
      ⚠️ 数组本体里还夹着大量**解释性注释**（含 `'toggle'` / 旧键名的字面量）—— 必须**先剥注释**
@@ -6530,14 +6530,18 @@ section('9au · 深度旋钮搬家 ＋ 面板实时刷新 ＋ 自动化行首标
   /* ② 实时刷新钩子：syncGodLive 里三条定点查询 ＋ 渲染侧对应的 data 标记。 */
   const iSync = rend.indexOf('function syncGodLive(');
   const syncBody = rend.slice(iSync, iSync + 3000);
-  check('9au② 面板实时刷新：syncGodLive 定点改读数行 / 当前日期 / 插针状态（不重建整块）',
+  check('9au② 面板实时刷新：syncGodLive 定点改读数行 / 当前日期 / 插针状态与 `●`（不重建整块）',
     iSync > 0
     && syncBody.includes("panel.querySelector('[data-lvprice]')")
     && syncBody.includes("panel.querySelector('[data-lvnow]')")
     && syncBody.includes("panel.querySelector('[data-lvpintext]')")
+    && syncBody.includes("panel.querySelector('[data-lvpinstop]')")
+    && syncBody.includes("panel.querySelector('[data-lvpinlabel]')")
     && rend.includes('priceP.dataset.lvprice = \'\';')
     && rend.includes('nowB.dataset.lvnow = \'\';')
-    && rend.includes('pinP.dataset.lvpintext = \'\';'));
+    && rend.includes('pinP.dataset.lvpintext = \'\';')
+    && rend.includes('pinStop.dataset.lvpinstop = \'\';')
+    && rend.includes('pinLabel.dataset.lvpinlabel = \'\';'));
   /* ③ 「自动操作开着没有」一眼可辨：行首标签 `●` ＋ accent 样式。 */
   check('9au③ 自动化行首标识：autoLabel 装置 ＋ `.set-row i.on` 样式 ＋ 三处挂载',
     rend.includes('const autoLabel = (text, on) => el(\'i\', on ? \'on\' : null, on ? `${text} ●` : text);')
@@ -6546,6 +6550,18 @@ section('9au · 深度旋钮搬家 ＋ 面板实时刷新 ＋ 自动化行首标
     && rend.includes("autoLabel('自动操盘', !!s.god.autoWash || !!s.god.autoPump)")
     && rend.includes("autoLabel('插针', !!s.god.pin)")
     && css.includes('.set-row i.on { color: var(--accent); font-weight: 600; }'));
+  /* ④ **动作键 vs 状态键的视觉分工**（2026-10-10 用户拍板「一页全是高亮 ⇒ 看不出真正的状态」）：
+     `.on` 只留给「状态」（选中档 / 自动化在跑）；「填入 / 跳到 / 吃买盘 / 砸针 / 拉针 / 利空 /
+     利好 / 拉到 / 砸到」是**动作**，一律不挂 `.on`。 */
+  check('9au④ 动作键不挂 `.on`（只有状态键高亮）＋ 置灰的「当前档」保留 accent 线索',
+    rend.includes("el('button', 'set-btn', '填入')")
+    && rend.includes("el('button', 'set-btn', '跳到')")
+    && rend.includes("el('button', 'set-btn', '吃买盘')")
+    && rend.includes("el('button', 'set-btn', '砸针')")
+    && rend.includes("el('button', 'set-btn', '利空')")
+    && rend.includes("s.god.eat ? 'set-btn on' : 'set-btn'")
+    && rend.includes("s.god.autoWash ? 'set-btn on' : 'set-btn'")
+    && css.includes('.set-btn.on:disabled { border-color: var(--accent); color: var(--accent); border-style: dashed; }'));
 }
 
 /* ═══════════════════ 9av · 自动伺服的性能修（2026-10-10 用户报「组合拳开启后卡」） ═══════════════════
