@@ -2683,14 +2683,14 @@ section('9q · 上帝面板分页接线（data-godtab ⇄ ACTION_KEYS ⇄ onGodT
   const mainSrc = readSrc('src/main.js');
   check('9q `godtab` 进了 `ACTION_KEYS`（否则页签点了没反应）',
     /['"]godtab['"]/.test(bindSrc));
-  check('9q 面板生成页签（`dataset.godtab`）＋ 两页 `.confirm-rows` 互斥显隐',
-    /dataset\.godtab/.test(renderSrc)
-    && /rowsA\.style\.display/.test(renderSrc) && /rowsB\.style\.display/.test(renderSrc));
-  check('9q `openGod` 收 `page` 入参（签名四参：2026-10-07 起多浮窗状态 fui，缺省零负担）',
-    /export function openGod\(s, sel = null, page = 0, fui = \{ on: true, alpha: 1 \}\)/.test(renderSrc));
-  check('9q 分派层有 `onGodTab`，且 `showGod` 把 `godPage` ＋ 浮窗状态传下去',
+  check('9q 面板按页渲染（`dataset.goftab` ＋ godCashPage / godManipPage 分段）',
+    /dataset\.goftab/.test(renderSrc)
+    && /function godCashPage\(/.test(renderSrc) && /function godManipPage\(/.test(renderSrc));
+  check('9q `godBody` 收 `page` 入参（2026-10-10 浮窗化：原 openGod modal → 浮窗主体渲染器）',
+    /export function godBody\(s, page, gx = \{\}\)/.test(renderSrc));
+  check('9q 分派层有 `onGodTab`，且 `showGod` 开合 god 浮窗（2026-10-10 浮窗化）',
     /function onGodTab\(/.test(mainSrc)
-    && /openGod\(s, godSel, godPage, \{ on: godFloatOn, alpha: godAlpha \}\)/.test(mainSrc));
+    && /const showGod = \(\) => \{ godFloatOpen = true; godVer\+\+; focusFloat\('god'\); after\(\); \}/.test(mainSrc));
   /* ⚠️ **穷举护栏**（`chan` / `godinf` 两次实测踩坑的病根）：render.js 渲染出的**每一个**
      `data-*` 动作键都必须注册进 ACTION_KEYS —— 漏一条 = `findActionEl` 认不出 = 点了没反应，
      且引擎/分派侧全绿也测不出来（按钮根本到不了 dispatch）。
@@ -3026,7 +3026,7 @@ section('9u · 上帝浮窗（godWatchOf 快照）＋ 接线锚点');
     mainSrc.includes("GOD_ALPHA_KEY = 'degen_god_alpha'")
     && mainSrc.includes('[1, 0.8, 0.6, 0.4]')
     && mainSrc.includes('updateFloat(s, floatUi())')
-    && mainSrc.includes('onGodFloatChip(ev)'));
+    && mainSrc.includes('onGodFloatChip(node, ev)'));
   check('9u render：圆钮/面板/热力图类名 ＋ 导出 updateFloat',
     renderSrc.includes("'god-chip'") && renderSrc.includes("'god-float'")
     && renderSrc.includes('god-hm-bar') && renderSrc.includes('export function updateFloat'));
@@ -3170,7 +3170,7 @@ section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源
   check('9v⑤ bind 注册 mktfloat 键', bindSrc9v.includes("'mktfloat'"));
   check('9v⑤ main：市场浮窗开关（localStorage 持久化 ＋ 页表随模式）',
     mainSrc9v.includes("MKT_FLOAT_KEY = 'degen_mkt_float'")
-    && mainSrc9v.includes('MKT_FLOAT_PAGES') && mainSrc9v.includes('mkt: !s.god'));
+    && mainSrc9v.includes('MKT_FLOAT_PAGES') && mainSrc9v.includes('on: !menuUp && (s.god ? godFloatOn : mktFloatOn)'));
   check('9v⑤ render：订单簿页 coinglass 三列（价格/数量/金额累计 ＋ 量条∝数量）＋ 设置页开关 ＋ 深度页墙汇总',
     rendSrc9v.includes('gb-row') && rendSrc9v.includes('gb-mid') && rendSrc9v.includes('gb-head')
     && rendSrc9v.includes('r.notional / r.price') && rendSrc9v.includes('fmtQty(r.qty)')
@@ -5234,7 +5234,7 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
      五档按钮 ＋ 会话级 `logFilt` ＋ `goffilt` 三链路缺一即「点了没反应」。 */
   check('9ae⑧ 日志页过滤档：五档按钮（feedPctLabel·goffilt）＋ 会话级 logFilt ＋ bind 收键 ＋ t4 底色',
     renderSrc9y.includes('const feedPctLabel') && renderSrc9y.includes('b.dataset.goffilt = String(i)')
-    && renderSrc9y.includes('r.t >= lf') && renderSrc9y.includes('floatBody(s, ui.page, ui.step, ui.filt)')
+    && renderSrc9y.includes('r.t >= lf') && renderSrc9y.includes('defaultBody(s, ui.page, ui.step, ui.filt)')
     && mainSrc9y.includes('let logFilt = 0;') && mainSrc9y.includes('function onGodFloatFilt(node)')
     && mainSrc9y.includes('filt: logFilt,') && mainSrc9y.includes('if (d.goffilt !== undefined) return onGodFloatFilt(node);')
     && readSrc9y('src/ui/bind.js').includes("'goffilt'")
@@ -5401,7 +5401,8 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     && engSrc9ag.includes('if (s.pending) return;\n\n  /* 交易所收入分流')
     && engSrc9ag.includes('exRevSweep(s);\n\n  /* 插针剧本伺服')   // 2026-10-09 回流管道：排在伺服 / NPC 刻度之前
     && engSrc9ag.includes('godPinTick(s);\n\n  /* 自动扫单伺服')   // 2026-10-09：扫单伺服紧随插针（同一时序纪律）
-    && engSrc9ag.includes('godEatTick(s);\n\n  /* NPC 情绪 / 踩踏级联')
+    && engSrc9ag.includes('godEatTick(s);\n\n  /* 自动化伺服')     // 2026-10-10：自动化伺服紧随扫单
+    && engSrc9ag.includes('godAutoTick(s);\n\n  /* NPC 情绪 / 踩踏级联')
     /* 2026-10-08 M4k：作废行扩成对象体（插针 ＋ 沙盒世界偏向台阶 `sbBias` 一起清）；
        M4d：再并进假消息的冷却 / 轮换计数（`newsAt` / `newsN`）。 */
     && engSrc9ag.includes('if (s.god) {')
@@ -5671,8 +5672,8 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     check('9ah④ M4d 行为：连按 16 次 ⇒ 16 条播报两两不同（轮换计数去重）＋ 全部含币符号',
       seen.size === 16 && [...seen].every(t => t.includes('BTC')),
       `去重后 ${seen.size} 条`);
-    check('9ah④ M4d 常数：利好 / 利空各 46 条（6 类风格 ＋ 早期年代风味）＋ 冷却 8h',
-    god.MANIP_NEWS.good.length === 46 && god.MANIP_NEWS.bad.length === 46 && god.MANIP_NEWS_CD === 8,
+    check('9ah④ M4d 常数：利好 / 利空各 86 条（6 类风格 ＋ 早期年代风味 ＋ 年代扩容 40）＋ 冷却 8h',
+    god.MANIP_NEWS.good.length === 86 && god.MANIP_NEWS.bad.length === 86 && god.MANIP_NEWS_CD === 8,
     `good=${god.MANIP_NEWS.good.length} bad=${god.MANIP_NEWS.bad.length}`);
   }
 }
@@ -5710,7 +5711,7 @@ section('9ai · 新闻占位符 newsVars / fillNews ＋ 上帝终局 s.god.ended
   const flat = tpl => (typeof tpl === 'string' ? tpl : tpl.t);
   const fake = god.MANIP_NEWS.good.concat(god.MANIP_NEWS.bad).map(tpl => engine.fillNews(flat(tpl), nv));
   const badFake = fake.filter(t => /%[A-Za-z]/.test(t) || t.includes('\n') || !t.includes('BTC'));
-  check('9ai② 假新闻模板 92 条填充后无残留占位符 / 无换行 / 全部含币符号',
+  check('9ai② 假新闻模板 172 条填充后无残留占位符 / 无换行 / 全部含币符号',
     badFake.length === 0, badFake.join(' | '));
 
   /* ③ `newsVars` 幂等（同状态两次调用逐键相等 ⇒ 重放确定性）；表外币不抛、价格走 `--`。 */
@@ -6316,6 +6317,112 @@ section('9ar · 扫单 godEatBook ＋ 目标价 godTargetPush ＋ 自动伺服')
       && mainSrcAr.includes('function onGodTarget(dir, pct) {')
       && bindSrcAr.includes("'godeat',") && bindSrcAr.includes("'godtgt',")
       && engSrcAr.includes('godEatTick(s);'));
+  }
+}
+
+/* ═══════════════════ 9as · 自动化伺服 ＋ 自动新闻币种权重（2026-10-10 拍板） ═══════════════════ */
+section('9as · 自动新闻（币种权重）＋ 自动造量 ＋ 自动拉盘 ＋ 互斥');
+{
+  /* ① 币种权重：BTC（大流动性）显著多于 DOGE（小流动性），且两者都抽得到（5% 地板）。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 5, 10)) });
+    await market.loadCoin('DOGE');
+    engine.tickMarket(s, 'DOGE');
+    check('9as① 前置：两币都在 s.mkt 里', !!s.mkt.BTC && !!s.mkt.DOGE,
+      `keys=${Object.keys(s.mkt).join(',')}`);
+    const cnt = {}; let badSym = '';
+    const i0 = s.i;
+    for (let h = 0; h < 600; h++) {
+      s.i = i0 + h;                                  // 逐小时推进（不改世界，只测抽样）
+      const sym = engine.autoNewsSym(s);
+      if (!(sym in s.mkt)) { if (!badSym) badSym = `h=${h} sym=${sym}`; }
+      cnt[sym] = (cnt[sym] || 0) + 1;
+    }
+    const nB = cnt.BTC || 0, nD = cnt.DOGE || 0;
+    check('9as② 权重：BTC（大流动性）抽取次数显著多于 DOGE（小流动性）',
+      nB > nD * 1.5, `BTC=${nB} DOGE=${nD}`);
+    check('9as③ 5% 地板：小币仍抽得到（DOGE 命中 > 0）且不抽未上市币',
+      nD > 0 && badSym === '', badSym || `DOGE=${nD}/600`);
+  }
+  /* ② 单币 / 空 mkt 退化：不抛、返回 s.sym。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2013, 6, 1)) });
+    check('9as④ 退化：只有 BTC 时恒返回 BTC', engine.autoNewsSym(s) === 'BTC');
+    const s2 = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2013, 6, 1)) });
+    s2.mkt = {};
+    check('9as⑤ 退化：s.mkt 为空 ⇒ 退回 s.sym（不抛）', engine.autoNewsSym(s2) === 'BTC');
+  }
+  /* ③ 自动造量：开 autoWash 跑一根 ⇒ 假量入账（m.pv）；关掉不产生。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 5, 10)) });
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e11;
+    engine.tickMarket(s, 'BTC');
+    s.god.autoWash = true; s.god.autoWashSym = 'BTC';
+    /* ⚠️ 直调伺服（**不** `advanceOneHour`）—— 推进时钟会让 `tickMarket` 把 m.pv 结算清零，
+       测不到「这一根洗了多少」（2026-10-10 测试口径修）。 */
+    engine.godAutoTick(s);
+    check('9as⑥ 自动造量：伺服一根 ⇒ 有假量（m.pv 入账）', (s.mkt.BTC.pv || 0) > 0,
+      `pv=${(s.mkt.BTC.pv || 0).toExponential(2)}`);
+  }
+  /* ④ 自动拉盘：开 autoPump=+1 跑若干根 ⇒ 价格上移；且与 autoWash 互斥（引擎单点）。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 5, 10)) });
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e12;
+    engine.tickMarket(s, 'BTC');
+    const p0 = engine.lastPrice(s, 'BTC');
+    s.god.autoPump = 1; s.god.autoPumpSym = 'BTC'; s.god.lastPush = 2e8;
+    for (let h = 0; h < 3; h++) engine.advanceOneHour(s);
+    check('9as⑦ 自动拉盘：连续伺服 ⇒ 价格上移（组合拳持续推）',
+      engine.lastPrice(s, 'BTC') > p0, `p0=${f(p0, 0)} → ${f(engine.lastPrice(s, 'BTC'), 0)}`);
+    /* 互斥：autoPump 开着时 autoWash 分支不进（同根不双倍洗售）—— 用 swap 计数间接验证。 */
+    const src = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+    check('9as⑧ 互斥：拉盘开着时造量分支短路（`!g.autoPump && g.autoWash`）',
+      src.includes('if (!g.pin && !g.autoPump && g.autoWash) {'));
+  }
+  /* ⑤ 自动新闻：autoNews 开 ⇒ 到点播报一条 + 重排 12~36h；方向开关生效。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 5, 10)) });
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e11;
+    engine.tickMarket(s, 'BTC');
+    s.mkt.BTC.heat = 0.5;
+    s.god.autoNews = 1; s.god.autoNewsAt = s.i;      // 立刻到点
+    const i0 = s.i;
+    engine.advanceOneHour(s);
+    /* ⚠️ `advanceOneHour` 先推进 `s.i` 再跑伺服 ⇒ `newsAt` 落在 `i0 + 1`（不是在 i0）——
+       断言按真实时序写（2026-10-10 测试口径修）。 */
+    check('9as⑨ 自动新闻：到点播报一条（newsAt 落位）＋ 下次时刻重排在 12~36h',
+      Number.isFinite(s.god.newsAt) && s.god.newsAt >= i0 && s.god.newsAt <= i0 + 1
+      && Number.isFinite(s.god.autoNewsAt) && s.god.autoNewsAt >= i0 + 12 && s.god.autoNewsAt <= i0 + 37,
+      `newsAt=${s.god.newsAt}（i0=${i0}） next=${s.god.autoNewsAt} (Δ=${s.god.autoNewsAt - i0}h)`);
+    /* 混合方向：用 `newsN.good/bad` 的增量判方向（文案本身不含「利好/利空」字样）；
+       ⚠️ 每次清 `newsAt` 绕开 8h 冷却（这里测的是「方向随机」而非「冷却」）。 */
+    const dirSet = new Set();
+    s.god.autoNews = 0;
+    for (let h = 0; h < 80; h++) {
+      s.god.autoNewsAt = s.i;
+      s.god.newsAt = null;
+      const g0 = s.god.newsN ? s.god.newsN.good : 0;
+      const b0 = s.god.newsN ? s.god.newsN.bad : 0;
+      engine.godAutoTick(s);
+      const g1 = s.god.newsN ? s.god.newsN.good : 0;
+      const b1 = s.god.newsN ? s.god.newsN.bad : 0;
+      if (g1 > g0) dirSet.add(1); else if (b1 > b0) dirSet.add(-1);
+      s.i += 24;                                     // 每次跳一天（远离冷却窗）
+    }
+    check('9as⑩ 混合方向：autoNews=0 时两个方向都会被抽到（非恒一元）',
+      dirSet.size === 2, `观测方向 = {${[...dirSet].join(',')}}`);
+  }
+  /* ⑥ 源断言：挂点 + rewindTo 清 autoNewsAt + 三个开关读法。 */
+  {
+    const src = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+    check('9as⑪ 结构：godAutoTick 进 advanceOneHour（扫单之后）＋ rewindTo 清 autoNewsAt ＋ 导出 autoNewsSym',
+      src.includes('godAutoTick(s);\n\n  /* NPC 情绪 / 踩踏级联')
+      && src.includes('s.god.autoNewsAt = null;')
+      && src.includes('export function autoNewsSym(s) {')
+      && src.includes('export function godAutoTick(s) {'));
   }
 }
 

@@ -4770,6 +4770,80 @@ export function godEatTick(s) {
   godEatBook(s, e.sym, e.dir);
 }
 
+/**
+ * 自动新闻的**币种抽取**（2026-10-10 用户拍板「随机币种 ＋ 币种权重」）——
+ * 权重 = 各已加载币**当日流动性**的**平方根**，叠加 5% 地板：
+ *
+ *   · **平方根平滑**：线性口径下 BTC 2021 的日流动性是 DOGE 的几十倍 ⇒ 小币几乎永不上新闻。
+ *     `sqrt` 把 50:1 压到约 7:1 —— 仍是「大币常上头条」（现实口径：媒体覆盖率与市值/活跃度
+ *     正相关，BTC/ETH 常年占绝大多数版面），但小币也有露脸机会（山寨币新闻确实是少数但存在）。
+ *   · **5% 地板**：任何已加载币至少占 `0.05/n` 权重 ⇒ 刚上市的小币不会被完全饿死。
+ *   · **只抽 `s.mkt` 里有格的币**（已进过市场的）—— 未上市的币连行情都没有，播它读不出数。
+ *   · 流动性取不到（交易日缺口 / 全 0）⇒ **等权兜底**（宁可平均，不因一个缺格把新闻卡死）。
+ *   · 确定性：走 `randFast` 通道 `'autoNS'` ⇒ 同种子同小时同结果，断点续跑可复现。
+ * ⚠️ 导出给审计 9as 直调（与 `exRevSweep` / `feedPush` 同一先例）—— 权重分布要能单独测。
+ * @returns {string} 币符号（保证是 `s.mkt` 的键；无币时退回 `s.sym`）
+ */
+export function autoNewsSym(s) {
+  const syms = Object.keys(s.mkt || {});
+  if (!syms.length) return s.sym;
+  if (syms.length === 1) return syms[0];
+  const n = syms.length;
+  const day = dayIndexOf(s.i);
+  const w = syms.map(sym => {
+    const liq = liqOf(sym, day);
+    return liq > 0 ? Math.sqrt(liq) : 0;
+  });
+  const tot = w.reduce((a, b) => a + b, 0);
+  const FLOOR = 0.05;
+  const ww = tot > 0 ? w.map(x => FLOOR / n + (1 - FLOOR) * (x / tot)) : w.map(() => 1 / n);
+  let r = randFast(s.seed, hashStr('autoNS'), s.i, 0, hashStr('news'));
+  for (let i = 0; i < n; i++) { r -= ww[i]; if (r <= 0) return syms[i]; }
+  return syms[n - 1];
+}
+
+/**
+ * **自动化伺服**（2026-10-09 用户拍板「自动新闻三开关 ＋ 自动造量 ＋ 自动拉盘」）——
+ * `advanceOneHour` 每根调一次（排在扫单伺服之后、NPC 刻度之前），三个子开关独立：
+ *
+ *   · **自动新闻**（`s.god.autoNews`）：0 = 好坏混合 / 1 = 纯利好 / −1 = 纯利空。
+ *     到点（`s.god.autoNewsAt`）**按币种权重随机抽一个币**（`autoNewsSym`，见其头注）、
+ *     随机取一条**当年代过门控**的模板播报（走 `godFakeNews` 全套：热度脚 ＋ 小额跟风 ＋ 播报），
+ *     下次时刻 = 本根 ＋ **12~36h 随机**（`randFast` 确定性 —— 断点续跑可复现），
+ *     天然大于 `MANIP_NEWS_CD`(8h) 冷却。
+ *   · **自动拉盘**（`s.god.autoPump` = ±1）：每根一次组合拳（幌骗→洗售→吃单），
+ *     名义 = 面板记忆 `lastPush`（与手动行同源）——真实 P&D 的 pump 阶段就是连续数小时推。
+ *   · **自动造量**（`s.god.autoWash`）：每根一次洗售，名义 = `min(lastWash ?? 下限×10, 本时深度)`
+ *     （与组合拳的洗售配比同一条口径——喂饱热度放大器即止，多洗纯烧费）。
+ *
+ * **互斥裁决**（引擎层单点，UI 置灰与之同步）：
+ *   插针伺服中（`s.god.pin`）全部跳过；自动拉盘开着 ⇒ 自动造量跳过（组合拳内已含洗售，
+ *   双开等于同根双倍洗售费）；扫单（`s.god.eat`）与拉盘可并存（扫的是簿、推的是价，物理不重复）。
+ * @returns {void}
+ */
+export function godAutoTick(s) {
+  const g = s.god;
+  if (!g) return;
+  if (!g.pin && g.autoPump) {
+    const n = g.lastPush ?? MANIP_MIN * 10;
+    godManipPump(s, g.autoPumpSym ?? s.sym, g.autoPump, n);
+  }
+  if (!g.pin && !g.autoPump && g.autoWash) {
+    const deep = hourLiqBase(s, g.autoWashSym ?? s.sym, s.i);
+    godManipWash(s, g.autoWashSym ?? s.sym, Math.max(MANIP_MIN, Math.min(g.lastWash ?? MANIP_MIN * 10, deep)));
+  }
+  /* ⚠️ `typeof === 'number'` 而不是真值判断（2026-10-10 测试抓到的真 bug）：`autoNews = 0`
+     是**合法的「好坏混合」档**，用 `if (g.autoNews && …)` 会把 0 当「关」⇒ 混合档永不触发；
+     用类型判断顺带挡住 UI 误传的 `false` / `undefined`（关闭态一律写 `null` 或 `delete`）。 */
+  if (typeof g.autoNews === 'number' && (g.autoNewsAt ?? 0) <= s.i) {
+    /* 币种按权重随机抽（2026-10-10）—— 抽到哪个币，新闻就播哪个币（%S 与读数都跟着它）。 */
+    const sym = autoNewsSym(s);
+    const dir = g.autoNews === 0 ? (randFast(s.seed, hashStr(sym), s.i, 0, 7) > 0.5 ? 1 : -1) : g.autoNews;
+    godFakeNews(s, sym, dir);
+    g.autoNewsAt = s.i + 12 + Math.floor(randFast(s.seed, hashStr('autoN'), s.i, 0, 11) * 25);   // 12~36h
+  }
+}
+
 /* ── 插针剧本（2026-10-08 三批拍板③「插针剧本」）─────────────────────────────
  * 一键「吃穿最大的强平簇再回位」：真实庄家的猎杀剧本（hunt liquidations）。**没有「直接设价」
  * 通道** —— 推进完全复用操盘台的吃单物理（`godManipPush`：付手续费 ＋ 冲击成本、吃深度、
@@ -5511,6 +5585,10 @@ export function advanceOneHour(s) {
      —— 排在本根成形之前，位移进本根 K 线（与插针同一时序纪律）。 */
   godEatTick(s);
 
+  /* 自动化伺服（2026-10-09 拍板：自动新闻三开关 ＋ 自动造量 ＋ 自动拉盘）—— 同一时序纪律，
+     互斥裁决在引擎单点（见 `godAutoTick` 头注）。 */
+  godAutoTick(s);
+
   /* NPC 情绪 / 踩踏级联（§73.5）：基础行情（这一根的 K 线）算完之后跑一次 ——
      它自己会往 `s.flow` 写 NPC 的成交，所以必须排在资金费 / 强平之前、玩家的流之后。 */
   tickMarket(s, s.sym);
@@ -5639,6 +5717,7 @@ export function rewindTo(s, to) {
   if (s.god) {
     s.god.pin = null;
     s.god.eat = null;   // 自动扫单（2026-10-09）同样作废 —— 跳转后的世界要玩家重新拍板方向
+    s.god.autoNewsAt = null;   // 自动新闻的「下次时刻」是跳转前读数 ⇒ 重排（开关本身保留）
     s.god.sbBias = null;
     /* 假消息冷却与轮换计数（2026-10-08）也是「跳转前世界」的读数 ⇒ 一并作废，
        否则跳时间后冷却可能落在未来（按钮永远灰着）。 */

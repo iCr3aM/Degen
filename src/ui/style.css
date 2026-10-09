@@ -1226,10 +1226,18 @@ canvas.curve {
 /* 上帝面板的行与行要留 8px —— `.confirm-rows` 自身不带行距（它是给「三行标签」那种
    连排盒用的）；这里是七八块（资金 / 读数 / 三排档位），不隔开会糊成一片。
    ⚠️ 档排叠起来比一屏高（小屏尤其）⇒ 面板自身可滚，按钮**不压缩**（压到 32px 以下就点不准了）。 */
-.godp .confirm-rows { display: grid; gap: 8px; }
-/* ⚠️ `100vh` → `100dvh`（2026-10-03 修）：全站其余高度一律走 `dvh`（见 `#app`），
-   只有这里漏了 —— 手机地址栏收起 / 展开时 `vh` 不跟着变，面板会有一截伸到屏幕外。 */
-.godp { max-height: calc(100dvh - 32px); overflow-y: auto; }
+/* 上帝面板搬进 god 浮窗（2026-10-10）后：主体挂在 `.god-float.god`（不再是 `#overlay` 的 `.godp`）——
+   行与行留 8px（`.confirm-rows` 自身不带行距，它是给「三行标签」那种连排盒用的）。
+   ⚠️ 面板自身可滚由 `.god-float`（`overflow-y: auto` ＋ `--float-h`）兜住，这里不再写 `max-height`。 */
+.god-float.god .confirm-rows { display: grid; gap: 8px; margin-top: 0; }
+/* 内容按浮窗宽重排（`--float-w`）：控件字号 / 高度收一档，四枚并排（自动新闻）也放得下。
+   ⚠️ 不动 `.god-pick .set-btn { width: 100% }`（公元 / 月档排靠它撑满格）—— 只压高度与字号。 */
+.god-float.god .set-row, .god-float.god .god-in, .god-float.god .set-btn { font-size: 11px; }
+.god-float.god .set-row { gap: 6px; }
+.god-float.god .set-btn { height: 26px; min-width: calc(44px * var(--ui)); padding: 0 6px; }
+.god-float.god .god-in { height: 26px; }
+/* ⚠️ `.godp`（`#overlay` 里的居中 modal）已随 2026-10-10 浮窗化退役 —— 面板主体改挂 `.god-float.god`，
+   高度 / 滚动由 `.god-float` 统一兜住（`--float-h` ＋ `overflow-y: auto`），这里不再有 `.godp` 规则。 */
 .god-in {
   flex: 1;
   min-width: 0;
@@ -1263,7 +1271,7 @@ canvas.curve {
 .god-target .num { color: var(--accent); }
 
 /* ── 上帝沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）──────────
-   分组标题 ＋ 5 行旋钮 ＋ 1 行预设 ＋ 1 行种子。行距沿用 `.godp .confirm-rows` 的 8px。
+   分组标题 ＋ 5 行旋钮 ＋ 1 行预设 ＋ 1 行种子。行距沿用 `.god-float.god .confirm-rows` 的 8px。
    ⚠️ 旋钮 / 预设行 = `标签在左 ＋ 档位在右`（与 `.set-row` 的两端对齐一致）；
       档位组要 `flex: 1` 才不会被 flex 行压扁（`.god-pick` 本身是 grid、无宽度诉求）。 */
 .god-sep {
@@ -2038,17 +2046,21 @@ button { user-select: none; -webkit-user-select: none; }
   #app { max-width: 1360px; }
 }
 
-/* ══════════════ 上帝浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开，尽量小」） ══════════════
-   圆钮 ＋ 三 tab 小面板都挂在 body 上（#overlay 之外）。z-index 15：盖过页面、
-   被 #overlay（20）与结束遮罩压住 —— 面板开着时圆钮让位。
-   ⚠️ 透明度：`.godp`（上帝面板）/ 圆钮 / 浮窗**同一份** `--god-alpha`（main.js 写，
-      档位按钮循环 100→80→60→40）。改的是**背景**的 alpha，文字不参与 —— 缩到多小都锐利。
+/* ══════════════ 浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开，尽量小」；2026-10-10 实例化） ══════════════
+   两枚圆钮 ＋ 两块面板（mkt「详」/ god「神」）都挂在 body 上（#overlay 之外）。
+   ⚠️ `z-index` 由 `render.js` 动态写（`applyFloatZ`）：面板占 `zL`、圆钮占 `zL + 2`，
+      聚焦实例 `zL = 16`、另一个 `15` ⇒ 自己的浮窗**永远盖不住自己的圆钮**（2026-10-10 病根修），
+      且两浮窗「谁最后碰谁在上」。均低于 `#overlay`（20）与结束遮罩。
+   ⚠️ 透明度：两个浮窗 / 圆钮**同一份** `--god-alpha`（main.js 写，档位按钮循环 100→80→60→40）。
+      改的是**背景**的 alpha，文字不参与 —— 缩到多小都锐利。
       color-mix 不认的旧浏览器回落到不透明 `var(--panel)`（先写一行兜底再写 color-mix）。 */
-.godp, .god-chip, .god-float {
+.god-chip, .god-float {
   background: var(--panel);
   background: color-mix(in srgb, var(--panel) calc(var(--god-alpha, 1) * 100%), transparent);
 }
-/* 圆钮「详」：默认钉右下角（避开底部操作区）；拖过之后 main.js 写 inline left/top 接管。 */
+/* 圆钮「详」（mkt）：默认钉右下角（避开底部操作区）；拖过之后 main.js 写 inline left/top 接管。
+   ⚠️ `z-index` 不再写死值（原 15 与浮窗同层 = 圆点被自己的浮窗盖住的病根）—— `render.js` 的
+      `applyFloatZ` 动态写：本实例 `chip.z = zL + 2`、`panel.z = zL`，聚焦者 `zL = 16`、另一个 `15`。 */
 .god-chip {
   position: fixed;
   right: 12px;
@@ -2060,11 +2072,13 @@ button { user-select: none; -webkit-user-select: none; }
   color: var(--gold);
   font-size: 13px;
   font-weight: 600;
-  z-index: 15;
   touch-action: none;           /* 拖拽不走浏览器手势 —— 与画布同一条理由 */
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
+/* god 圆钮「神」（2026-10-10 浮窗化）：金色副色 + 顶到 mkt 之上（避让，默认叠在 mkt 圆钮上方一档）。
+   mkt 圆钮在 `bottom: 118px`，god 圆钮错开 44px 垂直排布 —— 两枚不重叠、都可点。 */
+.god-chip.god { bottom: 166px; border-color: var(--gold); color: var(--gold); }
 .god-float {
   position: fixed;
   /* 宽 / 高走 `:root` 变量（2026-10-08 桌面端分档）：手机端未定义 ⇒ 340px × 64dvh；
@@ -2074,10 +2088,11 @@ button { user-select: none; -webkit-user-select: none; }
   overflow-y: auto;
   border: 1px solid var(--line);
   padding: 8px;
-  z-index: 15;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
+/* god 浮窗（上帝面板）默认钉右下角时错开 mkt 一档，避免两浮窗开机即叠死（拖过则由 inline 接管）。 */
+.god-float.god { border-color: var(--gold); }
 /* ⚠️ 浮窗字号**固定 px、不乘 `--ui`**（用户拍板「尽量小，缩到可视大小」）——
    它是给上帝盯盘用的密集读数，跟着全局字号放大就失去「小窗」的意义了。
    例外（2026-10-08 用户反馈「桌面端有些文字数字太小」）：≥1280px 档整体上调一档，

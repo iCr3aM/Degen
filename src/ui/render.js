@@ -3023,62 +3023,51 @@ export function openYearPick(curYear) {
  * ⚠️ 这个页**没有「关闭」出口** —— 底部 Tab 就是出口（切回交易 / 资产）。
  */
 
-/* ═════════════════════════ 上帝模式面板（主菜单图标连点入口） ═════════════════════════ */
+/* ═════════════════════════ 上帝面板（主菜单图标连点入口） ═════════════════════════ */
 
 /**
  * 上帝面板。**入口是主菜单图标连点 5 次**（2026-10-07 入口改型，`logoEl` 的 `data-god="logo"`）
- * —— 命中即直接进入上帝模式的这一局并弹出本面板；解锁之后（`s.god` 非空）点一下顶栏标题就能重开
- * （计数与超时状态机在 `main.js`，与「重开本局」的双重确认同一个理由：这里是静态 DOM、不参与每帧重绘）。
+ * —— 命中即直接进入上帝模式的这一局并展开本面板；解锁之后（`s.god` 非空）点一下顶栏标题就能重开
+ * （计数与超时状态机在 `main.js`）。
  *
  * **三页 tab**（2026-10-05 起分页，2026-10-07 增第 3 页）：第 1 页「资金·时间」= ①填入资金 ＋ ②跳到日期；
  * 第 2 页「沙盒」= ③沙盒旋钮 / 预设 / 种子；第 3 页「操盘」= ④吃单拉砸 / 洗售 / 幌骗（走既有市场
- * 物理，见 `engine.godManipPush` / `godManipWash` / `godManipSpoof` 的头注）。
+ * 物理，见 `engine.godManipPush` / `godManipWash` / `godManipSpoof` 的头注）＋ 自动化伺服三行。
  * ⚠️ **「关闭上帝模式」已删除**（2026-10-07 用户拍板）：上帝模式是**会话级一次性**状态
  *    （`save.js` 落盘时剔除 `s.god`，读档回来就是普通局），没有「退出」一说；
- *    底部只剩「关闭」（关的是面板，不是模式）。
- * ⚠️ 切页走 `data-godtab`（`main.js` 把页码存进 `godPage` 再重开本层）—— 面板本是**无状态**的
- *    静态 DOM，页签同样由 `page` 入参决定高亮。
- *    页内容用 inline `style.display` 互斥显隐（`.godp .confirm-rows { display: grid }` 特异度高于
- *    UA 的 `[hidden] { display: none }`，写 `hidden` 不生效）；「关闭」常驻三页之外。
+ *    底部只剩「关闭」（关的是浮窗，不是模式）。
+ * ⚠️ **2026-10-10 浮窗化**：原 `#overlay` 居中 modal（`.confirm.godp` ＋ `.pick-back` 暗底）退役 ——
+ *    三页内容整块搬进 `godBody`，由 **god 浮窗**按「页码 / 版本号」重建（面板含输入框，
+ *    不能每帧抹；`ui.ver` 由 `main.js` 的 `showGod()` 自增触发刷新）。
+ *    页签走 `.god-ftab` ＋ `data-godtab`（普通数字 0/1/2），与 mkt 浮窗的 `data-goftab` 是两套。
  * ⚠️ **资金框不能挂 `data-*`**：`bind.js` 拦的是 `[data-*]` 的 `pointerdown` 并会 `preventDefault`，
- *    挂上去就打不了字了。所以值由动作处理函数从同一个面板里按类名读（`god-cash`）。
+ *    挂上去就打不了字了。所以值由动作处理函数从同一个面板里按类名读（`readGodInput` →
+ *    `closest('.god-float.god')`）。
  *    ⚠️ 档排上那些是**按钮**、不是输入框，照旧挂 `data-*`（`godyear` / `godmon`；`godday`
  *       已随 2026-10-08 三批的「日选择删除」一并退役）。
- *    ⚠️ 操盘台的两个输入框同理（`god-manip` / `god-wash`）；预览行随 `input` 事件即时重算
- *       （`input` 不走 `bind.js`，不受拦）。
+ *    ⚠️ 操盘台的输入框同理（`god-manip` / `god-cash` / `god-seed`）；预览行随 `input` 事件即时重算。
  * ⚠️ **「无限」开关（2026-10-07 用户拍板）与资金输入框同处一行**：它翻的是 `s.god.inf`，
  *    开启后归零**自动补满**到输入框那个数（`engine.js` 的 `checkRuin`）——
  *    与「填入」（当下填一次）语义不重叠，故并排而不是各占一行。
  *
  * @param {object} s
- * @param {{y:number,m:number,d:number}|null} sel 日期选择器的**暂存目标**；`null` = 跟随当前游戏日期
  * @param {number} page 当前页（0 = 资金·时间，1 = 沙盒，2 = 操盘）
- * @param {{on:boolean,alpha:number}} [fui] 浮窗的会话状态（开关 ＋ 透明档），由 `main.js` 持有；
- *        缺省按「开 ＋ 100%」画（审计与旧调用零负担）。
+ * @param {{sel:{y:number,m:number}|null,alpha:number,floatOn:boolean}} [gx] 会话态（`main.js` 持有）
+ * @returns {HTMLElement} 面板主体
  */
-export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
-  closePicker();
-  const ov = document.getElementById('overlay');
-  if (!ov) return;
+export function godBody(s, page, gx = {}) {
+  const box = el('div', 'god-fbody god-fgod');
+  if (page === 0) box.append(godCashPage(s, gx));
+  else if (page === 1) box.append(godSandboxPage(s, gx));
+  else box.append(godManipPage(s, gx));
+  box.append(godDetailRow(gx));       // 详情行（透明档 / mkt 浮窗开关）—— 三页之外，哪页都改得到
+  box.append(godCloseRow());          // 「关闭」＝收起 god 浮窗
+  return box;
+}
 
-  const back = el('div', 'pick-back');
-  const box = el('div', 'confirm godp');
-  box.append(el('h3', null, '上帝模式'));
-
-  /* 页签行（2026-10-05 分两页；2026-10-07 增「操盘」）：三列各占三分之一宽的 `.set-btn`，当前页挂 `.on`。
-     用 `.god-pick` 的网格 ＋ 行内列模板 —— 复用现有类，不动 `style.css`。 */
-  const tabs = el('div', 'god-pick');
-  tabs.style.gridTemplateColumns = 'repeat(3, 1fr)';
-  tabs.style.marginTop = '12px';
-  for (const [i, label] of [[0, '资金·时间'], [1, '沙盒'], [2, '操盘']]) {
-    const b = el('button', i === page ? 'set-btn on' : 'set-btn', label);
-    b.dataset.godtab = String(i);
-    tabs.append(b);
-  }
-  box.append(tabs);
-
-  const rowsA = el('div', 'confirm-rows');   // ① 填入资金 ＋ ② 跳到日期
-  const rowsB = el('div', 'confirm-rows');   // ③ 沙盒
+/** 页 0「资金·时间」—— ①填入资金 ＋ ②跳到日期（原 `openGod` 的 `rowsA` 逐段搬）。 */
+function godCashPage(s, gx) {
+  const rows = el('div', 'confirm-rows');
 
   /* ① 填入资金 —— 输入框**预填上次填的数**，于是归零之后点一下就补回来。
      ⚠️「无限」（2026-10-07 用户拍板）开着时**归零自动补满**到输入框这个数（`engine.checkRuin`）——
@@ -3096,13 +3085,14 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   const infBtn = el('button', s.god.inf ? 'set-btn on' : 'set-btn', s.god.inf ? '无限 开' : '无限 关');
   infBtn.dataset.godinf = '';
   cRow.append(el('i', null, '资金'), cashIn, cBtn, infBtn);
-  rowsA.append(cRow);
+  rows.append(cRow);
 
   /* ② 跳到日期 —— 跳时间 = **重置上帝局到所选时刻**（2026-10-08 三批拍板：向前/向后统一落点，
        保留资金、清空持仓与全部累积进度，NPC 世界从那一刻冷启动累积）。
        形状 = 两行读数（当前 / 目标 ＋ 跳到）＋ 年 / 月 两排按钮（日选择已删：落点 = 该月 1 日）。 */
   const now = timeOf(s);
   const today = new Date(now);
+  const sel = gx.sel;
   const pick = sel ?? { y: today.getUTCFullYear(), m: today.getUTCMonth() + 1 };
   /* 一枚档位按钮 —— 挂 `data-*`（这类是按钮，不受 `preventDefault` 影响），选中态走 `.on` */
   const pickBtn = (on, key, v) => {
@@ -3113,7 +3103,7 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
 
   const dRow = el('div', 'set-row');
   dRow.append(el('i', null, '当前'), el('b', 'num', fmtDate(now, false)));
-  rowsA.append(dRow);
+  rows.append(dRow);
 
   const tRow = el('div', 'set-row');
   const tBox = el('div', 'god-target');
@@ -3121,7 +3111,7 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   const gBtn = el('button', 'set-btn on', '跳到');
   gBtn.dataset.godgo = '';
   tRow.append(tBox, gBtn);
-  rowsA.append(tRow);
+  rows.append(tRow);
 
   /* ⚠️ 年代开局（M1）起，年份档**从本局开局那一年**起排 —— 再往前没有这一局（`main.js`
      的 `godJump` 也会挡），列出来只是让人点一个跳不过去的年份。 */
@@ -3130,11 +3120,18 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   const y1 = new Date(GAME.start + (s.endI - 1) * HOUR_MS).getUTCFullYear();
   const yRow = el('div', 'god-pick god-years');
   for (let y = y0; y <= y1; y++) yRow.append(pickBtn(y === pick.y, 'godyear', y));
-  rowsA.append(yRow);
+  rows.append(yRow);
 
   const mRow = el('div', 'god-pick god-months');
   for (let m = 1; m <= 12; m++) mRow.append(pickBtn(m === pick.m, 'godmon', m));
-  rowsA.append(mRow);
+  rows.append(mRow);
+
+  return rows;
+}
+
+/** 页 1「沙盒」—— 6 枚旋钮 ＋ 4 组预设 ＋ 种子（原 `openGod` 的 `rowsB` 逐段搬）。 */
+function godSandboxPage(s) {
+  const rows = el('div', 'confirm-rows');
 
   /* ③ 沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）——
      精选 **6 枚高影响旋钮 ＋ 4 组世界预设 ＋ 全局种子**，只作用在合成层（热度 / NPC / 冲击 / 共振 / 挂单密度）。
@@ -3173,7 +3170,7 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
       grp.append(b);
     }
     row.append(grp);
-    rowsB.append(row);
+    rows.append(row);
   }
 
   /* 预设 —— 一整套「世界」；选中态按 5 枚旋钮**逐键相等**判定（手动微调后自然全灭）。 */
@@ -3187,7 +3184,7 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
     pGrp.append(b);
   }
   pRow.append(pGrp);
-  rowsB.append(pRow);
+  rows.append(pRow);
 
   /* 种子 —— 写的是存档本体 `s.seed`（**不是** `s.god.sb`，见 `god.js` 头注）。 */
   const seedRow = el('div', 'set-row');
@@ -3202,20 +3199,26 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   const seedRoll = el('button', 'set-btn', '随机');
   seedRoll.dataset.sbroll = '';
   seedRow.append(el('i', null, '种子'), seedIn, seedBtn, seedRoll);
-  rowsB.append(seedRow);
+  rows.append(seedRow);
+
+  return rows;
+}
+
+/** 页 2「操盘」—— 手动操盘 / 目标价 / 插针 / 假消息 / 新闻源 / 强平图 ＋ 自动化伺服三行（原 `openGod` 的 `rowsC` 逐段搬）。 */
+function godManipPage(s, gx) {
+  const rows = el('div', 'confirm-rows');
 
   /* ④ 操盘（2026-10-07 用户拍板「上帝模式可以操纵市场，但要真实化」）——
      三枚动作全部走既有市场物理（`engine.godManipPush` / `godManipWash` / `godManipSpoof`），
      作用对象 = **当前查看的币**；执行前给预览（吃单：位移 ＋ 花费；洗售：双边费），预览与实值同式同参。
      ⚠️ 输入框照旧不挂 `data-*`（`bind.js` preventDefault）；预览随 `input` 事件即时重算。 */
-  const rowsC = el('div', 'confirm-rows');
 
   /* 常驻读数（2026-10-09 沉浸增强）—— **与新闻文案同源**：`newsVars` 正是新闻占位符的产出处，
      这里印的 `现价 / 24h / 偏离 / 热度` 与史实新闻、假新闻里出现的数字**逐字一致**
      （同一函数、同一时刻 ⇒ 改一处两处同变，杜绝「面板一个数、新闻又一个数」）。 */
   {
     const nv = newsVars(s, s.sym);
-    rowsC.append(el('p', 'god-prev',
+    rows.append(el('p', 'god-prev',
       `现价 ${nv['%L']} ｜ 24h ${nv['%C']} ｜ 偏离 ${nv['%M']} ｜ 热度 ${nv['%H']}`));
   }
 
@@ -3233,7 +3236,7 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
     lqGrp.append(b);
   }
   lqRow.append(lqGrp);
-  rowsC.append(lqRow);
+  rows.append(lqRow);
 
   /* ⚠️ 局部变量用 `mn*` 前缀 —— 页签 1 的月份选择器已经占了 `mRow`（2026-10-07 构建撞名修正）。
      操盘行（2026-10-08 用户拍板「晃骗＋洗售合并为拉盘/砸盘」）：三行合一 —— 点击即整条
@@ -3252,9 +3255,9 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   const mnDn = el('button', 'set-btn on', '砸盘');
   mnDn.dataset.godpump = '-1';
   mnRow.append(el('i', null, '操盘'), manipIn, mnUp, mnDn);
-  rowsC.append(mnRow);
+  rows.append(mnRow);
   const mnPrev = el('p', 'god-prev', '');
-  rowsC.append(mnPrev);
+  rows.append(mnPrev);
 
   /* 预览：与 `engine.godManipPump` 同式同参（同一时刻同一单，预览即实值）——
      吃单位移/花费走 `manipPreview`；造势量 = `min(N, 本时深度)`（热度放大器饱和点，
@@ -3289,7 +3292,52 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   eatAuto.dataset.godeatauto = '';
   eatAuto.disabled = !!s.god.pin;
   eatRow.append(el('i', null, '扫单'), eatBid, eatAsk, eatAuto);
-  rowsC.append(eatRow);
+  rows.append(eatRow);
+
+  /* ── 自动化伺服三行（2026-10-10 用户拍板「自动新闻 ＋ 自动造量 ＋ 自动拉盘」）──
+     开关写 `s.god.autoNews / autoWash / autoPump`，引擎 `godAutoTick` 每根裁决；
+     互斥**单点在引擎**（见其头注），这里只把引擎的裁决如实画成置灰：
+        · 插针 `s.god.pin` 非空 ⇒ 三个自动化开关与扫单方向键一起置灰；
+        · 自动拉盘开着 ⇒ 自动造量置灰（组合拳内已含洗售）；
+        · 自动新闻与它们无互斥。 */
+  const pinOn = !!s.god.pin;
+  const autoNewsRow = el('div', 'set-row');
+  autoNewsRow.append(el('i', null, '自动新闻'));
+  for (const [v, label] of [['0', '混合'], ['1', '利好'], ['-1', '利空']]) {
+    const b = el('button', s.god.autoNews === Number(v) ? 'set-btn on' : 'set-btn', label);
+    b.dataset.godautonews = v;
+    b.disabled = pinOn;
+    autoNewsRow.append(b);
+  }
+  const autoNewsOff = el('button', s.god.autoNews == null ? 'set-btn on' : 'set-btn', '关');
+  autoNewsOff.dataset.godautonewsoff = '';
+  autoNewsOff.disabled = pinOn;
+  autoNewsRow.append(autoNewsOff);
+  rows.append(autoNewsRow);
+  if (s.god.autoNews != null) {
+    const eta = Number.isFinite(s.god.autoNewsAt) ? Math.max(0, s.god.autoNewsAt - s.i) : 0;
+    rows.append(el('p', 'god-prev', `自动新闻 ｜ 下次约 ${eta} 小时后`));
+  }
+
+  const autoWashRow = el('div', 'set-row');
+  const autoWashBtn = el('button', s.god.autoWash ? 'set-btn on' : 'set-btn', s.god.autoWash ? '开' : '关');
+  autoWashBtn.dataset.godautowash = '';
+  autoWashBtn.disabled = pinOn || !!s.god.autoPump;
+  autoWashRow.append(el('i', null, '自动造量'), autoWashBtn);
+  rows.append(autoWashRow);
+
+  const autoPumpRow = el('div', 'set-row');
+  const apDn = el('button', s.god.autoPump === -1 ? 'set-btn on' : 'set-btn', '自动砸盘');
+  apDn.dataset.godautopump = '-1';
+  apDn.disabled = pinOn;
+  const apUp = el('button', s.god.autoPump === 1 ? 'set-btn on' : 'set-btn', '自动拉盘');
+  apUp.dataset.godautopump = '1';
+  apUp.disabled = pinOn;
+  const apStop = el('button', !s.god.autoPump ? 'set-btn on' : 'set-btn', '停');
+  apStop.dataset.godautopump = '0';
+  apStop.disabled = !s.god.autoPump;
+  autoPumpRow.append(el('i', null, '自动操盘'), apDn, apUp, apStop);
+  rows.append(autoPumpRow);
 
   /* 目标价（2026-10-09 用户拍板「目标涨幅档」）：把「拉/砸到 ±X%」交给引擎反解名义
      （数值二分 manipPreview 本体 —— 同式同参），一次性推完。手动名义行保留（进阶精度）。 */
@@ -3300,7 +3348,7 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
     b.dataset.godtgt = `1:${pct / 100}`;
     tgtRow.append(b);
   }
-  rowsC.append(tgtRow);
+  rows.append(tgtRow);
   const tgtRow2 = el('div', 'set-row');
   tgtRow2.append(el('i', null, '砸到'));
   for (const pct of [1, 3, 5, 10]) {
@@ -3308,7 +3356,7 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
     b.dataset.godtgt = `-1:${pct / 100}`;
     tgtRow2.append(b);
   }
-  rowsC.append(tgtRow2);
+  rows.append(tgtRow2);
 
   /* 插针剧本（2026-10-08 三批拍板③）：一键吃穿**最大的强平簇**再回位 —— 伺服走既有操盘台
      吃单物理（engine.godPinStart / godPinTick，每小时一笔真实吃单）。激活时方向钮置灰、
@@ -3324,10 +3372,10 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   pinStop.dataset.godpin = '0';
   pinStop.disabled = !s.god.pin;
   pinRow.append(el('i', null, '插针'), pinDn, pinUp, pinStop);
-  rowsC.append(pinRow);
+  rows.append(pinRow);
   if (s.god.pin) {
     const pin = s.god.pin;
-    rowsC.append(el('p', 'god-prev',
+    rows.append(el('p', 'god-prev',
       `插针中 ${pin.dir < 0 ? '↓' : '↑'} ${pin.sym} ｜ 目标 ${fmtLogPrice(pin.tip)} ｜ 已推 ${fmtMoneyShort(pin.n)}`));
   }
 
@@ -3343,11 +3391,11 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   const newsCd = s.i - (Number.isFinite(s.god.newsAt) ? s.god.newsAt : -Infinity);
   if (newsCd < MANIP_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }
   newsRow.append(el('i', null, '假消息'), newsDn, newsUp);
-  rowsC.append(newsRow);
+  rows.append(newsRow);
   /* 冷却读数（2026-10-09 沉浸增强）—— 置灰只说明「现在不能按」，这一行说明「还要等多久」
      （`newsCd` 是距上次注入的小时数；从未注入 = `+Inf` ⇒ 条件假、不显示）。 */
   if (newsCd < MANIP_NEWS_CD) {
-    rowsC.append(el('p', 'god-prev', `冷却中 · 还需 ${MANIP_NEWS_CD - newsCd} 小时`));
+    rows.append(el('p', 'god-prev', `冷却中 · 还需 ${MANIP_NEWS_CD - newsCd} 小时`));
   }
 
   /* 「新闻源与事件」开关（2026-10-08 用户拍板；2026-10-09 由「新闻源」扩名）：进入上帝模式
@@ -3358,7 +3406,7 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   const realBtn = el('button', s.god.noRealNews ? 'set-btn' : 'set-btn on', s.god.noRealNews ? '关' : '开');
   realBtn.dataset.godreal = '';
   realRow.append(el('i', null, '新闻源与事件'), realBtn);
-  rowsC.append(realRow);
+  rows.append(realRow);
 
   /* 强平叠加（2026-10-08 三批拍板③）：主图右轴画当前币的强平档位条（多红空绿、宽∝名义额）。
      纯显示开关（`s.god.liqOverlay`，会话级），读数每帧从 `godWatchOf.liqs` 现取。 */
@@ -3366,49 +3414,76 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   const ovBtn = el('button', s.god.liqOverlay ? 'set-btn on' : 'set-btn', s.god.liqOverlay ? '叠加 开' : '叠加 关');
   ovBtn.dataset.godliqov = '';
   ovRow.append(el('i', null, '强平图'), ovBtn);
-  rowsC.append(ovRow);
+  rows.append(ovRow);
 
-  /* 互斥显隐：改 `.confirm-rows`（`display:grid`）的 inline `display` —— 见本函数头注。 */
-  rowsA.style.display = page === 1 || page === 2 ? 'none' : '';
-  rowsB.style.display = page === 1 ? '' : 'none';
-  rowsC.style.display = page === 2 ? '' : 'none';
-  box.append(rowsA, rowsB, rowsC);
+  return rows;
+}
 
-  /* 详情行（2026-10-07 用户拍板「浮窗＋透明度」；圆钮名 = 「详」，行标签与之同族）——
-     挂在三页**之外**：它是界面偏好，哪页都改得到。
-     透明度是**档位按钮**不是滑杆（用户拍板「应为按钮，不需要自己拖动」）—— 循环
-     100 → 80 → 60 → 40 → 100，按钮上的字就是当前档；写 `--god-alpha` 全局变量，
-     上帝面板与浮窗**同一份**背景 alpha（文字不参与，保持锐利）。 */
+/* 详情行 / 「关闭」行 —— 挂在三页**之外**（哪页都改得到），原 `openGod` 尾部逐段搬。 */
+
+/** 详情行（2026-10-07 用户拍板「浮窗＋透明度」）—— mkt 浮窗开关 ＋ 透明档位按钮。
+ *  透明度循环 100 → 80 → 60 → 40 → 100，按钮上的字就是当前档；写 `--god-alpha` 全局变量，
+ *  两个浮窗**同一份**背景 alpha（文字不参与，保持锐利）。 */
+function godDetailRow(gx = {}) {
   const fRow = el('div', 'set-row god-frow');
-  const fBtn = el('button', fui.on ? 'set-btn on' : 'set-btn', fui.on ? '浮窗 开' : '浮窗 关');
+  const fBtn = el('button', gx.floatOn ? 'set-btn on' : 'set-btn', gx.floatOn ? '浮窗 开' : '浮窗 关');
   fBtn.dataset.godfloat = '';
-  const aBtn = el('button', 'set-btn on', `透明 ${Math.round(fui.alpha * 100)}%`);
+  const aBtn = el('button', 'set-btn on', `透明 ${Math.round((gx.alpha ?? 1) * 100)}%`);
   aBtn.dataset.godalpha = '';
   fRow.append(el('i', null, '详情'), fBtn, aBtn);
-  box.append(fRow);
+  return fRow;
+}
 
-  /* 「关闭上帝模式」已删除（2026-10-07 用户拍板）—— 上帝模式不进存档（会话级一次性），
-     这里只剩「关闭」（关的是面板，不是模式）。 */
+/** 「关闭」（`sclose`）—— 关的是浮窗，不是模式（2026-10-07 拍板：上帝模式会话级一次性，无「退出」）。 */
+function godCloseRow() {
   const close = el('button', 'act flat', '关闭');
   close.dataset.sclose = '';
   const btns = el('div', 'confirm-btns');
   btns.append(close);
-  box.append(btns);
-
-  back.addEventListener('pointerdown', closePicker);
-  ov.append(back, box);
-  ov.hidden = false;
-  picker = ov;
+  return btns;
 }
 
-/* ══════════════ 上帝浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开，尽量小」） ══════════════
-   小圆钮「详」（2026-10-07 用户拍板由「哨」更名：详情/明细）挂在 document.body（**不进 #overlay**）：
-   非模态、游戏运行中始终在场，点开是一块多 tab 小面板（清算热力图 / 巨鲸 / 深度 / 订单簿 / 成交），
-   数字全部来自 `engine.godWatchOf`。
+/* ══════════════ 浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开，尽量小」；2026-10-10 实例化） ══════════════
+   每个**实例** = 一枚可拖圆钮 ＋ 一块多 tab 小面板，挂在 document.body（**不进 #overlay**）：
+     · `mkt`（圆钮「详」）：盘口浮窗 —— 清算热力图 / 巨鲸 / 深度 / 订单簿 / 日志（数字来自 `engine.godWatchOf`）；
+     · `god`（圆钮「神」·金色）：上帝面板 —— 资金·时间 / 沙盒 / 操盘（原 `#overlay` 里的居中 modal）。
+   ⚠️ 层次（2026-10-10 病根修「圆点被自己的浮窗盖住」）：本实例 `panel.z = zL`、`chip.z = zL + 2`
+      （**两档**余量：一档保证自己的浮窗压不住自己的圆钮；一档保证跨实例的圆钮也不被对方浮窗压住）。
+      `focusFloat(id)` 把最近交互的实例 `zL` 提到 `Z_FOCUS`、另一个降到 `Z_BASE` ⇒ 谁最后碰谁在上。
    ⚠️ 状态（开关 / 展开 / 页码 / 拖拽位置）全在 `main.js`；这里只画 —— 面板内容每帧全量重画
       （与 `update()` 同一节奏，`draw()` 的 80ms 节流兜着），骨架只建一次。
-   ⚠️ 透明度走全局 `--god-alpha`（main.js 写、style.css 读）：面板 / 浮窗 / 圆钮同一份。 */
-let fChip = null, fPanel = null;
+   ⚠️ 透明度走全局 `--god-alpha`（main.js 写、style.css 读）：两个浮窗 / 圆钮同一份。 */
+
+/** 层次档位：面板占 `zL`、圆钮占 `zL + Z_CHIP_GAP`；聚焦的实例 `zL = Z_FOCUS`，其余 `Z_BASE`。 */
+const Z_BASE = 15, Z_FOCUS = 16, Z_CHIP_GAP = 2;
+/** 浮窗实例表 —— 键 `'mkt'` / `'god'`。 */
+const FLOATS = {};
+/** 建一个浮窗实例（骨架懒建：首次 `updateFloat` 需要显示时才挂 chip / panel）。 */
+function makeFloat(id, label, extra = '') {
+  const inst = { id, label, extra, zL: Z_BASE, chip: null, panel: null, pagesKey: '' };
+  FLOATS[id] = inst;
+  return inst;
+}
+makeFloat('mkt', '详');
+makeFloat('god', '神', 'god');
+
+/** 把实例的层次写进 DOM —— 圆钮恒高于本实例面板（跨实例留一档余量）。 */
+function applyFloatZ(inst) {
+  if (inst.chip) inst.chip.style.zIndex = String(inst.zL + Z_CHIP_GAP);
+  if (inst.panel) inst.panel.style.zIndex = String(inst.zL);
+}
+/** 最近交互的实例置顶：自己 `Z_FOCUS`、其余 `Z_BASE`（`main.js` 的圆钮 / 面板 pointerdown 调）。 */
+export function focusFloat(id) {
+  for (const k in FLOATS) FLOATS[k].zL = (k === id ? Z_FOCUS : Z_BASE);
+  for (const k in FLOATS) applyFloatZ(FLOATS[k]);
+}
+/** 摘除实例的圆钮 / 面板（回到「不显示」）。 */
+function detachFloat(inst) {
+  if (inst.chip) { inst.chip.remove(); inst.chip = null; }
+  if (inst.panel) { inst.panel.remove(); inst.panel = null; }
+  inst.pagesKey = '';
+  inst.bodyKey = null;
+}
 
 /* 浮窗几何（2026-10-08 桌面端分档）：宽 / 高 / 热力图高由 style.css 的 `:root` 变量给
    （`--float-w` / `--float-h` / `--hm-h`，见文件末尾那两档媒体查询）。手机端未定义 ⇒ 走兜底值,
@@ -3814,51 +3889,75 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
 }
 
 /**
- * 每帧调用（`main.js` 的 `draw()` 全量路径）：按 `ui` 挂 / 摘圆钮与面板。
+ * 每帧调用（`main.js` 的 `draw()` 全量路径）：按 `ui` 挂 / 摘两个浮窗实例。
  * @param {object|null} s  游戏状态；`null`（回顾 / 浮窗关）⇒ 全部摘除
- * @param {{on:boolean,open:boolean,page:number,pos:{x:number,y:number}|null,
- *          pages:Array<[number,string]>,mkt:boolean,step:number,filt:number}} ui main.js 持有的浮窗状态
- *   —— `pages` 是**当前模式的页表**（上帝局 4 页 / 普通局订单簿＋深度 2 页），
- *      `mkt` = 普通局标记（决定圆钮副色，页签与内容都随 `pages` 走）。
+ * @param {{mkt:object|null, god:object|null}} ui 两个实例的会话状态；某支为 `null` / `on:false` ⇒ 该实例摘除。
+ *   每支形状：
+ *   `{on:boolean,open:boolean,page:number,pos:{x:number,y:number}|null,pages:Array<[number,string]>,
+ *     step:number,filt:number, body?:function}`
+ *   —— `pages` 是**该实例的页表**（mkt：上帝局 5 页 / 普通局 3 页；god：3 页）；
+ *      `body(s,page)` 仅 god 用（返回面板主体 DOM）；mkt 走内置 `floatBody`。
  */
 export function updateFloat(s, ui) {
-  if (!(s && ui && ui.on && (s.god || ui.mkt))) {
-    if (fChip) { fChip.remove(); fChip = null; }
-    if (fPanel) { fPanel.remove(); fPanel = null; }
-    return;
+  if (!(s && ui)) { detachFloat(FLOATS.mkt); detachFloat(FLOATS.god); return; }
+  renderInst(FLOATS.mkt, s, ui.mkt, floatBody);
+  renderInst(FLOATS.god, s, ui.god, null);
+}
+
+/** 渲染单个实例（`bodyFn` 缺省走实例的 `ui.body`）。 */
+function renderInst(inst, s, ui, defaultBody) {
+  if (!(ui && ui.on)) { detachFloat(inst); return; }
+  if (!inst.chip) {
+    inst.chip = el('button', inst.extra ? `god-chip ${inst.extra}` : 'god-chip', inst.label);
+    inst.chip.dataset.gofloat = inst.id;
+    document.body.append(inst.chip);
   }
-  if (!fChip) {
-    fChip = el('button', 'god-chip', '详');
-    fChip.dataset.gofloat = '';
-    document.body.append(fChip);
-  }
+  applyFloatZ(inst);
   /* 位置：没拖过走 CSS 默认（右下角）；拖过用视口坐标 inline 覆盖（main.js 已夹回视口）。 */
   if (ui.pos) {
-    fChip.style.left = `${ui.pos.x}px`; fChip.style.top = `${ui.pos.y}px`;
-    fChip.style.right = 'auto'; fChip.style.bottom = 'auto';
+    inst.chip.style.left = `${ui.pos.x}px`; inst.chip.style.top = `${ui.pos.y}px`;
+    inst.chip.style.right = 'auto'; inst.chip.style.bottom = 'auto';
   }
-  if (!ui.open) { if (fPanel) { fPanel.remove(); fPanel = null; } return; }
-  if (!fPanel) {
-    fPanel = el('div', 'god-float');
+  if (!ui.open) { if (inst.panel) { inst.panel.remove(); inst.panel = null; inst.pagesKey = ''; inst.bodyKey = null; } return; }
+  if (!inst.panel) {
+    inst.panel = el('div', inst.id === 'god' ? 'god-float god' : 'god-float');
     const x = el('button', 'god-fx', '✕');
-    x.dataset.gofclose = '';
+    x.dataset.gofclose = inst.id;
     const head = el('div', 'god-fhead');   // 页签 ＋ ✕ 同一行（骨架，只建一次）
     head.append(el('div', 'god-ftabs'), x);
-    fPanel.append(head, el('div', 'god-fpage'));
-    document.body.append(fPanel);
+    inst.panel.append(head, el('div', 'god-fpage'));
+    /* 面板自身 pointerdown ⇒ 该实例置顶（任务 A2：两个浮窗「谁最后碰谁在上」）。 */
+    inst.panel.addEventListener('pointerdown', () => focusFloat(inst.id));
+    document.body.append(inst.panel);
+    applyFloatZ(inst);
   }
-  /* 页签随模式重建（2026-10-07）：上帝局 4 页 / 普通局 2 页 —— 页键串变了才重建，别的帧零开销。 */
+  /* 页签随模式重建：页键串变了才重建，别的帧零开销。god 走 `data-godtab`（0/1/2），mkt 走 `data-goftab`。
+     ⚠️ 两条赋值**写死字面键**（不用 `dataset[tabKey]`）—— 审计 9q 的「渲染 ⇄ 注册」双向护栏按
+        `dataset.<key> =` 静态扫描，动态键会被判成「未渲染的死键」。 */
   const pkey = ui.pages.map(([p]) => p).join(',');
-  if (fPanel.dataset.pages !== pkey) {
-    fPanel.dataset.pages = pkey;
-    fPanel.querySelector('.god-ftabs').replaceChildren(...ui.pages.map(([i, label]) => {
+  if (inst.pagesKey !== pkey) {
+    inst.pagesKey = pkey;
+    inst.panel.querySelector('.god-ftabs').replaceChildren(...ui.pages.map(([i, label]) => {
       const b = el('button', 'god-ftab', label);
-      b.dataset.goftab = String(i);
+      if (inst.id === 'god') b.dataset.godtab = String(i);
+      else b.dataset.goftab = String(i);
       return b;
     }));
   }
-  for (const b of fPanel.querySelectorAll('[data-goftab]')) b.classList.toggle('on', Number(b.dataset.goftab) === ui.page);
-  fPanel.querySelector('.god-fpage').replaceChildren(floatBody(s, ui.page, ui.step, ui.filt));
+  for (const b of inst.panel.querySelectorAll(inst.id === 'god' ? '[data-godtab]' : '[data-goftab]')) {
+    b.classList.toggle('on', Number(inst.id === 'god' ? b.dataset.godtab : b.dataset.goftab) === ui.page);
+  }
+  /* 主体重画策略（2026-10-10）：
+     · mkt（无 `ui.body`）⇒ **每帧**重建（热力图 / 读数随行情走，且面板无输入框）；
+     · god（有 `ui.body`）⇒ 只在**页码 / 版本号**变时重建 —— 面板里有资金 / 种子 / 名义三个输入框，
+       每帧重建会把正在输入的值与焦点一起抹掉（原 modal 静态 DOM 正是为此刻意不做每帧重建，
+       这里以 `ui.ver` 等价替代：每个动作处理函数走 `showGod()` 时 `ver++`）。 */
+  const bodyKey = ui.body ? `${ui.page}|${ui.ver ?? ''}` : null;
+  if (bodyKey === null || inst.bodyKey !== bodyKey) {
+    inst.bodyKey = bodyKey;
+    const body = ui.body ? ui.body(s, ui.page) : (defaultBody ? defaultBody(s, ui.page, ui.step, ui.filt) : null);
+    if (body) inst.panel.querySelector('.god-fpage').replaceChildren(body);
+  }
   /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽由 `--float-w` 给，＋8px 余量）。
      高度由 `--float-h` 给（手机端兜底 64dvh）⇒ **两个方向**的 top 都要夹进
      「视口高 − 面板高 − 余量」（2026-10-08 三批修：旧版只夹了上弹支，钮在上半屏时面板向下
@@ -3867,12 +3966,12 @@ export function updateFloat(s, ui) {
   const cw = geo.cw, ch = geo.ch;
   if (ui.pos) {
     const fh = geo.h;
-    fPanel.style.left = `${Math.min(Math.max(4, ui.pos.x), cw - geo.w - 8)}px`;
-    fPanel.style.top = `${Math.max(4, Math.min(ui.pos.y + (ui.pos.y > ch * 0.55 ? -320 : 46), ch - fh - 4))}px`;
-    fPanel.style.right = 'auto'; fPanel.style.bottom = 'auto';
+    inst.panel.style.left = `${Math.min(Math.max(4, ui.pos.x), cw - geo.w - 8)}px`;
+    inst.panel.style.top = `${Math.max(4, Math.min(ui.pos.y + (ui.pos.y > ch * 0.55 ? -320 : 46), ch - fh - 4))}px`;
+    inst.panel.style.right = 'auto'; inst.panel.style.bottom = 'auto';
   } else {
-    fPanel.style.left = 'auto'; fPanel.style.top = 'auto';
-    fPanel.style.right = '12px'; fPanel.style.bottom = '118px';
+    inst.panel.style.left = 'auto'; inst.panel.style.top = 'auto';
+    inst.panel.style.right = '12px'; inst.panel.style.bottom = '118px';
   }
 }
 

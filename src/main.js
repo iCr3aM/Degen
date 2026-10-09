@@ -20,10 +20,10 @@ import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct } from './core/fo
 import { canLiquidate, safetyOf } from './core/positions.js';
 import {
   mount, update, renderOver, renderLoan, renderWarn, renderGodEnd, clearOver, renderBoot, hideBoot,
-  pickExchange, confirmExchange, closePicker, openIntro, openMenu, openGod, showPage, openLog, menuNote,
+  pickExchange, confirmExchange, closePicker, openIntro, openMenu, showPage, openLog, menuNote,
   renderReview, openNodeCard, openYearPick, openGuide, renderCareers, openPoster,
   isStandalone, toggleInstallGuide, menuRemoveInstall, closeMenuDlg, openSavePick, openScenPick,
-  openAbout, redrawChart, openMarginDlg, updateFloat,
+  openAbout, redrawChart, openMarginDlg, updateFloat, focusFloat, godBody,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -231,25 +231,27 @@ let godTapAt = 0;
    ⚠️ 与 `godTaps` 同一个口径：纯界面状态，**不进 `s`**。 */
 let godSel = null;
 
-/* 上帝面板当前页（2026-10-05 分页）—— `0` = 资金·时间、`1` = 沙盒。
-   ⚠️ 与 `godSel` 同一个口径：纯界面状态，**不进 `s`**；每次重新打开面板归零（L1306/L1320）。 */
-let godPage = 0;
-
-/* ── 上帝浮窗（2026-10-07 用户拍板「浮窗＋透明度」）──────────────────────────
-   开关 / 展开 / 页码 / 拖拽位置都是**会话级界面状态**（与 `godPage` 同口径，不进 `s`）；
+/* ── 上帝浮窗（2026-10-07 用户拍板「浮窗＋透明度」；2026-10-10 面板浮窗化）──────────────
+   开关 / 展开 / 页码 / 拖拽位置都是**会话级界面状态**（与 `godSel` 同口径，不进 `s`）；
    透明度是**浏览器偏好** —— 独立 localStorage 键（与 `degen_colors` 同一口径，不进存档），
    档位按钮循环 100 → 80 → 60 → 40，写进 `<html>` 的 `--god-alpha`（style.css 读，
-   上帝面板与浮窗同一份背景 alpha；文字不参与，保持锐利）。 */
+   两个浮窗同一份背景 alpha；文字不参与，保持锐利）。 */
 const GOD_ALPHA_KEY = 'degen_god_alpha';
 const GOD_ALPHA_STEPS = [1, 0.8, 0.6, 0.4];
 let godAlpha = (() => {
   try { const v = Number(localStorage.getItem(GOD_ALPHA_KEY)); return GOD_ALPHA_STEPS.includes(v) ? v : 1; }
   catch { return 1; }
 })();
-let godFloatOn = true;      // 浮窗开关（上帝面板浮窗行那枚），会话级，默认开
-let floatOpen = false;      // 面板是否展开
-let floatPage = 0;          // 面板页码：0 热力 / 1 巨鲸 / 2 深度 / 3 订单（随模式夹取）
-let floatPos = null;        // 圆钮视口坐标 {x,y}；null = 走 CSS 默认（右下角）
+let godFloatOn = true;      // mkt 浮窗开关（上帝面板详情行那枚），会话级，默认开
+let floatOpen = false;      // mkt 面板是否展开
+let floatPage = 0;          // mkt 面板页码：0 热力 / 1 巨鲸 / 2 深度 / 3 订单 / 4 日志（随模式夹取）
+let floatPos = null;        // mkt 圆钮视口坐标 {x,y}；null = 走 CSS 默认（右下角）
+/* ── god 浮窗（2026-10-10 浮窗化）：与 mkt 各自独立（开合 / 页码 / 拖拽位置）────────── */
+let godFloatOpen = false;   // 上帝面板浮窗是否展开
+let godFloatPage = 0;       // 上帝面板页码：0 资金·时间 / 1 沙盒 / 2 操盘
+let godVer = 0;             // 面板重画版本号（2026-10-10）：god 面板含输入框，不能每帧重建（会抹掉打字）——
+                            // 只在页码 / 本版本号变化时 `godBody` 重建；每个动作处理函数走 `showGod()` 时自增。
+let godPos = null;          // god 圆钮视口坐标 {x,y}；null = 走 CSS 默认（右下角，叠在 mkt 之上）
 let bookStep = 1;           // 订单簿网格步进 ×1/×2/×3/×5/×8（2026-10-08；2026-10-09 收窄）：会话级，不进存档
 let logFilt = 0;            // 日志页过滤档（索引 0..4 → 0.1%/0.5%/1%/2%/5% 当日流动性，2026-10-09）：会话级，不进存档
 
@@ -267,6 +269,8 @@ let mktFloatOn = (() => {
  *     普通局也在 —— NPC 市场永远在跑，看盘不必开上帝。 */
 const GOD_FLOAT_PAGES = [[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单'], [4, '日志']];
 const MKT_FLOAT_PAGES = [[3, '订单'], [2, '深度'], [4, '日志']];
+/** 上帝面板浮窗的页表（2026-10-10 浮窗化）：与 mkt 各自独立。 */
+const GOD_PANEL_PAGES = [[0, '资金·时间'], [1, '沙盒'], [2, '操盘']];
 const applyGodAlpha = () => document.documentElement.style.setProperty('--god-alpha', String(godAlpha));
 applyGodAlpha();
 
@@ -1119,6 +1123,8 @@ function dispatch(node, ev) {
     || d.godpump !== undefined || d.godpin !== undefined || d.godnews !== undefined
     || d.godeat !== undefined || d.godeatauto !== undefined || d.godtgt !== undefined
     || d.godliqov !== undefined || d.godreal !== undefined || d.sb !== undefined
+    || d.godautonews !== undefined || d.godautonewsoff !== undefined
+    || d.godautowash !== undefined || d.godautopump !== undefined
     || d.sbpreset !== undefined || d.sbseed !== undefined || d.sbroll !== undefined)) {
     return;
   }
@@ -1216,11 +1222,21 @@ function dispatch(node, ev) {
     if (!s.god && !mktFloatOn) return;
     if (d.godfloat !== undefined) return onGodFloat();
     if (d.godalpha !== undefined) return onGodAlpha();
-    if (d.gofloat !== undefined) return onGodFloatChip(ev);
+    if (d.gofloat !== undefined) return onGodFloatChip(node, ev);
     if (d.goftab !== undefined) return onGodFloatTab(node);
     if (d.gofstep !== undefined) return onGodFloatStep(node);
     if (d.goffilt !== undefined) return onGodFloatFilt(node);
-    return onGodFloatClose();
+    return onGodFloatClose(node);
+  }
+  /* ── 自动化伺服（2026-10-10 用户拍板「自动新闻 ＋ 自动造量 ＋ 自动拉盘」）──
+     只出现在上帝面板里，以 `s.god` 非空兜底（状态机不靠 DOM）。 */
+  if (d.godautonews !== undefined || d.godautonewsoff !== undefined
+    || d.godautowash !== undefined || d.godautopump !== undefined) {
+    if (!s.god) return;
+    if (d.godautonews !== undefined) return onGodAutoNews(Number(d.godautonews));
+    if (d.godautonewsoff !== undefined) return onGodAutoNews(null);
+    if (d.godautowash !== undefined) return onGodAutoWash();
+    return onGodAutoPump(Number(d.godautopump));
   }
 
   if (d.sym !== undefined) return onSym(d.sym);
@@ -1513,7 +1529,7 @@ function onGodTap(node) {
   if (node && node.dataset.god === 'logo') return onGodLogo();
   if (!s.god || s.over || s.pending || s.god.ended) return;   // 未解锁 / 本局已结束（含上帝终局）/ 停在救济金遮罩：不理
   /* 面板记忆（2026-10-07 用户拍板）：重开**不重置** —— 页签停在上次所在页、日期选择器
-     留在上次的目标上（`godSel` / `godPage` 是模块级变量，天然跨开合存活，只要别主动归零）。 */
+     留在上次的目标上（`godSel` / `godFloatPage` 是模块级变量，天然跨开合存活，只要别主动归零）。 */
   showGod();
   after();
 }
@@ -1546,8 +1562,8 @@ function onGodLogo() {
   pushLog(s, '上帝模式已开启 ｜ 仅本局有效（存档不记），操盘台在面板第 3 页', 'ok');
   snd.begin();
   godSel = null;                      // 面板选择器回到「当前日期」起手
-  godPage = 0;                        // 页签回到第 1 页
-  /* 待决态（救济金遮罩）不续跑也不弹面板 —— 遮罩接管；其余场合当场开盘 ＋ 弹上帝面板。 */
+  godFloatPage = 0;                   // 页签回到第 1 页
+  /* 待决态（救济金遮罩）不续跑也不展面板 —— 遮罩接管；其余场合当场开盘 ＋ 展开上帝面板。 */
   if (!s.pending) {
     s.paused = false;
     s.speed = 1;
@@ -1557,42 +1573,51 @@ function onGodLogo() {
   after();
 }
 
-/** 面板的统一出口 —— 每次都把暂存的选择器 ＋ 当前页带上，点年 / 月 / 日或切页之后才不会跳回去 */
-const showGod = () => openGod(s, godSel, godPage, { on: godFloatOn, alpha: godAlpha });
+/** 上帝面板的统一出口（2026-10-10 浮窗化）—— 面板按「页码 / 版本号」重建（含输入框，不能每帧抹），
+ *  这里把 god 浮窗**展开** ＋ `godVer++` 触发重画；`godSel` / `godFloatPage` 是模块级变量，跨开合存活。 */
+const showGod = () => { godFloatOpen = true; godVer++; focusFloat('god'); after(); };
 
 /**
- * 上帝面板页签（`data-godtab="0|1"`，2026-10-05 分页）—— 只改界面页码，**不碰 `s`**。
- * ⚠️ 与 `godSel` 同一处境：面板是静态 DOM、不参与每帧重绘 ⇒ 切页必须重开一次本层。
- *    `godSel` 原样保留，所以从沙盒页切回日期页时，「目标」仍停在玩家之前点的日子。
+ * 上帝面板页签（`data-godtab="0|1|2"`，2026-10-05 分页）—— 只改界面页码，**不碰 `s`**。
+ * ⚠️ 面板按「页码 / 版本号」重建（输入框不能每帧抹）⇒ 这里改页码 ＋ `showGod()` 刷一帧即可。
  */
 function onGodTab(node) {
-  godPage = Number(node.dataset.godtab) || 0;
+  godFloatPage = Number(node.dataset.godtab) || 0;
   showGod();
 }
 
 /** 深度旋钮（`data-godliq`，2026-10-08）：写 `s.god.liqMul`（'auto' | 1|2|4|8）——
  *  引擎闸门在 `engine.hourLiqBase` 末尾（`godLiqMulOf`），撮合 / 订单簿 / 量柱一处放大。
- *  面板是静态 DOM ⇒ 重开本层刷新按钮高亮（同 `onGodTab` 的理由）；不进存档（会话级）。 */
+ *  面板按版本号重建 ⇒ 重开一次刷新按钮高亮；不进存档（会话级）。 */
 function onGodLiq(node) {
   const v = node.dataset.godliq;
   s.god.liqMul = v === 'auto' ? 'auto' : (Number(v) || 1);
-  showGod();
+  showGod();      // 面板按版本号重建 ⇒ 刷新档位高亮
 }
 
-/* ── 上帝浮窗（2026-10-07 用户拍板）────────────────────────────────────────── */
+/* ── 浮窗（2026-10-07 用户拍板；2026-10-10 实例化：mkt ＋ god 两支）────────────────────── */
 
-/** 浮窗的 `ui` 包（2026-10-07 起两模式共用）：页表随模式取、页码夹进表内、开关读各自的偏好
- *  —— `draw()` 每帧与三处手势（拖钮 / 切页 / 收起后的立即跟随）都走它，不会各算各的。 */
+/** 浮窗的 `ui` 包（2026-10-07 起两模式共用；2026-10-10 拆成 mkt / god 两支实例）
+ *  —— `draw()` 每帧与手势（拖钮 / 切页 / 收起后的立即跟随）都走它，不会各算各的。 */
 function floatUi() {
   const pages = s.god ? GOD_FLOAT_PAGES : MKT_FLOAT_PAGES;
   if (!pages.some(([p]) => p === floatPage)) floatPage = pages[0][0];
+  if (!GOD_PANEL_PAGES.some(([p]) => p === godFloatPage)) godFloatPage = GOD_PANEL_PAGES[0][0];
   /* 主菜单在时**不挂浮窗**（2026-10-09 用户要求「进主菜单所有状态都要清空」）：
      判据是菜单 DOM 还在不在（`openMenu` 造 `.menu-box`，`closePicker` 清 `#overlay` 时一并抹掉）
      —— 用 DOM 事实、不引状态位，就不会漏掉某一条「关菜单」的路径。回到局内菜单没了，浮窗自动回来。 */
   const menuUp = !!document.querySelector('.menu-box');
   return {
-    on: !menuUp && (s.god ? godFloatOn : mktFloatOn), open: floatOpen, page: floatPage, pos: floatPos,
-    pages, mkt: !s.god, step: bookStep, filt: logFilt,
+    mkt: {
+      on: !menuUp && (s.god ? godFloatOn : mktFloatOn), open: floatOpen, page: floatPage, pos: floatPos,
+      pages, step: bookStep, filt: logFilt,
+    },
+    /* god 浮窗只在上帝局存在（`s.god` 非空）；body = `godBody` 逐页重建上帝面板主体。
+       详情行的「浮窗 开/关」管的是**另一支**（mkt 盘口浮窗，上帝局下由 `godFloatOn` 决定）。 */
+    god: {
+      on: !menuUp && !!s.god, open: godFloatOpen, page: godFloatPage, pos: godPos, ver: godVer,
+      pages: GOD_PANEL_PAGES, body: (st, pg) => godBody(st, pg, { sel: godSel, alpha: godAlpha, floatOn: godFloatOn }),
+    },
   };
 }
 
@@ -1605,48 +1630,58 @@ function onMktFloat() {
   after();
 }
 
-/** 浮窗行「浮窗 开/关」：翻会话开关；关的同时把展开的面板收起。下一帧 `updateFloat` 自动跟随。 */
+/** 浮窗行「浮窗 开/关」（`data-godfloat`）：翻 **mkt** 浮窗的会话开关；关的同时把展开的面板收起。
+ *  下一帧 `updateFloat` 自动跟随。（2026-10-10 浮窗化后这枚只管 mkt —— god 面板的收合是「关闭」键。） */
 function onGodFloat() {
   godFloatOn = !godFloatOn;
   if (!godFloatOn) floatOpen = false;
-  after();
+  showGod();      // 面板按版本号重建 ⇒ 刷新「浮窗 开/关」文案
 }
 
 /** 透明档位按钮（用户拍板「应为按钮，不需要自己拖动」）：循环 100 → 80 → 60 → 40 → 100，
- *  存独立键（`degen_god_alpha`），写 `--god-alpha` 全局变量 —— 面板与浮窗同一份。 */
+ *  存独立键（`degen_god_alpha`），写 `--god-alpha` 全局变量 —— 两个浮窗同一份。 */
 function onGodAlpha() {
   godAlpha = GOD_ALPHA_STEPS[(GOD_ALPHA_STEPS.indexOf(godAlpha) + 1) % GOD_ALPHA_STEPS.length];
   try { localStorage.setItem(GOD_ALPHA_KEY, String(godAlpha)); } catch { /* 隐私模式：本会话生效即可 */ }
   applyGodAlpha();
-  showGod();      // 重开面板：按钮上的档位字要跟着换（面板是静态 DOM，不参与每帧重绘）
+  showGod();      // 面板按版本号重建 ⇒ 刷新「透明 NN%」文案
 }
 
-/** 浮窗小圆钮（`data-gofloat`）：pointerdown 进来（`ev` = bind.js 转发的原始事件）——
+/* god 浮窗三态（`data-gofloat="god"` / `data-godtab` / `data-gofclose="god"`）—— 与 mkt 同一套手势，
+   只是状态换成 `godPos` / `godFloatOpen` / `godFloatPage`。 */
+
+/** 浮窗小圆钮（`data-gofloat="mkt|god"`）：pointerdown 进来（`ev` = bind.js 转发的原始事件）——
  *  位移 < 6px 判「点按」＝展开/收起，否则按拖拽走（拖完不触发点按）。
- *  起点以「指针相对圆钮左上角的抓取偏移」记账：拖动时圆钮不跳位。 */
-function onGodFloatChip(ev) {
-  const rect = document.querySelector('.god-chip').getBoundingClientRect();
+ *  起点以「指针相对圆钮左上角的抓取偏移」记账：拖动时圆钮不跳位。
+ *  2026-10-10 实例化：按 `node.dataset.gofloat` 分派到两实例，并 `focusFloat` 置顶。 */
+function onGodFloatChip(node, ev) {
+  const id = node.dataset.gofloat === 'god' ? 'god' : 'mkt';
+  focusFloat(id);
+  const hold = id === 'god'
+    ? { set: v => { godPos = v; }, toggle: () => { godFloatOpen = !godFloatOpen; } }
+    : { set: v => { floatPos = v; }, toggle: () => { floatOpen = !floatOpen; } };
+  const rect = node.getBoundingClientRect();
   const ox = ev.clientX - rect.left, oy = ev.clientY - rect.top;
   let dragged = false;
   const move = e => {
     if (!dragged && Math.hypot(e.clientX - ev.clientX, e.clientY - ev.clientY) < 6) return;
     dragged = true;
-    floatPos = {
+    hold.set({
       x: Math.min(Math.max(4, e.clientX - ox), window.innerWidth - 44),
       y: Math.min(Math.max(4, e.clientY - oy), window.innerHeight - 44),
-    };
+    });
     updateFloat(s, floatUi());
   };
   const up = () => {
     window.removeEventListener('pointermove', move);
-    if (!dragged) { floatOpen = !floatOpen; after(); }
+    if (!dragged) { hold.toggle(); after(); }
     else updateFloat(s, floatUi());
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up, { once: true });
 }
 
-/** 浮窗面板页签（`data-goftab`，**与上帝面板的 `godtab` 是两套**）—— 只改页码。 */
+/** mkt 浮窗面板页签（`data-goftab`，**与上帝面板的 `godtab` 是两套**）—— 只改页码。 */
 function onGodFloatTab(node) {
   floatPage = Number(node.dataset.goftab) || 0;
   after();
@@ -1668,9 +1703,10 @@ function onGodFloatFilt(node) {
   after();
 }
 
-/** 浮窗面板右上角「✕」：只收起面板，不关浮窗本体。 */
-function onGodFloatClose() {
-  floatOpen = false;
+/** 浮窗面板右上角「✕」（`data-gofclose="mkt|god"`）：只收起该实例的面板，不关浮窗本体。 */
+function onGodFloatClose(node) {
+  if (node.dataset.gofclose === 'god') godFloatOpen = false;
+  else floatOpen = false;
   after();
 }
 
@@ -1867,8 +1903,9 @@ function onGodPump(node, ev) {
   }
 }
 
-/** 上帝面板里输入框的值 —— 输入框没有动作键，只能从同一个面板里按类名找（两个框各有一个唯一类） */
-const readGodInput = (node, sel) => node.closest('.godp')?.querySelector(sel)?.value ?? null;
+/** 上帝面板里输入框的值 —— 输入框没有动作键，只能从同一个面板里按类名找（两个框各有一个唯一类）
+ *  ⚠️ 2026-10-10 浮窗化：面板挂在 `.god-float.god`（不再是 `#overlay` 里的 `.godp`）。 */
+const readGodInput = (node, sel) => node.closest('.god-float.god')?.querySelector(sel)?.value ?? null;
 
 /* ── 插针剧本（2026-10-08 三批拍板③）── 启动 / 停止的**点击反馈**在这里播报；
    伺服过程（吃穿簇价 / 回位完成 / 中止）由引擎 `godPinTick` 自己逐小时播，
@@ -1938,6 +1975,38 @@ function onGodTarget(dir, pct) {
     ? `目标价 ｜ ${dir < 0 ? '砸' : '拉'} ${s.sym} ${Math.round(Math.abs(pct) * 100)}%（名义 ${fmtMoneyShort(r.n)} · 实际位移 ${fmtPct(r.impact)}${r.sat ? ' ｜ 深度不足 · 已推到饱和' : ''}）`
     : `目标价失败 · ${r.why}`, r.ok ? 'ok' : 'bad');
   if (!r.ok) snd.deny();
+  showGod();
+  after();
+}
+
+/* ── 自动化伺服开关（2026-10-10 用户拍板「自动新闻 ＋ 自动造量 ＋ 自动拉盘」）──
+   这里只翻会话开关 ＋ 记一条日志；伺服本身由引擎 `godAutoTick` 每根裁决（互斥单点在引擎，
+   见其头注）。`s.god.autoNewsAt = null` ⇒ 引擎下一根立即重排（`?? 0 <= s.i` 恒真）。 */
+
+/** 自动新闻（`data-godautonews` / `data-godautonewsoff`）：`0` 混合 / `1` 利好 / `-1` 利空 / `null` 关。 */
+function onGodAutoNews(dir) {
+  s.god.autoNews = dir == null ? null : dir;
+  s.god.autoNewsAt = null;
+  pushLog(s, dir == null ? '自动新闻 ｜ 已关闭'
+    : `自动新闻 ｜ 已开启（${dir === 0 ? '混合' : dir > 0 ? '利好' : '利空'} · 每 12~36 小时一条）`, 'sys');
+  showGod();
+  after();
+}
+
+/** 自动造量（`data-godautowash`）：单钮开关，名义 = `min(lastWash, 本时深度)`（引擎内裁决）。 */
+function onGodAutoWash() {
+  s.god.autoWash = !s.god.autoWash;
+  if (s.god.autoWash) s.god.autoWashSym = s.sym;
+  pushLog(s, s.god.autoWash ? `自动造量 ｜ 已开启（${s.god.autoWashSym} · 每根一次）` : '自动造量 ｜ 已关闭', 'sys');
+  showGod();
+  after();
+}
+
+/** 自动拉盘 / 砸盘（`data-godautopump`）：`1` 拉 / `-1` 砸 / `0` 停（组合拳每根一次）。 */
+function onGodAutoPump(dir) {
+  s.god.autoPump = dir ? dir : null;
+  if (dir) s.god.autoPumpSym = s.sym;
+  pushLog(s, dir ? `自动操盘 ｜ 已开启（${s.god.autoPumpSym} · 每根${dir > 0 ? '拉盘' : '砸盘'}组合拳）` : '自动操盘 ｜ 已停止', 'sys');
   showGod();
   after();
 }
@@ -3019,9 +3088,10 @@ function onHintToggle() {
 
 function onClosePanel() {
   /* ⚠️ 现在只剩**上帝面板**用 `data-sclose`（设置已改成页，出口是底部 Tab）。
+     2026-10-10 浮窗化：面板搬进 god 浮窗 ⇒ 「关闭」＝**收起 god 浮窗**（不再走 `#overlay`）。
      顺手撤销重开的武装态：上帝面板在任意页都能开（连点标题），多这一句不亏。 */
   cancelReset();
-  closePicker();
+  godFloatOpen = false;
   after();
 }
 

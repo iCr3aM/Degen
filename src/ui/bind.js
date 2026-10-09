@@ -132,6 +132,14 @@ export const ACTION_KEYS = [
   'godeat',
   'godeatauto',
   'godtgt',
+  /* 自动化伺服（2026-10-10 用户拍板「自动新闻 ＋ 自动造量 ＋ 自动拉盘」）：`godautonews`（三档
+     混合/利好/利空）、`godautonewsoff`（关闭）、`godautowash`（自动造量开关）、`godautopump`
+     （自动拉盘/砸盘/停 —— 值 `1|-1|0`）。全在上帝面板「操盘」页，伺服由引擎 `godAutoTick` 每根裁决；
+     分派见 `main.js` 的 `onGodAutoNews` / `onGodAutoWash` / `onGodAutoPump`。 */
+  'godautonews',
+  'godautonewsoff',
+  'godautowash',
+  'godautopump',
   /* `godback`（2026-10-09）：上帝终局「返回主菜单」遮罩上那枚**返回**（收起遮罩、露出三页只读）。
      ⚠️ 与 `god`（入口）/ `home`（设置页回主菜单）不是一回事 —— 它只把 `godEndOpen` 置假。
      **必须进这张表**：renderGodEnd 给它挂了 `data-godback`，漏了就是「点了没反应」那一类 bug
