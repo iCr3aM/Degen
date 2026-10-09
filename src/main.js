@@ -1470,12 +1470,10 @@ function onMarginAdjust(s, val) {
   if (!caps) { if (!cur) closePicker(); return; }  // 仓位已经没了：关掉弹层
   const cap = add ? caps.add : caps.reduce;
   if (!(cap > 1e-9)) {                             // 零上限：给一句准话
-    /* 加保证金撞上 1x 封顶（2026-10-05）要单独说 —— 这时既不是余额不够、也不是币种不对，
-       说「可用余额不足」会让玩家以为充钱就能继续加（其实充了也加不了）。 */
+    /* 超额抵押解锁（2026-10-09）：加保证金只受可用余额约束 —— 1x 封顶话术随封顶一起删除；
+       cap = 0 只可能是余额空了（mustUsdt 时是币种不对）。 */
     pushLog(s, add
-      ? (!(caps.headroom > 1e-9)
-        ? '实际杠杆已到 1x ｜ 保证金不能再加'
-        : (caps.mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用余额不足'))
+      ? (caps.mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用余额不足')
       : '保证金率接近维持线 ｜ 不能再减', 'bad');
     after();
     return;

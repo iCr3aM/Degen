@@ -4080,8 +4080,8 @@ export const canCloseAt = (s, frac = 1) => closeCheck(s, frac).ok;
  *   - 本作从 v13 起就是逐仓（每仓独立 `pos.margin`）⇒ 天然兼容，**不需要新状态字段**、不升存档版本。
  *   - 现实约束：加受**可用余额**限制；减不能把保证金率压到**维持线**以下（否则是自己推向强平）。
  *
- * @returns {null | { pos:object, price:number, mustUsdt:boolean, add:number, headroom:number, reduce:number }}
- *   `add` = 此刻最多能加多少（已含 1x 封顶）；`headroom` = 名义 − 保证金（到 1x 还剩多少）；
+ * @returns {null | { pos:object, price:number, mustUsdt:boolean, add:number, reduce:number }}
+ *   `add` = 此刻最多能加多少（2026-10-09 超额抵押解锁：只受可用余额约束，可越过名义）；
  *   `reduce` = 此刻最多能减多少（都 ≥ 0）
  */
 export function marginCapsOf(s, sym) {
@@ -4095,20 +4095,19 @@ export function marginCapsOf(s, sym) {
   const price = exMarkPrice(s, sym, pos.ex);
   if (!(price > 0)) return null;
   const mustUsdt = !isMargin(pos);                 // 合约（perp）只认 USDT；杠杆是两格之和
-  /* **到 1 倍杠杆还剩多少垫子**（2026-10-05 用户拍板）—— 实际杠杆 = `notional ÷ margin`，
-     加保证金只会把它往 1x 压。压到 1x（`margin === notional`）后**不能再加**：现实中交易所的
-     杠杆档位**下限就是 1x**（Binance 客服口径「leverage starts at 1x，想更低只能手动减仓」，
-     已核一手）—— 再往里塞钱等于开一个「负杠杆」，既无现实对应、也会让保证金率虚高。
-     ⚠️ 因此 `add` 取「可用余额」与「headroom」的**较小者**，封顶顺带把弹层预设键与交易页 ± 键
-        一起置灰（`render` / `openMarginDlg` 都读 `caps.add`，同源）。 */
-  const headroom = Math.max(0, pos.notional - pos.margin);
-  const add = Math.max(0, Math.min(spendableOf(s, mustUsdt), headroom));
+  /* **超额抵押解锁**（2026-10-09 用户拍板，推翻 2026-10-05 的「1x 封顶」）—— 保证金可以**超过名义**
+     （保证金率 > 100%）：现实中这是合法态（Aave 超额抵押 120–150%、Bybit IM Rate ≥ 100% 只是
+     「不能再加仓」），本作语义也已自洽 —— `margin > notional` ⇒ `borrowedOf = 0`（停息、无强平线、
+     `instrumentOf` 翻 perp），`effLevOf` 显示 < 1x 的真实值。`add` 因此只受**可用余额**约束。
+     （旧拍板依据「Binance 杠杆档位下限 1x」—— 那是**杠杆档位选择器**的下限，不是逐仓保证金的
+     天花板；往逐仓里继续塞钱不是「负杠杆档」，是超额抵押。） */
+  const add = Math.max(0, spendableOf(s, mustUsdt));
   /* 减的下限：减完后**权益**（保证金 ＋ 未实现盈亏）仍要撑在维持线的 `PARTIAL_TARGET` 倍之上
      —— 与部分强平同一个目标倍数，留一道垫子，不许玩家把仓位减到「下一秒就爆」。
      权益口径与强平判据同源（`equityOf` / `maintRateOf`）⇒ 浮亏时能抽回的钱自然更少。 */
   const floorEquity = PARTIAL_TARGET * maintRateOf(pos) * pos.notional;
   const reduce = Math.max(0, Math.min(pos.margin, equityOf(pos, price) - floorEquity));
-  return { pos, price, mustUsdt, add, headroom, reduce };
+  return { pos, price, mustUsdt, add, reduce };
 }
 
 /**
@@ -4152,12 +4151,9 @@ function adjustCheck(s, sym, delta) {
   const amount = Math.abs(delta);
   if (!(amount > 1e-9)) return { ok: false, why: '调整金额为 0' };
   if (delta > 0) {
-    /* 先判 1x 封顶（2026-10-05）：`margin` 已经追平 `notional`（实际杠杆 1x）⇒ 一点也加不动。
-       放在余额判断之前 —— 撞的是名义天花板时，说「余额不足」会误导玩家去充值。 */
-    if (!(c.headroom > 1e-9)) return { ok: false, why: '实际杠杆已到 1x ｜ 保证金不能再加' };
+    /* 超额抵押解锁（2026-10-09 用户拍板）：保证金可超过名义（保证金率 > 100%），上限只有
+       可用余额 —— 不再有「1x 封顶」分支。`c.add` 已是 spendable，超了就给准话。 */
     if (amount > c.add + 1e-9) {
-      /* `add` = `min(可用余额, headroom)`，所以「超了」有两种成因，分别给准话。 */
-      if (amount > c.headroom + 1e-9) return { ok: false, why: '实际杠杆已到 1x ｜ 保证金不能再加' };
       return { ok: false, why: c.mustUsdt ? '合约保证金必须是 USDT ｜ 先在资产页把美元换成 U' : '可用余额不足' };
     }
     return { ok: true, pos: c.pos, add: true, amount, mustUsdt: c.mustUsdt };

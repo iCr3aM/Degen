@@ -4181,39 +4181,42 @@ section('13d · 逐币通道记忆 · 保证金 1x 封顶 · 资金费基数=名
 check('13d 源码锚点：engine 不再写死 `s.chan = \'book\'`（复位玩家选择的旧 bug 根因）',
   !/s(?:\.chan|\[\s*['"]chan['"]\s*\])\s*=\s*['"]book['"]/.test(fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8')));
 
-/* ── d2 · 保证金加到实际杠杆 1x 即封顶（用户拍板「压平 1x 后不能再加」） ── */
+/* ── d2 · 超额抵押解锁（2026-10-09 用户拍板，推翻 2026-10-05 的「1x 封顶」）：保证金可越过名义，
+      保证金率 > 100% 合法（Aave 超额抵押 120–150%、Bybit IM Rate 同款）；借入归零 ⇒ 停息、无强平线。 ── */
 {
   const s = await mk({ sym: 'BTC', mode: 'margin', cash: 2e7, i: idx(at(2021, 5)) });
   s.lev = 3;
   const o = engine.openTrade(s, 'long', 0.02);
   const pos = s.positions.BTC;
-  check('13d 1x 封顶前置：3x 建仓成功', o.ok && !!pos, o.why || '');
+  check('13d 超额抵押前置：3x 建仓成功', o.ok && !!pos, o.why || '');
   if (pos) {
     check('13d 建仓时实际杠杆 = 3x', Math.abs(P.effLevOf(pos) - 3) < 1e-6, `effLev=${f(P.effLevOf(pos), 4)}`);
     check('13d 建仓时确有利息成本（借入 > 0）',
       P.borrowedOf(pos) > 0 && P.paysInterest(pos), `borrowed=${f(P.borrowedOf(pos), 2)}`);
-    /* 连点「+」加到加不动为止 —— 每次都走真实 `marginStepOf` / `adjustMargin`。 */
+    /* 连点「+」加到余额耗尽为止 —— 每次都走真实 `marginStepOf` / `adjustMargin`。 */
     let guard = 0;
-    while (guard++ < 200) {
+    while (guard++ < 400) {
       const a = engine.marginStepOf(s, 'BTC', 0.25, true);
       if (!(a > 1e-9)) break;
       if (!engine.adjustMargin(s, 'BTC', a).ok) break;
     }
     const caps = engine.marginCapsOf(s, 'BTC');
-    check('13d 加到顶后实际杠杆 = 1x（不会跌破 1x）',
-      P.effLevOf(pos) >= 1 - 1e-9, `effLev=${f(P.effLevOf(pos), 6)}`);
-    check('13d 加到顶后保证金 ≈ 名义（headroom → 0）',
-      pos.margin <= pos.notional + 1e-6 && caps.headroom <= 1e-6,
-      `margin=${f(pos.margin, 2)} notional=${f(pos.notional, 2)} headroom=${f(caps.headroom, 6)}`);
-    check('13d 到顶后 add 上限 = 0（弹层预设键 / 交易页 ± 键据它置灰）',
+    check('13d 越过名义：保证金 > 名义 ⇒ 保证金率 > 100%（超额抵押合法态）',
+      pos.margin > pos.notional && P.marginRateOf(pos, engine.exMarkPrice(s, 'BTC', pos.ex)) > 1,
+      `margin=${f(pos.margin, 0)} notional=${f(pos.notional, 0)}`);
+    check('13d 超额抵押后实际杠杆 < 1x（effLevOf 显示真实值）', P.effLevOf(pos) < 1,
+      `effLev=${f(P.effLevOf(pos), 4)}`);
+    check('13d 加到余额耗尽后 add 上限 = 0（弹层预设键 / 交易页 ± 键据它置灰）',
       caps.add <= 1e-9, `add=${f(caps.add, 6)}`);
     const r = engine.adjustMargin(s, 'BTC', 1);
-    check('13d 到顶后再加保证金被拒，且给出「1x」准话',
-      !r.ok && /1x/.test(r.why || ''), r.why || '(未被拒)');
-    check('13d 压到 1x 后借入归零 ⇒ 停息（用户拍板口径）',
+    check('13d 余额耗尽后再加被拒，话术是「可用余额不足」（1x 封顶话术已删）',
+      !r.ok && /可用余额不足/.test(r.why || ''), r.why || '(未被拒)');
+    check('13d 借入归零 ⇒ 停息（不再借钱，利息停）',
       P.borrowedOf(pos) === 0 && !P.paysInterest(pos),
       `borrowed=${f(P.borrowedOf(pos), 6)} interest=${P.paysInterest(pos)}`);
-    check('13d 压到 1x 后不可强平（维持线远在下方）', !P.canLiquidate(pos));
+    check('13d 超额抵押后不可强平（无借入 ⇒ 无维持线）', !P.canLiquidate(pos));
+    check('13d 超额抵押后仍可减（reduce 正常，回到杠杆态）', caps.reduce > 1e-9,
+      `reduce=${f(caps.reduce, 0)}`);
   }
 }
 
