@@ -126,6 +126,12 @@ export const ACTION_KEYS = [
   'godnews',
   'godliqov',
   'godreal',
+  /* 上帝操盘台第四批（2026-10-09 用户拍板「一键吃单开关 ＋ 目标涨幅档」）：`godeat`（扫单
+     吃买盘/吃卖盘）、`godeatauto`（自动扫单单钮循环 关→↓→↑）、`godtgt`（拉/砸到 ±1/3/5/10%
+     —— 引擎二分反解名义）。全在上帝面板里，分派见 `main.js` 的 `onGodEat` / `onGodTarget`。 */
+  'godeat',
+  'godeatauto',
+  'godtgt',
   /* `godback`（2026-10-09）：上帝终局「返回主菜单」遮罩上那枚**返回**（收起遮罩、露出三页只读）。
      ⚠️ 与 `god`（入口）/ `home`（设置页回主菜单）不是一回事 —— 它只把 `godEndOpen` 置假。
      **必须进这张表**：renderGodEnd 给它挂了 `data-godback`，漏了就是「点了没反应」那一类 bug

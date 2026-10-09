@@ -3275,6 +3275,38 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   manipIn.addEventListener('input', updPrev);
   updPrev();
 
+  /* 扫单（2026-10-09 用户拍板「一键吃单开关」）：[吃买盘][吃卖盘] 一口吃光该侧 NPC 簿；
+     [自动] 单钮循环 关→自动↓→自动↑→关 —— 开着时每根由 `godEatTick` 伺服（方向随状态，
+     label 自明：`自动↓` = 每根吃买盘砸、`自动↑` = 每根吃卖盘拉）。手动两枚走即时执行。 */
+  const eatRow = el('div', 'set-row');
+  const eatBid = el('button', 'set-btn on', '吃买盘');
+  eatBid.dataset.godeat = '-1';
+  const eatAsk = el('button', 'set-btn on', '吃卖盘');
+  eatAsk.dataset.godeat = '1';
+  const eatAuto = el('button', 'set-btn on', s.god.eat ? (s.god.eat.dir < 0 ? '自动↓' : '自动↑') : '自动');
+  eatAuto.dataset.godeatauto = '';
+  eatRow.append(el('i', null, '扫单'), eatBid, eatAsk, eatAuto);
+  rowsC.append(eatRow);
+
+  /* 目标价（2026-10-09 用户拍板「目标涨幅档」）：把「拉/砸到 ±X%」交给引擎反解名义
+     （数值二分 manipPreview 本体 —— 同式同参），一次性推完。手动名义行保留（进阶精度）。 */
+  const tgtRow = el('div', 'set-row');
+  tgtRow.append(el('i', null, '拉到'));
+  for (const pct of [1, 3, 5, 10]) {
+    const b = el('button', 'set-btn on', `+${pct}%`);
+    b.dataset.godtgt = `1:${pct / 100}`;
+    tgtRow.append(b);
+  }
+  rowsC.append(tgtRow);
+  const tgtRow2 = el('div', 'set-row');
+  tgtRow2.append(el('i', null, '砸到'));
+  for (const pct of [1, 3, 5, 10]) {
+    const b = el('button', 'set-btn on', `-${pct}%`);
+    b.dataset.godtgt = `-1:${pct / 100}`;
+    tgtRow2.append(b);
+  }
+  rowsC.append(tgtRow2);
+
   /* 插针剧本（2026-10-08 三批拍板③）：一键吃穿**最大的强平簇**再回位 —— 伺服走既有操盘台
      吃单物理（engine.godPinStart / godPinTick，每小时一笔真实吃单）。激活时方向钮置灰、
      「停」亮起（置灰与可按要一眼分得开），状态行报目标价与已推名义额；面板重开时刷新。 */

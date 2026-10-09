@@ -11,7 +11,7 @@ import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, exchangeOf, hasFinancingAt
 import { anyHeld, createState, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godManipPump, godPinStart, godPinStop, godFakeNews } from './core/engine.js';
+import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godManipPump, godPinStart, godPinStop, godFakeNews, godEatBook, godTargetPush } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
@@ -1117,6 +1117,7 @@ function dispatch(node, ev) {
     || d.godyear !== undefined || d.godmon !== undefined || d.godgo !== undefined
     || d.godtab !== undefined || d.godinf !== undefined || d.godliq !== undefined
     || d.godpump !== undefined || d.godpin !== undefined || d.godnews !== undefined
+    || d.godeat !== undefined || d.godeatauto !== undefined || d.godtgt !== undefined
     || d.godliqov !== undefined || d.godreal !== undefined || d.sb !== undefined
     || d.sbpreset !== undefined || d.sbseed !== undefined || d.sbroll !== undefined)) {
     return;
@@ -1152,6 +1153,16 @@ function dispatch(node, ev) {
     /* ⚠️ 转发原始事件（2026-10-08）：`onGodPump` 靠 `ev.pointerId` 区分「指针按下（可长按）」
        与「键盘激活（`click`，只单次）」，见该函数头注。 */
     return onGodPump(node, ev);
+  }
+  /* ── 扫单 / 目标价（2026-10-09 三批拍板）── 同一处境：只出现在上帝面板里，以 `s.god` 非空兜底。 */
+  if (d.godeat !== undefined || d.godeatauto !== undefined) {
+    if (!s.god) return;
+    return onGodEat(d.godeat !== undefined ? Number(d.godeat) : null);
+  }
+  if (d.godtgt !== undefined) {
+    if (!s.god) return;
+    const [dir, pct] = String(d.godtgt).split(':').map(Number);
+    return onGodTarget(dir, pct);
   }
   /* ── 插针 / 假消息 / 强平叠加（2026-10-08 三批拍板③）── 同一处境：只出现在上帝面板里，
      以 `s.god` 非空兜底（状态机不靠 DOM）。 */
@@ -1893,6 +1904,40 @@ function onGodNews(node) {
        不会自动响；这里显式补上，与史实新闻同一记音。 */
     snd.news();
   }
+  showGod();
+  after();
+}
+
+/* ── 扫单（2026-10-09 用户拍板「一键吃单开关」）── dir ±1 = 一次性吃光该侧；null = 自动钮
+   循环 关→自动↓→自动↑→关（`s.god.eat` 是伺服状态，`godEatTick` 每根驱动）。 */
+function onGodEat(dir) {
+  if (dir === null) {
+    if (!s.god.eat) s.god.eat = { dir: -1, sym: s.sym };        // 关 → 自动↓
+    else if (s.god.eat.dir < 0) s.god.eat = { dir: 1, sym: s.sym };   // ↓ → ↑
+    else s.god.eat = null;                                       // ↑ → 关
+    pushLog(s, s.god.eat
+      ? `扫单 ｜ 自动${s.god.eat.dir < 0 ? '吃买盘' : '吃卖盘'}（每根伺服 · ${s.god.eat.sym}）`
+      : '扫单 ｜ 自动已关', 'sys');
+    showGod();
+    after();
+    return;
+  }
+  const r = godEatBook(s, s.sym, dir);
+  pushLog(s, r.ok
+    ? `扫单 ｜ 一口吃光${dir < 0 ? '买' : '卖'}盘 ${fmtMoneyShort(r.ate)}（位移 ${fmtPct(r.impact)} · 花费 ${fmtMoneyShort(r.cost)}）`
+    : `扫单失败 · ${r.why}`, r.ok ? 'ok' : 'bad');
+  if (!r.ok) snd.deny();
+  showGod();
+  after();
+}
+
+/* ── 目标价（2026-10-09 用户拍板「目标涨幅档」）── 引擎二分反解名义后一次性推完。 */
+function onGodTarget(dir, pct) {
+  const r = godTargetPush(s, s.sym, dir, pct);
+  pushLog(s, r.ok
+    ? `目标价 ｜ ${dir < 0 ? '砸' : '拉'} ${s.sym} ${Math.round(Math.abs(pct) * 100)}%（名义 ${fmtMoneyShort(r.n)} · 实际位移 ${fmtPct(r.impact)}${r.sat ? ' ｜ 深度不足 · 已推到饱和' : ''}）`
+    : `目标价失败 · ${r.why}`, r.ok ? 'ok' : 'bad');
+  if (!r.ok) snd.deny();
   showGod();
   after();
 }

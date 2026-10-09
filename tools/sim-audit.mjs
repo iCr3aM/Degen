@@ -5400,7 +5400,8 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     && engSrc9ag.includes('export function godFakeNews(s, sym, dir)')
     && engSrc9ag.includes('if (s.pending) return;\n\n  /* 交易所收入分流')
     && engSrc9ag.includes('exRevSweep(s);\n\n  /* 插针剧本伺服')   // 2026-10-09 回流管道：排在伺服 / NPC 刻度之前
-    && engSrc9ag.includes('godPinTick(s);\n\n  /* NPC 情绪 / 踩踏级联')
+    && engSrc9ag.includes('godPinTick(s);\n\n  /* 自动扫单伺服')   // 2026-10-09：扫单伺服紧随插针（同一时序纪律）
+    && engSrc9ag.includes('godEatTick(s);\n\n  /* NPC 情绪 / 踩踏级联')
     /* 2026-10-08 M4k：作废行扩成对象体（插针 ＋ 沙盒世界偏向台阶 `sbBias` 一起清）；
        M4d：再并进假消息的冷却 / 轮换计数（`newsAt` / `newsN`）。 */
     && engSrc9ag.includes('if (s.god) {')
@@ -6250,6 +6251,71 @@ section('9aq · tape 3 日保留窗口 ＋ 订单簿强平价注入');
     check('9aq③ 保证金率口径：权益/名义（资金方向）—— >100% = 超额抵押合法态，不封顶',
       posSrcAq.includes('保证金率 = 仓位权益 / 名义价值')
       && posSrcAq.includes('export function marginRateOf(pos, price) {'));
+  }
+}
+
+/* ═══════════════════ 9ar · 扫单 ＋ 目标价（2026-10-09 三批拍板「一键吃单开关」） ═══════════════════ */
+section('9ar · 扫单 godEatBook ＋ 目标价 godTargetPush ＋ 自动伺服');
+{
+  /* ① 扫单行为：手工布簿 → 一口吃光该侧（离散单清空）→ 费用进 exRev（回流管道）→ 对侧不动。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 5, 10)) });
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e11;
+    engine.tickMarket(s, 'BTC');                    // 冷启动生成活簿
+    const b = s.lob.BTC;
+    check('9ar① 前置：冷启动后离散簿非空', Array.isArray(b.asks) && b.asks.length > 0,
+      `asks=${b.asks.length} bids=${b.bids.length}`);
+    const sumA = b.asks.reduce((a, r) => a + r.n, 0), nB = b.bids.length;
+    s.exRev = 0;
+    const r = engine.godEatBook(s, 'BTC', 1);
+    check('9ar② 扫单：吃光卖盘（ate = 求和 ＋ 该侧清空 ＋ 买侧原样）',
+      r.ok && Math.abs(r.ate - sumA) < 1e-6 && b.asks.length === 0 && b.bids.length === nB,
+      `ate=${f(r.ate, 0)}`);
+    check('9ar③ 扫单费用进交易所收入账（exRev > 0，回流管道口径）', s.exRev > 0, `exRev=${f(s.exRev, 0)}`);
+  }
+  /* ② 目标价行为：二分反解的名义实推位移 ≥ 目标（99% 口径），返回 sat 语义与名义回读。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 5, 10)) });
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e11;
+    engine.tickMarket(s, 'BTC');
+    const r = engine.godTargetPush(s, 'BTC', 1, 0.03);
+    check('9ar④ 目标价：+3% 反解名义后实推位移 ≥ 2.97%（名义回读 ＋ 非饱和）',
+      r.ok && r.impact >= 0.03 * 0.999 && r.n >= 1000 && !r.sat,
+      `n=${f(r.n, 0)} impact=${f(r.impact, 4)}`);
+    const r2 = engine.godTargetPush(s, 'BTC', -1, 0.03);
+    check('9ar⑤ 反方向同款（砸 3%）', r2.ok && r2.impact <= -0.03 * 0.999,
+      `impact=${f(r2.impact, 4)}`);
+  }
+  /* ③ 自动伺服：s.god.eat 开着 ⇒ advanceOneHour 每根吃光（吃一根清一侧，下一根回填再吃）。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 5, 10)) });
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e11;
+    engine.tickMarket(s, 'BTC');
+    s.god.eat = { dir: 1, sym: 'BTC' };
+    const asks0 = s.lob.BTC.asks.length;
+    engine.advanceOneHour(s);
+    const clearedOnce = s.lob.BTC.asks.length < asks0;
+    engine.advanceOneHour(s);
+    engine.advanceOneHour(s);
+    check('9ar⑥ 自动扫单：每根伺服（首根清空卖盘，后续回填-再吃循环不炸）',
+      clearedOnce && s.over !== true, `asks ${asks0}→${clearedOnce ? 0 : '?'} → ${s.lob.BTC.asks.length}`);
+  }
+  /* ④ 源断言：UI 三行 ＋ main 派发 ＋ bind 键表 ＋ advanceOneHour 伺服挂点。 */
+  {
+    const rendSrcAr = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+    const mainSrcAr = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+    const bindSrcAr = fs.readFileSync(path.join(ROOT, 'src/ui/bind.js'), 'utf8');
+    const engSrcAr = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+    check('9ar⑦ 结构：扫单/目标价三行 UI ＋ main 派发与处理器 ＋ bind 键表 ＋ godEatTick 伺服挂点',
+      rendSrcAr.includes("eatAuto.dataset.godeatauto = '';")
+      && rendSrcAr.includes("b.dataset.godtgt = `1:${pct / 100}`;")
+      && mainSrcAr.includes('return onGodEat(d.godeat !== undefined ? Number(d.godeat) : null);')
+      && mainSrcAr.includes('function onGodTarget(dir, pct) {')
+      && bindSrcAr.includes("'godeat',") && bindSrcAr.includes("'godtgt',")
+      && engSrcAr.includes('godEatTick(s);'));
   }
 }
 

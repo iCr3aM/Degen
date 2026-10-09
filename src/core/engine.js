@@ -4691,6 +4691,76 @@ export function godManipPump(s, sym, dir, notional) {
   return { ok: true, impact: pu.impact, cost: pu.cost + (ws.ok ? ws.fee : 0), wash: ws.ok ? wash : 0 };
 }
 
+/**
+ * 操盘台「**扫单**」（2026-10-09 用户拍板「一键吃单开关」）—— 一口吃掉当前 NPC 簿某一侧的
+ * **全部离散挂单**：真实巨鲸的「扫货」（market sweep / 吃穿盘口 —— 挂单被逐档吃掉、价格跳档）。
+ *
+ * 口径：
+ *   · 名义 = `s.lob` 该侧离散单名义**求和**（含同格合并单；不含墙 —— 墙是 `levelsOf` 的
+ *     历史价位标记，属于「隐含流动性」，不是可被吃掉的真实挂单）；
+ *   · 执行走 `godManipPush` 全套物理（手续费进 `exRev` 回流管道、冲击进 `pushFlow`、
+ *     热度喂饱、硬夹照吃）—— 扫单不是「直接改簿」，是**一笔吃穿全部挂单的市价单**；
+ *   · 成功后**清空该侧离散单**（被吃掉了）—— 冷启动生成器下一根会照常补新单（真实盘口
+ *     被扫后做市商回填），所以「自动扫单」每根都有单可吃、形成持续买/卖压；
+ *   · 簿空 / 未生成 ⇒ 返回 why（自动模式下 harmless no-op，开关不自动停 —— 下一根有新单）。
+ * @param {number} dir +1 吃卖盘（拉）/ −1 吃买盘（砸）
+ * @returns {{ok:true, ate:number, impact:number, cost:number}|{ok:false, why:string}}
+ */
+export function godEatBook(s, sym, dir) {
+  if (!s.god) return { ok: false, why: '非上帝模式' };
+  if (dir !== 1 && dir !== -1) return { ok: false, why: '方向非法' };
+  const b = lobOf(s, sym);
+  if (!b) return { ok: false, why: '订单簿尚未生成' };
+  const arr = dir > 0 ? b.asks : b.bids;
+  const sum = arr.reduce((a, r) => a + r.n, 0);
+  if (!(sum > 0)) return { ok: false, why: '该侧没有挂单' };
+  const p = godManipPush(s, sym, dir, sum);
+  if (!p.ok) return p;
+  arr.length = 0;                     // 被扫空：离散单全部移除（做市商下一根回填）
+  return { ok: true, ate: sum, impact: p.impact, cost: p.cost };
+}
+
+/**
+ * 操盘台「**目标价**」（2026-10-09 用户拍板「目标涨幅档」）—— 把「拉/砸到 ±X%」翻译成名义额：
+ * 数值**二分反解** `manipPreview` 本体（同式同参 —— 预览、实值、反解共用同一条冲击曲线），
+ * 求出「瞬时位移 ≥ X%」所需名义，然后走 `godManipPush` 全套物理一次性推完。
+ *
+ * 口径：
+ *   · 目标 = **相对当前价**再动 X%（叠加语义 —— 现有 `s.flow` 台阶不动，只算这一笔的增量）；
+ *   · `manipPreview.impact` 随名义**单调**且在 `q ≥ cap` 处饱和 ⇒ 二分必收敛；饱和后仍达不到
+ *     目标（深度太小 / σ 太小）时如实返回 `sat: true`（UI 提示「深度不足 · 已推到饱和」）——
+ *     与拉盘预览的 `sat` 同一条口径，不假装推到了；
+ *   · 名义上界探测从「本时深度 × 2」起每轮 ×4（早期小深度年代也能够到）。
+ * @param {number} dir +1 拉 / −1 砸
+ * @param {number} pct 目标幅度（0.01 = 1%）
+ * @returns {{ok:true, n:number, impact:number, cost:number, sat:boolean}|{ok:false, why:string}}
+ */
+export function godTargetPush(s, sym, dir, pct) {
+  if (!s.god) return { ok: false, why: '非上帝模式' };
+  if (dir !== 1 && dir !== -1) return { ok: false, why: '方向非法' };
+  const d = Math.min(0.25, Math.max(0.002, Math.abs(pct)));
+  let lo = MANIP_MIN;
+  let hi = Math.max(MANIP_MIN * 2, hourLiqBase(s, sym, s.i) * 2);
+  for (let g = 0; g < 10 && manipPreview(s, sym, dir, hi).impact < d; g++) hi *= 4;
+  for (let k = 0; k < 22; k++) {
+    const mid = (lo + hi) / 2;
+    if (manipPreview(s, sym, dir, mid).impact < d) lo = mid; else hi = mid;
+  }
+  const pv = manipPreview(s, sym, dir, hi);
+  const r = godManipPush(s, sym, dir, hi);
+  if (!r.ok) return r;
+  return { ok: true, n: hi, impact: pv.impact, cost: pv.cost, sat: pv.impact < d * 0.999 };
+}
+
+/** 自动扫单的**伺服**（`advanceOneHour` 每根调，排在插针伺服之后）：`s.god.eat` 非空 ⇒
+ *  每根把 `e.sym` 该侧簿吃光（方向随开关）。簿空 harmless no-op（下一根做市商回填）。
+ *  费用照走 `godManipPush` → `exRev` 回流管道；无限资金开着则自动补款（同吃单）。 */
+export function godEatTick(s) {
+  const e = s.god && s.god.eat;
+  if (!e) return;
+  godEatBook(s, e.sym, e.dir);
+}
+
 /* ── 插针剧本（2026-10-08 三批拍板③「插针剧本」）─────────────────────────────
  * 一键「吃穿最大的强平簇再回位」：真实庄家的猎杀剧本（hunt liquidations）。**没有「直接设价」
  * 通道** —— 推进完全复用操盘台的吃单物理（`godManipPush`：付手续费 ＋ 冲击成本、吃深度、
@@ -5428,6 +5498,10 @@ export function advanceOneHour(s) {
      ⇒ 推到位的那一根，NPC 的强平簇真的爆。待决态（上面 return）时钟停走 ⇒ 伺服自然暂停。 */
   godPinTick(s);
 
+  /* 自动扫单伺服（2026-10-09 用户拍板「一键吃单开关」）：`s.god.eat` 开着 ⇒ 每根吃光该侧簿
+     —— 排在本根成形之前，位移进本根 K 线（与插针同一时序纪律）。 */
+  godEatTick(s);
+
   /* NPC 情绪 / 踩踏级联（§73.5）：基础行情（这一根的 K 线）算完之后跑一次 ——
      它自己会往 `s.flow` 写 NPC 的成交，所以必须排在资金费 / 强平之前、玩家的流之后。 */
   tickMarket(s, s.sym);
@@ -5555,6 +5629,7 @@ export function rewindTo(s, to) {
      `stepValueAt` 在跳到那根之前读不到 ⇒ 世界偏向会「迟到」。清空后在下一根按当前旋钮重落。 */
   if (s.god) {
     s.god.pin = null;
+    s.god.eat = null;   // 自动扫单（2026-10-09）同样作废 —— 跳转后的世界要玩家重新拍板方向
     s.god.sbBias = null;
     /* 假消息冷却与轮换计数（2026-10-08）也是「跳转前世界」的读数 ⇒ 一并作废，
        否则跳时间后冷却可能落在未来（按钮永远灰着）。 */
