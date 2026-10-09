@@ -2699,8 +2699,11 @@ section('9q · 上帝面板分页接线（data-godtab ⇄ ACTION_KEYS ⇄ onGodT
        `heat` = `.chart-heat[data-heat=…]` 的着色桶（greedy/panic/缺省三档）；
        `pages` = 浮窗页签骨架的键串（`fPanel` 上给 `updateFloat` 判断「页签要不要随模式重建」，
        不是点击目标 —— 页签点击走 `goftab`，2026-10-07 市场浮窗复用骨架时新增）。
+       `lvnews` / `lvcd` / `lveta` / `lvpin` / `lvwash` = god 浮窗**盘中轻刷新**（`syncGodLive`）
+       的定点查询标记（2026-10-10 code review：冷却倒计时 / 自动新闻 eta / 插针置灰是时间驱动，
+       不能只靠「打开那一刻」的渲染；这些标记只给 `querySelector` 用，不是点击目标）。
      新增状态标记要在这里补一行并说明用途；新增**按钮**漏注册则此断言当场咬死。 */
-  const STATE_MARKS = new Set(['pf', 'heat', 'pages']);
+  const STATE_MARKS = new Set(['pf', 'heat', 'pages', 'lvnews', 'lvcd', 'lveta', 'lvpin', 'lvwash']);
   /* 只抓 `export const ACTION_KEYS = [ ... ];` **数组本体** —— 不扫全文：全文抓会把
      注释里提到的旧键 / 别的字符串也当「已注册」，护栏假绿。
      ⚠️ 数组本体里还夹着大量**解释性注释**（含 `'toggle'` / 旧键名的字面量）—— 必须**先剥注释**
@@ -6423,6 +6426,15 @@ section('9as · 自动新闻（币种权重）＋ 自动造量 ＋ 自动拉盘 
       && src.includes('s.god.autoNewsAt = null;')
       && src.includes('export function autoNewsSym(s) {')
       && src.includes('export function godAutoTick(s) {'));
+    const rendSrcAs = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+    check('9as⑫ 结构：god 浮窗盘中轻刷新（syncGodLive 定点改文本/disabled，不重建整块）',
+      rendSrcAs.includes('function syncGodLive(panel, s) {')
+      && rendSrcAs.includes("if (inst.id === 'god') syncGodLive(inst.panel, s);")
+      && rendSrcAs.includes("panel.querySelectorAll('[data-lvnews]')")
+      && rendSrcAs.includes("panel.querySelector('[data-lvcd]')")
+      && rendSrcAs.includes("panel.querySelector('[data-lveta]')")
+      && rendSrcAs.includes("panel.querySelectorAll('[data-lvpin]')")
+      && rendSrcAs.includes("panel.querySelectorAll('[data-lvwash]')"));
   }
 }
 

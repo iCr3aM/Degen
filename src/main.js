@@ -933,9 +933,10 @@ function draw(force = false, chartOnly = false) {
        原来那句 `!arch` 是一处**永远为真**的死守卫，只会让人以为档案页的覆盖问题已解决。 */
     if (s.god && s.god.ended) {
       /* 上帝终局（2026-10-09 用户拍板）：**不结算 / 不播结算音 / 只弹「返回主菜单」遮罩**。
-         `closePicker()` 每次都收掉任何残留弹层（含上帝操盘台 —— 终局后它不该再被看见）。
-         点「返回」收起后 `godEndOpen = false` ⇒ 只 `clearOver`，露出三页（只读、时钟已停死）。 */
+         `closePicker()` 收掉 #overlay 里的残留弹层（2026-10-10 浮窗化后 god 面板已不在此路径，
+         但要显式收起 god 浮窗 —— 否则终局遮罩下还会浮着操盘台）。 */
       closePicker();
+      godFloatOpen = false;
       if (!godEndDrawn) godEndDrawn = true;   // 首帧补画（同 `overDrawn` 的理由）；**不播任何音**
       if (godEndOpen) renderGodEnd(root, s);
       else clearOver(root);
@@ -1529,9 +1530,9 @@ function onGodTap(node) {
   if (node && node.dataset.god === 'logo') return onGodLogo();
   if (!s.god || s.over || s.pending || s.god.ended) return;   // 未解锁 / 本局已结束（含上帝终局）/ 停在救济金遮罩：不理
   /* 面板记忆（2026-10-07 用户拍板）：重开**不重置** —— 页签停在上次所在页、日期选择器
-     留在上次的目标上（`godSel` / `godFloatPage` 是模块级变量，天然跨开合存活，只要别主动归零）。 */
+     留在上次的目标上（`godSel` / `godFloatPage` 是模块级变量，天然跨开合存活，只要别主动归零）。
+     ⚠️ 不另调 `after()`（2026-10-10 code review Minor）：`showGod()` 内部已 `after()`。 */
   showGod();
-  after();
 }
 
 /**

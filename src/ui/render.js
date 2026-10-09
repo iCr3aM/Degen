@@ -3284,12 +3284,15 @@ function godManipPage(s, gx) {
   const eatRow = el('div', 'set-row');
   const eatBid = el('button', 'set-btn on', '吃买盘');
   eatBid.dataset.godeat = '-1';
+  eatBid.dataset.lvpin = '';                        // 盘中轻刷新：插针结束 ⇒ 解灰
   eatBid.disabled = !!s.god.pin;                    // 审查 Minor 1：插针伺服中与扫单互斥（同根双推）
   const eatAsk = el('button', 'set-btn on', '吃卖盘');
   eatAsk.dataset.godeat = '1';
+  eatAsk.dataset.lvpin = '';
   eatAsk.disabled = !!s.god.pin;
   const eatAuto = el('button', 'set-btn on', s.god.eat ? (s.god.eat.dir < 0 ? '自动↓' : '自动↑') : '自动');
   eatAuto.dataset.godeatauto = '';
+  eatAuto.dataset.lvpin = '';
   eatAuto.disabled = !!s.god.pin;
   eatRow.append(el('i', null, '扫单'), eatBid, eatAsk, eatAuto);
   rows.append(eatRow);
@@ -3306,22 +3309,29 @@ function godManipPage(s, gx) {
   for (const [v, label] of [['0', '混合'], ['1', '利好'], ['-1', '利空']]) {
     const b = el('button', s.god.autoNews === Number(v) ? 'set-btn on' : 'set-btn', label);
     b.dataset.godautonews = v;
+    b.dataset.lvpin = '';                            // 盘中轻刷新：pinOn 变了解灰（见 syncGodLive）
     b.disabled = pinOn;
     autoNewsRow.append(b);
   }
   const autoNewsOff = el('button', s.god.autoNews == null ? 'set-btn on' : 'set-btn', '关');
   autoNewsOff.dataset.godautonewsoff = '';
+  autoNewsOff.dataset.lvpin = '';
   autoNewsOff.disabled = pinOn;
   autoNewsRow.append(autoNewsOff);
   rows.append(autoNewsRow);
-  if (s.god.autoNews != null) {
-    const eta = Number.isFinite(s.god.autoNewsAt) ? Math.max(0, s.god.autoNewsAt - s.i) : 0;
-    rows.append(el('p', 'god-prev', `自动新闻 ｜ 下次约 ${eta} 小时后`));
-  }
+  /* ⚠️ 倒计时**常驻渲染**（2026-10-10 code review Important）：以前是条件渲染，但
+     `autoNewsAt` 每根推进 ⇒ 火力集中在「打开那一刻」的读数会过期；常驻 ＋ `syncGodLive`
+     每帧定点改文本（不重建整块 ⇒ 不抹输入框）。非自动档时由 sync 隐藏。 */
+  const etaP = el('p', 'god-prev', '');
+  etaP.dataset.lveta = '';
+  if (s.god.autoNews == null) etaP.style.display = 'none';
+  else etaP.textContent = `自动新闻 ｜ 下次约 ${Number.isFinite(s.god.autoNewsAt) ? Math.max(0, s.god.autoNewsAt - s.i) : 0} 小时后`;
+  rows.append(etaP);
 
   const autoWashRow = el('div', 'set-row');
   const autoWashBtn = el('button', s.god.autoWash ? 'set-btn on' : 'set-btn', s.god.autoWash ? '开' : '关');
   autoWashBtn.dataset.godautowash = '';
+  autoWashBtn.dataset.lvwash = '';                   // 受 pinOn ＋ autoPump 双重影响
   autoWashBtn.disabled = pinOn || !!s.god.autoPump;
   autoWashRow.append(el('i', null, '自动造量'), autoWashBtn);
   rows.append(autoWashRow);
@@ -3329,9 +3339,11 @@ function godManipPage(s, gx) {
   const autoPumpRow = el('div', 'set-row');
   const apDn = el('button', s.god.autoPump === -1 ? 'set-btn on' : 'set-btn', '自动砸盘');
   apDn.dataset.godautopump = '-1';
+  apDn.dataset.lvpin = '';
   apDn.disabled = pinOn;
   const apUp = el('button', s.god.autoPump === 1 ? 'set-btn on' : 'set-btn', '自动拉盘');
   apUp.dataset.godautopump = '1';
+  apUp.dataset.lvpin = '';
   apUp.disabled = pinOn;
   const apStop = el('button', !s.god.autoPump ? 'set-btn on' : 'set-btn', '停');
   apStop.dataset.godautopump = '0';
@@ -3364,9 +3376,11 @@ function godManipPage(s, gx) {
   const pinRow = el('div', 'set-row');
   const pinDn = el('button', 'set-btn on', '砸针');
   pinDn.dataset.godpin = '-1';
+  pinDn.dataset.lvpin = '';                         // 盘中轻刷新：pin 结束（预算/时长用尽）⇒ 解灰
   pinDn.disabled = !!s.god.pin || !!s.god.eat;      // 审查 Minor 1：与自动扫单互斥（同根双推）
   const pinUp = el('button', 'set-btn on', '拉针');
   pinUp.dataset.godpin = '1';
+  pinUp.dataset.lvpin = '';
   pinUp.disabled = !!s.god.pin || !!s.god.eat;
   const pinStop = el('button', 'set-btn on', '停');
   pinStop.dataset.godpin = '0';
@@ -3389,14 +3403,19 @@ function godManipPage(s, gx) {
   /* 冷却置灰（2026-10-08 用户拍板）：距上次成功注入不足 `MANIP_NEWS_CD` 小时 ⇒ 两枚键一起灰掉
      （与「插针」那排同一套手感：置灰与可按要一眼分得开）。 */
   const newsCd = s.i - (Number.isFinite(s.god.newsAt) ? s.god.newsAt : -Infinity);
+  newsDn.dataset.lvnews = '';
+  newsUp.dataset.lvnews = '';
   if (newsCd < MANIP_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }
   newsRow.append(el('i', null, '假消息'), newsDn, newsUp);
   rows.append(newsRow);
-  /* 冷却读数（2026-10-09 沉浸增强）—— 置灰只说明「现在不能按」，这一行说明「还要等多久」
-     （`newsCd` 是距上次注入的小时数；从未注入 = `+Inf` ⇒ 条件假、不显示）。 */
-  if (newsCd < MANIP_NEWS_CD) {
-    rows.append(el('p', 'god-prev', `冷却中 · 还需 ${MANIP_NEWS_CD - newsCd} 小时`));
-  }
+  /* 冷却读数（2026-10-09 沉浸增强；2026-10-10 code review Important 改**常驻 ＋ 定点刷新**）：
+     置灰只说明「现在不能按」，这一行说明「还要等多久」；`newsCd` 每根递减 ⇒ 必须常驻
+     让 `syncGodLive` 每帧改文本（非冷却期隐藏）。 */
+  const cdP = el('p', 'god-prev', '');
+  cdP.dataset.lvcd = '';
+  if (newsCd < MANIP_NEWS_CD) cdP.textContent = `冷却中 · 还需 ${MANIP_NEWS_CD - newsCd} 小时`;
+  else cdP.style.display = 'none';
+  rows.append(cdP);
 
   /* 「新闻源与事件」开关（2026-10-08 用户拍板；2026-10-09 由「新闻源」扩名）：进入上帝模式
      **默认关** —— 4 条真实新闻播报 ＋ 巨鲸/ETF 有向买盘（`extFlow`）＋ 交易所停机（播报＋
@@ -3904,6 +3923,38 @@ export function updateFloat(s, ui) {
   renderInst(FLOATS.god, s, ui.god, null);
 }
 
+/**
+ * **god 浮窗的盘中轻量刷新**（2026-10-10 code review Important 修）——
+ * god 主体只在页码/版本号变时重建（保住三个输入框），但下列元素是**时间/引擎驱动**的，
+ * 不刷新就会停在「打开那一刻」：
+ *   · 假消息冷却（`newsAt` 固定、`s.i` 推进 ⇒ 倒计时递减、到期解灰）—— 文本 ＋ 两钮 disabled；
+ *   · 自动新闻 eta（`autoNewsAt − s.i` 递减）—— 文本；
+ *   · 插针 / 扫单 / 自动化开关的置灰（`s.god.pin` 由 `godPinTick` **内部**结束 ⇒ 不经 showGod）；
+ *   · 自动造量钮（还受 `autoPump` 影响）。
+ * 全部按 `data-*` 标记**定点**改，绝不 replaceChildren（输入框/焦点/滚动都保住）。
+ */
+function syncGodLive(panel, s) {
+  if (!(panel && s && s.god)) return;
+  const g = s.god;
+  const cd = MANIP_NEWS_CD - (s.i - (Number.isFinite(g.newsAt) ? g.newsAt : -Infinity));
+  const cdOn = cd > 0;
+  for (const b of panel.querySelectorAll('[data-lvnews]')) b.disabled = cdOn;
+  const cdEl = panel.querySelector('[data-lvcd]');
+  if (cdEl) {
+    cdEl.style.display = cdOn ? '' : 'none';
+    if (cdOn) cdEl.textContent = `冷却中 · 还需 ${Math.ceil(cd)} 小时`;
+  }
+  const etaEl = panel.querySelector('[data-lveta]');
+  if (etaEl) {
+    const on = g.autoNews != null;
+    etaEl.style.display = on ? '' : 'none';
+    if (on) etaEl.textContent = `自动新闻 ｜ 下次约 ${Number.isFinite(g.autoNewsAt) ? Math.max(0, g.autoNewsAt - s.i) : 0} 小时后`;
+  }
+  const pinOn = !!g.pin;
+  for (const b of panel.querySelectorAll('[data-lvpin]')) b.disabled = pinOn;
+  for (const b of panel.querySelectorAll('[data-lvwash]')) b.disabled = pinOn || !!g.autoPump;
+}
+
 /** 渲染单个实例（`bodyFn` 缺省走实例的 `ui.body`）。 */
 function renderInst(inst, s, ui, defaultBody) {
   if (!(ui && ui.on)) { detachFloat(inst); return; }
@@ -3958,6 +4009,11 @@ function renderInst(inst, s, ui, defaultBody) {
     const body = ui.body ? ui.body(s, ui.page) : (defaultBody ? defaultBody(s, ui.page, ui.step, ui.filt) : null);
     if (body) inst.panel.querySelector('.god-fpage').replaceChildren(body);
   }
+  /* god 浮窗的**盘中轻量刷新**（2026-10-10 code review Important）—— god 主体只在页码/版本号
+     变时重建（保住输入框），但「假消息冷却倒计时」「自动新闻 eta」「插针/扫单置灰」是**时间/
+     引擎驱动**的（`s.i` 推进、插针由 `godPinTick` 内部结束），不刷新就会停在打开那一刻。
+     这里每帧按 data 标记**定点**改文本与 disabled，绝不重建整块（输入框/焦点/滚动都保住）。 */
+  if (inst.id === 'god') syncGodLive(inst.panel, s);
   /* 面板贴着圆钮：钮在下半屏 → 面板往上弹；水平夹回视口内（面板宽由 `--float-w` 给，＋8px 余量）。
      高度由 `--float-h` 给（手机端兜底 64dvh）⇒ **两个方向**的 top 都要夹进
      「视口高 − 面板高 − 余量」（2026-10-08 三批修：旧版只夹了上弹支，钮在上半屏时面板向下
