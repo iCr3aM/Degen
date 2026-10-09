@@ -6438,6 +6438,36 @@ section('9as · 自动新闻（币种权重）＋ 自动造量 ＋ 自动拉盘 
   }
 }
 
+/* ═══════════════════ 9at · 假新闻禁「可证伪数据断言」（2026-10-10 拍板） ═══════════════════
+   用户红线：新闻文案**不得**出现可与图表对不上的**具体数据断言**——
+     · 绝对水位（「首破 X 万 / 十亿」「创新高 / 创纪录 / 三年低位」）；
+     · 方向词 × 绝对值（`%c` 是 `Math.abs` 口径，配「涨 / 跌」会自相矛盾）⇒ 全表禁用 `%c`；
+     · 硬编码价格 / 百分比（`$123` / `50%`）。
+   允许的数值只有播报那一刻的**占位符真值**：`%L` 现价 · `%C` 带符号 24h · `%A` 成交额 ·
+   `%R` 资金费率 · `%H` 热度 · `%M` 位移。
+   护栏：解析 god.js 的 MANIP_NEWS 块 ⇒ 抽出全部含「快讯」的字面量逐条扫禁词 ＋ 硬编码数字。 */
+section('9at · 假新闻禁「可证伪数据断言」（禁词 ＋ 硬编码 ＋ %c）');
+{
+  const src = fs.readFileSync(path.join(ROOT, 'src/core/god.js'), 'utf8');
+  const head = src.indexOf('export const MANIP_NEWS = {');
+  const blk = src.slice(head, src.indexOf('\n};', head));
+  const tpls = [...blk.matchAll(/'([^']*)'/g)].map(m => m[1]).filter(t => t.includes('快讯'));
+  const BAN = /首破|创新高|创纪录|创年内新高|历史新高|历史新低|三年低位|腰斩|归零|跌逾|急挫|暴跌|飙升|大涨|重挫|跳水|跌破|失守|崩盘|破纪录|翻倍|关口|逼近五成|五成|三成|两成|八成|九成|%c/;
+  const hits = tpls.filter(t => BAN.test(t));
+  check('9at① 全表模板无「绝对水位 / 定性方向 / 绝对值占位」禁词',
+    tpls.length >= 172 && hits.length === 0, `n=${tpls.length} | ${hits.join(' | ')}`);
+  const hard = tpls.filter(t => /\$\d/.test(t) || /%\d/.test(t));
+  check('9at② 全表模板无硬编码价格（`$`+数字）与百分比（`%`+数字）', hard.length === 0, hard.join(' | '));
+  /* 行为复核（另一块板、另一日期）：填充后每条含币符号、无残留占位符、无换行。 */
+  const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2023, 6, 1)) });
+  god.enableGod(s);
+  const nv = engine.newsVars(s, 'BTC');
+  const filled = tpls.map(t => engine.fillNews(t, nv));
+  const badFill = filled.filter(t => /%[A-Za-z]/.test(t) || t.includes('\n') || !t.includes('BTC'));
+  check('9at③ 全表模板填充后无残留占位符 / 无换行 / 全部含币符号',
+    filled.length >= 172 && badFill.length === 0, badFill.join(' | '));
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);
