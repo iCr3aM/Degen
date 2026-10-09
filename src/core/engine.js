@@ -4700,9 +4700,9 @@ export function godManipPump(s, sym, dir, notional) {
  *     历史价位标记，属于「隐含流动性」，不是可被吃掉的真实挂单）；
  *   · 执行走 `godManipPush` 全套物理（手续费进 `exRev` 回流管道、冲击进 `pushFlow`、
  *     热度喂饱、硬夹照吃）—— 扫单不是「直接改簿」，是**一笔吃穿全部挂单的市价单**；
- *   · 成功后**清空该侧离散单**（被吃掉了）—— 冷启动生成器下一根会照常补新单（真实盘口
+ *   · 成功后**清空该侧离散单**（被吃掉了）—— `lobTick` 治理器下一根会照常回补新单（真实盘口
  *     被扫后做市商回填），所以「自动扫单」每根都有单可吃、形成持续买/卖压；
- *   · 簿空 / 未生成 ⇒ 返回 why（自动模式下 harmless no-op，开关不自动停 —— 下一根有新单）。
+ *   · 簇空 / 未生成 ⇒ 返回 why（自动模式下 harmless no-op，开关不自动停 —— 下一根有新单）。
  * @param {number} dir +1 吃卖盘（拉）/ −1 吃买盘（砸）
  * @returns {{ok:true, ate:number, impact:number, cost:number}|{ok:false, why:string}}
  */
@@ -4714,6 +4714,9 @@ export function godEatBook(s, sym, dir) {
   const arr = dir > 0 ? b.asks : b.bids;
   const sum = arr.reduce((a, r) => a + r.n, 0);
   if (!(sum > 0)) return { ok: false, why: '该侧没有挂单' };
+  /* 浅簿专述（审查 Minor 2）：单侧合计够不到 `MANIP_MIN` 时，「名义额至少 1000」会让人
+     困惑（明明是引擎自己算的名义）—— 给一句贴场景的准话。 */
+  if (sum < MANIP_MIN) return { ok: false, why: `该侧挂单合计 ${fmtMoneyShort(sum)}，扫单至少 ${MANIP_MIN}` };
   const p = godManipPush(s, sym, dir, sum);
   if (!p.ok) return p;
   arr.length = 0;                     // 被扫空：离散单全部移除（做市商下一根回填）
@@ -4739,9 +4742,15 @@ export function godTargetPush(s, sym, dir, pct) {
   if (!s.god) return { ok: false, why: '非上帝模式' };
   if (dir !== 1 && dir !== -1) return { ok: false, why: '方向非法' };
   const d = Math.min(0.25, Math.max(0.002, Math.abs(pct)));
+  const cap = godCapOf(s);
+  const liq = hourLiqOf(s, sym, s.i);
+  const satN = liq > 0 ? cap * liq : Infinity;   // 饱和名义：q = cap 处 impact 顶死
   let lo = MANIP_MIN;
   let hi = Math.max(MANIP_MIN * 2, hourLiqBase(s, sym, s.i) * 2);
-  for (let g = 0; g < 10 && manipPreview(s, sym, dir, hi).impact < d; g++) hi *= 4;
+  if (hi > satN) hi = satN;
+  for (let g = 0; g < 10 && hi < satN && manipPreview(s, sym, dir, hi).impact < d; g++) {
+    hi = Math.min(satN, hi * 4);   // 审查 Important 1：撞到饱和名义就停探测 —— 超推部分纯烧手续费
+  }
   for (let k = 0; k < 22; k++) {
     const mid = (lo + hi) / 2;
     if (manipPreview(s, sym, dir, mid).impact < d) lo = mid; else hi = mid;

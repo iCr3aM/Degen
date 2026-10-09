@@ -3281,10 +3281,13 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   const eatRow = el('div', 'set-row');
   const eatBid = el('button', 'set-btn on', '吃买盘');
   eatBid.dataset.godeat = '-1';
+  eatBid.disabled = !!s.god.pin;                    // 审查 Minor 1：插针伺服中与扫单互斥（同根双推）
   const eatAsk = el('button', 'set-btn on', '吃卖盘');
   eatAsk.dataset.godeat = '1';
+  eatAsk.disabled = !!s.god.pin;
   const eatAuto = el('button', 'set-btn on', s.god.eat ? (s.god.eat.dir < 0 ? '自动↓' : '自动↑') : '自动');
   eatAuto.dataset.godeatauto = '';
+  eatAuto.disabled = !!s.god.pin;
   eatRow.append(el('i', null, '扫单'), eatBid, eatAsk, eatAuto);
   rowsC.append(eatRow);
 
@@ -3313,10 +3316,10 @@ export function openGod(s, sel = null, page = 0, fui = { on: true, alpha: 1 }) {
   const pinRow = el('div', 'set-row');
   const pinDn = el('button', 'set-btn on', '砸针');
   pinDn.dataset.godpin = '-1';
-  pinDn.disabled = !!s.god.pin;
+  pinDn.disabled = !!s.god.pin || !!s.god.eat;      // 审查 Minor 1：与自动扫单互斥（同根双推）
   const pinUp = el('button', 'set-btn on', '拉针');
   pinUp.dataset.godpin = '1';
-  pinUp.disabled = !!s.god.pin;
+  pinUp.disabled = !!s.god.pin || !!s.god.eat;
   const pinStop = el('button', 'set-btn on', '停');
   pinStop.dataset.godpin = '0';
   pinStop.disabled = !s.god.pin;
@@ -3459,7 +3462,10 @@ const feedPctLabel = i => `${Math.round(FEED_STEPS[i] * 1000) / 10}%`;
 function playerPosOf(s) {
   const pos = s.positions && s.positions[s.sym];
   if (!(pos && pos.notional > 0 && pos.size > 0)) return null;
-  return { pos, lp: liquidationPrice(pos), lev: effLevOf(pos), side: pos.side };
+  /* 强平价带 `canLiquidate` 守卫（审查 Important 2）：超额抵押 / 1x 多头（借入 0）没有强平线
+     —— `liquidationPrice` 会返回负数或 NaN，画出来就是「强平 −$X」的鬼行；三处浮窗统一 '--'。 */
+  const liq = canLiquidate(pos);
+  return { pos, lp: liq ? liquidationPrice(pos) : null, lev: effLevOf(pos), side: pos.side, liq };
 }
 function floatBody(s, page, bookStep = 1, logFilt = 0) {
   const w = godWatchOf(s, s.sym);
@@ -3488,11 +3494,12 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const avail = 1 - 2 * MARGIN;
     const clampT = v => Math.min(1 - MARGIN, Math.max(MARGIN, v));
     const rows = w.liqs.map(l => ({ y: yFrac(l.price), l }));
-    /* 玩家自己的强平线（2026-10-09 · 用户拍板）：有仓就画一条「你」的条。纵轴**不**为它
+    /* 玩家自己的强平线（2026-10-09 · 用户拍板）：有仓**且有强平线**就画一条「你」的条。纵轴**不**为它
        延展（1x 仓的强平价 ≈ 0，会把整个视窗拉爆）—— 越界时夹到边缘照画，精确数字在巨鲸页。
-       条宽 = 玩家名义占「NPC 合计 ＋ 玩家」的份额（与 NPC 行同一把尺）。 */
+       条宽 = 玩家名义占「NPC 合计 ＋ 玩家」的份额（与 NPC 行同一把尺）。
+       超额抵押 / 1x 多头（借入 0）没有强平线 ⇒ 不画鬼条（审查 Important 2）。 */
     const you = playerPosOf(s);
-    if (you) {
+    if (you && you.lp != null) {
       let sum = 0;
       for (const l of w.liqs) sum += l.notional;
       rows.push({
@@ -3567,7 +3574,7 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const you = playerPosOf(s);
     if (you) {
       box.append(el('div', 'god-frow2 you',
-        `你·${you.side === 'long' ? '多' : '空'} ${Math.round(you.lev * 10) / 10}x ｜ ${fmtMoneyShort(you.pos.notional)}@${fmtFloatPrice(you.pos.entry)} ｜ 强平 ${fmtFloatPrice(you.lp)} (${fmtPct(you.lp / t - 1)})`));
+        `你·${you.side === 'long' ? '多' : '空'} ${Math.round(you.lev * 10) / 10}x ｜ ${fmtMoneyShort(you.pos.notional)}@${fmtFloatPrice(you.pos.entry)} ｜ 强平 ${you.lp != null ? `${fmtFloatPrice(you.lp)} (${fmtPct(you.lp / t - 1)})` : '--'}`));
     }
     const longs = [], shorts = [];
     for (const tr of w.tiers) {
@@ -3620,7 +3627,7 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
        那一行挂 `you` 标记（价格列缀「你」＋ accent 高亮，与「墙」同一套行内标记语言）；
        精确数字在巨鲸页，窗口外不标（步进拨大就能看到）。 */
     const you = playerPosOf(s);
-    const youK = you ? Math.floor(you.lp / step + 1e-9) : null;
+    const youK = you && you.lp != null ? Math.floor(you.lp / step + 1e-9) : null;   // 无强平线不注入
     const bucketOf = rows => {
       const m = new Map();
       for (const r of rows) {
