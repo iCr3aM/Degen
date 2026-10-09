@@ -2219,9 +2219,17 @@ function npcRealised(long, mag, avg, price) {
  * 分档按「当日流动性比例」五档（用户拍板；2026-10-09 补 1%）：0.1% / 0.5% / 1% / 2% / 5%
  * —— 跨年代自适应（2013 年的 $1m 与 2024 年的 $1m 不是一回事），低于 0.1% 不上日志；
  * 浮窗页 4 底部那排过滤档与 `FEED_STEPS` **一一对应**（选中第 i 档 ⇒ 只留 `t ≥ i` 的行）。
- * ⚠️ **不进存档**（save.js `EPHEMERAL`）、`rewindTo` 清空、`FEED_CAP` 环形封顶 ——
- *    tape 是「最近发生的事」，不是账本，不参与任何玩法判定。 */
-export const FEED_CAP = 240;
+ * ⚠️ **不进存档**（save.js `EPHEMERAL`）、`rewindTo` 清空、**保留窗口 ＋ 总量硬顶**（见 `FEED_DAYS`
+ *    与 `FEED_CAP`）—— tape 是「最近发生的事」，不是账本，不参与任何玩法判定。 */
+export const FEED_CAP = 1200;
+/**
+ * tape 的**保留窗口**（2026-10-09 用户拍板「保留 3 日或更多日内的开平爆仓数据，超出显示数量
+ * 则截断」）：按**游戏时龄**裁剪 —— `FEED_DAYS`（3 个游戏日 = 72h）内的开/平/爆仓都留，
+ * 更老的截掉；显示层本来就有 maxRows 截断（装框恒定）。旧口径 `FEED_CAP = 240` 只按条数
+ * 环形覆盖 —— NPC 大单风暴几小时就把玩家三天前的开/平记录冲掉，5% 深档常年空、列表看着
+ * 在「跳动」。总量硬顶 1200 条（72h × 常态喂入量 ＋ 风暴余量）兜住内存；两条同时生效。
+ */
+export const FEED_DAYS = 3;
 /** 分档阈值（名义 ÷ 当日流动性）—— 与浮窗日志页底部过滤档同序、同源（单一事实）。 */
 export const FEED_STEPS = [0.001, 0.005, 0.01, 0.02, 0.05];
 /** 名义额 ÷ 当日流动性 → 档位（0..4，从浅到深）；低于 0.1% ⇒ −1（不上日志）。 */
@@ -2231,7 +2239,11 @@ export function feedTier(notional, liqDay) {
   for (let i = FEED_STEPS.length - 1; i >= 0; i--) if (r >= FEED_STEPS[i]) return i;
   return -1;
 }
-function feedPush(s, sym, k, price, notional, minTier = -1) {
+/**
+ * **tape 大单事件流**（喂入口）：k = 六型（0 开多…5 爆空）、`minTier` 强制档位（玩家强平传 0）。
+ * ⚠️ 导出给审计 9aq 直调（与 `exRevSweep` 同一先例）—— 保留窗口的行为断言需要喂任意时龄的条目。
+ */
+export function feedPush(s, sym, k, price, notional, minTier = -1) {
   if (!(price > 0) || !(notional > 0)) return;
   /* M4b：档位阈值同样过 `gm` —— 市场放大 ⇒ 同一笔名义的「分量」按比例缩水（与 `lobTick` 里
      那条取值同源）。`gm === 1` ⇒ 逐位不变。
@@ -2244,7 +2256,13 @@ function feedPush(s, sym, k, price, notional, minTier = -1) {
   if (tier < 0) return;
   if (!s.feed) s.feed = [];                        // 旧档 / 回退后惰性补建（不升存档版）
   s.feed.push({ i: s.i, sym, k, p: price, n: notional, t: tier });
-  if (s.feed.length > FEED_CAP) s.feed.splice(0, s.feed.length - FEED_CAP);
+  /* 保留窗口 ＋ 总量硬顶（2026-10-09 用户拍板）：3 日（72h）内的开/平/爆都留，超龄截掉；
+     极端风暴下再由 FEED_CAP 兜底。只在超限时才扫（常态零开销）。 */
+  if (s.feed.length > FEED_CAP || s.feed[0].i < s.i - FEED_DAYS * 24) {
+    const floor = s.i - FEED_DAYS * 24;
+    if (s.feed[0].i < floor) s.feed = s.feed.filter(r => r.i >= floor);
+    if (s.feed.length > FEED_CAP) s.feed.splice(0, s.feed.length - FEED_CAP);
+  }
 }
 
 /**

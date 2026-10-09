@@ -5164,11 +5164,13 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
   const renderSrc9y = readSrc9y('src/ui/render.js');
   const styleSrc9y = readSrc9y('src/ui/style.css');
 
-  check('9ae① 引擎：feedPush / feedTier / FEED_STEPS / FEED_CAP 定义 ＋ rewindTo 清空（会话级口径）',
+  check('9ae① 引擎：feedPush / feedTier / FEED_STEPS / FEED_CAP（1200 硬顶）＋ FEED_DAYS 保留窗口 ＋ rewindTo 清空',
     engSrc9y.includes('function feedPush(s, sym, k, price, notional, minTier = -1)')
     && engSrc9y.includes('export function feedTier(notional, liqDay)')
     && engSrc9y.includes('export const FEED_STEPS = [0.001, 0.005, 0.01, 0.02, 0.05]')
-    && engSrc9y.includes('export const FEED_CAP = 240')
+    && engSrc9y.includes('export const FEED_CAP = 1200')
+    && engSrc9y.includes('export const FEED_DAYS = 3;')
+    && engSrc9y.includes('if (s.feed.length > FEED_CAP || s.feed[0].i < s.i - FEED_DAYS * 24) {')
     && engSrc9y.includes('s.feed = [];'));
 
   check('9ae② 挂点：六档建减仓发事件（s, sym）＋ 做市盘两处**不带**（对手盘不上 tape）',
@@ -5934,7 +5936,7 @@ section('9al · 玩家仓位可见性（热力图/巨鲸/订单/tape）＋ 插�
     && renderSrcAl.includes('god-hm-bar ${r.l.side} you')
     && renderSrcAl.includes("'god-frow2 you'")
     && renderSrcAl.includes("r.you ? '你 '")
-    && renderSrcAl.includes('you: k === youK')
+    && renderSrcAl.includes('you: isYou,')   // 2026-10-09 强平名义注入：isYou 同时决定标记与加量
     && styleSrcAl.includes('.god-hm-bar.you') && styleSrcAl.includes('.god-frow2.you')
     && styleSrcAl.includes('.gb-row.you i'));
   check('9al③ 沙盒旋钮标签带当前值（预设的非档位值如 ×1.4 / +0.12 玩家可见）',
@@ -6146,7 +6148,7 @@ section('9ao · 现实地板 godFloor ＋ 潜在基线 latentOf ＋ 步进行固
       && godSrcAo.includes('if (!s.god) return shockFactorOf(playerPart + npcPart, false);')
       && godSrcAo.includes('return Math.max(f, SHOCK.godFloor);'));
     check('9ao⑦ 结构：render 空桶填 latentOf ＋ 买卖比含基线 ＋ 日志列表固定高',
-      rendSrcAo.includes('const notional = o ? o.notional : latent(k, dir);')
+      rendSrcAo.includes('const base = o ? o.notional : latent(k, dir);')   // 2026-10-09 强平注入改形：base ＋ isYou 加量
       && rendSrcAo.includes('aUsd += oa ? oa.notional : latent(ka, 1);')
       && rendSrcAo.includes("list.style.height = `${maxRows * rowH}px`;")
       && styleSrcAo.includes('.gfd-list { overflow-y: auto;'));
@@ -6211,6 +6213,40 @@ section('9ap · 做空供应量上限：硬拒 · 费率 jump · 同口径范围
     check('9ap⑤ 范围：多头不进 jump 段（≤ kRate 上界）＆ 无仓常态乘数恒 1',
       mulLong <= 1 + C.MARGIN.util.kRate + 1e-9 && mulNone === 1,
       `long=${f(mulLong, 2)} none=${f(mulNone, 2)}`);
+  }
+}
+
+/* ═══════════════════ 9aq · tape 保留窗口 ＋ 强平价挂单注入（2026-10-09 三拍板） ═══════════════════ */
+section('9aq · tape 3 日保留窗口 ＋ 订单簿强平价注入');
+{
+  /* ① 行为：超龄条目被窗口裁掉（3 日 = 72h）、新鲜条目保留、FEED_CAP 1200 硬顶仍在。 */
+  {
+    const s = await mk({ sym: 'BTC', i: idx(at(2021, 5, 10)) });
+    s.feed = [
+      { i: s.i - 73 * 24, sym: 'BTC', k: 0, p: 5e4, n: 1e7, t: 4 },   // 73 天前 ⇒ 必须被裁
+      { i: s.i - 2 * 24, sym: 'BTC', k: 2, p: 5e4, n: 1e7, t: 3 },    // 2 天前 ⇒ 留
+      { i: s.i - 1, sym: 'BTC', k: 4, p: 5e4, n: 1e7, t: 4 },         // 1 小时前 ⇒ 留
+    ];
+    engine.feedPush(s, 'BTC', 0, 5e4, 1e7, 0);                        // 推一根触发窗口扫描
+    check('9aq① tape 保留窗口：>72h 的开平爆仓记录被裁、窗口内保留（超出显示数量由显示层截断）',
+      s.feed.length === 3 && s.feed.every(r => r.i >= s.i - 3 * 24),
+      `留存 ${s.feed.length} 条`);
+  }
+  /* ② 源断言：强平价格注入玩家名义（NPC 量＋玩家量同格）＋ 买卖比不计条件单 ＋ 你 标记沿用。 */
+  {
+    const rendSrcAq = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+    check('9aq② 订单簿：强平价格 = NPC 挂单 ＋ 玩家强平名义（多头砸买盘/空头买卖盘，几何自动对侧）＋ 买卖比不计',
+      rendSrcAq.includes('const isYou = you && k === youK;')
+      && rendSrcAq.includes('const notional = base + (isYou ? you.pos.notional : 0);')
+      && rendSrcAq.includes('买卖比不计它（那是「将会发生」的条件单，不是已挂的流动性）'));
+    /* ③ 保证金率口径锚（2026-10-09 联网核实）：`marginRateOf = 权益 ÷ 名义` 属「资金方向」口径
+       —— >100% = 超额抵押 / 浮盈丰厚，现实合法（Bybit IM Rate ≥100% 只是不能再加仓、
+       Aave 超额抵押 120–150%）；本作借入归零 ⇒ 无强平线（instrumentOf 翻 perp）已处理。
+       UI 不封顶、不改码 —— 断言公式注释在场，防将来口径漂移。 */
+    const posSrcAq = fs.readFileSync(path.join(ROOT, 'src/core/positions.js'), 'utf8');
+    check('9aq③ 保证金率口径：权益/名义（资金方向）—— >100% = 超额抵押合法态，不封顶',
+      posSrcAq.includes('保证金率 = 仓位权益 / 名义价值')
+      && posSrcAq.includes('export function marginRateOf(pos, price) {'));
   }
 }
 

@@ -3617,11 +3617,17 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
       for (let i = 1; i <= VIEW; i++) {
         const k = midK + dir * i;
         const o = m.get(k);
-        const notional = o ? o.notional : latent(k, dir);
+        /* 玩家强平单注入（2026-10-09 · 用户拍板「强平价格的挂单要正常显示玩家的数量与金额」）：
+           强平价那一格的量 = NPC 挂单（s.lob ＋ 潜在基线）**＋ 玩家被强平那一刻进簿的名义**
+           —— 多头强平 = 砸进买盘（lp < mid，几何上自动落在买侧）、空头强平 = 买穿卖盘。
+           买卖比不计它（那是「将会发生」的条件单，不是已挂的流动性）。 */
+        const isYou = you && k === youK;
+        const base = o ? o.notional : latent(k, dir);
+        const notional = base + (isYou ? you.pos.notional : 0);
         vis.push({
           price: k * step, notional, wall: o ? o.wall : false, qty: 0, cum: 0,
           gate: k % 10 === 0 ? 1 : k % 5 === 0 ? 2 : 0,
-          you: k === youK,
+          you: isYou,
         });
       }
       return vis;
