@@ -1233,6 +1233,13 @@ canvas.curve {
 /* 内容按浮窗宽重排（`--float-w`）：控件字号 / 高度收一档，四枚并排（自动新闻）也放得下。
    ⚠️ 不动 `.god-pick .set-btn { width: 100% }`（公元 / 月档排靠它撑满格）—— 只压高度与字号。 */
 .god-float.god .set-row, .god-float.god .god-in, .god-float.god .set-btn { font-size: 11px; }
+/* ⚠️ **浮窗内的字号一律固定 px**（与上面那条纪律同源）：`.god-prev` 原来走 `calc(11px * --ui)`，
+   全局缩放（`--ui` 可到 1.35）下涨到 ~15px ⇒ 340px 宽里那行读数**折行**、把下方控件整块顶下去
+   （2026-10-10 用户报「文字换行 ⇒ 元素移动」）。收成 10px ＝ 最坏情形
+   （`$99,999.99 ｜ -99.99% ｜ +999.9% ｜ 100%`）仍单行放得下，且与 `.god-frow2` 同档。 */
+.god-float.god .god-prev { font-size: 10px; }
+/* 行首标签也不许折行（「自动操盘 / 新闻源与事件」这类长标签挤到就换行 ⇒ 行高变、下方跟着跳） */
+.god-float.god .set-row i { white-space: nowrap; }
 .god-float.god .set-row { gap: 6px; }
 .god-float.god .set-btn { height: 26px; min-width: calc(44px * var(--ui)); padding: 0 6px; }
 .god-float.god .god-in { height: 26px; }
@@ -1286,8 +1293,18 @@ canvas.curve {
 .god-sbrow .god-presets { grid-template-columns: repeat(4, 1fr); }
 .god-sbrow .set-btn { padding: 0 4px; }   /* 5 列并排时给「0.15×」这类稍长的字留余地 */
 
-/* 操盘台每行动作下面那行预览（2026-10-07）：小字弱色，随输入即时重算 */
-.god-prev { margin: 0; font-size: calc(11px * var(--ui)); color: var(--mut); }
+/* 操盘台每行动作下面那行读数 / 预览（2026-10-07）：小字弱色，随状态即时重算。
+   ⚠️ **不折行**（2026-10-10 用户拍板「文字固定、元素不移动」）：那行常驻读数
+   （`现价 ｜ 24h ｜ 偏离 ｜ 热度`）在 340px 浮窗里一旦折行，会把下方整块控件顶下去 ——
+   `nowrap` 锁死单行，真溢出时省略号收尾（浮窗内字号另收，见 `.god-float.god .god-prev`）。 */
+.god-prev {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: calc(11px * var(--ui));
+  color: var(--mut);
+}
 
 /* ══════════════ 开场叙事（Batch 4 · B19） ══════════════
    复用 `.confirm` 的盒子，**不铺暗底**（不是「点外面就能关掉」的菜单，是这一局的入口）。
@@ -2273,6 +2290,9 @@ button { user-select: none; -webkit-user-select: none; }
      GAP 的锚，10.5px 在 12px 行内放得下）、订单簿 9 → 10 → 11px（行高 13 → 15px，
      三列固定列宽同步 78 / 52 / 68px，track 吸收；行数装框后一屏恒放下 —— 三批拍板）。 */
   .god-ftab, .god-fx, .god-frow2, .god-fnote { font-size: 12px; }
+  /* 桌面档浮窗更宽（420 / 480px）⇒ 那行读数放大一档仍单行放得下（手机端 10px 不动）。
+     选择器要带 `.god-float.god` 前缀才压得过基座那条同名的固定 10px（特异度 3 类）。 */
+  .god-float.god .god-prev { font-size: 12px; }
   .god-hm-bar { font-size: 10.5px; }
   .god-hm-now { font-size: 11px; }
   .gb-row, .gb-head { font-size: 11px; line-height: 15px; }

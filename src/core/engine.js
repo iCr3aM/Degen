@@ -3260,9 +3260,15 @@ function npcBuild(s, sym, m, i) {
 function npcOtherTick(s) {
   if (!s.mkt) s.mkt = {};
   const adv = s.adv || {};
+  /* ⚠️ **跳过「此刻还没上线」的币**（2026-10-10 用户报「XRP 还没上线却出现 XRP 的新闻」）：
+     `prefetchAllCoins` 会把 8 币全下下来 ⇒ `isLoaded` 恒真，旧写法会给未上市币也建格
+     （`mktOf` 无 unlock 闸）⇒ `s.mkt` 在 2013 年就躺着 XRP/ETH/SOL 的格子，向下游
+     （`autoNewsSym` 抽币、`crossHeat` 共振、`meanHeatOf` 起手值）泄漏「未来币」。
+     闸门与 `rewindTo` / 下单路径同源（`timeOf(s) >= c.unlock`）。 */
+  const t = timeOf(s);
   for (const c of COINS) {
     const sym = c.sym;
-    if (sym === s.sym || !isLoaded(sym)) continue;
+    if (sym === s.sym || !isLoaded(sym) || t < c.unlock) continue;
     const m = mktOf(s, sym);
     settleFng(s, sym, m, s.i);   // 散户接盘层读 fng ⇒ 其他币也要先日频结算（与 tickMarket 同相位）
     npcBuild(s, sym, m, s.i);
@@ -4778,14 +4784,21 @@ export function godEatTick(s) {
  *     `sqrt` 把 50:1 压到约 7:1 —— 仍是「大币常上头条」（现实口径：媒体覆盖率与市值/活跃度
  *     正相关，BTC/ETH 常年占绝大多数版面），但小币也有露脸机会（山寨币新闻确实是少数但存在）。
  *   · **5% 地板**：任何已加载币至少占 `0.05/n` 权重 ⇒ 刚上市的小币不会被完全饿死。
- *   · **只抽 `s.mkt` 里有格的币**（已进过市场的）—— 未上市的币连行情都没有，播它读不出数。
+ *   · **只抽「此刻已上线」的币**（`c.unlock <= timeOf(s)` 且行情已加载）—— `s.mkt` 里可能
+ *     残留**未上线**的币格子（`npcOtherTick` 对已加载币建格，而 `prefetchAllCoins` 会把 8 币
+ *     全下下来 ⇒ 2013 年就有 XRP 格子）。不过滤就会播「XRP 还没上线却上新闻」的穿帮快讯
+ *     （2026-10-10 用户报）。未上市币连行情都没有，播它读不出数。
  *   · 流动性取不到（交易日缺口 / 全 0）⇒ **等权兜底**（宁可平均，不因一个缺格把新闻卡死）。
  *   · 确定性：走 `randFast` 通道 `'autoNS'` ⇒ 同种子同小时同结果，断点续跑可复现。
  * ⚠️ 导出给审计 9as 直调（与 `exRevSweep` / `feedPush` 同一先例）—— 权重分布要能单独测。
- * @returns {string} 币符号（保证是 `s.mkt` 的键；无币时退回 `s.sym`）
+ * @returns {string} 币符号（保证是「此刻已上线」的币；无币时退回 `s.sym`）
  */
 export function autoNewsSym(s) {
-  const syms = Object.keys(s.mkt || {});
+  const t = timeOf(s);
+  const syms = Object.keys(s.mkt || {}).filter(sym => {
+    const c = coinOf(sym);
+    return !!c && t >= c.unlock && isLoaded(sym);
+  });
   if (!syms.length) return s.sym;
   if (syms.length === 1) return syms[0];
   const n = syms.length;
@@ -5052,6 +5065,10 @@ export function fillNews(tpl, vars) {
 export function godFakeNews(s, sym, dir) {
   if (!s.god) return { ok: false, why: '非上帝模式' };
   if (dir !== 1 && dir !== -1) return { ok: false, why: '方向非法' };
+  /* 上线闸（2026-10-10 用户报「XRP 还没上线却出现 XRP 的新闻」）：手动 / 自动新闻都必须
+     落在**已上线**的币上（与下单路径 `openOrder` 的门槛同源）。 */
+  const coin = coinOf(sym);
+  if (!coin || timeOf(s) < coin.unlock) return { ok: false, why: `${sym} 还没上线` };
   /* 冷却闸：`newsAt` 未写过 ⇒ `−Infinity` ⇒ 恒可发（旧局 / 首次点击逐位不变）。 */
   const last = Number.isFinite(s.god.newsAt) ? s.god.newsAt : -Infinity;
   const cd = s.i - last;

@@ -2918,7 +2918,8 @@ section('9s · 上帝局重开保上帝（doRestart 投信箱 → 开机 bootGod
         与玩家 UI 形态解耦；`cascadeMulOf` 只剩逐笔热度加料一处用途。
      ② **深度饱和**（2014 年「几十亿只拉 3%」的三层天花板：q>0.25 单笔饱和 / 上限=σ / 压力位
         吸收）：上帝局玩家侧 cap 放宽到 1.0（单笔上限 σ→2σ）；NPC 侧三通道不放宽（红线 A）；
-        预览在饱和时提示「深度不足 · 超出部分无效」。
+        预览在饱和时提示「深度不足 · 超出部分无效」—— 2026-10-10 手动名义行删除后，提示改由
+        `main.onGodTarget` 的日志承担（「深度不足 · 已推到饱和」）。
    ⚠️ 纯函数断言走 `impact.js`（无吸收、无状态）——`absorbedImpact` 非线性，含它的
       `manipPreview` 位移只做**单调**对比，不咬精确倍数。 */
 section('9t · 爆仓潮解闸（stampede 不再看玩家形态）＋ 上帝局深度 cap 1.0 ＋ 预览饱和提示');
@@ -2962,9 +2963,11 @@ section('9t · 爆仓潮解闸（stampede 不再看玩家形态）＋ 上帝局�
   const pvSmall = engine.manipPreview(sN, 'BTC', 1, 1e4);
   check('9t 预览 sat 标志：小额（q≪cap）= false', pvSmall.sat === false, `impact=${f(pvSmall.impact, 5)}`);
 
-  /* ④ 预览提示 + cap 缺省参数锚点 */
-  check('9t 预览行带「深度不足 · 超出部分无效」提示（render）',
-    renderSrc.includes('深度不足 · 超出部分无效'));
+  /* ④ 饱和提示 + cap 缺省参数锚点
+     ⚠️ 2026-10-10：手动名义行（原预览行）随用户拍板删除 ⇒ 饱和提示**挪到「目标价」日志**
+     （`main.js` 的 `onGodTarget` 播报「深度不足 · 已推到饱和」），锚点跟着搬。 */
+  check('9t 饱和提示：main「目标价」播报带「深度不足 · 已推到饱和」',
+    fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8').includes('深度不足 · 已推到饱和'));
   check('9t impact.js 五个入口都带缺省 cap（不传逐位不变）',
     (impactSrc.match(/cap = SLIP\.cap/g) || []).length === 5,
     `实得 ${(impactSrc.match(/cap = SLIP\.cap/g) || []).length} 处（2026-10-07 走簿新增 baseLadder / walkBook 两入口，同守「不传 = SLIP.cap」口径）`);
@@ -5582,15 +5585,18 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     && engSrc9ah.includes('if (!eventsOff(s)) {')
     && engSrc9ah.includes('s.god.newsAt = null;')
     && engSrc9ah.includes('s.god.newsN = null;'));
-  check('9ah① M4d/M4e/M4f 接线：godreal 三处 ＋ 冷却置灰 ＋ 长按连发 ＋ 日志条 6 行/120px',
+  check('9ah① M4d/M4e/M4f 接线：godreal 三处 ＋ 冷却置灰 ＋ 手动操盘行摘除（godpump 三处清零）＋ 日志条 6 行/120px',
     bindSrc9ah.includes("'godreal'")
     && mainSrc9ah.includes('if (d.godreal !== undefined)') && mainSrc9ah.includes('s.god.noRealNews = !s.god.noRealNews;')
     && rendSrc9ah.includes("realBtn.dataset.godreal = ''")
     && rendSrc9ah.includes('if (newsCd < MANIP_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }')
-    && mainSrc9ah.includes('const PUMP_REPEAT_MS = 200;')
-    && mainSrc9ah.includes('function pumpStop()') && mainSrc9ah.includes('pumpAcc.timer = setInterval(')
-    && mainSrc9ah.includes('window.addEventListener(\'pointerup\', pumpStop);')
-    && mainSrc9ah.includes('return onGodPump(node, ev);')
+    /* 2026-10-10 用户拍板「删手动操盘行」：`godpump` 一键组合拳 ＋ 长按连发整链退役
+       （render 输入框 / main 处理器与节拍器 / bind 键表三处一起摘，缺一处 = 死键或点了没反应）。 */
+    && !mainSrc9ah.includes('function onGodPump(')
+    && !mainSrc9ah.includes('const PUMP_REPEAT_MS = 200;')
+    && !rendSrc9ah.includes("el('input', 'god-in god-manip')")
+    && !bindSrc9ah.includes("'godpump'")
+    && rendSrc9ah.includes("autoRow.append(el('i', null, '自动操盘'), autoWashBtn, apDn, apUp, apStop);")
     && rendSrc9ah.includes("&& window.matchMedia('(min-width: 1280px)').matches) ? 6 : 2;")
     && cssSrc9ah.includes('.logline { height: calc(120px * var(--ui)); }'));
 
@@ -6466,6 +6472,31 @@ section('9at · 假新闻禁「可证伪数据断言」（禁词 ＋ 硬编码 �
   const badFill = filled.filter(t => /%[A-Za-z]/.test(t) || t.includes('\n') || !t.includes('BTC'));
   check('9at③ 全表模板填充后无残留占位符 / 无换行 / 全部含币符号',
     filled.length >= 172 && badFill.length === 0, badFill.join(' | '));
+
+  /* ④ **上线闸**（2026-10-10 用户报「XRP 还没上线却出现 XRP 的新闻」）：
+     建 2013 局、把 8 币全加载（复刻 `prefetchAllCoins` 全量预热），并**手动注入** XRP 格子
+     （复刻旧 `npcOtherTick` 给未上市币建格）⇒ `autoNewsSym` 600 次一律不得抽到未上市币；
+     `godFakeNews` 对未上市币必须 ok:false。 */
+  const s13 = await mk({ sym: 'BTC', mode: 'fut', cash: 1e8, i: idx(at(2013, 6, 15)) });
+  god.enableGod(s13);
+  for (const sy of ['BTC', 'ETH', 'XRP', 'DOGE', 'SOL']) await market.loadCoin(sy);
+  s13.mkt.XRP = { heat: 0.5 };                       // 「未来币」格子（旧实现的形状）
+  const i13 = s13.i; let badSym = '';
+  for (let h = 0; h < 600; h++) {
+    s13.i = i13 + h;
+    const sym = engine.autoNewsSym(s13);
+    const c = C.coinOf(sym);
+    if (!c || engine.timeOf(s13) < c.unlock) { if (!badSym) badSym = `${sym}@h${h}`; }
+  }
+  check('9at④ 未上市币不进新闻：2013 局注入 XRP 格子后 autoNewsSym 恒返回已上市币',
+    badSym === '', badSym || '600 次全过');
+  const xr = engine.godFakeNews(s13, 'XRP', 1);
+  check('9at④ godFakeNews 对未上市币拒发（ok:false ＋ why 提「还没上线」）',
+    xr.ok === false && String(xr.why).includes('还没上线'), JSON.stringify(xr));
+  const srcAt = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('9at④ 结构：autoNewsSym 过滤 unlock/已加载 ＋ npcOtherTick 跳过未上市币',
+    srcAt.includes('return !!c && t >= c.unlock && isLoaded(sym);')
+    && srcAt.includes('if (sym === s.sym || !isLoaded(sym) || t < c.unlock) continue;'));
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

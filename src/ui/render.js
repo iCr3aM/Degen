@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtFloatPrice, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { latentOf, available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, eventsOff, exMarkPrice, FEED_STEPS, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, manipPreview, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { latentOf, available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, eventsOff, exMarkPrice, FEED_STEPS, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -23,7 +23,7 @@ import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
 import { badgesOf, epitaphOf, multShown, overLabelOf, styleOf, titleOf } from '../core/titles.js';
-import { MANIP_MIN, MANIP_NEWS_CD, SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
+import { MANIP_NEWS_CD, SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
 import { drawChart, drawEquityCurve, curveWindow } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 import { vibSupported } from './sound.js';
@@ -3045,7 +3045,7 @@ export function openYearPick(curYear) {
  *    `closest('.god-float.god')`）。
  *    ⚠️ 档排上那些是**按钮**、不是输入框，照旧挂 `data-*`（`godyear` / `godmon`；`godday`
  *       已随 2026-10-08 三批的「日选择删除」一并退役）。
- *    ⚠️ 操盘台的输入框同理（`god-manip` / `god-cash` / `god-seed`）；预览行随 `input` 事件即时重算。
+ *    ⚠️ 其余输入框同理（`god-cash` / `god-seed`）；`god-manip` 已随 2026-10-10 手动操盘行删除退役。
  * ⚠️ **「无限」开关（2026-10-07 用户拍板）与资金输入框同处一行**：它翻的是 `s.god.inf`，
  *    开启后归零**自动补满**到输入框那个数（`engine.js` 的 `checkRuin`）——
  *    与「填入」（当下填一次）语义不重叠，故并排而不是各占一行。
@@ -3238,45 +3238,11 @@ function godManipPage(s, gx) {
   lqRow.append(lqGrp);
   rows.append(lqRow);
 
-  /* ⚠️ 局部变量用 `mn*` 前缀 —— 页签 1 的月份选择器已经占了 `mRow`（2026-10-07 构建撞名修正）。
-     操盘行（2026-10-08 用户拍板「晃骗＋洗售合并为拉盘/砸盘」）：三行合一 —— 点击即整条
-     一键组合拳（幌骗造势 → 洗售造量 → 吃单推价，`engine.godManipPump`），原三行独立操作
-     退役。预填/面板记忆沿用 `lastPush`。 */
-  const mnRow = el('div', 'set-row');
-  const manipIn = el('input', 'god-in god-manip');
-  manipIn.type = 'number';
-  manipIn.inputMode = 'decimal';
-  manipIn.min = String(MANIP_MIN);
-  manipIn.step = '10000';
-  /* 面板记忆：预填上次实际执行的名义额（没有才回落到填入资金那一格） */
-  manipIn.value = String(s.god.lastPush ?? s.god.lastFill);
-  const mnUp = el('button', 'set-btn on', '拉盘');
-  mnUp.dataset.godpump = '1';
-  const mnDn = el('button', 'set-btn on', '砸盘');
-  mnDn.dataset.godpump = '-1';
-  mnRow.append(el('i', null, '操盘'), manipIn, mnUp, mnDn);
-  rows.append(mnRow);
-  const mnPrev = el('p', 'god-prev', '');
-  rows.append(mnPrev);
-
-  /* 预览：与 `engine.godManipPump` 同式同参（同一时刻同一单，预览即实值）——
-     吃单位移/花费走 `manipPreview`；造势量 = `min(N, 本时深度)`（热度放大器饱和点，
-     `depth.hourBase` 含深度旋钮，与引擎 `hourLiqBase` 同口径）、造势费 = 双边手续费。
-     输入非法 / 不足下限时留空（执行时引擎还会再拦一道）。 */
-  const updPrev = () => {
-    const n = Number(manipIn.value);
-    if (!(Number.isFinite(n) && n >= MANIP_MIN)) { mnPrev.textContent = ''; return; }
-    const pv = manipPreview(s, s.sym, 1, n);
-    const deep = godWatchOf(s, s.sym).depth.hourBase;
-    const wash = Math.max(MANIP_MIN, Math.min(n, deep));
-    const feeRate = feeRateOf(s.ex, timeOf(s), 'fut', vol30Of(s, s.ex, s.i, 'fut'));
-    /* `sat`（2026-10-07 用户拍板）：本笔名义已顶到深度上限 ⇒ 再加钱位移不再涨 —— 如实说。 */
-    mnPrev.textContent =
-      `预计位移 ${fmtPct(pv.impact)} ｜ 花费 ${fmtMoneyShort(pv.cost + wash * feeRate * 2)}` +
-      ` ｜ 造势 ${fmtMoneyShort(wash)}${pv.sat ? ' ｜ 深度不足 · 超出部分无效' : ''}`;
-  };
-  manipIn.addEventListener('input', updPrev);
-  updPrev();
+  /* ⚠️ **手动操盘行已删除**（2026-10-10 用户拍板「优先删除手动操盘＝填数字拉盘砸盘那一行」）：
+     原来那行「数值输入框 ＋ 拉盘 / 砸盘」与它的预览行整条退役 —— 手动推价改由下面
+     「拉到 / 砸到」档位键（引擎反解名义，一次推完）＋「自动操盘」伺服承担，
+     一行少两件控件、页面高度也随之下移（治本「页内滚动」）。
+     `engine.godManipPump` 本体保留（自动拉盘 / 砸到档位仍走它，面板记忆 `lastPush` 照旧）。 */
 
   /* 扫单（2026-10-09 用户拍板「一键吃单开关」）：[吃买盘][吃卖盘] 一口吃光该侧 NPC 簿；
      [自动] 单钮循环 关→自动↓→自动↑→关 —— 开着时每根由 `godEatTick` 伺服（方向随状态，
@@ -3297,11 +3263,12 @@ function godManipPage(s, gx) {
   eatRow.append(el('i', null, '扫单'), eatBid, eatAsk, eatAuto);
   rows.append(eatRow);
 
-  /* ── 自动化伺服三行（2026-10-10 用户拍板「自动新闻 ＋ 自动造量 ＋ 自动拉盘」）──
+  /* ── 自动化伺服两行（2026-10-10 用户拍板「自动新闻 ＋ 自动造量 ＋ 自动拉盘」；
+        同日精简：造量原为独立一行，与「自动操盘」同属自动伺服 ⇒ **并成一行**治「页内滚动」）──
      开关写 `s.god.autoNews / autoWash / autoPump`，引擎 `godAutoTick` 每根裁决；
      互斥**单点在引擎**（见其头注），这里只把引擎的裁决如实画成置灰：
-        · 插针 `s.god.pin` 非空 ⇒ 三个自动化开关与扫单方向键一起置灰；
-        · 自动拉盘开着 ⇒ 自动造量置灰（组合拳内已含洗售）；
+        · 插针 `s.god.pin` 非空 ⇒ 两个自动化开关与扫单方向键一起置灰；
+        · 自动拉盘开着 ⇒ 造量置灰（组合拳内已含洗售）；
         · 自动新闻与它们无互斥。 */
   const pinOn = !!s.god.pin;
   const autoNewsRow = el('div', 'set-row');
@@ -3328,31 +3295,30 @@ function godManipPage(s, gx) {
   else etaP.textContent = `自动新闻 ｜ 下次约 ${Number.isFinite(s.god.autoNewsAt) ? Math.max(0, s.god.autoNewsAt - s.i) : 0} 小时后`;
   rows.append(etaP);
 
-  const autoWashRow = el('div', 'set-row');
-  const autoWashBtn = el('button', s.god.autoWash ? 'set-btn on' : 'set-btn', s.god.autoWash ? '开' : '关');
+  /* 自动造量 ＋ 自动操盘合一行（2026-10-10）：[造量 开/关] ＋ [砸盘][拉盘][停] ——
+     四件控件同属「每根自动伺服」一组。造量仍受 `pinOn || autoPump` 双重置灰（`syncGodLive`）。 */
+  const autoRow = el('div', 'set-row');
+  const autoWashBtn = el('button', s.god.autoWash ? 'set-btn on' : 'set-btn', '造量');
   autoWashBtn.dataset.godautowash = '';
   autoWashBtn.dataset.lvwash = '';                   // 受 pinOn ＋ autoPump 双重影响
   autoWashBtn.disabled = pinOn || !!s.god.autoPump;
-  autoWashRow.append(el('i', null, '自动造量'), autoWashBtn);
-  rows.append(autoWashRow);
-
-  const autoPumpRow = el('div', 'set-row');
-  const apDn = el('button', s.god.autoPump === -1 ? 'set-btn on' : 'set-btn', '自动砸盘');
+  const apDn = el('button', s.god.autoPump === -1 ? 'set-btn on' : 'set-btn', '砸盘');
   apDn.dataset.godautopump = '-1';
   apDn.dataset.lvpin = '';
   apDn.disabled = pinOn;
-  const apUp = el('button', s.god.autoPump === 1 ? 'set-btn on' : 'set-btn', '自动拉盘');
+  const apUp = el('button', s.god.autoPump === 1 ? 'set-btn on' : 'set-btn', '拉盘');
   apUp.dataset.godautopump = '1';
   apUp.dataset.lvpin = '';
   apUp.disabled = pinOn;
   const apStop = el('button', !s.god.autoPump ? 'set-btn on' : 'set-btn', '停');
   apStop.dataset.godautopump = '0';
   apStop.disabled = !s.god.autoPump;
-  autoPumpRow.append(el('i', null, '自动操盘'), apDn, apUp, apStop);
-  rows.append(autoPumpRow);
+  autoRow.append(el('i', null, '自动操盘'), autoWashBtn, apDn, apUp, apStop);
+  rows.append(autoRow);
 
   /* 目标价（2026-10-09 用户拍板「目标涨幅档」）：把「拉/砸到 ±X%」交给引擎反解名义
-     （数值二分 manipPreview 本体 —— 同式同参），一次性推完。手动名义行保留（进阶精度）。 */
+     （数值二分 manipPreview 本体 —— 同式同参），一次性推完。这是**唯一的手动推价入口**
+     （2026-10-10 起：原「填数字拉砸盘」行已删）。 */
   const tgtRow = el('div', 'set-row');
   tgtRow.append(el('i', null, '拉到'));
   for (const pct of [1, 3, 5, 10]) {

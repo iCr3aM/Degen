@@ -11,7 +11,7 @@ import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, exchangeOf, hasFinancingAt
 import { anyHeld, createState, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
-import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godManipPump, godPinStart, godPinStop, godFakeNews, godEatBook, godTargetPush } from './core/engine.js';
+import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godPinStart, godPinStop, godFakeNews, godEatBook, godTargetPush } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
@@ -1121,7 +1121,7 @@ function dispatch(node, ev) {
   if (s.god && s.god.ended && !rv && (d.god !== undefined || d.godcash !== undefined
     || d.godyear !== undefined || d.godmon !== undefined || d.godgo !== undefined
     || d.godtab !== undefined || d.godinf !== undefined || d.godliq !== undefined
-    || d.godpump !== undefined || d.godpin !== undefined || d.godnews !== undefined
+    || d.godpin !== undefined || d.godnews !== undefined
     || d.godeat !== undefined || d.godeatauto !== undefined || d.godtgt !== undefined
     || d.godliqov !== undefined || d.godreal !== undefined || d.sb !== undefined
     || d.godautonews !== undefined || d.godautonewsoff !== undefined
@@ -1152,16 +1152,8 @@ function dispatch(node, ev) {
     if (d.godmon !== undefined) return onGodPick('m', Number(d.godmon));
     return onGodGo();
   }
-  /* ── 上帝操盘台（2026-10-07）── 与上面几枚同一处境：只出现在上帝面板里，
-     同样以 `s.god` 非空兜底（状态机不靠 DOM）。2026-10-08 三行合一后只剩一枚 `godpump`
-     （一键组合拳：幌骗 → 洗售 → 吃单）。 */
-  if (d.godpump !== undefined) {
-    if (!s.god) return;
-    /* ⚠️ 转发原始事件（2026-10-08）：`onGodPump` 靠 `ev.pointerId` 区分「指针按下（可长按）」
-       与「键盘激活（`click`，只单次）」，见该函数头注。 */
-    return onGodPump(node, ev);
-  }
-  /* ── 扫单 / 目标价（2026-10-09 三批拍板）── 同一处境：只出现在上帝面板里，以 `s.god` 非空兜底。 */
+  /* ── 扫单 / 目标价（2026-10-09 三批拍板）── 同一处境：只出现在上帝面板里，以 `s.god` 非空兜底。
+     （原「上帝操盘台」`godpump` 一键组合拳 ＋ 长按连发已随 2026-10-10 手动操盘行删除退役。） */
   if (d.godeat !== undefined || d.godeatauto !== undefined) {
     if (!s.god) return;
     return onGodEat(d.godeat !== undefined ? Number(d.godeat) : null);
@@ -1835,74 +1827,10 @@ function godReset(to, label) {
    真实化依据见 `engine.godManip*` 的头注。
    ⚠️ 「关闭上帝模式」已随入口改型删除：上帝模式不进存档（会话级一次性），没有退出的路。 */
 
-/** 长按连发的节拍（ms）—— 按住不放时的重复间隔（2026-10-08 用户拍板「手点的有点酸」）。 */
-const PUMP_REPEAT_MS = 200;
-/** 本轮长按的累计账（`null` = 没有正在进行的连发）；松手时汇总播一条，**过程中不逐次播报**。 */
-let pumpAcc = null;
-/** 长按期间掐掉系统右键 / 长按菜单 —— 手机端按住不放 ~500ms 会弹出上下文菜单打断连发。 */
-const pumpNoMenu = e => e.preventDefault();
-
-/** 收手：停节拍器、按累计数播**一条**汇总日志、重开面板。幂等（重复调用只收一次）。 */
-function pumpStop() {
-  if (!pumpAcc) return;
-  const a = pumpAcc;
-  pumpAcc = null;
-  if (a.timer != null) { clearInterval(a.timer); a.timer = null; }
-  window.removeEventListener('pointerup', pumpStop);
-  window.removeEventListener('pointercancel', pumpStop);
-  window.removeEventListener('contextmenu', pumpNoMenu);
-  /* ⚠️ 播报口径：单次（`n === 1`）与改动前**逐字相同**（短按 = 老行为）；长按（`n > 1`）才汇总，
-     否则 200ms 一条会把日志刷屏 —— 玩家要的是「一直推」，不是「一直报」。 */
-  pushLog(s, a.fail
-    ? `操盘 · 一键${a.dir > 0 ? '拉盘' : '砸盘'} ${a.n} 连后中断（${a.fail}）`
-    : (a.n === 1
-      ? `操盘 · 一键${a.dir > 0 ? '拉盘' : '砸盘'} ${fmtMoneyShort(a.num)}（造势 ${fmtMoneyShort(a.wash)}） ｜ 位移 ${fmtPct(a.impact)} ｜ 花费 ${fmtMoneyShort(a.cost)}`
-      : `操盘 · 一键${a.dir > 0 ? '拉盘' : '砸盘'} ${a.n} 连 ×${fmtMoneyShort(a.num)} ｜ 累计花费 ${fmtMoneyShort(a.cost)}`),
-    a.fail ? 'bad' : 'ok');
-  if (a.fail) snd.deny();
-  showGod();
-  after();
-}
-
-/** 拉盘/砸盘一键组合拳（`data-godpump="1|-1"`，2026-10-08 用户拍板「晃骗＋洗售合并」）：
- *  `engine.godManipPump` 依次执行 幌骗造势（免费）→ 洗售造量（min(N, 本时深度)）→ 吃单推价；
- *  资金预检一步不动，总花费 = 吃单花费 ＋ 洗售双边费。
- *  ⚠️ **长按连发**（2026-10-08）：`pointerdown` 立刻推一次（短按 = 单次，老行为逐字不变），
- *     按住则以 `PUMP_REPEAT_MS` 定频重复，松手 / 取消即停（`pumpStop` 汇总播一条）。
- *     键盘激活（`ev.detail === 0`，无 `pointerId`）只做单次。 */
-function onGodPump(node, ev) {
-  const dir = Number(node.dataset.godpump);
-  const v = readGodInput(node, '.god-manip');
-  const num = v === null ? NaN : Number(v);
-  if (v === null || v.trim() === '' || !Number.isFinite(num)) {
-    pushLog(s, '操盘失败 · 先填名义额', 'bad');
-    snd.deny();
-    return;
-  }
-  pumpStop();                                   // 上一轮长按（若有）先收掉，避免两条节拍器并存
-  const r = godManipPump(s, s.sym, dir, num);
-  if (!r.ok) {                                  // 第一次就失败（资金不足 / 名义额太小）⇒ 照旧即时播报
-    pushLog(s, `操盘失败 · ${r.why}`, 'bad');
-    snd.deny();
-    showGod();
-    after();
-    return;
-  }
-  pumpAcc = { dir, num, n: 1, cost: r.cost, wash: r.wash, impact: r.impact, fail: null, timer: null };
-  /* 只有**指针按下**才进长按（键盘 click 没有 `pointerId`）。 */
-  if (ev && ev.pointerId != null) {
-    pumpAcc.timer = setInterval(() => {
-      const rr = godManipPump(s, s.sym, dir, num);
-      if (!rr.ok) { pumpAcc.fail = rr.why; pumpStop(); return; }
-      pumpAcc.n++; pumpAcc.cost += rr.cost; pumpAcc.wash += rr.wash; pumpAcc.impact = rr.impact;
-    }, PUMP_REPEAT_MS);
-    window.addEventListener('pointerup', pumpStop);
-    window.addEventListener('pointercancel', pumpStop);
-    window.addEventListener('contextmenu', pumpNoMenu);   // 掐掉长按菜单（见上）
-  } else {
-    pumpStop();                                 // 单次：直接收手播报（与老行为逐字相同）
-  }
-}
+/* ⚠️ 2026-10-10 用户拍板「优先删除手动操盘（填数字拉盘砸盘）那一行」：
+   原来这里整块是「拉盘 / 砸盘 一键组合拳 ＋ 长按连发（`PUMP_REPEAT_MS` / `pumpStop` /
+   `onGodPump`）」—— 随着那一行 UI 一起退役（手动推价改由「拉到 / 砸到」档位键，
+   `engine.godManipPump` 本体仍在，自动拉盘与砸到档位照走它）。 */
 
 /** 上帝面板里输入框的值 —— 输入框没有动作键，只能从同一个面板里按类名找（两个框各有一个唯一类）
  *  ⚠️ 2026-10-10 浮窗化：面板挂在 `.god-float.god`（不再是 `#overlay` 里的 `.godp`）。 */

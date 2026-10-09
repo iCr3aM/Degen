@@ -25,8 +25,9 @@ export const ACTION_KEYS = [
         顶栏标题挂着同一枚键但只作「已解锁时单击重开面板」（不再是解锁入口）。
      / `godcash` `godyear` `godmon` `godgo`（上帝面板内的各枚按钮）
      / `godtab`（2026-10-05 分页：页签「资金·时间」/「沙盒」/「操盘」）
-     / `godpump`（2026-10-08 操盘台三行合一：拉盘/砸盘一键组合拳 = 幌骗→洗售→吃单；
-        原三枚 `godpush` `godwash` `godspoof` 随独立操作一并删除）
+     ⚠️ `godpump`（2026-10-08 操盘台三行合一：拉盘/砸盘一键组合拳）已随 2026-10-10
+        用户拍板「优先删除手动操盘（填数字拉盘砸盘那一行）」整条退役；同批还有 `godpush`
+        `godwash` `godspoof`（更早的三枚独立操作）早已删除。
      ⚠️ 原来的 `godmult` `godscale` `godreset` 三枚已随上帝模式瘦身整体删除（2026-09-29）；
         `goddate` 随原生日期框一起删除，日期改由 `godyear` / `godmon` 两排档位选择、
         `godgo` 才真正跳（2026-09-30）；`godday`（日排）已随 2026-10-08 三批的
@@ -35,7 +36,6 @@ export const ACTION_KEYS = [
         一次性状态（`save.js` 落盘剔除 `s.god`，读档回来就是普通局），面板底部只剩
         「关闭」（关的是面板，不是模式）。 */
   'god', 'godcash', 'godinf', 'godyear', 'godmon', 'godgo', 'godtab',
-  'godpump',
   /* `godliq`（2026-10-08）：操盘台「深度」行的档位按钮（自动 / ×1 / ×2 / ×4 / ×8）——
      写 `s.god.liqMul`，引擎在 `hourLiqBase` 末尾统一放大深度分母。 */
   'godliq',
