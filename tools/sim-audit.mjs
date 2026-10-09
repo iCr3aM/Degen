@@ -6153,6 +6153,67 @@ section('9ao · 现实地板 godFloor ＋ 潜在基线 latentOf ＋ 步进行固
   }
 }
 
+/* ═══════════════════ 9ap · 做空供应量上限（§9.5 重启 · 2026-10-09 三拍板） ═══════════════════
+   借币池 = 真实流通量 × MARGIN.shortShare（1%——GDD 原表 5/8/10% 会被流动性闸永久遮蔽，联网核实
+   现实借币峰值 ≈ 流通量 0.034%）；硬拒（同额度闸 UX）＋ marginRateMulOf 的 kink/jump 费率飙升段
+   （借满池 → 乘数 25× → 借币日息 2017 档 0.5%/日 = GDD 原设极值）。只限杠杆空头；NPC 不占池；
+   OTC 豁免 —— 与 quota 闸同口径。 */
+section('9ap · 做空供应量上限：硬拒 · 费率 jump · 同口径范围');
+{
+  const cfgSrcAp = fs.readFileSync(path.join(ROOT, 'src/core/config.js'), 'utf8');
+  const engSrcAp = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('9ap① 结构：shortShare 1% ＋ kink/jump ＋ openCheck 供应闸（只卡空头）＋ marginRateMulOf jump 段',
+    cfgSrcAp.includes('shortShare: 0.01,') && cfgSrcAp.includes('kink: 0.8,') && cfgSrcAp.includes('jump: 12,')
+    && engSrcAp.includes("return { ok: false, why: `做空供应量不足 ｜ 全市场可借 ≈ ${fmtQty(supDay * MARGIN.shortShare)} 枚（流通量 1%）` };")
+    && engSrcAp.includes('if (pos && pos.side === \'short\' && isMargin(pos)) {')
+    && engSrcAp.includes('if (useSup > U.kink) mul += U.jump * Math.min(1, (useSup - U.kink) / (1 - U.kink));'));
+  /* ② 行为：把流动性闸临时调大隔离出供应闸 —— 超过流通量 1% 的杠杆空头被拒、以内放行。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'margin', cash: 1e9, i: idx(at(2013, 8, 1)) });
+    const saveQuota = C.MARGIN.quota;
+    C.MARGIN.quota = 1e9;                                   // 隔离流动性闸，单测供应闸
+    s.lev = 5;
+    const sup = market.supplyAt('BTC', Math.floor(s.i / 24));
+    const capUsd = sup * 0.01 * engine.lastPrice(s, 'BTC');
+    const over = engine.openTrade(s, 'short', 0.02);        // $2e7 × 5x ≫ 供应闸 ⇒ 必拒
+    const ok = engine.canOpenAt(s, 'short', 0.000001);      // $5e3 ≪ 供应闸 ⇒ 放行
+    /* 长仓不受供应闸约束（借美元）——趁流动性闸仍被隔离时测小单 */
+    const longOk = engine.canOpenAt(s, 'long', 0.000001);
+    C.MARGIN.quota = saveQuota;
+    check('9ap② 硬拒：超流通量 1% 的杠杆空头被拒（why 带可借枚数）· 小单放行',
+      over.ok === false && /做空供应量不足/.test(over.why) && ok === true,
+      `cap≈$${f(capUsd, 0)} over=${over.ok ? 'ok' : over.why.slice(0, 30)}`);
+    check('9ap③ 同口径：多头（借美元）不受供应闸约束', longOk === true);
+  }
+  /* ③ 费率 jump：杠杆空头借入逼近池上限 ⇒ 乘数越过 kRate 上界（jump 生效）；多头恒 ≤ 上界。
+     ⚠️ heat 归一 0.5（stress 0 ⇒ 无恐慌抽贷），隔离出 jump 段的贡献。 */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'margin', cash: 1e9, i: idx(at(2017, 8, 1)) });
+    s.mkt.BTC.heat = 0.5;
+    const sup = market.supplyAt('BTC', Math.floor(s.i / 24));
+    const capUsd = sup * 0.01 * engine.lastPrice(s, 'BTC');
+    /* 空头仓位：名义 = 池的 99%（kink 之上 ⇒ jump 段开火）与 30%（kink 之下 ⇒ 无 jump）
+       ⚠️ 手工仓必须带 `isMargin: true`（`borrowedOf` / `isMargin` 的判据字段）。 */
+    const big = { sym: 'BTC', side: 'short', notional: capUsd * 0.99, margin: capUsd * 0.99 / 5, lev: 5, isMargin: true, entry: engine.lastPrice(s, 'BTC'), size: (capUsd * 0.99) / engine.lastPrice(s, 'BTC'), openFee: 0, ex: s.ex, mix: { usd: 1, usdt: 0 }, otc: false, liqCounted: false };
+    const small = { ...big, notional: capUsd * 0.30, margin: capUsd * 0.30 / 5, size: (capUsd * 0.30) / engine.lastPrice(s, 'BTC') };
+    const long = { ...big, side: 'long' };
+    s.positions.BTC = big;
+    const mulBig = engine.marginRateMulOf(s, 'BTC');
+    s.positions.BTC = small;
+    const mulSmall = engine.marginRateMulOf(s, 'BTC');
+    s.positions.BTC = long;
+    const mulLong = engine.marginRateMulOf(s, 'BTC');
+    delete s.positions.BTC;
+    const mulNone = engine.marginRateMulOf(s, 'BTC');
+    check('9ap④ 费率 jump：空头借入 99% 池 ⇒ 乘数越过 kRate 上界（jump 生效）；30% 池 ⇒ 无 jump',
+      mulBig > 1 + C.MARGIN.util.kRate + 1e-9 && mulSmall <= 1 + C.MARGIN.util.kRate + 1e-9,
+      `99%→${f(mulBig, 2)}× 30%→${f(mulSmall, 2)}×`);
+    check('9ap⑤ 范围：多头不进 jump 段（≤ kRate 上界）＆ 无仓常态乘数恒 1',
+      mulLong <= 1 + C.MARGIN.util.kRate + 1e-9 && mulNone === 1,
+      `long=${f(mulLong, 2)} none=${f(mulNone, 2)}`);
+  }
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);

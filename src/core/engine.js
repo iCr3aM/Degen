@@ -3840,6 +3840,19 @@ function openCheck(s, side, frac = 1) {
     if (borrowedOf(prev) + addBorrowed > borrowCap) {
       return { ok: false, why: `借贷额度不足 ｜ ${s.sym} 当日可借约 ${fmtMoneyShort(borrowCap)}` };
     }
+    /* 做空供应量上限（§9.5 重启 · 2026-10-09 用户拍板「硬拒＋费率飙升」）：做空必须**借到真币**
+       才能卖，借出的币是真实流通量的一部分 —— 借币池 = `supplyAt × MARGIN.shortShare`（1%）。
+       只卡**空头**这一支（多头借的是美元、不占币量；合约空头是合成敞口不借真币），取不到
+       流通量 ⇒ 放行（与上面同一纪律）。费率端的飙升由 `marginRateMulOf` 的 jump 段承接。 */
+    if (side === 'short') {
+      const supDay = supplyAt(s.sym, dayIndexOf(s.i));
+      if (supDay > 0) {
+        const supplyCap = supDay * MARGIN.shortShare * price;
+        if (borrowedOf(prev) + addBorrowed > supplyCap) {
+          return { ok: false, why: `做空供应量不足 ｜ 全市场可借 ≈ ${fmtQty(supDay * MARGIN.shortShare)} 枚（流通量 1%）` };
+        }
+      }
+    }
   }
 
   /* 供应量上限（P2-B2 · §15.1 / §15.4）：买入会从市场里锁走一部分币，锁走的枚数不得越界。
@@ -5604,6 +5617,12 @@ export function invalidateSigma() {
  *   利用率 = clamp((base + 玩家借入 ÷ 额度) ÷ 供给, 0, 1)
  *   乘数   = 1 + kRate × (利用率 − base) ÷ (1 − base)，夹在 [1, 1 + kRate]
  *
+ * **做空供应利用率 jump 段**（§9.5 重启 · 2026-10-09 用户拍板「硬拒＋费率飙升」）：
+ *   `useSup = 空头借币 ÷ (流通量 × shortShare)` —— 越过 `util.kink`（80%，Aave kink 同型）
+ *   后再叠 `util.jump × (useSup − kink) ÷ (1 − kink)`；借满整个借币池时乘数 25×，
+ *   借币日息 2017 档恰好到 **0.5%/日**（GDD 原设极值）、2020 档 0.125%/日 ≈ 46% APR
+ *   （对齐 2021-05 借贷挤兑实录）。只对**杠杆空头**计（多头借的是美元、不占币量）。
+ *
  * ⇒ 常态（压力 0、玩家不借）乘数**恰为 1** ⇒ 与改动前逐位相同（老档读档后的利息也不变）。
  * ⚠️ **只读、纯函数**：不写状态、不新增字段 ⇒ 不升 `STATE_VERSION`。
  * @param {object} s   本局状态
@@ -5613,12 +5632,24 @@ export function invalidateSigma() {
 export function marginRateMulOf(s, sym) {
   const U = MARGIN.util;
   const poolCap = (liqOf(sym, dayIndexOf(s.i)) ?? 0) * MARGIN.quota;
-  const use = poolCap > 0 ? borrowedOf(s.positions && s.positions[sym]) / poolCap : 0;
+  const pos = s.positions && s.positions[sym];
+  const use = poolCap > 0 ? borrowedOf(pos) / poolCap : 0;
   const stress = Math.min(1, Math.abs(heatOf(s, sym) - HEAT.base) / HEAT.base);
   const supply = Math.max(0.2, 1 - U.supplyPull * stress);
   const util = Math.max(0, Math.min(1, (U.base + use) / supply));
   const dev = Math.max(0, (util - U.base) / (1 - U.base));
-  return 1 + U.kRate * dev;
+  let mul = 1 + U.kRate * dev;
+  /* 做空供应利用率 jump 段（§9.5 重启 · 2026-10-09）：只对**杠杆空头**计 —— 它借的是真实
+     流通量的币；多头借的是美元（quote 池，不占币量）、合约空头是合成敞口。借满借币池
+     （useSup → 1）时再叠 `jump` ⇒ 乘数 25×、借币日息到 GDD 原设 0.5%/日 极值。 */
+  if (pos && pos.side === 'short' && isMargin(pos)) {
+    const supDay = supplyAt(sym, dayIndexOf(s.i));
+    if (supDay > 0) {
+      const useSup = borrowedOf(pos) / (supDay * MARGIN.shortShare * lastPrice(s, sym));
+      if (useSup > U.kink) mul += U.jump * Math.min(1, (useSup - U.kink) / (1 - U.kink));
+    }
+  }
+  return mul;
 }
 
 /**
