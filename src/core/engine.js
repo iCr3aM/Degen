@@ -1305,10 +1305,12 @@ export function hourLiqRaw(s, sym, i) {
   /* **机构建仓 / 披露 → 深度增厚**（2026-10-11 用户拍板 P2 · A 类）：与 ETF 乘子**同层相乘** ——
      A 类只做**买侧增厚**（`whaleDepthMul ≥ 1`），真实传导链是「企业 / 主权持续吸筹 ⇒ 买侧变厚」。
      ⚠️ 同样只改摩擦、不改价格（P2-C 红线）；架空局的披露走 `ficnews` 另一套 ⇒ `eventsOff` 闸掉；
-        两个乘子都恒 1 时 `mul === 1` 走 IEEE 精确恒等 ⇒ 无关年代与币种逐位不变。 */
+        两个乘子都恒 1 时走 IEEE 精确恒等短路 ⇒ 无关年代与币种逐位不变。 */
   const wh = eventsOff(s) ? 1 : whaleDepthMul(sym, day);
-  const mul = etf * wh;
-  return mul === 1 ? raw : raw * mul;
+  /* 短路走**两枚各自恒等**判定（**不**用 `mul === 1`）：否则「两乘子都 ≠1、但乘积恰为 1.0」时
+     会把两个效果一起吞掉、原样返回未折减的 raw（回归审核 H1 发现的结构脆弱点）。
+     `etf === 1 && wh === 1` 才是真正的「无任何事件」⇒ 逐位返回 raw（IEEE 精确恒等，无关年代与币种）。 */
+  return (etf === 1 && wh === 1) ? raw : raw * (etf * wh);
 }
 
 /* ───────────────── 读数：梅耶倍数（价 ÷ 200 日 MA）─────────────────────────
@@ -1918,7 +1920,8 @@ function fngBandStep(prev, v) {
 }
 
 /**
- * 某一天 `d` 的 F&G **原始读数**（0–100）—— 三个子因子等权，贪婪为正。
+ * 某一天 `d` 的 F&G **原始读数**（0–100）—— 子因子按官方六维口径**加权**（波动率 0.5 / 动量 0.25 /
+ * 成交量 0.25，权重见 `god.FNG.w`），贪婪为正。
  * ⚠️ P1-7（2026-10-04 审计）：归一化用的 σ 一律走**原始行情版**（`rawDailySigma` /
  *    `rawDailySigmaFast`）。病根：分子 `priceAt` 读的是**原始行情**（`heatPriceAt` /
  *    `rawCloseAt`），分母原来却读 `dailySigma`（**含位移**）—— 位移把 σ 抬高，于是
@@ -1931,17 +1934,17 @@ function fngBandStep(prev, v) {
 function fngRawWith(priceAt, sym, d) {
   const H = HOURS_PER_DAY;
   const i1 = d * H + (H - 1);          // 这一天（已收盘）的最后一根小时
-  /* ① 动量 25%：30 天收益的 z 分位（`σ_30日 × √30` 归一，夹 ±2σ 后折算到 ±1）。 */
+  /* ① 动量（权重 0.25）：30 天收益的 z 分位（`σ_30日 × √30` 归一，夹 ±2σ 后折算到 ±1）。 */
   const sig = rawDailySigma(sym, i1);
   const p1 = priceAt(i1);
   const p0 = priceAt(i1 - FNG.window * H);
   const z = sig > 0 && p1 > 0 && p0 > 0 ? (p1 / p0 - 1) / (sig * Math.sqrt(FNG.window)) : 0;
   const mom = Math.max(-1, Math.min(1, z / 2));
-  /* ② 波动率 25%：`σ_短 ÷ σ_30日` 的**偏离**，越高越恐惧 ⇒ 取负（与 `HEAT.kVol` 同一支口径）。 */
+  /* ② 波动率（权重 0.5）：`σ_短 ÷ σ_30日` 的**偏离**，越高越恐惧 ⇒ 取负（与 `HEAT.kVol` 同一支口径）。 */
   const sigFast = rawDailySigmaFast(sym, i1);
   const dev = sig > 0 && sigFast > 0 ? Math.max(-1, Math.min(1, sigFast / sig - 1)) : 0;
   const vol = -dev;
-  /* ③ 成交量 25%：当日额 vs 近 30 日均额（`liqOf` 就是全市场**日成交额**锚），
+  /* ③ 成交量（权重 0.25）：当日额 vs 近 30 日均额（`liqOf` 就是全市场**日成交额**锚），
         再乘**趋势方向** —— 放量上涨 ⇒ 贪婪，放量下跌 ⇒ 恐惧。
         ⚠️ 方向取**30 天收益的符号**（与 ① 同一个 `p0`），**不是当日涨跌**（2026-10-04 实测定标）：
         用当日符号时 `dir` 每天翻一次，成交量项变成 ±33 分的日频噪声 ⇒
@@ -5243,7 +5246,7 @@ export function godPinStop(s) {
 }
 
 /* ═══════════ 新闻文案 · 数值绑定（2026-10-09 用户拍板「新闻里的数必须符合游戏实际数值」）═══════════
- * 病根：真实新闻的结果条（`anchors.rt`）与假新闻模板（`god.GOD_NEWS`）里的数字都是**写死的史实**，
+ * 病根：真实新闻的结果条（`anchors.rt`）与消息模板（`god.GOD_NEWS`）里的数字都是**写死的史实**，
  * 与游戏内行情脱节 —— 玩家在上帝 / 普通 / 挑战局把某币拉涨 100%，新闻却仍报一个固定值。
  * 修法：模板改用**占位符**，数值一律从**此刻的 `s`** 现算（同一个 `newsVars` 出口，与操盘台读数同源）。
  *
@@ -5271,7 +5274,7 @@ export function godPinStop(s) {
  *
  * @param {object} s 状态
  * @param {string} sym 币符号（模板里 `%S` 的取值）
- * @param {{r?:object, at?:number}} [ctx] 真实结果条的规格与锚点时刻（假新闻不需要）
+ * @param {{r?:object, at?:number}} [ctx] 真实结果条的规格与锚点时刻（消息不需要）
  * @returns {Record<string,string>} 占位符 → 字符串
  */
 export function newsVars(s, sym, ctx = {}) {
@@ -5306,7 +5309,7 @@ export function newsVars(s, sym, ctx = {}) {
   const ff = fundingForecastOf(s, sym);
   v['%R'] = ff ? fmtRate(ff.rate, 3) : '—';
 
-  /* 真实结果条的触发阈值与隐含幅度（假新闻不带 `ctx.r` ⇒ 保持兜底） */
+  /* 真实结果条的触发阈值与隐含幅度（消息不带 `ctx.r` ⇒ 保持兜底） */
   v['%V'] = '--';
   v['%D'] = '--';
   if (r && r.sym) {
@@ -5361,7 +5364,7 @@ export function fillNewsEnts(s, sym, tpl, { salt = 0, seed = s.seed, ctx, free =
  *   ③ 日志播报（`news` 金底芯片，与史实新闻同族；模板见 `god.GOD_NEWS`）。
  * 确定性：**幅度**走 `randFast` 通道 `'news'`（同一存档同一小时同一条 —— 重放不漂移）。
  * ⚠️ **选条**改为逐方向**轮换计数**（`s.god.newsN`，2026-10-08 用户报「会重复显示新闻」）：
- *    每按一次取下一条、取满一整轮才回第一条 ⇒ 连按 16 次不重样；计数是会话级、不落盘。
+ *    每按一次取下一条、取满一整轮才回第一条 ⇒ 连按 40 次不重样；计数是会话级、不落盘。
  *    2026-10-09 起选条前先过**年代门控**（`godNewsTplsOf`）：早期年代只从「当时可能存在」的
  *    模板里轮换 —— 2013 年不会播「现货 ETF 净流入」这类穿帮快讯（`god.GOD_NEWS` 头注）。
  * ⚠️ **冷却**（`GOD_NEWS_CD`）：距上次成功注入不足 `GOD_NEWS_CD` 小时就拒绝 ——

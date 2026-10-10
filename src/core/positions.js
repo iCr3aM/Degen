@@ -247,7 +247,8 @@ export const canLiquidate = pos => !isMargin(pos) || borrowedOf(pos) > 0;
  *   - `'margin'`：**杠杆借贷** —— 有借入的仓（`borrowedOf > 0`，即 `lev > 1` 或**任何空头**；
  *     Bitfinex 2013-04 起 3.3x、Binance 2019-07-11 起 3x）。借来的钱 / 币要还，按**借贷日息**计息，
  *     维持线按所取：Bitfinex 走史实的 **15%（权益口径）**，Binance 走保证金水平换算的 **9–12%**。
- *   - `'perp'`：**线性 USDT 本位永续** —— `fut` 表的任何仓位。吃 8 小时资金费、维持线 0.5% 起。
+ *   - `'perp'`：**线性 USDT 本位永续** —— `fut` 表的任何仓位。吃 8 小时资金费、维持线 **0.4% 起**
+ *     （Binance 永续首档；其余所回落 `GAME.maintRate` 0.5%）。
  *
  * ⚠️ 2016-05-13 之前世界上**没有永续**（BitMEX 的 XBTUSD 是人类第一个）——
  *    那年头的「杠杆」全是借钱买币，所以早期仓位一律落进 `'margin'` 这一支。

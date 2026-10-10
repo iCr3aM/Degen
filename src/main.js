@@ -1938,7 +1938,7 @@ function onGodNews(node) {
     pushLog(s, `消息失败 · ${r.why}`, 'bad');
     snd.deny();
   } else {
-    /* 成功时补一记**播报铃**（2026-10-09 沉浸增强）：引擎那两条假新闻日志的 `kind` 是
+    /* 成功时补一记**播报铃**（2026-10-09 沉浸增强）：引擎那两条消息日志的 `kind` 是
        `ok`/`bad`（为红/绿上色），`soundFromTick` 只认 `kind==='news'` ⇒ 它认不出、
        不会自动响；这里显式补上，与史实新闻同一记音。 */
     snd.news();
@@ -1990,7 +1990,7 @@ function onGodAutoNews(dir) {
   s.god.autoNews = dir == null ? null : dir;
   s.god.autoNewsAt = null;
   pushLog(s, dir == null ? '自动新闻 ｜ 已关闭'
-    : `自动新闻 ｜ 已开启（${dir === 0 ? '混合' : dir > 0 ? '利好' : '利空'} · 每 12~36 小时一条）`, 'sys');
+    : `自动新闻 ｜ 已开启（${dir === 0 ? '混合' : dir > 0 ? '利好' : '利空'} · 每 40~80 天一条）`, 'sys');
   showGod();
   after();
 }
