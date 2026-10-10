@@ -2501,6 +2501,11 @@ section('9l–9o · 模拟深度：跨币危机共振 · 处置效应盈利侧 �
   /* ⚠️ 冻结 NPC 建仓（`stepNpc`）—— 否则① 建仓会同时改 `long`（污染「减半」读数）、
      `syncNpcDrift` 还会挪动显示价。本段只想量 `flushSlot` 的止盈带，故六档 ＋ 做市一起钉 0（npcFreeze）。 */
   const unfreeze = npcFreeze();
+  /* 另需隔离散户极恐接盘层（`dipBuyOf`）：`fng < 22` 时会**额外加长侧**，污染「名义减半」读数。
+     2026-10-11 FNG 重标定后，2021-06（五月崩盘后）本作读数落进极恐区（更贴真实）⇒ 需显式钉中性。
+     与 `npcFreeze` 同一意图：本段只量 `flushSlot` 的止盈带，其余改 `long` 的通路一律隔断。 */
+  s.mkt.BTC.fng = 50;
+  s.mkt.BTC.fngDay = Math.floor(T / 24);
   try {
     engine.tickMarket(s, 'BTC');
     check('9m 盈利的多单被止盈（落标志 ＋ 名义减半）',
@@ -7643,6 +7648,47 @@ section('12j · 机构建仓 → 深度（P2 · A 类）＋ 消息类化热度�
     idxA >= 0 && idxG >= 0 && okA5 && okG5 && dA5 > 0 && dG5 > 0
     && Math.abs(dG5 / dA5 - G4.GOD_NEWS_HEAT.G) < 1e-9,
     `idxA=${idxA} idxG=${idxG} · G/A = ${(dG5 / dA5).toFixed(6)} · 期望 ${G4.GOD_NEWS_HEAT.G}`);
+}
+
+/* ═══════════════ 12k · FNG 子因子权重对齐 CoinGlass 六维口径（2026-10-11） ═══════════════
+   用户拍板「纯行情重排」：官方六维（波动率 25 / 动能与成交量 25 / 社交 15 / 问卷 15 停用 /
+   主导率 10 / 搜索 10）里，本作能**纯行情**复现的只有 波动率 与 动能与成交量 两维（社交要借玩法
+   `heat`、主导率需五币全加载，都会破坏显示轨的纯函数性）⇒ 按「波动率 25 : 动能与成交量 25」等比
+   ⇒ 波动率 0.5 / 动量 0.25 / 成交量 0.25；sens / center / alpha 随之重标定。见 `god.FNG` 头注。 */
+section('12k · FNG 子因子权重对齐 CoinGlass 六维口径');
+{
+  const G5 = await import('../src/core/god.js');
+  const engSrc12k = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  const w5 = G5.FNG.w;
+  /* ① 权重不变量 ＋ 接线在位 */
+  check('12k① 权重：和 = 1 · 波动率 = 2×动量 · 动量 = 成交量（官方「波动率25 ＝ 动能与成交量25」）＋ 接线',
+    Math.abs(w5.mom + w5.vol + w5.volu - 1) < 1e-12 && w5.vol === 2 * w5.mom && w5.mom === w5.volu
+    && engSrc12k.includes('FNG.w.mom * mom + FNG.w.vol * vol + FNG.w.volu * volu'),
+    `mom=${w5.mom} vol=${w5.vol} volu=${w5.volu}`);
+
+  /* ② 运行时**非退化**：BTC 全期逐日（真实代码路径 reviewFngOf / reviewFngBandOf）—— 值 ∈ [0,100]
+     · 五档皆非空 · 中位落真实区间 · 换档频率落真实量级（防「权重改了但分布塌成一档」的空断言） */
+  await market.loadCoin('BTC');
+  await market.loadLiq();
+  const r5 = market.rangeOf('BTC');
+  const a5 = Math.floor(r5[0] / 24), b5 = Math.floor((r5[1] - 1) / 24);
+  const IDX5 = { xfear: 0, fear: 1, mid: 2, greed: 3, xgreed: 4 };
+  const vals5 = [], bi5 = [];
+  for (let d = a5; d <= b5; d++) {
+    const i = d * 24 + 23;
+    vals5.push(engine.reviewFngOf('BTC', i) * 100);
+    bi5.push(IDX5[engine.reviewFngBandOf('BTC', i)] ?? 2);
+  }
+  const sorted5 = [...vals5].sort((x, y) => x - y);
+  const p50 = sorted5[Math.floor(sorted5.length / 2)];
+  const sh5 = [0, 0, 0, 0, 0];
+  for (const k of bi5) sh5[k]++;
+  let sw5 = 0;
+  for (let k = 1; k < bi5.length; k++) if (bi5[k] !== bi5[k - 1]) sw5++;
+  const swYr = sw5 / (vals5.length / 365);
+  check('12k② 运行时分布非退化：BTC 全期值 ∈ [0,100] · 五档皆非空 · p50 ∈ [38,52] · 换档 ∈ [25,90]/年',
+    vals5.every(v => v >= 0 && v <= 100) && sh5.every(x => x > 0) && p50 >= 38 && p50 <= 52 && swYr >= 25 && swYr <= 90,
+    `n=${vals5.length} p50=${p50.toFixed(0)} 五档=${sh5.map(x => (x * 100 / vals5.length).toFixed(1)).join('/')} 换档/年=${swYr.toFixed(0)}`);
 }
 
 /* ═══════════════ 11 · 架空世界线：生成器 · 数据层物化 · 2033 终点（2026-10-10 · P2）═══════════════

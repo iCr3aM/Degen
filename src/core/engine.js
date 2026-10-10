@@ -1957,7 +1957,10 @@ function fngRawWith(priceAt, sym, d) {
   const dir = p1 > 0 && p0 > 0 ? Math.sign(p1 - p0) : 0;
   const vr = today > 0 && avg > 0 ? Math.max(-1, Math.min(1, today / avg - 1)) : 0;
   const volu = dir * vr;
-  const m = (mom + vol + volu) / 3;                    // 三因子等权（各已归一到 ±1）
+  /* 子因子**按官方六维口径加权**（2026-10-11 用户拍板；权重见 `god.FNG.w`）：
+     波动率 0.5 ／ 动量 0.25 ＋ 成交量 0.25（＝官方「波动率 25 ＝ 动能与成交量 25」等权）。
+     ⚠️ 旧口径是三因子**三等分**（1/3 各）；改权重会移动分布 ⇒ `center` / `sens` 已随之重标定。 */
+  const m = FNG.w.mom * mom + FNG.w.vol * vol + FNG.w.volu * volu;
   return Math.max(0, Math.min(100, FNG.center + FNG.sens * m));
 }
 
