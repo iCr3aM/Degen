@@ -445,6 +445,8 @@ export const FNG = {
 export const CDRI = {
   /** 四档边界：0–30 低 / 30–60 中性 / 60–80 高 / 80–100 极端（与 Coinglass 官方逐位同源） */
   bands: [30, 60, 80],
+  /** 四档的**中文档名**（2026-10-11 首次上屏 —— 详情页「风险指数」行读它；档名与官方同源） */
+  bandLabel: { low: '低风险', mid: '中性波动', high: '高风险', extreme: '极端风险' },
   /** 五项输入的权重（和 = 1；`oi` 项已含成交量热度） */
   w: { oi: 0.25, fund: 0.20, lev: 0.20, ls: 0.15, vol: 0.20 },
   /** 每项「多少算高」的归一化上下界（`lo` → 0 分、`hi` → 100 分；来源见上面的注释） */
@@ -1111,6 +1113,31 @@ export function etfNewsAt(i) {
   }
   if (!parts.length) return null;
   return `现货 ETF ｜ ${dt.getUTCMonth() === 0 ? 12 : dt.getUTCMonth()} 月净流入 ${parts.join(' ｜ ')}美元`;
+}
+
+/** ETF → 深度映射的常数（见 `etfDepthMul`）：±10% 封顶，$3 亿/日 ≈ 1σ 的尺度 */
+const ETF_DEPTH = { k: 0.10, scale: 3e8, lo: 0.90, hi: 1.10 };
+
+/**
+ * **现货 ETF 净流入 → 深度乘子**（2026-10-11 用户拍板 P1；设计见 `docs/references/12-news-effect-mapping.md` §3 B 类）。
+ *
+ * 真实传导链：一级市场申赎 → AP 在现货市场买卖 → **现货深度 / 买卖价差变化**。
+ * 本作已有前半段（`ETF_FLOW` → `extFlow` → NPC 侧买盘），这里补后半段：
+ * 把**当日净额**（美元/天）映射到 `hourLiqRaw` 的乘子上 —— 入流期更厚、出流期更薄。
+ *
+ * ⚠️ 走的是**深度**通道而不是价格（P2-C 红线）：深度只改「摩擦」，不改价格水平。
+ * ⚠️ `tanh` 有界 ⇒ 乘子夹在 `[lo, hi]`；取不到净额（未上市 / 周末 / 该月无数据）⇒ **恒 1**
+ *    —— 调用方按 `mul === 1` 走 IEEE 精确恒等，非 ETF 年代与币种**逐位不变**。
+ * ⚠️ 只在**史实**世界生效：架空局没有真实申赎，调用方（`engine.hourLiqRaw`）已用 `eventsOff` 闸掉。
+ * @param {string} sym
+ * @param {number} d 游戏窗口天序号（与 `etfFlowAt` 同尺）
+ * @returns {number} 深度乘子（1 = 无影响）
+ */
+export function etfDepthMul(sym, d) {
+  const f = etfFlowAt(sym, d);
+  if (!f) return 1;
+  const r = 1 + ETF_DEPTH.k * Math.tanh(f / ETF_DEPTH.scale);
+  return Math.max(ETF_DEPTH.lo, Math.min(ETF_DEPTH.hi, r));
 }
 
 /**

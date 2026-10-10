@@ -21,7 +21,7 @@ import { ficNewsAt } from './ficnews.js';
 import { entsOfTpl, literalEnts, resolveEnts, putStance, stanceConflict, tplUsable } from './entities.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, LADDER, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, GOD_NEWS_CD, GOD_NEWS_Q, GOD_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfFlowAt, etfNewsAt, etfNewsMeta, exDevOf, instSeedOf, godNewsTplsOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt, whaleNewsMeta } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, GOD_NEWS_CD, GOD_NEWS_Q, GOD_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfDepthMul, etfFlowAt, etfNewsAt, etfNewsMeta, exDevOf, instSeedOf, godNewsTplsOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt, whaleNewsMeta } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -792,6 +792,12 @@ export function godWatchOf(s, sym = s.sym) {
     /* 深度乘数 / 池回补（2026-10-08 · 深度页加两行读数 · 用户拍板）：depthMul = 对抗性
        折减残值（已折进上面的「本时深度」，这行让玩家看清折了多少）；refillPct = 深度池
        在途消耗的回补进度 `1 − poolRefill(e)`，无在途消耗 ⇒ 1（满）。纯派生，不写状态。 */
+    /* 风险 / 估值读数（2026-10-11 用户拍板「CDRI / 梅耶倍数**只在详情页**展示」）——
+       · CDRI 是本作**既有**的隐藏基准（`cdriOf`，五维加权 + 四档，口径对齐 Coinglass），
+         这里只是**首次上屏**，一个字不改它的算法；
+       · 梅耶倍数 = 现价 ÷ 200 日 MA（`mayerOf`，样本不足为 `null`）。
+       两者都**只读**：不进存档、不参与任何玩法判定（同 `cdriOf` 头注的纪律）。 */
+    risk: (() => { const c = cdriOf(s, sym); return { cdri: c.v, band: c.band, mayer: mayerOf(s, sym, s.i) }; })(),
     depth: {
       liqDay: liqDay * liqMul, hourBase: base,
       poolUsed: poolConsumedAt(s, sym, s.i), poolCap: POOL.capK * base,
@@ -1290,7 +1296,38 @@ export function hourLiqRaw(s, sym, i) {
   if (!(liq > 0)) return 0;
   const { sum, n } = dayVolShare(sym, day);
   const shrink = Math.max(FLOAT.depthFloor, 1 - floatShareOf(s, sym, i));
-  return liq * hourShareK(volumeAt(sym, i), sum, n) * shrink;
+  const raw = liq * hourShareK(volumeAt(sym, i), sum, n) * shrink;
+  /* **现货 ETF 净流入 → 深度**（2026-10-11 用户拍板 P1）：入流期更厚、出流期更薄 ——
+     真实传导链「申赎 → AP 现货买卖 → 深度/价差」的后半段（前半段 `extFlow` 早已在位）。
+     ⚠️ 只改**摩擦**（深度），不改价格水平（P2-C 红线）；架空局没有真实申赎 ⇒ `eventsOff` 闸掉；
+        `mul === 1` 走 IEEE 精确恒等 ⇒ 非 ETF 年代 / 币种逐位不变。 */
+  const etf = eventsOff(s) ? 1 : etfDepthMul(sym, day);
+  return etf === 1 ? raw : raw * etf;
+}
+
+/* ───────────────── 读数：梅耶倍数（价 ÷ 200 日 MA）─────────────────────────
+   2026-10-11 用户拍板「CDRI / 梅耶倍数只在详情页展示」（参考 CoinGlass，见
+   `docs/references/11-coinglass-metrics.md` §3.3）。口径与原站一致：现价 ÷ 200 日移动平均；
+   >2.4 过热 / <0.8 低估 —— **只在读数上用，不参与任何玩法判定**（同 `cdriOf` 的纪律）。
+   ⚠️ 纯读、不进存档；按**天**缓存（200 日 = 4800 次 `closeAt`，逐帧算太贵；缓存键含天号 ⇒
+      `rewindTo` 回退时自动失效重算，同 `daySigmaCache` 的纪律）。
+   ⚠️ 历史不足（早年）/ 样本 < 20 日 ⇒ 返回 `null`（**不编数**，页面显示 `—`）。 */
+const mayerCache = new Map();
+
+/** 梅耶倍数（`null` = 样本不足）—— 详见上方注释 */
+export function mayerOf(s, sym, i) {
+  const day = dayIndexOf(i);
+  const hit = mayerCache.get(sym);
+  if (hit && hit.day === day) return hit.v;
+  const last = closeAt(sym, day * HOURS_PER_DAY + HOURS_PER_DAY - 1);
+  let sum = 0, n = 0;
+  for (let d = Math.max(0, day - 200); d < day; d++) {
+    const c = closeAt(sym, d * HOURS_PER_DAY + HOURS_PER_DAY - 1);
+    if (c > 0) { sum += c; n++; }
+  }
+  const v = (last > 0 && n >= 20) ? last / (sum / n) : null;
+  mayerCache.set(sym, { day, v });
+  return v;
 }
 
 /* ───────────────── 对抗性流动性（提案 B 档 1 · NEXT-STEPS §五 · 2026-10-02）─────────────────

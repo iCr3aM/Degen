@@ -7514,6 +7514,63 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
   }
 }
 
+/* ═══════════════ 12i · 现货 ETF → 深度（P1）＋ 详情页读数（CDRI / 梅耶倍数）（2026-10-11） ═══════════════
+   用户拍板：①「消息 / 新闻该影响不同数值」的 P1 = **现货 ETF 净流入 → 深度乘子**；
+   ② CDRI / 梅耶倍数**只在详情页展示**（不进主 HUD）。设计见 docs/references/12 / 11。 */
+section('12i · 现货 ETF → 深度（P1）＋ 详情页读数（CDRI / 梅耶倍数）');
+{
+  const G3 = await import('../src/core/god.js');
+  const dayOf = t => Math.round((t - C.GAME.start) / H / 24);
+  /* ① etfDepthMul：纯函数 / 有界 / 无数据恒 1 / 入流 > 1 / 出流 < 1 */
+  const mIn = G3.ETF_FLOW.BTC.months.filter(m => m[1] > 0)[0];
+  const mOut = G3.ETF_FLOW.BTC.months.filter(m => m[1] < 0)[0];
+  const dIn = dayOf(mIn[0]) + 10, dOut = dayOf(mOut[0]) + 10;
+  const d13 = dayOf(at(2013, 5, 15)), dDoge = dayOf(at(2024, 5, 15));
+  const a = G3.etfDepthMul('BTC', dIn), b = G3.etfDepthMul('BTC', dOut);
+  check('12i① etfDepthMul：入流 > 1 / 出流 < 1 / 无 ETF · 无数据恒 1 / 有界 [0.9,1.1] / 纯函数',
+    a > 1 && b < 1 && G3.etfDepthMul('BTC', d13) === 1 && G3.etfDepthMul('DOGE', dDoge) === 1
+    && [a, b].every(v => v >= 0.9 && v <= 1.1) && G3.etfDepthMul('BTC', dIn) === a,
+    `入流 ${a.toFixed(3)} · 出流 ${b.toFixed(3)} · 2013 ${G3.etfDepthMul('BTC', d13)} · DOGE ${G3.etfDepthMul('DOGE', dDoge)}`);
+
+  /* ② 接线 ＋ **运行时非空洞**：把同一档的 `eventsOff` 由 hist 翻到 fic，比值应正好等于该乘子 */
+  const engSrc12i = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  const s12i = await mk({ sym: 'BTC', mode: 'fut', cash: 1e6, i: idx(at(2024, 2, 15)) });
+  const day12i = Math.floor(s12i.i / 24);
+  const rHist = engine.hourLiqRaw(s12i, 'BTC', s12i.i);
+  s12i.world = 'fic';
+  const rFic = engine.hourLiqRaw(s12i, 'BTC', s12i.i);
+  s12i.world = 'hist';
+  const expect = G3.etfDepthMul('BTC', day12i);
+  check('12i② hourLiqRaw 接线：hist 档含 ETF 深度乘子（hist/fic 比值 = etfDepthMul）、fic 档恒 1',
+    engSrc12i.includes('eventsOff(s) ? 1 : etfDepthMul(sym, day)')
+    && expect > 1 && Math.abs(rHist / rFic - expect) < 1e-9 && rHist > rFic,
+    `hist/fic = ${(rHist / rFic).toFixed(4)} · 期望 ${expect.toFixed(4)}`);
+
+  /* ③ 读数只在详情页：`godWatchOf.risk` 形状 ＋ CDRI 四档名 ＋ render 深度页两行 */
+  const rendSrc12i = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  const w12i = engine.godWatchOf(s12i);
+  check('12i③ 详情页读数：`godWatchOf.risk{cdri,band,mayer}` ＋ CDRI 四档中文名 ＋ render 两行在位',
+    !!w12i.risk && w12i.risk.cdri >= 0 && w12i.risk.cdri <= 100
+    && !!G3.CDRI.bandLabel[w12i.risk.band]
+    && (w12i.risk.mayer === null || (w12i.risk.mayer > 0 && Number.isFinite(w12i.risk.mayer)))
+    && rendSrc12i.includes("row('风险指数'") && rendSrc12i.includes("row('梅耶倍数'")
+    && rendSrc12i.includes('CDRI.bandLabel'),
+    `cdri=${w12i.risk.cdri.toFixed(1)} ${w12i.risk.band} · mayer=${w12i.risk.mayer === null ? 'null' : w12i.risk.mayer.toFixed(2)}`);
+
+  /* ④ 梅耶口径 = 现价 ÷ 近 200 日收盘均值（**手算对照**，非空洞） */
+  const sM = await mk({ sym: 'BTC', mode: 'fut', cash: 1e6, i: idx(at(2021, 0, 15)) });
+  const dM = Math.floor(sM.i / 24);
+  let sum = 0, cnt = 0;
+  for (let d = Math.max(0, dM - 200); d < dM; d++) {
+    const c = market.closeAt('BTC', d * 24 + 23);
+    if (c > 0) { sum += c; cnt++; }
+  }
+  const want = market.closeAt('BTC', dM * 24 + 23) / (sum / cnt);
+  check('12i④ 梅耶倍数口径 = 现价 ÷ 近 200 日收盘均值（手算对照）',
+    Math.abs(engine.mayerOf(sM, 'BTC', sM.i) - want) < 1e-9,
+    `${engine.mayerOf(sM, 'BTC', sM.i).toFixed(3)} vs ${want.toFixed(3)}`);
+}
+
 /* ═══════════════ 11 · 架空世界线：生成器 · 数据层物化 · 2033 终点（2026-10-10 · P2）═══════════════
    ⚠️ 放在**全文件最末尾**：11c 会把合成世界线灌进 `market` 的全局缓存（`installWorld`），
       之后任何读行情的小节都会读到合成数据 —— 所以必须最后跑。 */

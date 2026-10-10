@@ -23,7 +23,7 @@ import { anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
 import { badgesOf, epitaphOf, multShown, overLabelOf, styleOf, titleOf } from '../core/titles.js';
-import { GOD_NEWS_CD, SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
+import { CDRI, GOD_NEWS_CD, SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
 import { drawChart, drawEquityCurve, curveWindow } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 import { vibSupported } from './sound.js';
@@ -3922,6 +3922,14 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     box.append(row('压力位墙', walls.length
       ? `${walls.length} 条 · 合计 ${fmtMoneyShort(walls.reduce((a, r) => a + r.notional, 0))}`
       : '—'));
+    /* 风险 / 估值读数（2026-10-11 用户拍板「CDRI / 梅耶倍数**只在详情页**展示」）——
+       · 风险指数 = 本作既有的隐藏基准 `cdriOf`（五维加权，口径对齐 CoinGlass CDRI）**首次上屏**；
+       · 梅耶倍数 = 现价 ÷ 200 日 MA（`engine.mayerOf`；样本不足显示 `—`，不编数）。
+       两者都只读、不参与玩法；也就放在**深度页**（两种模式下都有这一页）。 */
+    if (w.risk) {
+      box.append(row('风险指数', `${Math.round(w.risk.cdri)} ${CDRI.bandLabel[w.risk.band] || ''}`));
+      box.append(row('梅耶倍数', w.risk.mayer == null ? '—' : w.risk.mayer.toFixed(2)));
+    }
   }
   return box;
 }
