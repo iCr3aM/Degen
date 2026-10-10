@@ -2269,7 +2269,7 @@ button { user-select: none; -webkit-user-select: none; }
 }
 .gb-step.on { color: var(--accent); background: var(--accent-soft); }
 
-/* 日志页（2026-10-08 · 用户拍板⑤）：aggr 式大单 tape —— 六型分色 ＋ 流动性比例五档背景。
+/* 日志页（2026-10-08 · 用户拍板⑤）：aggr 式大单 tape —— 八型分色 ＋ 流动性比例五档背景。
    列全部固定宽不换行（用户红线）：类型 14px / 方向 24px / 价格弹性 / 名义 52px / 数量 48px /
    倍数 30px（`12.5x`，2026-10-11 新增）/ 时间 60px（报「月日 时:分」`03-15 14:00`，年份在左上角
    已有 ⇒ 不加年份），与 .gb-row 同一套 9px/13px 字号纪律。
@@ -2310,6 +2310,10 @@ button { user-select: none; -webkit-user-select: none; }
 .gfd-os i, .gfd-os span, .gfd-cs i, .gfd-cs span, .gfd-os s, .gfd-cs s { color: var(--down); }
 .gfd-lq i, .gfd-lq span, .gfd-row.gfd-lq b, .gfd-lq s { color: #ec407a; }
 .gfd-ls i, .gfd-ls span, .gfd-row.gfd-ls b, .gfd-ls s { color: #ff9800; }
+/* 部分强平（2026-10-11 · 强多 / 强空）：与整档强平同族、**浅一档**（爆成全色、强是同族浅色），
+   靠字形（⚡ vs 💥）＋方向文字区分。 */
+.gfd-pl i, .gfd-pl span, .gfd-row.gfd-pl b, .gfd-pl s { color: #f06292; }
+.gfd-ps i, .gfd-ps span, .gfd-row.gfd-ps b, .gfd-ps s { color: #ffb74d; }
 
 /* ══════════════ 桌面端分档：详情浮窗扩大 ＋ 容器再放宽（2026-10-08 用户拍板）══════════════
    用户原话「做桌面端（桌面网页版）适配，详细适配，比如详情浮窗可以扩大」。浮窗那三档尺寸改由

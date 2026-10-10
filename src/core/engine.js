@@ -2177,10 +2177,12 @@ function mktOf(s, sym) {
       long: 0, longAvg: 0, short: 0, shortAvg: 0,
       longStopped: false, shortStopped: false,      // 亏损侧止损带（`NPC.stopFrac`）
       longTp: false, shortTp: false,                // G1 · 盈利侧止盈带（`NPC.tpFrac`）
+      longLiq: false, shortLiq: false,              // 部分强平一次性标志（`NPC.partialFrac`）
     })),
     mm: {
       long: 0, longAvg: 0, short: 0, shortAvg: 0,
       longStopped: false, shortStopped: false, longTp: false, shortTp: false,
+      longLiq: false, shortLiq: false,
     },
     npcDrift: null, npcShock: null, npcFund: 0, advPush: 0, pv: 0,
     /* 恐惧贪婪**显示轨**（2026-10-04）：旧档缺这三个键 ⇒ 由 `fngDay === null` 触发首次结算
@@ -2458,7 +2460,8 @@ function npcRealised(long, mag, avg, price) {
  *   会话级 tape，只记**市场**的合约大单 —— NPC 六档建仓/减仓、护盘/巨鲸/ETF 买入、
  *   止损/止盈减仓、强平（含玩家自己被强平：现实里 forceOrder 是全市场可见的事实流）；
  *   玩家自己的主动开/平不进 tape（主日志已有，重复两遍只会吵）。
- * 六型：0 开多 ▲ / 1 开空 ▼ / 2 平多 △ / 3 平空 ▽ / 4 爆多 💥 / 5 爆空 💥（配色见 render.js）。
+ * 八型：0 开多 ▲ / 1 开空 ▼ / 2 平多 △ / 3 平空 ▽ / 4 爆多 💥 / 5 爆空 💥 /
+ *       6 强多 ⚡ / 7 强空 ⚡（配色见 render.js）。**爆** = 整档/整条清零、**强** = 部分强平。
  * 分档按「当日流动性比例」五档（用户拍板；2026-10-09 补 1%）：0.1% / 0.5% / 1% / 2% / 5%
  * —— 跨年代自适应（2013 年的 $1m 与 2024 年的 $1m 不是一回事），低于 0.1% 不上日志；
  * 浮窗页 4 底部那排过滤档与 `FEED_STEPS` **一一对应**（选中第 i 档 ⇒ 只留 `t ≥ i` 的行）。
@@ -2481,7 +2484,7 @@ export function feedTier(notional, liqDay) {
   return -1;
 }
 /**
- * **tape 大单事件流**（喂入口）：k = 六型（0 开多…5 爆空）、`minTier` 强制档位（玩家强平传 0）、
+ * **tape 大单事件流**（喂入口）：k = 八型（0 开多…5 爆空、6/7 强多/强空）、`minTier` 强制档位（玩家强平传 0）、
  * `lev` = 该笔的**倍数**（供日志页「倍数」列；不知道的填 0 ⇒ 显示 `—`）。
  * ⚠️ 导出给审计 9aq 直调（与 `exRevSweep` 同一先例）—— 保留策略的行为断言需要喂任意时龄的条目。
  */
@@ -2522,15 +2525,17 @@ export function feedPush(s, sym, k, price, notional, minTier = -1, lev = 0) {
  * @param {object} [fS] 大单事件流上下文（游戏状态）—— 传了才往 `s.feed` 发**开/平单**事件
  *   （趋势盘六档传，做市盘不传：做市是对手盘流动性、不是方向性合约单，上了 tape 只会是噪声）；
  * @param {string} [fSym] 事件流的币种（与 `fS` 成对）
+ * @param {number} [lev] 该档的**生效杠杆**（`npcLevOf` 年代封顶后）—— 只喂 tape 的「倍数」列（缺省 0 ⇒ `—`）
  * @returns {number} 本次**减仓**（含残尾清零）的已实现盈亏（正 = NPC 赚）—— 供调用方入对手方池；
  *   没有减仓（纯加仓 / 无变化）时返回 0。方案 A ②：NPC 减仓也要结算，否则「无玩家时」池无收入流。
  */
-function stepNpc(slot, side, target, price, floor, speed = NPC.speed, fS = null, fSym = '') {
+function stepNpc(slot, side, target, price, floor, speed = NPC.speed, fS = null, fSym = '', lev = 0) {
   const long = side === 'long';
   const key = long ? 'long' : 'short';
   const avgKey = long ? 'longAvg' : 'shortAvg';
   const stopKey = long ? 'longStopped' : 'shortStopped';
   const tpKey = long ? 'longTp' : 'shortTp';
+  const liqKey = long ? 'longLiq' : 'shortLiq';
   const cur = slot[key];
   const next = cur + (Math.max(0, target) - cur) * speed;
   if (next < floor) {                                                                // 残尾 ⇒ 直接清零
@@ -2540,8 +2545,8 @@ function stepNpc(slot, side, target, price, floor, speed = NPC.speed, fS = null,
       /* 残尾清零同样是**减仓**（把 `cur` 平掉）⇒ 它的已实现盈亏也要入池（方案 A ②）——
          不结算就等于让一小笔钱消失。量级 < `floor`（本就微小），但口径要闭合。 */
       const realised = npcRealised(long, cur, slot[avgKey], price);
-      slot[key] = 0; slot[avgKey] = 0; slot[stopKey] = false; slot[tpKey] = false;
-      if (fS) feedPush(fS, fSym, long ? 2 : 3, price, cur);   // tape：残尾清零 = 平多/平空（档位阈值过滤小单）
+      slot[key] = 0; slot[avgKey] = 0; slot[stopKey] = false; slot[tpKey] = false; slot[liqKey] = false;
+      if (fS) feedPush(fS, fSym, long ? 2 : 3, price, cur, -1, lev);   // tape：残尾清零 = 平多/平空（档位阈值过滤小单）
       return realised;
     }
     return 0;
@@ -2550,7 +2555,7 @@ function stepNpc(slot, side, target, price, floor, speed = NPC.speed, fS = null,
   if (!(Math.abs(delta) > 1e-9)) return 0;
   /* **减仓**（`delta < 0`）⇒ 已实现盈亏入池；**加仓**（`delta > 0`）只摊均价，不结算（方案 A ②）。 */
   const realised = delta < 0 ? npcRealised(long, -delta, slot[avgKey], price) : 0;
-  if (fS) feedPush(fS, fSym, long ? (delta > 0 ? 0 : 2) : (delta > 0 ? 1 : 3), price, Math.abs(delta));
+  if (fS) feedPush(fS, fSym, long ? (delta > 0 ? 0 : 2) : (delta > 0 ? 1 : 3), price, Math.abs(delta), -1, lev);
   slot[key] = next;
   if (delta > 0 && price > 0) slot[avgKey] = (slot[avgKey] * cur + price * delta) / next;   // 加仓 ⇒ 摊平均价
   return realised;
@@ -3167,90 +3172,142 @@ function stampede(s, sym, m, price) {
 
 /**
  * **一个持仓格子的逐档击穿**（趋势盘六档与做市盘**共用**这一条，缺口 6-A 抽出）——
- *   ① 多头：先自愿止损（平 50%、一次性），跌破强平线则全平并复位；空头镜像（逼空 ⇒ 热度上冲）。
- *      **G1（2026-10-05）**：盈利侧再加一条**止盈带**（`NPC.tpFrac`，比止损带更近）—— 处置效应
- *      （Odean 1998：盈利单卖出率 ≈ 亏损单 1.5×）⇒ 涨势里散户「见好就收」，不再只加不减。
- *   ② 返回本格本小时被**强平**的名义额（不含自愿止损波）—— 缺口 16 的「爆仓潮」只认这一笔。
+ *   ① 三段递进（多头，空头镜像）：
+ *      · **自愿止损带**（`NPC.stopFrac`，**仅生效杠杆 ≤ `NPC.stopLev`（10x）的档**，平 50%、一次性）；
+ *      · **自愿止盈带**（`NPC.tpFrac`，处置效应，Odean 1998，同上仅 ≤10x，平 50%、一次性）；
+ *      · 跌破**强平线**（`avg×(1−(1/lev−maint))`）⇒ **阶梯式部分强平**（削 `NPC.partialFrac`，
+ *        tape `强多 ⚡`）；击穿**破产价**（`avg×(1−1/lev)`，更深）⇒ **整档清零**（tape `爆多 💥`）。
+ *   ② 返回本格本小时被**强平**的名义额（含部分强平，**不含**自愿止损/止盈波）—— 「爆仓潮」只认这一笔。
  *
- * ⚠️ 杠杆由调用侧传入（趋势盘 `NPC.ladder[k].lev`、做市盘 `NPC.mm.lev`）⇒ 强平线 / 止损带
- *    仍是「`1/lev − 维持保证金率` 与本值 × `NPC.stopFrac`」这**一套**公式，没有第二条。
+ * ⚠️ **强平三态**（2026-10-11 · 用户拍板「爆仓分『强 / 爆』」）：`强多/强空` = 强平线↔破产价之间的
+ *    **部分**强平；`爆多/爆空` = 击穿破产价的**整档**清零。主流所（Binance/OKX/Bybit）都是**阶梯式
+ *    部分强平**，不是一触线就整仓打掉 —— 见 `NPC.partialFrac` 注。
+ * ⚠️ 杠杆由调用侧传入（趋势盘 `npcLevOf(t, NPC.ladder[k].lev)`、做市盘 `NPC.mm.lev`）⇒ 强平线 /
+ *    破产价 / 止损带仍是「`1/lev` 与本值 × `NPC.stopFrac`」这**一套**公式，没有第二条。
  * ⚠️ `quiet`（2026-10-08 tape）：做市盘传 `true` —— 做市是对手盘流动性、不是方向性合约单，
- *    它的止损/止盈/强平不上「大单日志」（趋势盘六档照发：爆多/爆空/平多/平空都是市场事实）。
+ *    它的止损/止盈/强平不上「大单日志」（趋势盘六档照发：强多/强空/爆多/爆空/平多/平空都是市场事实）。
  */
 function flushSlot(s, sym, m, g, lev, price, quiet = false) {
   const maint = GAME.maintRate;                     // 0.5% 基准档（与玩家侧 `GAME.maintRate` 同源）
-  const drop = 1 / lev - maint;                     // 该档距入场价多远爆
+  const drop = 1 / lev - maint;                     // 该档距入场价多远**触及强平线**
+  const bank = 1 / lev;                             // 该档距入场价多远**亏光保证金**（破产价，比强平线更深）
+  /* ⚠️ 主动止损 / 止盈带只给**生效杠杆 ≤ `NPC.stopLev`（10x）** 的档（2026-10-11 用户拍板）：
+     20x/50x/100x 档取消这两条带 ⇒ 它们一路走到自己的强平线，被部分强平 / 整档强平
+     （爆仓集中在高杠杆）。早年（`npcLevOf` 封顶到 3x）六档全带 ⇒ 与旧档逐位同轨。 */
+  const banded = lev <= NPC.stopLev;
   const stop = drop * NPC.stopFrac;                 // 止损带：强平线 × 0.6
   const take = drop * NPC.tpFrac;                   // G1 · 止盈带（0.4 < 0.6 ⇒ 盈利侧比亏损侧更急）
   let liqNotional = 0;
   /* 方案 A ②：自愿**止损 / 止盈**的已实现盈亏累加，函数末尾一次性入池。
-     ⚠️ 两个**强平**分支不在此列 —— 它们仍走 `fundSettle` → `s.fund`（避免同一笔钱两边都记）。 */
+     ⚠️ **强平 / 部分强平**两支不在此列 —— 它们仍走 `fundSettle` → `s.fund`（避免同一笔钱两边都记）。 */
   let realised = 0;
-  /* 多头：先自愿止损（平 50%、一次性），跌破强平线则全平并复位。 */
+  /* 多头三段：自愿止损 / 止盈（各平 50%、一次性）→ 跌破**强平线**做**阶梯式部分强平**（强多 ⚡）
+     → 击穿**破产价**整档清零（爆多 💥）。后两段是「强平」，第一段不是。 */
   if (g.long > 0 && g.longAvg > 0) {
-    if (price < g.longAvg * (1 - drop)) {
+    const liqLine = g.longAvg * (1 - drop);         // 强平线（触及 ⇒ 部分强平）
+    const bankLine = g.longAvg * (1 - bank);        // 破产价（击穿 ⇒ 整档清零）
+    if (price <= bankLine) {
+      /* 击穿破产价 ⇒ 整档清零（爆多 💥）。 */
       pushNpcShock(s, sym, m, -1, g.long);
       m.heat = clamp01(m.heat - HEAT.panicDrop);
-      liqNotional += g.long;                        // 缺口 16：只认这一笔（强平潮）
-      if (!quiet) feedPush(s, sym, 4, price, g.long);   // tape：爆多 💥（粉色，render.js 配色）
+      liqNotional += g.long;                        // 缺口 16：只认**强平**这一笔（强平潮）
+      if (!quiet) feedPush(s, sym, 4, price, g.long, -1, lev);   // tape：爆多 💥
       fundSettle(s, g.long, g.longAvg, lev, 1, price);   // 缺口 5 ①②：盈余入池 / 穿仓掏池
-      g.long = 0; g.longAvg = 0; g.longStopped = false; g.longTp = false;
-    } else {
-      /* 亏损侧止损带（平 50%、一次性）。 */
-      if (!g.longStopped && price < g.longAvg * (1 - stop)) {
-        const cut = g.long * 0.5;
+      g.long = 0; g.longAvg = 0; g.longStopped = false; g.longTp = false; g.longLiq = false;
+    } else if (price <= liqLine) {
+      /* 跌破强平线但未到破产价 ⇒ **部分强平**（强多 ⚡）：削 `NPC.partialFrac`。
+         ⚠️ **同一段水下只削一次**（`longLiq` 一次性标志，同止损带的先例）—— 否则价格停在
+         线下时每小时都削一次，同一档会被反复打 → 级联额在薄市里发散（实测 ETH 2017 单日
+         强平 ÷ 日流动性 = 14×，物理上不可能）。削后**等价格回升出强平线**（复位标志）才会
+         再削；一路下滑则由破产价那一支整档清零（爆多）。热度冲击按削掉的比例计。 */
+      if (!g.longLiq) {
+        const cut = g.long * NPC.partialFrac;
         pushNpcShock(s, sym, m, -1, cut);
+        m.heat = clamp01(m.heat - HEAT.panicDrop * NPC.partialFrac);
+        liqNotional += cut;
+        if (!quiet) feedPush(s, sym, 6, price, cut, -1, lev);   // tape：强多 ⚡
+        fundSettle(s, cut, g.longAvg, lev, 1, price);   // 强平线附近成交 ⇒ 正盈余入池
         g.long -= cut;
-        g.longStopped = true;
-        if (!quiet) feedPush(s, sym, 2, price, cut);   // tape：止损减仓 = 平多 △
-        realised += npcRealised(true, cut, g.longAvg, price);   // 方案 A ②：止损已实现盈亏入池
-      } else if (g.longStopped && price >= g.longAvg * (1 - stop)) {
-        g.longStopped = false;                      // 回升出带 ⇒ 下一轮可再触发
+        g.longLiq = true;
       }
-      /* G1 · 盈利侧止盈带（平 50%、一次性）—— 处置效应：见 `NPC.tpFrac`。 */
-      if (!g.longTp && price > g.longAvg * (1 + take)) {
-        const cut = g.long * 0.5;
-        pushNpcShock(s, sym, m, -1, cut);           // 卖出兑现 ⇒ 向下
-        g.long -= cut;
-        g.longTp = true;
-        if (!quiet) feedPush(s, sym, 2, price, cut);   // tape：止盈减仓 = 平多 △
-        realised += npcRealised(true, cut, g.longAvg, price);   // 方案 A ②：止盈已实现盈亏入池
-      } else if (g.longTp && price <= g.longAvg * (1 + take)) {
-        g.longTp = false;                           // 回落出带 ⇒ 下一轮可再触发
+      g.longStopped = false; g.longTp = false;      // 已进入强平流程 ⇒ 清掉自愿带标志
+    } else {
+      g.longLiq = false;                            // 回升出强平线 ⇒ 复位（下一段水下可再削）
+      if (banded) {                                 // 自愿止损 / 止盈带仅 ≤10x 档
+        /* 亏损侧止损带（平 50%、一次性）。 */
+        if (!g.longStopped && price < g.longAvg * (1 - stop)) {
+          const cut = g.long * 0.5;
+          pushNpcShock(s, sym, m, -1, cut);
+          g.long -= cut;
+          g.longStopped = true;
+          if (!quiet) feedPush(s, sym, 2, price, cut, -1, lev);   // tape：止损减仓 = 平多 △
+          realised += npcRealised(true, cut, g.longAvg, price);   // 方案 A ②：止损已实现盈亏入池
+        } else if (g.longStopped && price >= g.longAvg * (1 - stop)) {
+          g.longStopped = false;                    // 回升出带 ⇒ 下一轮可再触发
+        }
+        /* G1 · 盈利侧止盈带（平 50%、一次性）—— 处置效应：见 `NPC.tpFrac`。 */
+        if (!g.longTp && price > g.longAvg * (1 + take)) {
+          const cut = g.long * 0.5;
+          pushNpcShock(s, sym, m, -1, cut);         // 卖出兑现 ⇒ 向下
+          g.long -= cut;
+          g.longTp = true;
+          if (!quiet) feedPush(s, sym, 2, price, cut, -1, lev);   // tape：止盈减仓 = 平多 △
+          realised += npcRealised(true, cut, g.longAvg, price);   // 方案 A ②：止盈已实现盈亏入池
+        } else if (g.longTp && price <= g.longAvg * (1 + take)) {
+          g.longTp = false;                         // 回落出带 ⇒ 下一轮可再触发
+        }
       }
     }
   }
-  /* 空头镜像：逼空 ⇒ 热度反而上冲。 */
+  /* 空头镜像三段：逼空 ⇒ 热度反而上冲。 */
   if (g.short > 0 && g.shortAvg > 0) {
-    if (price > g.shortAvg * (1 + drop)) {
+    const liqLine = g.shortAvg * (1 + drop);
+    const bankLine = g.shortAvg * (1 + bank);
+    if (price >= bankLine) {
       pushNpcShock(s, sym, m, 1, g.short);
       m.heat = clamp01(m.heat + HEAT.panicDrop);
       liqNotional += g.short;
-      if (!quiet) feedPush(s, sym, 5, price, g.short);   // tape：爆空 💥（橙色，render.js 配色）
+      if (!quiet) feedPush(s, sym, 5, price, g.short, -1, lev);   // tape：爆空 💥
       fundSettle(s, g.short, g.shortAvg, lev, -1, price);
-      g.short = 0; g.shortAvg = 0; g.shortStopped = false; g.shortTp = false;
-    } else {
-      /* 亏损侧止损带（平 50%、一次性）。 */
-      if (!g.shortStopped && price > g.shortAvg * (1 + stop)) {
-        const cut = g.short * 0.5;
+      g.short = 0; g.shortAvg = 0; g.shortStopped = false; g.shortTp = false; g.shortLiq = false;
+    } else if (price >= liqLine) {
+      /* 部分强平（强空 ⚡）—— 同一段水下只削一次，见多头侧同注（`longLiq`）。 */
+      if (!g.shortLiq) {
+        const cut = g.short * NPC.partialFrac;
         pushNpcShock(s, sym, m, 1, cut);
+        m.heat = clamp01(m.heat + HEAT.panicDrop * NPC.partialFrac);
+        liqNotional += cut;
+        if (!quiet) feedPush(s, sym, 7, price, cut, -1, lev);   // tape：强空 ⚡
+        fundSettle(s, cut, g.shortAvg, lev, -1, price);
         g.short -= cut;
-        g.shortStopped = true;
-        if (!quiet) feedPush(s, sym, 3, price, cut);   // tape：止损减仓 = 平空 ▽
-        realised += npcRealised(false, cut, g.shortAvg, price);   // 方案 A ②：止损已实现盈亏入池
-      } else if (g.shortStopped && price <= g.shortAvg * (1 + stop)) {
-        g.shortStopped = false;                     // 回落出带 ⇒ 下一轮可再触发
+        g.shortLiq = true;
       }
-      /* G1 · 盈利侧止盈带（平 50%、一次性）—— 处置效应：见 `NPC.tpFrac`。 */
-      if (!g.shortTp && price < g.shortAvg * (1 - take)) {
-        const cut = g.short * 0.5;
-        pushNpcShock(s, sym, m, 1, cut);            // 买回平空兑现 ⇒ 向上
-        g.short -= cut;
-        g.shortTp = true;
-        if (!quiet) feedPush(s, sym, 3, price, cut);   // tape：止盈减仓 = 平空 ▽
-        realised += npcRealised(false, cut, g.shortAvg, price);   // 方案 A ②：止盈已实现盈亏入池
-      } else if (g.shortTp && price >= g.shortAvg * (1 - take)) {
-        g.shortTp = false;                          // 回升出带 ⇒ 下一轮可再触发
+      g.shortStopped = false; g.shortTp = false;    // 已进入强平流程 ⇒ 清掉自愿带标志
+    } else {
+      g.shortLiq = false;                           // 回落出强平线 ⇒ 复位（下一段水下可再削）
+      if (banded) {                                 // 自愿止损 / 止盈带仅 ≤10x 档
+        /* 亏损侧止损带（平 50%、一次性）。 */
+        if (!g.shortStopped && price > g.shortAvg * (1 + stop)) {
+          const cut = g.short * 0.5;
+          pushNpcShock(s, sym, m, 1, cut);
+          g.short -= cut;
+          g.shortStopped = true;
+          if (!quiet) feedPush(s, sym, 3, price, cut, -1, lev);   // tape：止损减仓 = 平空 ▽
+          realised += npcRealised(false, cut, g.shortAvg, price);   // 方案 A ②：止损已实现盈亏入池
+        } else if (g.shortStopped && price <= g.shortAvg * (1 + stop)) {
+          g.shortStopped = false;                   // 回落出带 ⇒ 下一轮可再触发
+        }
+        /* G1 · 盈利侧止盈带（平 50%、一次性）—— 处置效应：见 `NPC.tpFrac`。 */
+        if (!g.shortTp && price < g.shortAvg * (1 - take)) {
+          const cut = g.short * 0.5;
+          pushNpcShock(s, sym, m, 1, cut);          // 买回平空兑现 ⇒ 向上
+          g.short -= cut;
+          g.shortTp = true;
+          if (!quiet) feedPush(s, sym, 3, price, cut, -1, lev);   // tape：止盈减仓 = 平空 ▽
+          realised += npcRealised(false, cut, g.shortAvg, price);   // 方案 A ②：止盈已实现盈亏入池
+        } else if (g.shortTp && price >= g.shortAvg * (1 - take)) {
+          g.shortTp = false;                        // 回升出带 ⇒ 下一轮可再触发
+        }
       }
     }
   }
@@ -3442,12 +3499,13 @@ function npcBuild(s, sym, m, i) {
   for (let k = 0; k < NPC.ladder.length; k++) {
     const w = NPC.ladder[k].w;
     const floor = liqDay * NPC.floor * w;
-    const low = npcLevOf(t, NPC.ladder[k].lev) <= 10;
-    const b = low ? liqDay * NPC.base * w : 0;
+    const eff = npcLevOf(t, NPC.ladder[k].lev);     // 生效杠杆（年代封顶后）—— 基底判据 ＋ tape 倍数列
+    const low = eff <= 10;
+    const b = liqDay * (low ? NPC.base : NPC.baseHi) * w;   // 低杠杆档厚基底 / 高杠杆档薄churn地板（见 `NPC.baseHi`）
     /* 动量＋基底走**档位速度**（`sp`，2026-10-08 热力图改版 · 用户拍板 B）：高杠杆人群换手快
        ⇒ 均价贴现价，低杠杆慢 ⇒ 均价留在历史价位 —— 真实清算热力图「堆积带」的成因。 */
-    npcRealisedSum += stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym);
-    npcRealisedSum += stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp, s, sym);
+    npcRealisedSum += stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym, eff);
+    npcRealisedSum += stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp, s, sym, eff);
     /* 护盘 / 外部买盘：**当根全量入仓**（不走趋近，2026-10-08 拆分时定的口径）——急购就是
        砸市价单（对照 2025-10-10 实测锚：深度真空 35 分钟恢复九成，分钟级），原「并入靶心
        按 speed 渐近」要 19h 才到位九成，反而失真；且拆两次趋近会引入 `0.15/sp` 的稳态
@@ -3461,13 +3519,13 @@ function npcBuild(s, sym, m, i) {
         const c = m.npc[k].long || 0;
         m.npc[k].long = c + buy;
         m.npc[k].longAvg = ((m.npc[k].longAvg || 0) * c + price * buy) / (c + buy);
-        feedPush(s, sym, 0, price, buy);            // tape：护盘/巨鲸/ETF 急购 = 开多（当根全量，往往是大单）
+        feedPush(s, sym, 0, price, buy, -1, eff);   // tape：护盘/巨鲸/ETF 急购 = 开多（当根全量，往往是大单）
       }
       if (sell > 0) {
         const c = m.npc[k].short || 0;
         m.npc[k].short = c + sell;
         m.npc[k].shortAvg = ((m.npc[k].shortAvg || 0) * c + price * sell) / (c + sell);
-        feedPush(s, sym, 1, price, sell);           // tape：巨鲸/ETF 抛售 = 开空
+        feedPush(s, sym, 1, price, sell, -1, eff);  // tape：巨鲸/ETF 抛售 = 开空
       }
     }
   }
@@ -4663,7 +4721,9 @@ function forceLiquidate(s, pos, atPrice) {
   s.stat.liqNotional += notional;
   /* tape（2026-10-08）：玩家自己被强平也是全市场可见的事实流（现实里 forceOrder 对所有人推送）
      ⇒ 照发爆多/爆空；玩家**主动**开/平同样上 tape（2026-10-11 用户拍板，见 `openTrade`）。
-     2026-10-09：传 `minTier = 0` ⇒ 无论名义多小都上 tape（小仓在深市年代够不着 0.1% 阈值）。 */
+     2026-10-09：传 `minTier = 0` ⇒ 无论名义多小都上 tape（小仓在深市年代够不着 0.1% 阈值）。
+     ⚠️ 2026-10-11：这里是**整条仓位被打掉** ⇒ `爆多/爆空`（k=4/5）；被削一档的**部分强平**
+        走 `partialLiquidate` 的 `强多/强空`（k=6/7）。 */
   feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0, effLevOf(pos));
   delete s.positions[pos.sym];
   refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：爆掉的杠杆实物多头同 `closeGive` 比例释放折价
@@ -6523,7 +6583,10 @@ function partialLiquidate(s, pos, frac, atPrice) {
   if (!pos.liqCounted) s.stat.liq += 1;
   r.pos.liqCounted = true;                 // 落在这笔仓位身上 ⇒ `{...pos}` 会一路带着它
   s.stat.liqNotional += notional;          // §17.3（2026-10-04）：部分强平的成交名义同口径计入（与 `forceLiquidate` 一致）
-  feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0, effLevOf(pos));   // tape：部分强平同发爆多/爆空（minTier 0：玩家自己的仓，小名义也上）
+  /* tape（2026-10-11 分「强 / 爆」）：**部分强平** ⇒ `强多/强空`（k=6/7），与整条强平
+     （`forceLiquidate` 的 `爆多/爆空` k=4/5）在日志页分开显示。`minTier = 0`：玩家自己的仓，
+     小名义也上（深市年代够不着 0.1% 阈值）。 */
+  feedPush(s, pos.sym, pos.side === 'long' ? 6 : 7, atPrice, notional, 0, effLevOf(pos));
   /* 清算费（2026-10-07 用户拍板 · 补漏）：**部分强平同样按「已平名义」收费**。
      现实里交易所对部分强平也照收 liquidation fee（与整条强平同一张费率表）；旧实现只有
      `forceLiquidate` 扣费 ⇒ 「被削十几档」这条最惨的路反而一分不罚（实测累计 0.2%~0.5% 原始名义）。

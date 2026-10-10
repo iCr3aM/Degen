@@ -3260,9 +3260,9 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
   }
   const engSrc9w = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 动量/基底走档位速度 sp ＋ 护盘/外部流当根入仓（恒等式前提）',
-    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym)")
-    && engSrc9w.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp, s, sym)")
-    && engSrc9w.includes('const b = low ? liqDay * NPC.base * w : 0')
+    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym, eff)")
+    && engSrc9w.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp, s, sym, eff)")
+    && engSrc9w.includes('const b = liqDay * (low ? NPC.base : NPC.baseHi) * w;')
     && engSrc9w.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;'));
 
   /* ②′ 全币两侧常在（「怎么会无 NPC 持仓」的行为面）：72 小时烧入后逐币断言。
@@ -3559,7 +3559,7 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
   check('9y② 接线：dipOf 导出 ＋ npcBuild 长侧 dipBuy（买加长侧）＋ npcOtherTick 复用（护盘覆盖全币）',
     engSrc9y.includes('export function dipOf')
     && engSrc9y.includes('const dipBuy = d3.dipBuy;')
-    && engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym, eff)")
     && engSrc9y.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;')
     && engSrc9y.includes('npcBuild(s, sym, m, s.i);')
     && engSrc9y.includes('import { candleAt, closeAt, dayIndexOf'));
@@ -4746,7 +4746,10 @@ section('15 · 方案 A：玩家盈亏由对手方池承担（零和 · 池恒�
       engine.advanceOneHour(s);
       if (s.over || s.pending) break;
       const p = engine.lastPrice(s, 'BTC');
-      if (dir === 'up' ? p > entry * 1.01 : p < entry * 0.99) break;
+      /* ⚠️ 下行阈值 1% → **5%**（2026-10-11）：NPC 强平动力学重做后，合成位移在个别窗口可达
+         ±2% ⇒ 1% 的触发阈值会被位移噪声盖过（实测平仓价反而高于开仓价 ⇒ 15b 判成盈利）。
+         5% 深于位移量级 ⇒ 亏损符号稳。上行侧不变（15a/c 逐位不动）。 */
+      if (dir === 'up' ? p > entry * 1.01 : p < entry * 0.95) break;
     }
     const pos = s.positions.BTC;
     if (!pos) return null;
@@ -5196,23 +5199,27 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     && !engSrc9y.includes('FEED_DAYS')            // 2026-10-11：按天窗口已废除（改纯环形）
     && engSrc9y.includes('s.feed = [];'));
 
-  check('9ae② 挂点：六档建减仓发事件（s, sym）＋ 做市盘两处**不带**（对手盘不上 tape）',
-    engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym)")
-    && engSrc9y.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp, s, sym)")
+  check('9ae② 挂点：六档建减仓发事件（s, sym, lev）＋ 做市盘两处**不带**（对手盘不上 tape）',
+    engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym, eff)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp, s, sym, eff)")
     && engSrc9y.includes("stepNpc(m.mm, 'long', targetMM, price, floorMM, NPC.mm.speed)")
     && engSrc9y.includes('flushSlot(s, sym, m, m.mm, NPC.mm.lev, lastPrice(s, sym), true)'));
 
-  check('9ae③ 挂点：flushSlot 止损/止盈/强平六处（quiet）＋ 护盘/巨鲸急购 ＋ 玩家开/平/强平（含 `lev`）',
-    engSrc9y.includes('if (!quiet) feedPush(s, sym, 4, price, g.long)')
-    && engSrc9y.includes('if (!quiet) feedPush(s, sym, 5, price, g.short)')
-    && engSrc9y.split('if (!quiet) feedPush(s, sym, 2, price, cut)').length >= 3
-    && engSrc9y.split('if (!quiet) feedPush(s, sym, 3, price, cut)').length >= 3
-    && engSrc9y.includes('feedPush(s, sym, 0, price, buy)')
-    && engSrc9y.includes('feedPush(s, sym, 1, price, sell)')
+  check('9ae③ 挂点：flushSlot 止损/止盈/强/爆（quiet）＋ 护盘/巨鲸急购 ＋ 玩家开/平/强平（含 `lev`）',
+    engSrc9y.includes('if (!quiet) feedPush(s, sym, 4, price, g.long, -1, lev)')      // 爆多（整档清零）
+    && engSrc9y.includes('if (!quiet) feedPush(s, sym, 5, price, g.short, -1, lev)')  // 爆空（整档清零）
+    && engSrc9y.includes('if (!quiet) feedPush(s, sym, 6, price, cut, -1, lev)')       // 强多（部分强平）
+    && engSrc9y.includes('if (!quiet) feedPush(s, sym, 7, price, cut, -1, lev)')       // 强空（部分强平）
+    && engSrc9y.split('if (!quiet) feedPush(s, sym, 2, price, cut, -1, lev)').length >= 3
+    && engSrc9y.split('if (!quiet) feedPush(s, sym, 3, price, cut, -1, lev)').length >= 3
+    && engSrc9y.includes('feedPush(s, sym, 0, price, buy, -1, eff)')
+    && engSrc9y.includes('feedPush(s, sym, 1, price, sell, -1, eff)')
     /* 玩家自己的开/平（2026-10-11 用户拍板「玩家的开平爆也要写入日志内」）＋ 强平（事实流） */
     && engSrc9y.includes("feedPush(s, s.sym, side === 'long' ? 0 : 1, fill, notional, 0, effLevOf(pos))")
     && engSrc9y.includes("feedPush(s, sym, pos.side === 'long' ? 2 : 3, fill, notional, 0, tapeLev)")
-    && engSrc9y.split("feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0, effLevOf(pos))").length >= 3);
+    /* 整条强平 ⇒ 爆多/爆空（k=4/5）；部分强平 ⇒ 强多/强空（k=6/7） */
+    && engSrc9y.includes("feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0, effLevOf(pos))")
+    && engSrc9y.includes("feedPush(s, pos.sym, pos.side === 'long' ? 6 : 7, atPrice, notional, 0, effLevOf(pos))"));
 
   check('9ae④ 分档行为锚：5%→4 · 2%→3 · 1%→2 · 0.5%→1 · 0.1%→0 · 0.09%→−1（跨年代自适应的同一把尺）',
     engine.feedTier(5, 100) === 4 && engine.feedTier(2, 100) === 3 && engine.feedTier(1, 100) === 2

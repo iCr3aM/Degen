@@ -628,7 +628,8 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      * 大单事件流（2026-10-08 tape）—— aggr 式日志 tab 的数据源。
      * ⚠️ **会话级**：save.js `EPHEMERAL` 剔除、`rewindTo` 清空、`FEED_CAP` 环形封顶；
      *    只记市场的合约大单（NPC 六档建减仓 / 护盘巨鲸 / 止损止盈 / 强平），不参与玩法判定。
-     *    条目 `{ i, sym, k, p, n, t }`：小时序号 / 币 / 六型（0开多..5爆空）/ 价 / 名义 / 分档。
+     *    条目 `{ i, sym, k, p, n, t, lev }`：小时序号 / 币 / **八型**（0开多..5爆空、6/7 强多/强空）/
+     *    价 / 名义 / 分档 / 该笔倍数（`lev`，0 ⇒ 显示 `—`；2026-10-11 加「倍数」列）。
      */
     feed: [],
     /**
