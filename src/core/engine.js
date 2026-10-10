@@ -169,18 +169,32 @@ export function niceStepOf(p) {
  * 整数关口加成），按距离随时间撤单，被行情吃穿的档**跳价回填**（做市商把墙补得更厚）。
  *
  * 为什么这样做（拍板口径 R1「行为级离散簿」）：
- *   · **近场指数** λ(δ) ∝ e^(−kδ)：挂单密度随价距指数衰减（kB//近场致密），
- *     占每小时新单的 ~80%；δ 以盘口步长格计（`niceStepOf`）。
- *   · **远场幂律**：价值单（大额挂单）价距走 Pareto α≈1.8（Potters & Bouchaud 2002
- *     的限价价距宽尾 µ≈0.6~1.5；价值单取 1.6~2 中值）——远场稀而不断。
- *   · **大小**：对数正态 σ=1.2（文献挂单大小的对数正态主体）。
- *   · **整数关口**：落格后若是 5/10 倍格（人类整数价）名义 ×3~10
- *     （Urquhart 2017 / Hu et al. 2019 的 round-number 聚集）。
- *   · **撤单**：寿命 = `life0/(1+δ/δc)`（即 θ(δ)=θ0(1+δ/δc) 的存活时间形式）——
- *     近场单活得久（ ~14h）、远场单死得快（陈单被撤）。抖动用**价签哈希**（无随机数）。
+ *   · **近场指数** λ(δ) ∝ e^(−kδ)：做市商报价簇随价距指数衰减（近场致密）；
+ *     δ 以盘口步长格计（`niceStepOf`）。⚠️ A-S 的 λ(δ)=A·e^(−kδ) 本义是**成交强度**
+ *     不是挂单密度（2026-10-10 调研澄清）——这里只借「贴盘密集」的形状，不外推到远场。
+ *   · **远场幂律（账本剖面）**：价值单价距走**截断幂律** ρ(δ) ∝ δ^(−farMu)
+ *     on [farD0, 400] 格 —— Bouchaud-Mézard-Potters 2002 实测账本密度剖面 µ≈0.6
+ *     （Lillo 2006 澄清：µ=0.6 是「账本存储密度」，Zovko-Farmer 2002 的 1.5 是
+ *     「单笔挂单价距」，两者是不同的量；账本剖面才是渲染订单簿该对的口径）。
+ *     累计深度 D(δ) ∝ δ^0.4 ⇒ ±10% 累计深度 ≈ ±0.1% 的 6 倍、**同数量级**——
+ *     「越远越接近零」在真实 LOB 里不存在（Binance 现货实测 ±0.1%≈$7-8M / ±1%≈$20M，
+ *     CoinGlass：Binance 合约 ±1% 双边 $236M，比值吻合 δ^0.4）。
+ *   · **大小**：对数正态（近场）/ Pareto 重尾（远场与位聚集单）—— 单笔大小与挂单距离
+ *     **近独立**（Mike & Farmer 2008 实测；Lillo 2006 的解释：耐心的大资金挂得更远，
+ *     宏观上已由「远场=大单」的分布重叠表达，不再显式耦合）。
+ *   · **整数关口**：落格后若是 5/10 倍格（人类整数价）名义 ×1.5~3
+ *     （Urquhart 2017 / Hu et al. 2019 的 round-number 聚集；3~10× 是实践值非实证）。
+ *   · **支撑 / 压力位聚集**（2026-10-10 · 用户拍板「人人都想低买高卖」）：历史压力位
+ *     （`levelsOf` 的量价密集区 ＋ 摆动高低点）是全市场公认的挂单磁铁 —— 每小时每侧对
+ *     本侧每一条在册位钉一笔大单（×位权重），同价合并几小时就堆出肉眼可见的墙。
+ *     CoinGlass 清算热力图的「磁吸区」同构：显著价位上的聚集强度远超背景。
+ *   · **撤单**：寿命 = `life0 × (1 + δ/δc)` —— **远场单活得久**（2026-10-10 反转旧口径）：
+ *     远处的价值单是耐心单（Krause et al. 2021 两 regime：近场「流动性垫」密集短命、
+ *     远场稀疏但长寿命单恒在），账本剖面的幂律正是「持续挂单 ＋ 长寿命」积累出来的。
+ *     抖动用**价签哈希**（无随机数）。
  *   · **买侧不对称** ×1.6：加密市场的买盘深度系统性偏厚（历史上「抄底墙」）。
- *   · **吃穿跳价回填** ×1.5~3：被吃穿的档有 70% 概率在**更远一格**重新挂出、
- *     名义更厚 —— 做市商的防御性补墙，正是「扫荡后墙变厚」的微观结构事实。
+ *   · **吃穿回填**：就地同格补回被吃量的一部分（期望≈中性游走）；残量低于**最小名义
+ *     下限** ⇒ 整档退场 —— 做市商不会留碎渣（2026-10-10 尘埃闸，见 `LOB.minRel`）。
  *
  * ⚠️ **与成本模型的关系（红线 A · 不双重计价）**：连续曲线（`baseLadder` / `walkBook`）
  *    **原样保留**，仍是玩家吃单成本与「总量基线」—— 簿的总名义被治理器（`lobTick` 内的
@@ -202,7 +216,17 @@ export function niceStepOf(p) {
    修法：吃穿改**部分消费**（余量留原价）＋ 回填**就地同格**＋ `sMul` 夹口 0.25~4→0.2~2 ＋
    近场笔数 8→20（泊松噪声 ÷√2.5）＋ `sizeSig` 1.2→0.6（去掉十万级个例）＋ 关口加成 3~10→1.5~3。
    终值（离线 720h 实测）：单侧总量 CV 52.5%→39.4%、逐小时单侧变动中位 4.5%、
-   **同一价格档**跨小时变动中位 2.8%（P90 45.5%）、簿总深/日量 93.6%→37.7%。 */
+   **同一价格档**跨小时变动中位 2.8%（P90 45.5%）、簿总深/日量 93.6%→37.7%。
+⚠️ 2026-10-10（用户报「调了 ×8 深度 ×3 密度，远处挂单仍出现数量 <1」＋「人人都想低买高卖，
+   远处支撑/压力位应该特别多挂单」）—— 远场重构（联网调研定口径，见头注）：
+   病根三条（离线 240h 实测，`tools/tmp-lob-audit.mjs`）：① 吃穿回填的 15% 不补路径复利缩水
+   ⇒ 远区积满残渣（2014 普通局 10–30% 远区 72 笔里 45 笔 qty<1，最小 $68），且离散残渣
+   **盖住**空桶本该显示的潜在基线；② 远场帕累托 α=1.8（密度 ∝ δ^-2.8）＋ 每小时仅 0.3 笔
+   ⇒ 比账本剖面经验口径薄一个数量级以上，70% 外**整片为 0**；③ 寿命公式 `life0/(1+δ/δc)`
+   让远场单死得比近场**快** —— 与「远处价值单=耐心单」恰好相反，积累不起来。
+   修法：远场改**账本剖面截断幂律** ρ∝δ^-0.6（`farMu`）＋ 每小时 1 笔（`farP`）＋ 寿命反转
+   `life0×(1+δ/δc)` ＋ 支撑/压力位聚集单（`levelQ`）＋ 最小名义下限（`minRel`，尘埃闸）。
+   治理器 `sMul` 自动把总深锚回 `capQ`，近场相应收窄 —— 总盘不变、形状重分配。 */
 export const LOB = {
   /* 一侧总深上限（q = 名义 ÷ **当日成交量**）—— 这是治理器 `sMul` 的**设定点**，
      校准到「簿总深（双边）≈ 日成交量 30~40%」（Donier & Bouchaud 2015 口径）。
@@ -216,16 +240,23 @@ export const LOB = {
      ⚠️ 铺平会同步抬高总深；单笔大小 `nearQ` 按笔数反比缩回去（近场单更多更小），
      并放开治理器夹口下限（见 `lobTick`）⇒ 总深仍锚 `capQ`（≈日成交量 30~40%）。 */
   near: 70,            // 每小时每侧新生成的近场单数（× 沙盒旋钮 × 治理器）
-  kNear: 0.04,         // 近场指数衰减 k（每格；格 ≈ 0.2% 价距）
-  farP: 0.30,          // 每小时每侧出现远场价值单的概率
-  farD0: 15,           // 远场价距下限（格）
-  farA: 1.8,           // 远场价距幂律 α（Potters & Bouchaud 2002）
+  kNear: 0.04,         // 近场指数衰减 k（每格；格 ≈ 0.2% 价距）—— 只管近场 mm 簇，不外推远场
+  farP: 1.0,           // 每小时每侧远场价值单**笔数**基准（× 密度旋钮；小数 = 概率尾数）—— 0.30→1.0（2026-10-10：远场是持续存在的价值单流，不是稀客）
+  farD0: 15,           // 远场价距下限（格，≈±3%）
+  farMu: 0.6,          // 远场账本剖面指数 ρ(δ)∝δ^-µ（BMP 2002 / Lillo 2006；旧 farA=1.8 是单笔口径且过薄，退役）
   sizeSig: 0.6,        // 挂单大小对数正态 σ（1.2→0.6：去掉十万级个例）
   nearQ: 0.00009,      // 近场单中位大小（q 单位）—— 0.0015→0.00042（M4a）→ 0.00009（2026-10-09 铺平后按笔数反比缩）
   farQ: 0.00084,       // 远场单 Pareto 尺度（q 单位）—— 0.015→0.0039（M4a）→ 0.00084（2026-10-09 随 nearQ 同比例缩，保持 9.3× 近场比值）
-  life0: 14,           // 撤单基线寿命（小时）—— θ0 ≈ 0.07/h
-  lifeDist: 200,       // δc（格）—— 寿命 = life0/(1+δ/δc)（θ 随距离增大）—— 30→200（2026-10-09 铺平：远场单活得久才撑得住长尾）
+  levelQ: 0.0005,      // 支撑/压力位聚集单中位大小（q 单位）×(0.5 + 位权重)（2026-10-10 新增）
+  life0: 14,           // 撤单基线寿命（小时）—— 近场（δ≪δc）≈ 14h 不变
+  lifeDist: 200,       // δc（格）—— 寿命 = life0 **×**(1+δ/δc)（2026-10-10 反转：远场单活得久，账本幂律靠积累）
   gateMin: 1.5, gateMax: 3,  // 整数关口加成区间（3~10 → 1.5~3：不再造 10× 巨档）
+  /* **最小名义下限**（2026-10-10 尘埃闸 · 用户拍板「全市场的订单薄不该出现数量 <1 的挂单」）：
+     任何挂单（生成 / 回填残量）名义 < `max(该档价格, minRel × 深度尺子)` ⇒ **不挂 / 整档退场**。
+     `该档价格` 那一项保证 qty = 名义 ÷ 价格 **恒 ≥ 1**（早期年代价格/流动性比极高时自动接管）；
+     `minRel × 深度尺子` 是市场比例项（Binance 最小名义 $5 是单所散户盘口，全市场聚合口径
+     的最小可见档大三个数量级）。随深度旋钮同倍放大（市场 ×8 ⇒ 最小单 ×8）。 */
+  minRel: 2.5e-5,
   bidEdge: 1.6,        // 买侧深度不对称（×1.2~2 的中值）
   refillP: 0.85,       // 吃穿后回填概率
   /* 回填改为**期望刚好补平**被吃掉的那一份（2026-10-08 M4a v2）：原口径补 0.63× 吃掉量 ⇒
@@ -261,6 +292,45 @@ const lobPut = (arr, p, n, t, desc) => {
 /** 价签哈希（撤单抖动用，零随机数）—— 同价同抖动、跨小时稳定。 */
 const lobHash = p => (Math.imul(Math.round(p * 1e6) | 0, 2654435761) >>> 0) / 4294967296;
 
+/* 远场**截断幂律**取样器（2026-10-10）：账本剖面 ρ(δ) ∝ δ^(−farMu) on [farD0, 400] 格的
+   反变换采样 —— 冷启动与 `lobTick` ③ 共用（逐位同分布）。旧帕累托 α=1.8（密度 ∝ δ^-2.8）
+   比该剖面在远端薄 1~2 个数量级，正是「70% 外整片为 0」的生成侧根因。 */
+const LOB_FAR_POW = 1 - LOB.farMu;
+const LOB_FAR_LO = Math.pow(LOB.farD0, LOB_FAR_POW);
+const LOB_FAR_HI = Math.pow(400, LOB_FAR_POW);
+const lobFarDist = u => Math.min(400, Math.pow(LOB_FAR_LO + u * 0.999 * (LOB_FAR_HI - LOB_FAR_LO), 1 / LOB_FAR_POW));
+
+/** 挂单**入账收尾**（近场 / 远场共用；2026-10-10 抽出）：整数关口加成 ＋ **尘埃闸** ＋ `lobPut`。
+ *  · `pRaw` 未吸附价 —— 吸附到步长网格 `kk = round(pRaw/step)` 后落格（限价单钉在 tick 网格）；
+ *  · 尘埃闸：加成后名义 < `max(落格价, minRel × base)` ⇒ **不挂**（`base` = 深度尺子）——
+ *    「全市场的订单薄不该出现数量 <1 的挂单」（用户 2026-10-10 拍板），`落格价` 那一项
+ *    保证 qty 恒 ≥ 1，`minRel × base` 保证最小档随市场规模走。
+ *  · `exact` = **钉在精确价**（支撑/压力位聚集单用，不吸附 —— 位本身就是磁铁）。 */
+const lobPlace = (arr, pRaw, step, n, t, desc, base, exact = false) => {
+  const kk = Math.round(pRaw / step);
+  const p = exact ? pRaw : kk * step;
+  const nG = n * (kk % 10 === 0 ? LOB.gateMax : kk % 5 === 0 ? (LOB.gateMin + LOB.gateMax) / 2 : 1);
+  if (!(nG >= Math.max(p, LOB.minRel * base))) return;
+  lobPut(arr, p, nG, t, desc);
+};
+
+/** 支撑 / 压力位**聚集单**的一笔（2026-10-10 · 用户拍板「人人都想低买高卖，远处支撑位/压力位
+ *  应该特别多挂单」）：历史压力位（`levelsOf`：量价密集区 ＋ 摆动高低点）是全市场公认的挂单
+ *  磁铁 —— 对本侧每条在册位钉一笔大单（×位权重），**落最近格点**：同格位几小时就堆出肉眼
+ *  可见的墙，与近场/远场单同格也自然合并。CoinGlass 清算热力图的「磁吸区」同构。
+ *  ⚠️ 不钉精确价（2026-10-10 审计）：`exact=true` 会让聚集单价 = 墙行价 = `L.p`（同一浮点数
+ *  在视图里出现两次，违反 9v③「同侧严格升降序」契约）—— 落格后与墙行价至多差半格，
+ *  「位上有墙」的视觉不变。位在 1~400 格外 / 方向不符 ⇒ 跳过。
+ *  `li` = 位在 `levelsOf` 数组里的序号（随机通道分量）；
+ *  通道号 `3000 + li×4 + (side<0 ? 0 : 2)`（＋1 为大小）—— 与近场（≤1612）/ 远场（2000+）不重叠。 */
+const lobLevelPut = (arr, L, li, price, step, side, scale, sMul, base, t, sy, seed, h) => {
+  const dL = Math.abs(L.p / price - 1) / (step / price);
+  if (!(dL >= 1) || dL > 400 || !(side < 0 ? L.p < price : L.p > price)) return;
+  const u = randFast(seed, sy, h, 3000 + li * 4 + (side < 0 ? 0 : 2), CH_LOB);
+  const n = Math.min(LOB.maxQ, LOB.levelQ * Math.pow(1 - u * 0.999, -1 / 1.8) * (0.5 + L.w) * scale * sMul) * base;
+  lobPlace(arr, L.p, step, n, t, side < 0, base);
+};
+
 /**
  * 限价簿的**深度尺子**（2026-10-08 M4a）—— 锚在**日流动性**、不是逐小时深度。
  *
@@ -269,8 +339,10 @@ const lobHash = p => (Math.imul(Math.round(p * 1e6) | 0, 2654435761) >>> 0) / 42
  * 挂单深度没有同等幅度）⇒ 锚日尺子既更贴现实、也**平滑一个数量级**。
  * 仍保留两条市场级折减：对抗性撤深度（`advDepthMul`）与上帝深度旋钮（`godLiqMulOf`）——
  * 两者都是「市场整体变大/变小」，簿该跟着变（与 M4b 的全套放大同源）。
- */
-function lobScaleOf(s, sym, i) {
+ * ⚠️ 导出（2026-10-10 审计）：治理器设定点 = `capQ × 本函数` —— 离线断言 9af③ 的分母
+ * 必须用**同一把尺子**（`hourLiqOf` 含日内形态 0.3~3× 摆动，拿它当分母会把比值虚高
+ * 一个数量级：DOGE 实测 33×「超标」其实是分母被日内谷底砸小，锚本身是好的）。 */
+export function lobScaleOf(s, sym, i) {
   const dayLiq = liqOf(sym, dayIndexOf(i));
   if (!(dayLiq > 0)) return 0;
   const raw = hourLiqRaw(s, sym, i);
@@ -301,7 +373,9 @@ function lobOf(s, sym) {
   const sy = hashStr(sym);
   for (let k = 24; k >= 1; k--) {          // 回填出生小时：i−23..i（同 lobTick 的生成分布）
     const h = s.i - k;
+    const lv = levelsOf(sym, h);           // 该小时的在册压力位（聚集单用；无前视，levelsOf 自身只扫历史）
     for (const side of [-1, 1]) {
+      const arr = side < 0 ? b.bids : b.asks;
       const scale = side < 0 ? LOB.bidEdge : 1;
       const nNear = 2 + Math.floor(randFast(s.seed, sy, h, 1, CH_LOB) * LOB.near * 2);
       for (let j = 0; j < nNear; j++) {
@@ -309,30 +383,38 @@ function lobOf(s, sym) {
         const d = Math.max(1, Math.min(400, -Math.log(1 - u1 * 0.999) / LOB.kNear));
         const z = Math.sqrt(-2 * Math.log(1 - randFast(s.seed, sy, h, 11 + j * 3, CH_LOB) * 0.999)) * Math.cos(6.283185307 * randFast(s.seed, sy, h, 12 + j * 3, CH_LOB));
         const n = Math.min(LOB.maxQ, LOB.nearQ * Math.exp(LOB.sizeSig * z - LOB.sizeSig * LOB.sizeSig / 2) * scale) * scale0;
-        const kk = Math.round(price * (1 + side * d * step / price) / step);
-        lobPut(side < 0 ? b.bids : b.asks, kk * step, n * (kk % 10 === 0 ? LOB.gateMax : kk % 5 === 0 ? (LOB.gateMin + LOB.gateMax) / 2 : 1), h, side < 0);
+        lobPlace(arr, price * (1 + side * d * step / price), step, n, h, side < 0, scale0);
       }
       /* 远场价值单 —— **与 `lobTick` ③ 逐位同分布**（同 `h` 小时、同通道号）。
          ⚠️ 原实现此处**漏了这一支**（注释却自称「同 lobTick 的生成分布」）⇒ 冷启动簿没有长尾；
          而 `rewindTo` 清空 `s.lob` ⇒ 每次上帝重开本局拿到的都是「无尾簿」，远处一片 0
          （用户 2026-10-09 报「远处挂单为 0」的数据侧根因之一）。 */
-      if (randFast(s.seed, sy, h, side < 0 ? 61 : 62, CH_LOB) < LOB.farP) {
-        const u1 = randFast(s.seed, sy, h, side < 0 ? 63 : 64, CH_LOB);
-        const df = Math.min(400, LOB.farD0 * Math.pow(1 - u1 * 0.999, -1 / LOB.farA));
-        const u2 = randFast(s.seed, sy, h, side < 0 ? 65 : 66, CH_LOB);
+      const farRate = LOB.farP * lobMul;
+      const nFar = Math.floor(farRate) + (randFast(s.seed, sy, h, 2050 + (side < 0 ? 0 : 1), CH_LOB) < farRate % 1 ? 1 : 0);
+      for (let j = 0; j < nFar; j++) {
+        const u1 = randFast(s.seed, sy, h, 2000 + j * 4 + (side < 0 ? 0 : 2), CH_LOB);
+        const u2 = randFast(s.seed, sy, h, 2000 + j * 4 + 1 + (side < 0 ? 0 : 2), CH_LOB);
         const nf = Math.min(LOB.maxQ, LOB.farQ * Math.pow(1 - u2 * 0.999, -1 / 1.8) * scale) * scale0;
-        const kk = Math.round(price * (1 + side * df * step / price) / step);
-        lobPut(side < 0 ? b.bids : b.asks, kk * step, nf * (kk % 10 === 0 ? LOB.gateMax : kk % 5 === 0 ? (LOB.gateMin + LOB.gateMax) / 2 : 1), h, side < 0);
+        lobPlace(arr, price * (1 + side * lobFarDist(u1) * step / price), step, nf, h, side < 0, scale0);
+      }
+      /* 支撑 / 压力位聚集单 —— 同 `lobTick` ③ 逐位同分布（冷启动也要有墙）。 */
+      for (let li = 0; li < lv.length; li++) {
+        lobLevelPut(arr, lv[li], li, price, step, side, scale, 1, scale0, h, sy, s.seed, h);
       }
     }
   }
   /* 冷启动收尾：按寿命筛一次（出生最早的那批可能有该死的）—— 与 lobTick ② 同一公式 */
   for (const arr of [b.bids, b.asks]) {
+    const isBid = arr === b.bids;
     for (let j = arr.length - 1; j >= 0; j--) {
       const o = arr[j];
       const d = Math.abs(o.p / price - 1) / (step / price);
-      const life = LOB.life0 / (1 + d / LOB.lifeDist) * (0.6 + 0.8 * lobHash(o.p));
-      if (s.i - o.t > life || d > 400) arr.splice(j, 1);
+      const life = LOB.life0 * (1 + d / LOB.lifeDist) * (0.6 + 0.8 * lobHash(o.p));
+      /* stale 清理（2026-10-10）：价格已**越过**这一档 ⇒ 退场 —— 跳空穿过的老单吃不到
+         （① 只吃本根 K 线触及的档），赖到寿命尽会违反 9v③「严格分居中价两侧」契约。
+         真实盘口同理：限价单被穿过 = 成交或撤，不会留在簿上。 */
+      const stale = isBid ? o.p >= price : o.p <= price;
+      if (stale || s.i - o.t > life || d > 400) arr.splice(j, 1);
     }
   }
   return b;
@@ -340,11 +422,12 @@ function lobOf(s, sym) {
 
 /**
  * 限价簿的**小时刻度**（`tickMarket` / `npcOtherTick` 末尾调用，每币每小时一次）：
- *   ① 吃穿 —— 本根 K 线的高低价扫过的档：被动成交（大档按主动方向进 tape），70% 概率
- *      在更远一格跳价回填、名义 ×1.5~3（防御性补墙）；
- *   ② 撤单 —— 寿命 = `life0/(1+δ/δc) × 价签抖动`，远场陈单先死；
- *   ③ 生成 —— 近场指数 ＋ 远场幂律 ＋ 关口加成 ＋ 买侧不对称，名义经**治理器**
- *      （`sMul` = 目标深 ÷ 现存深，夹 0.25~4）锚在 `LOB.capQ × 本小时基准深度` 附近。
+ *   ① 吃穿 —— 本根 K 线的高低价扫过的档：部分消费、余量留原价，就地补回被吃量的一部分；
+ *      残量低于**尘埃闸**（`LOB.minRel`）⇒ 整档退场（2026-10-10）；
+ *   ② 撤单 —— 寿命 = `life0 × (1 + δ/δc) × 价签抖动`，远场单活得久（2026-10-10 反转）；
+ *   ③ 生成 —— 近场指数 ＋ 远场账本剖面幂律 ＋ 支撑/压力位聚集 ＋ 关口加成 ＋ 尘埃闸，
+ *      名义经**治理器**（`sMul` = 目标深 ÷ 现存深，夹 0.05~2）锚在
+ *      `LOB.capQ × 本小时基准深度` 附近。
  */
 function lobTick(s, sym) {
   const price = lastPrice(s, sym);
@@ -383,10 +466,15 @@ function lobTick(s, sym) {
       /* 余量 ＋ 就地在**原价**补回（`t` 刷成本小时 = 补的是新单，寿命筛按新单算）。
          ⚠️ 只补**仍在正确一侧**的档（`stale` 闸，2026-10-08 M4a v2）：价格已**越过**这一档
          （买档跑到现价上方 / 卖档跑到现价下方）⇒ 残量不该留（那一档已被吃掉、只剩「越过去」的
-         空价签）—— 留着会同时违反「簿两侧严格分居中价」这条 UI 契约（审计 9v③）。 */
+         空价签）—— 留着会同时违反「簿两侧严格分居中价」这条 UI 契约（审计 9v③）。
+         ⚠️ **尘埃闸**（2026-10-10）：残量 < `max(本档价, minRel × base)` ⇒ **整档退场**。
+         病根（离线实测）：15% 不补路径 × 0.35~0.85 消费比复利缩水 —— 反复被扫的档收敛到
+         几十美元的残渣（2014 局实测最小 $68、qty 0.089），且离散残渣**盖住**渲染空桶本该
+         显示的潜在基线（`latentOf`）—— 用户报「远处挂单数量 <1」的直接来源。做市商不会
+         留碎渣：撤掉重挂。 */
       const left = o.n - eatenN + back;
       const stale = side < 0 ? o.p >= price : o.p <= price;
-      if (left > 0 && !stale) lobPut(arr, o.p, Math.min(LOB.maxQ * base, left), left > o.n - eatenN ? s.i : o.t, side < 0);
+      if (left >= Math.max(o.p, LOB.minRel * base) && !stale) lobPut(arr, o.p, Math.min(LOB.maxQ * base, left), left > o.n - eatenN ? s.i : o.t, side < 0);
       if (eatenN > 0) eaten.push({ side, p: o.p, n: eatenN, t: o.t });
     }
   }
@@ -406,8 +494,15 @@ function lobTick(s, sym) {
     for (let j = arr.length - 1; j >= 0; j--) {
       const o = arr[j];
       const d = Math.abs(o.p / price - 1) / (step / price);
-      const life = LOB.life0 / (1 + d / LOB.lifeDist) * (0.6 + 0.8 * lobHash(o.p));
-      if (s.i - o.t > life || d > 400) arr.splice(j, 1);
+      /* 寿命 = `life0 × (1 + δ/δc)`（2026-10-10 反转旧式 `life0/(1+δ/δc)`）：远场价值单是
+         耐心单，活得比近场 mm 报价久 —— 账本剖面的幂律正是「持续挂单 × 长寿命」积累出来的
+         （Krause et al. 2021 两 regime；旧式让远场死得比近场快，长尾永远积累不起来）。 */
+      const life = LOB.life0 * (1 + d / LOB.lifeDist) * (0.6 + 0.8 * lobHash(o.p));
+      /* stale 清理（2026-10-10）：价格已**越过**这一档 ⇒ 退场 —— 跳空穿过的老单吃不到
+         （① 只吃本根 K 线触及的档），赖到寿命尽会违反 9v③「严格分居中价两侧」契约。
+         真实盘口同理：限价单被穿过 = 成交或撤，不会留在簿上。 */
+      const stale = side < 0 ? o.p >= price : o.p <= price;
+      if (stale || s.i - o.t > life || d > 400) arr.splice(j, 1);
     }
     let mass = 0;
     for (const o of arr) mass += o.n;
@@ -427,22 +522,34 @@ function lobTick(s, sym) {
     const sMul = Math.max(0.05, Math.min(2, target / (mass + target * 0.1)));
     const lobMul = sbOf(s).lob;            // 挂单密度旋钮（沙盒 · 2026-10-08 三批）：0 = 不再挂新单
     if (lobMul > 0) {
+      /* ③a 近场：做市商报价流（对数均匀距离 ＋ 对数正态大小），draw 不变，落单改走
+         `lobPlace` —— 尘埃闸把 < max(档价, minRel×base) 的碎单直接吞掉。 */
       const nNear = Math.max(1, Math.round((2 + Math.floor(randFast(s.seed, sy, s.i, side < 0 ? 31 : 32, CH_LOB) * LOB.near * 2)) * lobMul));
       for (let j = 0; j < nNear; j++) {
         const u1 = randFast(s.seed, sy, s.i, 40 + j * 3 + (side < 0 ? 300 : 0), CH_LOB);
         const d = Math.max(1, Math.min(400, -Math.log(1 - u1 * 0.999) / LOB.kNear));
         const z = Math.sqrt(-2 * Math.log(1 - randFast(s.seed, sy, s.i, 41 + j * 3 + (side < 0 ? 300 : 0), CH_LOB) * 0.999)) * Math.cos(6.283185307 * randFast(s.seed, sy, s.i, 42 + j * 3 + (side < 0 ? 300 : 0), CH_LOB));
         const n = Math.min(LOB.maxQ, LOB.nearQ * Math.exp(LOB.sizeSig * z - LOB.sizeSig * LOB.sizeSig / 2) * scale * sMul) * base;
-        const kk = Math.round(price * (1 + side * d * step / price) / step);
-        lobPut(arr, kk * step, n * (kk % 10 === 0 ? LOB.gateMax : kk % 5 === 0 ? (LOB.gateMin + LOB.gateMax) / 2 : 1), s.i, side < 0);
+        lobPlace(arr, price * (1 + side * d * step / price), step, n, s.i, side < 0, base);
       }
-      if (randFast(s.seed, sy, s.i, side < 0 ? 61 : 62, CH_LOB) < LOB.farP * lobMul) {
-        const u1 = randFast(s.seed, sy, s.i, side < 0 ? 63 : 64, CH_LOB);
-        const d = Math.min(400, LOB.farD0 * Math.pow(1 - u1 * 0.999, -1 / LOB.farA));
-        const u2 = randFast(s.seed, sy, s.i, side < 0 ? 65 : 66, CH_LOB);
-        const n = Math.min(LOB.maxQ, LOB.farQ * Math.pow(1 - u2 * 0.999, -1 / 1.8) * scale * sMul) * base;
-        const kk = Math.round(price * (1 + side * d * step / price) / step);
-        lobPut(arr, kk * step, n * (kk % 10 === 0 ? LOB.gateMax : kk % 5 === 0 ? (LOB.gateMin + LOB.gateMax) / 2 : 1), s.i, side < 0);
+      /* ③b 远场价值单 —— 笔数制：每小时 `farP × lobMul` 笔/侧（小数 = 概率尾数，与冷启动
+         `lobOf` 逐位同分布、同 2000/2050 通道）。距离走**截断幂律** `lobFarDist`
+         （账本剖面 ρ∝δ^-0.6，Bouchaud-Mézard-Potters 2002；旧帕累托 α=1.8 密度 ∝δ^-2.8
+         让 70% 外整片空 —— 「远处挂单为 0」的另一根因）。 */
+      const farRate = LOB.farP * lobMul;
+      const nFar = Math.floor(farRate) + (randFast(s.seed, sy, s.i, 2050 + (side < 0 ? 0 : 1), CH_LOB) < farRate % 1 ? 1 : 0);
+      for (let j = 0; j < nFar; j++) {
+        const u1 = randFast(s.seed, sy, s.i, 2000 + j * 4 + (side < 0 ? 0 : 2), CH_LOB);
+        const u2 = randFast(s.seed, sy, s.i, 2000 + j * 4 + 1 + (side < 0 ? 0 : 2), CH_LOB);
+        const nf = Math.min(LOB.maxQ, LOB.farQ * Math.pow(1 - u2 * 0.999, -1 / 1.8) * scale * sMul) * base;
+        lobPlace(arr, price * (1 + side * lobFarDist(u1) * step / price), step, nf, s.i, side < 0, base);
+      }
+      /* ③c 支撑 / 压力位聚集单 —— 「人人都想低买高卖」：对本侧每条在册位钉一笔价值单
+         （`lobLevelPut`：精确价落格、大小 ×(0.5+位权重)、同价自然合并成墙、尘埃闸兜底）。
+         就算默认 1 倍也特别多 —— 位的数量不乘 lobMul，只乘深度治理 sMul。 */
+      const lv = levelsOf(sym, s.i);
+      for (let li = 0; li < lv.length; li++) {
+        lobLevelPut(arr, lv[li], li, price, step, side, scale, sMul, base, s.i, sy, s.seed, s.i);
       }
     }
     if (arr.length > LOB.maxSide) arr.splice(LOB.maxSide);   // 裁最远（两端已按远近排序）
@@ -465,8 +572,13 @@ function bookForWatch(s, sym, price) {
   const cap = godCapOf(s);
   const wallsOf = (dir) => {
     const rows = [];
+    const lobArr = b && (dir > 0 ? b.asks : b.bids);
     for (const L of levelsOf(sym, s.i)) {
       if (!(L.w > 0) || (dir > 0 ? L.p <= price : L.p >= price)) continue;
+      /* 巧合防御（2026-10-10）：位价恰在 tick 格点上时，该位的**聚集单**（落格 = L.p）与
+         墙行同价 —— 视图同一价格出现两行，违反 9v③「同侧严格升降序」。聚集单已经占住了
+         这个价（真实单比合成墙更硬），墙行让位。 */
+      if (lobArr && lobArr.some(o => o.p === L.p)) continue;
       rows.push({ price: L.p, d: Math.abs(L.p / price - 1), notional: L.w * WALL_K * liq, wall: true, w: L.w });
     }
     return rows;

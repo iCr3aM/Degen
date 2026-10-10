@@ -3126,10 +3126,13 @@ section('9v · 走簿逐档撮合 ＋ 订单簿页（恒等 / 墙耦合 / 同源
         && bk.bids.every((r, k) => r.price < bk.mid && r.notional > 0
           && (k === 0 || r.price < bk.bids[k - 1].price)));
       const lvB = levels.levelsOf('BTC', sB.i).filter(L => L.w > 0);
+      /* 与 bookForWatch.wallsOf 同一巧合防御：位价恰在 tick 格点上时，该位的聚集单
+         （落格 = L.p）已占价 ⇒ 墙行让位 —— 对账期望同步排除这些位。 */
+      const takenPx = new Set([...bk.asks, ...bk.bids].filter(r => !r.wall).map(r => r.price));
       const wallAsks = bk.asks.filter(r => r.wall);
       const wallBids = bk.bids.filter(r => r.wall);
-      const askWalls = lvB.filter(L => L.p > bk.mid);
-      const bidWalls = lvB.filter(L => L.p < bk.mid);
+      const askWalls = lvB.filter(L => L.p > bk.mid && !takenPx.has(L.p));
+      const bidWalls = lvB.filter(L => L.p < bk.mid && !takenPx.has(L.p));
       check('9v③ 墙行逐条对账（价严格同源 ＋ 名义 = w × WALL_K × liq）',
         wallAsks.length === askWalls.length && wallBids.length === bidWalls.length
         && askWalls.every(L => {
@@ -5328,7 +5331,10 @@ section('9af · NPC 限价单离散簿（行为级 ＋ 显示/播报读簿 ＋ �
       const b = sQ.lob && sQ.lob[c.sym];
       if (!b || !b.asks.length || !b.bids.length) { miss += `${c.sym}缺簿 `; continue; }
       coins++;
-      const liq = engine.godWatchOf(sQ, c.sym).book.liq;   // hourLiqOf（含池回补折减）≤ 治理器的 base
+      /* 分母 = 治理器**同一把尺子**（lobScaleOf = 日流动性 × 对抗折减 × 上帝旋钮）。
+         ⚠️ 不能用 book.liq（hourLiqOf，含日内形态 0.3~3× 摆动）：锚不随日内谷底收缩，
+         DOGE 实测日内谷底时比值虚高到 33×（2026-10-10 诊断 tools/tmp-doge-audit.mjs）。 */
+      const liq = engine.lobScaleOf(sQ, c.sym, sQ.i);
       for (const [nm, arr] of [['asks', b.asks], ['bids', b.bids]]) {
         if (arr.length > engine.LOB.maxSide) sFail += `${c.sym}.${nm}=${arr.length}超顶 `;
         let mass = 0;
