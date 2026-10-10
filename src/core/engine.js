@@ -2462,17 +2462,15 @@ function npcRealised(long, mag, avg, price) {
  * 分档按「当日流动性比例」五档（用户拍板；2026-10-09 补 1%）：0.1% / 0.5% / 1% / 2% / 5%
  * —— 跨年代自适应（2013 年的 $1m 与 2024 年的 $1m 不是一回事），低于 0.1% 不上日志；
  * 浮窗页 4 底部那排过滤档与 `FEED_STEPS` **一一对应**（选中第 i 档 ⇒ 只留 `t ≥ i` 的行）。
- * ⚠️ **不进存档**（save.js `EPHEMERAL`）、`rewindTo` 清空、**保留窗口 ＋ 总量硬顶**（见 `FEED_DAYS`
- *    与 `FEED_CAP`）—— tape 是「最近发生的事」，不是账本，不参与任何玩法判定。 */
+ * ⚠️ **不进存档**（save.js `EPHEMERAL`）、`rewindTo` 清空、**只按条数硬顶** —— tape 是
+ *    「最近发生的事」，不是账本，不参与任何玩法判定。
+ *
+ * **保留策略**（2026-10-11 用户拍板「日志要持续保留，直到新的顶掉旧的」）：**纯环形缓冲** ——
+ * 只按条数硬顶本值，新条目挤掉最老的；**不再按游戏时龄裁剪**。⚠️ 旧口径（2026-10-09）是
+ * 「3 个游戏日（72h）窗口 ＋ 1200 条硬顶」两条同时生效；按年龄清空与「顶掉才算过期」的直觉
+ * 不符（安静时段一过，日志页会整片变空）⇒ 该窗口已废除。显示层另有「按面板高装框」的截断
+ * （只画最新 N 行），与保留策略是两件事。 */
 export const FEED_CAP = 1200;
-/**
- * tape 的**保留窗口**（2026-10-09 用户拍板「保留 3 日或更多日内的开平爆仓数据，超出显示数量
- * 则截断」）：按**游戏时龄**裁剪 —— `FEED_DAYS`（3 个游戏日 = 72h）内的开/平/爆仓都留，
- * 更老的截掉；显示层本来就有 maxRows 截断（装框恒定）。旧口径 `FEED_CAP = 240` 只按条数
- * 环形覆盖 —— NPC 大单风暴几小时就把玩家三天前的开/平记录冲掉，5% 深档常年空、列表看着
- * 在「跳动」。总量硬顶 1200 条（72h × 常态喂入量 ＋ 风暴余量）兜住内存；两条同时生效。
- */
-export const FEED_DAYS = 3;
 /** 分档阈值（名义 ÷ 当日流动性）—— 与浮窗日志页底部过滤档同序、同源（单一事实）。 */
 export const FEED_STEPS = [0.001, 0.005, 0.01, 0.02, 0.05];
 /** 名义额 ÷ 当日流动性 → 档位（0..4，从浅到深）；低于 0.1% ⇒ −1（不上日志）。 */
@@ -2484,7 +2482,7 @@ export function feedTier(notional, liqDay) {
 }
 /**
  * **tape 大单事件流**（喂入口）：k = 六型（0 开多…5 爆空）、`minTier` 强制档位（玩家强平传 0）。
- * ⚠️ 导出给审计 9aq 直调（与 `exRevSweep` 同一先例）—— 保留窗口的行为断言需要喂任意时龄的条目。
+ * ⚠️ 导出给审计 9aq 直调（与 `exRevSweep` 同一先例）—— 保留策略的行为断言需要喂任意时龄的条目。
  */
 export function feedPush(s, sym, k, price, notional, minTier = -1) {
   if (!(price > 0) || !(notional > 0)) return;
@@ -2499,13 +2497,9 @@ export function feedPush(s, sym, k, price, notional, minTier = -1) {
   if (tier < 0) return;
   if (!s.feed) s.feed = [];                        // 旧档 / 回退后惰性补建（不升存档版）
   s.feed.push({ i: s.i, sym, k, p: price, n: notional, t: tier });
-  /* 保留窗口 ＋ 总量硬顶（2026-10-09 用户拍板）：3 日（72h）内的开/平/爆都留，超龄截掉；
-     极端风暴下再由 FEED_CAP 兜底。只在超限时才扫（常态零开销）。 */
-  if (s.feed.length > FEED_CAP || s.feed[0].i < s.i - FEED_DAYS * 24) {
-    const floor = s.i - FEED_DAYS * 24;
-    if (s.feed[0].i < floor) s.feed = s.feed.filter(r => r.i >= floor);
-    if (s.feed.length > FEED_CAP) s.feed.splice(0, s.feed.length - FEED_CAP);
-  }
+  /* 只按**条数**硬顶（2026-10-11 用户拍板「持续保留，直到新的顶掉旧的」）—— 纯环形：
+     超过 `FEED_CAP` 才从最老那端挤掉（常态零开销）。不再按游戏时龄裁剪。 */
+  if (s.feed.length > FEED_CAP) s.feed.splice(0, s.feed.length - FEED_CAP);
 }
 
 /**

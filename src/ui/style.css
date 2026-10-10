@@ -2271,7 +2271,8 @@ button { user-select: none; -webkit-user-select: none; }
 
 /* 日志页（2026-10-08 · 用户拍板⑤）：aggr 式大单 tape —— 六型分色 ＋ 流动性比例五档背景。
    列全部固定宽不换行（用户红线）：类型 14px / 方向 20px / 价格弹性 / 名义 56px / 数量 52px /
-   时间 78px（2026-10-11 起报「年月日时分」⇒ 加宽），与 .gb-row 同一套 9px/13px 字号纪律。
+   时间 60px（2026-10-11 报「月日 时:分」`03-15 14:00`，年份在左上角已有 ⇒ 不加年份），
+   与 .gb-row 同一套 9px/13px 字号纪律。
    2026-10-11 用户拍板：日志页按「开平仓 70% ／ 爆仓 30%」**分区**，故多一条 `.gfd-sec` 段标题。
    分色：开平多空走 --up/--down（红涨绿跌主题跟随），爆多 #EC407A / 爆空 #FF9800 按拍板写死；
    行背景 t0 透明 → t4 最深（档位 = feedTier，五档 0.1% / 0.5% / 1% / 2% / 5%）。 */
@@ -2294,7 +2295,7 @@ button { user-select: none; -webkit-user-select: none; }
 .gfd-head s, .gfd-row s { flex: 0 0 20px; text-decoration: none; text-align: center; color: var(--mut); }
 .gfd-head b, .gfd-row b { flex: 0 0 56px; font-weight: 600; text-align: right; overflow: hidden; white-space: nowrap; }
 .gfd-head em, .gfd-row em { flex: 0 0 52px; font-style: normal; text-align: right; overflow: hidden; white-space: nowrap; }
-.gfd-head u, .gfd-row u { flex: 0 0 78px; text-decoration: none; text-align: right; color: var(--mut); overflow: hidden; white-space: nowrap; }
+.gfd-head u, .gfd-row u { flex: 0 0 60px; text-decoration: none; text-align: right; color: var(--mut); overflow: hidden; white-space: nowrap; }
 .gfd-row { display: flex; align-items: center; gap: 4px; font-size: 9px; line-height: 13px; overflow: hidden; }
 .gfd-row i { flex: 0 0 14px; font-style: normal; }
 .gfd-row span { flex: 1 1 auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -2341,12 +2342,12 @@ button { user-select: none; -webkit-user-select: none; }
   /* ── 桌面日志页（浮窗 tape）字号对齐（2026-10-09 用户报「桌面端字体偏小」）──
      `.gfd-row/.gfd-head` 原来漏了这一档覆盖、停在手机的 9px/13px，与同结构的订单簿
      `.gb-*`（已 11/15）**不一致**。11px 下最长列 `$123.4M`(7 字) ≈ 46px ≤ 56px、
-     数量 `0.0167`(6 字) ≈ 40px ≤ 52px、时间 `2024-03-15 14:00`(16 字) ≈ 88px ≤ 96px，均不截断。 */
+     数量 `0.0167`(6 字) ≈ 40px ≤ 52px、时间 `03-15 14:00`(11 字) ≈ 61px ≤ 72px，均不截断。 */
   .gfd-head, .gfd-row { font-size: 11px; line-height: 15px; }
-  /* 2026-10-11：方向列 22px、时间列 96px（11px 下「2024-03-15 14:00」16 字 ≈ 88px）；
+  /* 2026-10-11：方向列 22px、时间列 72px（11px 下「03-15 14:00」11 字 ≈ 61px）；
      段标题同步 11/15（与手机端同为一行高，render 的行高预算不乱）。 */
   .gfd-head s, .gfd-row s { flex: 0 0 22px; }
-  .gfd-head u, .gfd-row u { flex: 0 0 96px; }
+  .gfd-head u, .gfd-row u { flex: 0 0 72px; }
   .gfd-sec { font-size: 11px; line-height: 15px; }
   /* ── 桌面日志条加高（2026-10-08 拍板加高；2026-10-09 用户要求「还能加更多行」）──
      6 行 × 20px = 120px，与 `render.LOG_ROWS` 的 ≥1280px 分支**同源**（断点一致）；

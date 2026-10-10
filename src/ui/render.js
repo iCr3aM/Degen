@@ -3863,8 +3863,8 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
          上段开平仓（k 0–3）占 **70%**、下段爆仓（k 4–5）占 **30%**，各带段标题、各自定高列表；
          两段定高之和 = 可用高 ⇒ **铺满**（仍在**同一页**，不换页）。
        同时：① 每行新增「**方向**」列（多 / 空）—— 字形只表开/平，方向文字让玩家一眼看懂；
-         ② 时间改报**年月日时分**（`fmtDate`）—— 本浮窗是独立浮层，顶栏的日期未必可见
-         （与 K 线页日志条「只报时分」是**不同入口、不同口径**）。
+         ② 时间报**月日时分**（`fmtDate(...).slice(5)` ⇒ `03-15 14:00`）—— 年份在左上角已有，
+         这里再写一遍既重复又白占列宽（2026-10-11 用户拍板「不用显示年份」）。
        ⚠️ 2026-10-09 用户拍板⑥：底部**过滤档**（与 `FEED_STEPS` 一一对应，选中第 i 档 ⇒ 只留
        `t ≥ i` 的行）—— 数据仍全在 `s.feed` 环形缓冲里，过滤只作用在**显示**上，过滤行位置恒定。 */
     const lf = Math.max(0, Math.min(FEED_STEPS.length - 1, logFilt | 0));
@@ -3901,7 +3901,7 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
           el('span', null, fmtFloatPrice(r.p)),
           el('b', null, fmtMoneyShort(r.n)),
           el('em', null, fmtQty(r.n / r.p)),
-          el('u', null, fmtDate(GAME.start + r.i * HOUR_MS)));
+          el('u', null, fmtDate(GAME.start + r.i * HOUR_MS).slice(5)));
         list.append(row);
       }
     };

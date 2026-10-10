@@ -5187,13 +5187,13 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
   const renderSrc9y = readSrc9y('src/ui/render.js');
   const styleSrc9y = readSrc9y('src/ui/style.css');
 
-  check('9ae① 引擎：feedPush / feedTier / FEED_STEPS / FEED_CAP（1200 硬顶）＋ FEED_DAYS 保留窗口 ＋ rewindTo 清空',
+  check('9ae① 引擎：feedPush / feedTier / FEED_STEPS / FEED_CAP（1200 纯环形硬顶）＋ 时龄窗口已废 ＋ rewindTo 清空',
     engSrc9y.includes('function feedPush(s, sym, k, price, notional, minTier = -1)')
     && engSrc9y.includes('export function feedTier(notional, liqDay)')
     && engSrc9y.includes('export const FEED_STEPS = [0.001, 0.005, 0.01, 0.02, 0.05]')
     && engSrc9y.includes('export const FEED_CAP = 1200')
-    && engSrc9y.includes('export const FEED_DAYS = 3;')
-    && engSrc9y.includes('if (s.feed.length > FEED_CAP || s.feed[0].i < s.i - FEED_DAYS * 24) {')
+    && engSrc9y.includes('if (s.feed.length > FEED_CAP) s.feed.splice(0, s.feed.length - FEED_CAP);')
+    && !engSrc9y.includes('FEED_DAYS')            // 2026-10-11：按天窗口已废除（改纯环形）
     && engSrc9y.includes('s.feed = [];'));
 
   check('9ae② 挂点：六档建减仓发事件（s, sym）＋ 做市盘两处**不带**（对手盘不上 tape）',
@@ -6203,7 +6203,7 @@ section('9ao · 现实地板 godFloor ＋ 潜在基线 latentOf ＋ 步进行固
       && rendSrcAo.includes("sec('开平仓'") && rendSrcAo.includes("sec('爆仓'")   // 2026-10-11：70/30 分区
       && rendSrcAo.includes('Math.round(totalRows * 0.7)')                    // 上段 70%
       && rendSrcAo.includes("el('s', null, '方向')")                          // 新增方向列
-      && rendSrcAo.includes('fmtDate(GAME.start + r.i * HOUR_MS)')            // 时间到「年月日时分」
+      && rendSrcAo.includes('fmtDate(GAME.start + r.i * HOUR_MS).slice(5)')    // 时间「月日 时:分」（去年份）
       && rendSrcAo.includes("box.append(el('div', 'gfd-sec', name))")         // 段标题必须挂载
       && rendSrcAo.includes('box.append(list);')                              // ⚠️ 段列表必须挂载（2026-10-11 回归：漏挂 ⇒ 整页空白）
       && styleSrcAo.includes('.gfd-list { overflow-y: auto;')
@@ -6272,21 +6272,27 @@ section('9ap · 做空供应量上限：硬拒 · 费率 jump · 同口径范围
   }
 }
 
-/* ═══════════════════ 9aq · tape 保留窗口 ＋ 强平价挂单注入（2026-10-09 三拍板） ═══════════════════ */
-section('9aq · tape 3 日保留窗口 ＋ 订单簿强平价注入');
+/* ═══════════════════ 9aq · tape 纯环形保留（2026-10-11）＋ 强平价挂单注入（2026-10-09） ═══════════════════ */
+section('9aq · tape 纯环形保留（1200）＋ 订单簿强平价注入');
 {
-  /* ① 行为：超龄条目被窗口裁掉（3 日 = 72h）、新鲜条目保留、FEED_CAP 1200 硬顶仍在。 */
+  /* ① 行为：**纯环形**保留（2026-10-11 用户拍板「日志要持续保留，直到新的顶掉旧的」）——
+     旧条目**不因时龄被裁**，只有塞满 `FEED_CAP` 才从最老那端挤掉。 */
   {
     const s = await mk({ sym: 'BTC', i: idx(at(2021, 5, 10)) });
     s.feed = [
-      { i: s.i - 73 * 24, sym: 'BTC', k: 0, p: 5e4, n: 1e7, t: 4 },   // 73 天前 ⇒ 必须被裁
-      { i: s.i - 2 * 24, sym: 'BTC', k: 2, p: 5e4, n: 1e7, t: 3 },    // 2 天前 ⇒ 留
-      { i: s.i - 1, sym: 'BTC', k: 4, p: 5e4, n: 1e7, t: 4 },         // 1 小时前 ⇒ 留
+      { i: s.i - 73 * 24, sym: 'BTC', k: 0, p: 5e4, n: 1e7, t: 4 },   // 73 天前 ⇒ 现在**必须保留**
+      { i: s.i - 2 * 24, sym: 'BTC', k: 2, p: 5e4, n: 1e7, t: 3 },
+      { i: s.i - 1, sym: 'BTC', k: 4, p: 5e4, n: 1e7, t: 4 },
     ];
-    engine.feedPush(s, 'BTC', 0, 5e4, 1e7, 0);                        // 推一根触发窗口扫描
-    check('9aq① tape 保留窗口：>72h 的开平爆仓记录被裁、窗口内保留（超出显示数量由显示层截断）',
-      s.feed.length === 3 && s.feed.every(r => r.i >= s.i - 3 * 24),
-      `留存 ${s.feed.length} 条`);
+    engine.feedPush(s, 'BTC', 0, 5e4, 1e7, 0);                        // 推一根触发裁剪检查
+    const keptOld = s.feed.some(r => r.i === s.i - 73 * 24);
+    const n1 = s.feed.length;
+    /* 纯环形硬顶：塞 1300 条 ⇒ 只剩最新 1200 */
+    s.feed = [];
+    for (let j = 0; j < 1300; j++) engine.feedPush(s, 'BTC', 0, 5e4, 1e7, 0);
+    check('9aq① tape 保留策略：时龄不裁（73 天前的仍在）＋ 纯环形硬顶 1200（新的顶掉旧的）',
+      keptOld && n1 === 4 && s.feed.length === 1200,
+      `old=${keptOld} n1=${n1} cap=${s.feed.length}`);
   }
   /* ② 源断言：强平价格注入玩家名义（NPC 量＋玩家量同格）＋ 买卖比不计条件单 ＋ 你 标记沿用。 */
   {
