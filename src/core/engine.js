@@ -5341,10 +5341,13 @@ export function godFakeNews(s, sym, dir) {
      2013 年不会出现「现货 ETF 净流入」这类穿帮快讯，也不会出现「实体池还空着」（如 2013-06 的
      `%T`/`%O`/`%P`）的半截句。轮换计数在过滤后子序列上取模（跨年代边界跳条可接受）。
      实体解析一律在**选条之后**（`fillNewsEnts`），`manipTplsOf` 仍只返回 `string[]`。 */
-  /* 架空自由池（2026-10-11 用户拍板）：架空局里公司 / 国家 / 实体**不必与现实一致**
-     （可以出现苹果公司、英伟达…，且任何实体可搭任何动作）；史实局（含上帝·史实）严格照旧。 */
+  /* 架空自由池（2026-10-11 用户拍板「改为按槽分档」）：架空局里公司 / 国家 / 实体**不必与
+     现实一致**（苹果公司、英伟达、各国…都能出现，2013 年即可），但**槽仍要对**（公司只进
+     公司类槽、国家只进国家槽）；史实局（含上帝·史实）严格照旧。 */
   const free = s.world === 'fic';
-  const tpls = manipTplsOf(key, time, free);
+  /* 币种门控（2026-10-11 用户报「币种穿帮」）：BTC 减半 / ETH 共识切换 / XRP 案 / BTC 现货 ETF
+     这类**币专属史实**只在本币的假消息里出现（否则会播成「【XRP 快讯】XRP 完成共识切换」）。 */
+  const tpls = manipTplsOf(key, time, free, sym);
   const nudge = (MANIP_NEWS_RANGE.min + r1 * (MANIP_NEWS_RANGE.max - MANIP_NEWS_RANGE.min)) * dir;
   const notional = Math.max(MANIP_MIN, MANIP_NEWS_Q * hourLiqBase(s, sym, s.i));
   const p = manipPreview(s, sym, dir, notional);

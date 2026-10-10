@@ -196,14 +196,18 @@ export const countOf = kind => (BY_KIND[kind] || []).length;
 
    用户口径：「公司、国家、实体也不需要和现实的一样 —— 我们是架空世界（可以出现苹果公司、
    英伟达公司等等）」。⇒ **架空局**（`s.world === 'fic'`，见 `save.worldOf`）不走上面那张
-   真实注册表的时间门／能力域，改用**自由池**：任何实体可搭任何动作（架空里「苹果公司上线
-   永续合约」是合理的，而**史实世界**里它仍是错的 —— 那条口径一个字没改）。
+   真实注册表的**时间门**，改用**自由池**：实体不设现实身份与首现日期（架空世界本就没有这条
+   时间线）；但**槽仍要对**（见下「按槽分档」）—— 与史实世界的分界只在「谁/何时」，不在
+   「哪类实体做哪类事」。
 
-   ⚠️ 自由池 = `ENTITIES` 的**全部名字**（忽略 kind、忽略 `from`/`to`）∪ `FIC_EXTRA`。
+   ⚠️ 自由池**按槽分档**（2026-10-11 用户拍板「改为按槽分档」）：某个 kind 槽可用名字 =
+      该 kind 的**全部真实实体名**（忽略 `from`/`to`）∪ 该槽名下的 `FIC_EXTRA`。
       所以架空局里既有 Coinbase / 美国 SEC 这样的真实名，也有苹果 / 英伟达这样的巨头名，
       **还有国家 / 地区与央行 / 国际组织** —— 且 2013 年就能出现（架空世界本就没有这条时间线）。
-   ⚠️ **只有实体（谁）自由**：产品／概念仍按现实日期门控（永续合约 2016-05-13、现货 ETF
-      2024-01-11…见 `ficnews.FAMS` 的 `objs`）—— 用户拍板「保留少量概念门」。
+   ⚠️ **放宽的是「谁」，不是「哪类实体做哪类事」**：产品／概念仍按现实日期门控（永续合约
+      2016-05-13、现货 ETF 2024-01-11…见 `ficnews.FAMS` 的 `objs`）；槽也仍然对
+      （公司不进国家槽、国家不进交易所槽）—— 所以「麦当劳 撤回加密法案」「日本 上线永续合约」
+      都不会出现，「苹果公司 纳入资产负债表」照旧可以。
    ⚠️ 不写进上面的 `ENTITIES`：那张表是**史实口径的唯一真相源**，自由池是**派生**出来的。
    ⚠️ **本表只放"名字"**：不要放与 `ENTITIES` 同义/近形的别名（曾在草稿里出现 `摩根大通公司`
       ／`摩根士丹利国际`／`贝莱德集团`，与表内 `摩根大通`／`摩根士丹利`／`BlackRock` 撞义甚至
@@ -211,48 +215,91 @@ export const countOf = kind => (BY_KIND[kind] || []).length;
    ⚠️ 中英文名字**允许互为子串**（`日本` ⊂ `日本 FSA`、`韩国` ⊂ `韩国银行`、`挪威` ⊂
       `挪威主权基金`…）—— 这在**抽签**上无害（各自是独立实体），只在 `literalEnts` 的字面
       扫描里会同时命中长短两个；那里用**最长命中抑制**抹掉短名（见 `literalEnts`）。 */
-export const FIC_EXTRA = [
-  /* 科技巨头 */
+/* 分组 —— 每组的归属槽（kind）见下面的 `FIC_KIND_OF`。
+   ⚠️ 名字可以跨组、跨槽复用（如 `蚂蚁集团` 既像上市公司又像支付机构）——
+      具体进哪些槽由 `FIC_KIND_OF` 决定，**不是**"名字写在哪一组就只能进哪个槽"。 */
+const FIC_TECHS = [
   '苹果公司', '英伟达', '谷歌', '微软', 'Meta', '亚马逊', '三星', '索尼', '台积电',
   '英特尔', '高通', '甲骨文', '字节跳动', '腾讯', '阿里巴巴', '小米', '华为', '京东',
   '美团', '百度', '网易',
-  /* 传统巨头 / 消费品牌 */
+];
+const FIC_BRANDS = [
   '沃尔玛', '星巴克', '耐克', '迪士尼', '可口可乐', '麦当劳', '丰田汽车', '大众汽车', '波音',
-  '壳牌', '伯克希尔', '辉瑞', '强生',
-  /* 支付 / 金融科技 */
-  '蚂蚁集团', '软银', '红杉资本',
-  /* 国家 / 地区（用户 2026-10-11：「不止公司名，国家名称也可以有」）——
-     ⚠️ 这些是**池内名字**，不代表"现实中该国承认/储备 BTC"；架空局里它们可以搭任何动作。
-        史实局一概不用（那边只有 `ENTITIES` 的 6 个 gov ＋ 时间门控）。 */
+  '壳牌', '辉瑞', '强生',
+];
+const FIC_FINS = ['蚂蚁集团', '软银', '红杉资本', '伯克希尔'];
+/* 国家 / 地区（用户 2026-10-11：「不止公司名，国家名称也可以有」）——
+   ⚠️ 这些是**池内名字**，不代表"现实中该国承认/储备 BTC"；架空局里可搭国家槽的动作。
+      史实局一概不用（那边只有 `ENTITIES` 的 6 个 gov ＋ 时间门控）。 */
+const FIC_COUNTRIES = [
   '美国', '中国', '日本', '德国', '法国', '英国', '韩国', '印度', '俄罗斯', '巴西',
   '加拿大', '澳大利亚', '新加坡', '瑞士', '阿联酋', '沙特阿拉伯', '意大利', '西班牙',
   '荷兰', '瑞典', '挪威', '波兰', '墨西哥', '阿根廷', '印尼', '越南', '泰国', '菲律宾',
   '马来西亚', '土耳其', '南非', '埃及', '以色列', '爱尔兰', '葡萄牙', '希腊', '奥地利',
   '比利时', '丹麦', '芬兰', '新西兰', '智利',
-  /* 央行 / 国际组织（同一口径：架空局里可搭任何动作） */
-  '美联储', '欧洲央行', '日本央行', '英国央行', '印度央行', '韩国银行',
-  '国际货币基金组织', '世界银行', '国际清算银行',
+];
+const FIC_CBANKS = ['美联储', '欧洲央行', '日本央行', '英国央行', '印度央行', '韩国银行'];
+const FIC_ORGS = ['国际货币基金组织', '世界银行', '国际清算银行'];
+
+/** 自由池**全体名字**（并集、保序）—— 供审计 / 字面扫描 / 展示用；**不是**某个槽的池 */
+export const FIC_EXTRA = [
+  ...FIC_TECHS, ...FIC_BRANDS, ...FIC_FINS, ...FIC_COUNTRIES, ...FIC_CBANKS, ...FIC_ORGS,
 ];
 
 /**
- * 自由池（去重、保序：真实注册表全体在前，`FIC_EXTRA` 在后）。
+ * **各组能进哪些槽**（2026-10-11 用户拍板「改为按槽分档」）——
+ * 名字不限现实，但**槽要对**：公司只进公司类槽（`%O/%P/%I/%K`）、国家只进国家槽（`%G`）、
+ * 央行 / 国际组织只进监管类槽（`%Z`，国际组织另可进 `%I`）。
+ * ⇒ 架空局里「麦当劳 撤回加密法案」「日本 上线永续合约」都**不会**再出现；
+ *    而「苹果公司 将 BTC 纳入资产负债表」「日本 宣布国家储备」照旧可以。
+ * ⚠️ 这就是史实局的「kind 即能力」在架空局的**放宽版**：放宽的是「谁」（不设时间门、
+ *    不设现实身份），**没有**放宽「哪类实体能做哪类事」。
+ */
+const FIC_KIND_OF = [
+  [FIC_TECHS,     ['corp', 'pay', 'inst', 'infra']],   // 科技巨头：上市公司 / 支付券商 / 机构资管 / 基建服务
+  [FIC_BRANDS,    ['corp', 'pay']],                    // 传统巨头 / 消费品牌：上市公司 / 支付券商
+  [FIC_FINS,      ['corp', 'pay', 'inst', 'etf']],     // 金融 / 控股：再加 ETF 发行方
+  [FIC_COUNTRIES, ['gov']],                            // 国家 / 地区：只进国家槽
+  [FIC_CBANKS,    ['reg']],                            // 央行：只进监管槽
+  [FIC_ORGS,      ['reg', 'inst']],                    // 国际组织：监管槽 ＋ 机构槽
+];
+
+/**
+ * **按槽分档的自由池**：kind → 该槽可用的全部名字 =
+ *   该 kind 的**真实实体名**（忽略 `from`/`to`，架空局没有这条时间线）∪ 该槽名下的 `FIC_EXTRA`。
  * ⚠️ 抽签按坐标做（`randFast(seed, hash(kind), i, …)`）⇒ 池的**顺序与长度**变了，同一个
  *    `(seed, i, salt)` 抽到的名字也会变 —— 但架空快讯本就是 `(ficSeed, i)` 现算、不进存档，
- *    所以这只影响「读档重算是否与存档期一致」的**外观**，不影响任何状态。改本表请连同
+ *    所以这只影响「读档重算与存档期是否一致」的**外观**，不影响任何状态。改本表请连同
  *    `sim-audit` §12h 的架空自由池断言一起过。
  */
-const FIC_POOL = (() => {
-  const seen = new Set(), out = [];
-  for (const e of ENTITIES) if (!seen.has(e.name)) { seen.add(e.name); out.push(e.name); }
-  for (const n of FIC_EXTRA) if (!seen.has(n)) { seen.add(n); out.push(n); }
-  return out;
+const FIC_KIND_POOL = (() => {
+  const m = {};
+  for (const e of ENTITIES) {                       // ① 真实实体：忽略时间门，按 kind 归位
+    const arr = m[e.kind] || (m[e.kind] = []);
+    if (!arr.includes(e.name)) arr.push(e.name);
+  }
+  for (const [names, kinds] of FIC_KIND_OF) {       // ② 追加各组名字到它名下的槽
+    for (const k of kinds) {
+      const arr = m[k] || (m[k] = []);
+      for (const n of names) if (!arr.includes(n)) arr.push(n);
+    }
+  }
+  return m;
 })();
 
-/** 架空局此刻可用的**全体实体名**（忽略 kind 与 `from`/`to`；`time` 仅为对齐签名） */
+/** 架空局某槽此刻可用的实体名（忽略 `from`/`to`，**仍按槽分档**；`time` 仅为对齐签名） */
+export function ficPoolOf(kind, _time) { return FIC_KIND_POOL[kind] || []; }
+
+/** 自由池**全体名字**（并集、去重）—— 供审计 / 字面扫描 / 展示用 */
+const FIC_POOL = (() => {
+  const seen = new Set(), out = [];
+  for (const a of Object.values(FIC_KIND_POOL)) for (const n of a) if (!seen.has(n)) { seen.add(n); out.push(n); }
+  return out;
+})();
 export function ficPool(_time) { return FIC_POOL; }
 
-/** 自由池规模（`FICNEWS_COMBOS` 估算组合空间用） */
-export const ficCount = () => FIC_POOL.length;
+/** 某槽的自由池规模（`FICNEWS_COMBOS` 估算组合空间用） */
+export const ficCountOf = kind => ficPoolOf(kind).length;
 
 /**
  * **宏观关键词**（2026-10-11）—— 不是机构，但同样会「打架」的新闻主体，立场账本把它们
@@ -289,11 +336,12 @@ export function entitiesOf(kind, time) {
 /**
  * 模板在 `time` 时刻**能不能用**：它占用的每个 kind 都必须有非空可用池。
  * 空池（例如 2013 年早期的 `etf`）⇒ 该模板从候选池剔除，不会出现「解析不出实体」的半截句。
- * @param {{free?:boolean}} [o] `free:true`（架空局）⇒ 自由池恒非空，恒可用。
+ * @param {{free?:boolean}} [o] `free:true`（架空局）⇒ 改判自由池（忽略时间门，仍按槽分档）。
  */
 export function tplUsable(tpl, time, o = {}) {
-  if (o.free) return true;                      // 架空自由池：任何 slot 都抽得到名字
-  for (const k of kindsIn(tpl)) if (!entitiesOf(k, time).length) return false;
+  for (const k of kindsIn(tpl)) {
+    if (!(o.free ? ficPoolOf(k, time) : entitiesOf(k, time)).length) return false;
+  }
   return true;
 }
 
@@ -318,7 +366,7 @@ export function resolveEnts(tpl, time, seed, i, salt = 0, o = {}) {
   for (const ph of phsIn(tpl)) {
     const kind = PH_KIND[ph];
     if (!kind) continue;                        // 非实体占位符（%S/%L…）跳过
-    const pool = o.free ? FIC_POOL : entitiesOf(kind, time);
+    const pool = o.free ? ficPoolOf(kind, time) : entitiesOf(kind, time);
     if (!pool.length) continue;
     const r = randFast(
       seed >>> 0, hashStr(kind), i | 0,

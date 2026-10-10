@@ -6877,7 +6877,7 @@ section('12a · ficnews：确定性 · 节奏 · 丰富度 · 不注入涨跌幅
   check('12a⑤ 红线：无涨跌幅占位符（%C/%c）/ 无水位禁词 / 全部含 %S', bad.length === 0, bad.slice(0, 3).join(' | '));
 
   /* 词库规模 */
-  check('12a⑥ 组合空间 ≥ 100000（17 族 ＋ 架空自由池 186 名，2026-10-11 扩容）', FN.FICNEWS_COMBOS >= 100000, String(FN.FICNEWS_COMBOS));
+  check('12a⑥ 组合空间 ≥ 100000（17 族 ＋ 按槽分档自由池，2026-10-11 扩容）', FN.FICNEWS_COMBOS >= 100000, String(FN.FICNEWS_COMBOS));
 
   /* 只抽已上市的币 —— **逐条按它自己那一刻的小时号校验**（样本跨多年，不能用单一阈值）。
      ⚠️ 2026-10-11：样本扩到 20000 根后 DOGE/XRP 会（**正确地**）出现在它们上市之后 ——
@@ -7354,23 +7354,32 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
     check('12h⑥ 自由池忽略时间门：2013 年池内已有 Binance / 苹果公司（史实局同一时刻的交易所池没有 Binance）',
       pool2013.includes('Binance') && pool2013.includes('苹果公司')
       && !ENT.entitiesOf('exch', t13).includes('Binance'));
-    /* 行为级：free 模式下所有 kind 槽共用同一池 ⇒ `%X`（交易所槽）抽得到巨头名 / 国家名，
-       `%G`（国家槽）抽得到公司名 —— 能力域不再约束（用户：「任何实体可搭任何动作」）。 */
-    const names = new Set();
-    const govNames = new Set();
-    for (let k = 0; k < 400; k++) {
-      const r = ENT.resolveEnts('%X 上线 %S 现货交易', t13, 424242, k, 0, { free: true });
-      if (r['%X']) names.add(r['%X']);
-      const g = ENT.resolveEnts('%G 通过 %S 加密法案', t13, 535353, k, 0, { free: true });
-      if (g['%G']) govNames.add(g['%G']);
-    }
-    const extraHit = ENT.FIC_EXTRA.filter(n => names.has(n));
-    const countryHit = ENT.FIC_EXTRA.filter(n => govNames.has(n));
-    check('12h⑥ 架空 free 模式：`%X`（交易所槽）抽得到巨头 / 国家名（能力域不再约束）',
-      extraHit.length >= 1, extraHit.slice(0, 4).join('/') || '无');
-    check('12h⑥ 架空 free 模式：`%G`（国家槽）抽得到公司 / 央行名（同一池，任何实体可搭任何动作）',
-      countryHit.length >= 1, countryHit.slice(0, 4).join('/') || '无');
-    check('12h⑥ 架空 free 模式：`tplUsable` 恒真（2013 年的 ETF / 上市公司模板也算可用）',
+    /* 行为级 · **按槽分档**（2026-10-11 用户拍板「改为按槽分档」）：名字不限现实（2013 年就能
+       抽到 Binance），但**槽要对** —— 公司只进公司类槽、国家只进国家槽、央行只进监管槽；
+       跨槽（「麦当劳 撤回加密法案」「日本 上线永续合约」）在结构上不可能。 */
+    const FIC = new Set(ENT.FIC_EXTRA);
+    const draw = (tpl, ph, seed) => {
+      const st = new Set();
+      for (let k = 0; k < 600; k++) {
+        const r = ENT.resolveEnts(tpl, t13, seed, k, 0, { free: true });
+        if (r[ph]) st.add(r[ph]);
+      }
+      return st;
+    };
+    const govDraw = draw('%G 通过 %S 加密法案', '%G', 535353);
+    const exchDraw = draw('%X 上线 %S 现货交易', '%X', 424242);
+    const regDraw = draw('%Z 收紧 %S 合规要求', '%Z', 636363);
+    const COMPANIES = ['苹果公司', '英伟达', '谷歌', '微软', '台积电', '沃尔玛', '麦当劳'];
+    check('12h⑥ 按槽分档：`%G`（国家槽）抽得到国家名（美国 / 日本 / 德国…）、抽不到公司名',
+      govDraw.size >= 20 && [...govDraw].some(n => FIC.has(n)) && !COMPANIES.some(n => govDraw.has(n)),
+      `抽到 ${govDraw.size} 个`);
+    check('12h⑥ 按槽分档：`%X`（交易所槽）只出交易所（不含国家 / 公司名），2013 年也能抽到 Binance',
+      [...exchDraw].every(n => !FIC.has(n)) && exchDraw.has('Binance'),
+      `抽到 ${exchDraw.size} 个 · 含 Binance=${exchDraw.has('Binance')}`);
+    check('12h⑥ 按槽分档：`%Z`（监管槽）含央行 / 国际组织（美联储 / 欧洲央行 / 国际清算银行），不含公司名',
+      ['美联储', '欧洲央行', '国际清算银行'].some(n => regDraw.has(n)) && !COMPANIES.some(n => regDraw.has(n)),
+      `抽到 ${regDraw.size} 个`);
+    check('12h⑥ 各槽都有名字 ⇒ 2013 年的 ETF / 上市公司模板在架空局也算可用（史实局同一时刻不可用）',
       ENT.tplUsable('快讯 ｜ %T 提交 %S 现货 ETF 申请', t13, { free: true })
       && ENT.tplUsable('快讯 ｜ %O 公告：将 %S 纳入资产负债表', t13, { free: true })
       && !ENT.tplUsable('快讯 ｜ %T 提交 %S 现货 ETF 申请', t13));
@@ -7380,6 +7389,33 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
     check('12h⑥ free / 史实两种口径互不相同（同一坐标抽出不同实体）',
       aFree['%X'] !== aStrict['%X'] || aFree['%Z'] !== aStrict['%Z'],
       `free=${aFree['%X']}/${aFree['%Z']} · strict=${aStrict['%X']}/${aStrict['%Z']}`);
+  }
+
+  /* ⑥b **币种一致性**（2026-10-11 用户报「【DOGE 快讯】VanEck 被拒现货**比特币** ETF 申请」）——
+     凡正文里带币名的词条都加了 `coins` 门控（只在对应币的快讯里出现），假消息一侧加 `sym`。 */
+  {
+    const FN3 = await import('../src/core/ficnews.js');
+    const COIN_WORD = { BTC: ['比特币', 'BTC'], ETH: ['以太坊'], XRP: ['瑞波', 'XRP'], DOGE: ['狗狗币', 'DOGE'], SOL: ['Solana'] };
+    let n = 0, bad = 0, ex = '';
+    for (let k = 0; k < 400000; k++) {
+      const v = FN3.ficNewsAt(20260101, k);
+      if (!v) continue;
+      n++;
+      for (const c of Object.keys(COIN_WORD)) {
+        if (c === v.sym) continue;
+        if (COIN_WORD[c].some(w => v.tpl.includes(w))) { bad++; if (!ex) ex = v.tpl; }
+      }
+    }
+    check('12h⑥b 币种一致：架空快讯正文里出现的币名必与 `%S` 同币（40 万根 0 穿帮）',
+      n >= 200 && bad === 0, `样本 ${n} 条 · 穿帮 ${bad} 条${ex ? ' 例：' + ex : ''}`);
+    /* 假消息：币专属史实按 `sym` 门控（DOGE 不播「减半」/「现货 ETF」；ETH 才播「共识切换」） */
+    const t24 = Date.UTC(2024, 6, 1);
+    const dogeP = G2.manipTplsOf('good', t24, false, 'DOGE');
+    const ethP = G2.manipTplsOf('good', t24, false, 'ETH');
+    check('12h⑥b 币种一致：假消息的币专属模板按 `sym` 门控（DOGE 无「减半 / 现货 ETF」，ETH 有「共识切换」）',
+      dogeP.length >= 40 && !dogeP.some(x => x.includes('减半')) && !dogeP.some(x => x.includes('现货 ETF'))
+      && ethP.some(x => x.includes('共识切换')) && !ethP.some(x => x.includes('减半')),
+      `DOGE ${dogeP.length} 条 · ETH ${ethP.length} 条`);
   }
 
   /* ⑦ **真实史实新闻也进立场账本** ＋ 假消息不得反向（2026-10-11 用户口径
@@ -7518,6 +7554,32 @@ section('11c · 数据层物化 · 架空卡开放（运行时 ＋ 静态）');
   check('11c⑤ 物化后 liqOf 读到合成流动性（> 0）', q != null && q > 0, `${q}`);
   const rX = market.rangeOf('XRP');
   check('11c⑥ 山寨物化起点 = 其真实上线时刻（> 0）', !!rX && rX[0] > 0, JSON.stringify(rX));
+
+  /* 11c⑧ / 11c⑨ —— 2026-10-11 用户问「架空 K 线 / 流动性 / 深度是否单调、是否合理 / 符合现实」，
+     实测查出两处并修掉（FIC_VER 4 → 5）：① 流动性被误夹到 $2.1B；② 收益偏度符号相反。 */
+  const FG2 = await import('../src/core/ficgen.js');
+  const medOf = a => { const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
+  {
+    const byY = {};
+    for (let d = 0; d < 5000; d++) { const v = market.liqOf('BTC', d); if (v == null) continue; const y = 2013 + Math.floor(d / 365.25); (byY[y] || (byY[y] = [])).push(v); }
+    const m21 = medOf(byY[2021]), m18 = medOf(byY[2018]), m22 = medOf(byY[2022]);
+    const a24 = byY[2024], m24 = medOf(a24);
+    const cv = Math.sqrt(a24.reduce((s, x) => s + (x - m24) * (x - m24), 0) / a24.length) / m24;
+    check('11c⑧ 日流动性按年代曲线走高（2021 中位 ≫ 旧的 $2.1B 夹取上限）＋ 逐日抖动非恒定 ＋ 熊市回落',
+      m21 > 5e9 && m18 < m21 && m22 < m21 && cv > 0.10,
+      `2018 ${(m18 / 1e9).toFixed(2)}B · 2021 ${(m21 / 1e9).toFixed(2)}B · 2022 ${(m22 / 1e9).toFixed(2)}B · 2024 CV ${(cv * 100).toFixed(0)}%`);
+  }
+  {
+    const skewOf = c => {
+      const r = []; for (let k = 1; k < c.length; k++) { if (!(c[k - 1] > 0) || !(c[k] > 0)) continue; r.push(Math.log(c[k] / c[k - 1])); }
+      const m = r.reduce((a, b) => a + b, 0) / r.length;
+      const sd = Math.sqrt(r.reduce((a, b) => a + (b - m) * (b - m), 0) / r.length);
+      return r.reduce((a, b) => a + Math.pow((b - m) / sd, 3), 0) / r.length;
+    };
+    const sk = ['BTC', 'ETH', 'XRP', 'DOGE', 'SOL'].map(s => skewOf(FG2.closesOf(ficSeedWorld, s)));
+    check('11c⑨ 收益偏度为负（暴跌尾 —— 与真实数据包实测 −1.28 同号；`jumpDownP` 0.50 → 0.58 修）',
+      sk.every(v => v < 0), sk.map(v => v.toFixed(2)).join(' / '));
+  }
 
   const mainSrc = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
   const rendSrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');

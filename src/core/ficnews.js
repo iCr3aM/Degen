@@ -14,11 +14,12 @@
  *      ⚠️ 2026-10-10 用户拍板「**架空新闻可以有相关数值展示**、假消息只做叙事」——
  *        数值展示**收敛到本模块**（约 70% 的快讯带一段读数）；上帝假消息（`god.MANIP_NEWS`）
  *        已拆掉全部数值占位符，两边就此分工明确、不再重叠。
- *   ③ **主体 = 自由池**（2026-10-11 用户拍板：架空世界不必与现实一致）：句子里机构一律走
+ *   ③ **主体 = 按槽分档的自由池**（2026-10-11 用户拍板「改为按槽分档」）：句子里机构一律走
  *      **kind 占位符**（`%X` 交易所 / `%Z` 监管 / `%G` 国家 / `%O` 上市公司 / `%N` 矿业 /
- *      `%K` 基建 / `%I` 机构 / `%P` 支付券商 / `%T` ETF），但**架空局**里由 `entities.ficPool`
- *      给名 —— 忽略 kind、忽略 `from`/`to`，任何实体可搭任何动作（苹果公司、英伟达、Coinbase…
- *      同在池中，2013 年就能出现；架空里「苹果公司上线永续合约」是合理的）。
+ *      `%K` 基建 / `%I` 机构 / `%P` 支付券商 / `%T` ETF），**架空局**里由 `entities.ficPoolOf`
+ *      按槽给名 —— 忽略 `from`/`to`（2013 年就能出现 Binance / 苹果公司），但**不跨槽**
+ *      （公司不进国家槽、国家不进交易所槽）⇒「麦当劳 撤回加密法案」「日本 上线永续合约」
+ *      都不会出现；**币种**也门控（带币名的词条只在对应币的快讯里出现）。
  *      ⚠️ 与**史实世界**的分界：史实（含上帝·史实）仍走 `entities.entitiesOf` 的真实名 ＋
  *         **kind 即能力** ＋ 时间门控 ——「苹果上线永续合约」在那边结构上不可能。
  *      匿名者（巨鲸地址 / 休眠钱包）**不进池**，仍用匿名词表。
@@ -32,10 +33,11 @@
  */
 
 import { COINS, GAME, HOUR_MS } from './config.js';
-/* 架空快讯只服务**架空世界** ⇒ 实体一律走**自由池**（2026-10-11 用户拍板：架空局里
-   公司 / 国家 / 实体不必与现实一致，苹果公司、英伟达…都能出现，且任何实体可搭任何动作）；
-   产品 / 概念的门控（永续合约 2016-05-13、现货 ETF 2024-01-11…）仍按现实日期。 */
-import { ficCount, ficPool } from './entities.js';
+/* 架空快讯只服务**架空世界** ⇒ 实体一律走**按槽分档的自由池**（2026-10-11 用户拍板：
+   架空局里公司 / 国家 / 实体不必与现实一致，苹果公司、英伟达、各国…都能出现，**但槽要对**
+   —— 公司进公司类槽、国家进国家槽）；产品 / 概念的门控（永续合约 2016-05-13、
+   现货 ETF 2024-01-11…）与「币种」门控（带币名的词只配该币）仍按现实口径。 */
+import { ficCountOf, ficPoolOf, PH_KIND } from './entities.js';
 
 /* ── 确定性 RNG（与 ficgen 同一族的哈希，坐标决定取值、与访问顺序无关）── */
 function h32(x) {
@@ -69,8 +71,13 @@ const T = (y, m = 1, d = 1) => Date.UTC(y, m - 1, d);
 
 /** 动词：`{ w:词, t:方向, from:首可用毫秒(0=全期) }` */
 const V = (w, t, from = 0) => ({ w, t, from });
-/** 名词：`{ w:词, from:首可用毫秒(0=全期) }` */
-const O = (w, from = 0) => ({ w, from });
+/**
+ * 名词：`{ w:词, from:首可用毫秒(0=全期), coins:限定币种|null }`。
+ * `coins` = 该词**只能**配哪几个币（`null` = 任意币）—— 修「【DOGE 快讯】VanEck 被拒现货
+ * **比特币** ETF 申请」这类**币种穿帮**（2026-10-11 用户报）：带币名的词条只在对应币的
+ * 快讯里出现；不带币名的词条不受限。
+ */
+const O = (w, from = 0, coins = null) => ({ w, from, coins });
 
 /* ── 收尾（情绪 / 观察，**不含任何绝对值断言**）── */
 const TAIL = [
@@ -148,7 +155,8 @@ const GOV_OBJ = [
 
 /* ── 上市公司（把币纳入资产负债表）── */
 const CORP_OBJ = [
-  O('比特币储备'), O('加密资产'), O('数字资产储备'), O('比特币头寸'), O('公司金库'), O('长期持仓'),
+  O('比特币储备', 0, ['BTC']), O('加密资产'), O('数字资产储备'), O('比特币头寸', 0, ['BTC']),
+  O('公司金库'), O('长期持仓'),
 ];
 
 /* ── 支付 / 券商 ── */
@@ -167,14 +175,15 @@ const INST_OBJ = [
 
 /* ── 现货 ETF 发行方：**申请类**对象（2013-07 Winklevoss 首申起可有）── */
 const ETF_APPLY = [
-  O('现货 ETF 申请', T(2013, 7, 1)), O('现货比特币 ETF 申请', T(2018, 1)),
-  O('以太坊现货 ETF 申请', T(2021, 1)), O('加密指数 ETF 申请', T(2021, 1)),
+  O('现货 ETF 申请', T(2013, 7, 1)), O('现货比特币 ETF 申请', T(2018, 1), ['BTC']),
+  O('以太坊现货 ETF 申请', T(2021, 1), ['ETH']), O('加密指数 ETF 申请', T(2021, 1)),
 ];
 /* ── 现货 ETF 发行方：**获批 / 上市类**对象（只有真上市过才可用）──
    ⚠️ 这一分家是**事实性红线**：2019 年绝不能说「VanEck 上市现货 ETF」—— 美国现货 ETF
       直到 2024-01-11 才上市；期货 ETF 自 2021-10-19（BITO）起。 */
 const ETF_LIST = [
-  O('期货 ETF', T(2021, 10, 19)), O('现货比特币 ETF', T(2024, 1, 11)), O('以太坊现货 ETF', T(2024, 5, 23)),
+  O('期货 ETF', T(2021, 10, 19)), O('现货比特币 ETF', T(2024, 1, 11), ['BTC']),
+  O('以太坊现货 ETF', T(2024, 5, 23), ['ETH']),
 ];
 
 /**
@@ -211,30 +220,35 @@ const FAMS = [
   { ph: '%T', acts: [V('获批', 1), V('上市', 1), V('启动赎回', 0)], objs: ETF_LIST },
 ];
 
-/** 组在 `time` 此刻可用：主体池非空（自由池恒非空 ＋ 匿名族恒真）＋ 至少一个动作/对象已到期 */
-function groupUsable(g, time) {
-  if (g.ph && !ficPool(time).length) return false;
+/** 词条是否「此刻 ＋ 本币」可用（`coins` 限定币种 ⇒ 币种穿帮就在这一行被挡住） */
+const wordOk = (e, time, sym) => time >= e.from && (!e.coins || e.coins.includes(sym));
+
+/** 组在 `time`/`sym` 此刻可用：主体池非空 ＋ 至少一个动作/对象对本币已到期 */
+function groupUsable(g, time, sym) {
+  if (g.ph && !ficPoolOf(PH_KIND[g.ph], time).length) return false;
   if (!g.acts.some(a => time >= a.from)) return false;
   if (g.objs && !g.objs.length) return false;
-  if (g.objs && !g.objs.some(o => time >= o.from)) return false;
+  if (g.objs && !g.objs.some(o => wordOk(o, time, sym))) return false;
   return true;
 }
-/** 从「已到期」的子集里抽一个词 */
-const pickGated = (arr, seed, i, stream, salt, time) => {
-  const ok = arr.filter(e => time >= e.from);
-  return pickS(ok.length ? ok : arr, seed, i, stream, salt);
+/** 从「已到期 ＋ 不限币 / 本币」的子集里抽一个词；空则退回「不限币」的通用词，再空才退回全表 */
+const pickGated = (arr, seed, i, stream, salt, time, sym) => {
+  const ok = arr.filter(e => wordOk(e, time, sym));
+  if (ok.length) return pickS(ok, seed, i, stream, salt);
+  const any = arr.filter(e => !e.coins);
+  return pickS(any.length ? any : arr, seed, i, stream, salt);
 };
 
 /**
  * 拼一句快讯的**正文片段**（不含 `【%S 快讯】` 前缀与数值尾）。
  * @returns {{tpl:string, dir:number}} `dir` = 本句方向（供立场账本）
  */
-function assemble(seed, i, time, salt) {
-  const avail = FAMS.filter(g => groupUsable(g, time));
+function assemble(seed, i, time, salt, sym) {
+  const avail = FAMS.filter(g => groupUsable(g, time, sym));
   const g = pickS(avail.length ? avail : FAMS, seed, i, 11, salt);
   const head = g.ph ? g.ph : pickS(g.wh, seed, i, 15, salt);
-  const act = pickGated(g.acts, seed, i, 12, salt, time);
-  const obj = g.objs ? pickGated(g.objs, seed, i, 13, salt, time) : null;
+  const act = pickGated(g.acts, seed, i, 12, salt, time, sym);
+  const obj = g.objs ? pickGated(g.objs, seed, i, 13, salt, time, sym) : null;
   const tail = pickS(TAIL, seed, i, 14, salt);
   /* ⚠️ 占位符主体解析出来的多是**拉丁名**（Binance / 美国 SEC / 挪威主权基金…），
      `%X上线` 会连成「Binance上线」；中文匿名词（某场外大户）则不加空格。
@@ -277,7 +291,7 @@ export function ficNewsAt(seed, i, salt = 0) {
   if (!listed.length) listed = [COINS[0]];
   const sym = listed[Math.floor(rnd(sd, 0x91, i, 2) * listed.length) % listed.length].sym;
 
-  const { tpl, dir } = assemble(sd, i, t, salt);
+  const { tpl, dir } = assemble(sd, i, t, salt, sym);
   let out = `【%S 快讯】${tpl}`;
   /* **数值展示**（2026-10-10 用户拍板「架空新闻可以有相关数值展示」）—— 约 70% 的快讯带一段
      事实性读数：现价 / 当日成交额 / 资金费率 / 市场热度。这些值由引擎在**播报那一刻**填真值
@@ -301,7 +315,7 @@ export function ficNewsSample(seed, i0, n) {
 
 /** 词库规模（组合空间的下界，供验收断言）—— `Σ 主体数 × 动作数 × 对象数 × 收尾数` */
 export const FICNEWS_COMBOS = FAMS.reduce((sum, g) => {
-  const ents = g.ph ? ficCount() : g.wh.length;
+  const ents = g.ph ? ficCountOf(PH_KIND[g.ph]) : g.wh.length;
   const objs = g.objs ? g.objs.length : 1;
   return sum + ents * g.acts.length * objs * TAIL.length;
 }, 0);

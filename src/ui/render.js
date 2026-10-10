@@ -19,7 +19,7 @@ import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
 import { levelsOf } from '../core/levels.js';
 import { confirmationsOf, congestionLabel, congestionOf } from '../core/congestion.js';
-import { NEWS_HOURS, anchorsInRange, anchorOfAt } from '../core/anchors.js';
+import { anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
 import { badgesOf, epitaphOf, multShown, overLabelOf, styleOf, titleOf } from '../core/titles.js';
@@ -209,12 +209,15 @@ const fngColor = b => (b === 'greed' || b === 'xgreed' ? 'greedy' : b === 'fear'
  *
  * ⚠️ 老存档的条目没有 `tag`（那批数据写在 `LOG_TAGS` 存在之前）⇒ 按 `LOG_TAG_DEFAULT` 回退，
  *    所以两处渲染都**必须**走这个函数，不能直接读 `e.tag`。
- * ⚠️ **新闻会衰老**（P2-C 既有口径）：超过 `NEWS_HOURS` 就不该再顶着金底标签 —— 降级成 `sys`。
+ * ⚠️ **芯片一律常驻**（2026-10-11 用户拍板：「假消息开头的新闻黄色方块显示要持续，不要显示
+ *    一会儿就消失（类似世界、市场）」）—— 原先「新闻满 `NEWS_HOURS` 降级成 `sys`」那条
+ *    衰老口径**已废**：新闻芯片与 `fic`（世界）/`mkt`（市场）一样，在日志停留期间一直亮着。
+ *    `NEWS_HOURS` 仍留在 `anchors.js`：它是**一个锚点的新闻窗口长度**（`anchorAt` 在用），
+ *    与「芯片显示多久」无关。
+ * @param {object} e 日志条目
  */
-function tagOf(e, nowI) {
-  const t = e.tag || LOG_TAG_DEFAULT[e.kind] || 'sys';
-  if (t === 'news' && nowI >= (e.at ?? nowI) + NEWS_HOURS) return 'sys';
-  return t;
+function tagOf(e) {
+  return e.tag || LOG_TAG_DEFAULT[e.kind] || 'sys';
 }
 
 /** 正文颜色：只认 `kind`（`ok` 绿 / `bad` 红 / 其余灰）；`news` 的提亮交给 CSS 的 `.lg-row.news` */
@@ -1127,8 +1130,8 @@ export function update(refs, s, view) {
       cell._key = '';                           // 清签名：下一格新日志仍算「新的一条」，要滑入
       continue;
     }
-    /* ⚠️ 类别一律走 `tagOf`（老存档没有 `tag` 字段、新闻到点要衰老）—— 不要直接读 `e.tag`。 */
-    const tg = tagOf(e, s.i);
+    /* ⚠️ 类别一律走 `tagOf`（老存档没有 `tag` 字段）—— 不要直接读 `e.tag`。 */
+    const tg = tagOf(e);
     setText(cell.tag, LOG_TAGS[tg]);
     setCls(cell.tag, `log-tag ${tg}`);
     setText(cell.time, fmtHour(GAME.start + (e.at ?? s.i) * HOUR_MS));
@@ -2217,10 +2220,10 @@ export function openLog(s, onClose) {
 
   const list = el('div', 'log-list');
   for (const e of s.log.slice(0, 30)) {
-    /* 类别一律走 `tagOf`（老存档没有 `tag` 字段、新闻到点要衰老）。
+    /* 类别一律走 `tagOf`（老存档没有 `tag` 字段）。
        整行左侧 2px 色条 = 类别色（CSS 里按 `.log-row.<tag>` 取），`mkt`（全市场级）再叠一层
        边框 ＋ 淡底 —— 与日志条那两行走**同一套** class，两个入口一副样子。 */
-    const tg = tagOf(e, s.i);
+    const tg = tagOf(e);
     const row = el('div', `log-row ${tg}${tg === 'mkt' ? ' alert' : ''}`);
     row.append(el('i', `log-tag ${tg}`, LOG_TAGS[tg]));
     row.append(
@@ -2829,7 +2832,7 @@ export function renderReview(refs, rv, view) {
          全市场级再叠 `.alert`（红边 ＋ 淡红底）。
          ⚠️ `kind` 一律挂在**正文那一格**上，别挂整行 —— 挂整行会把日期一起染成红/绿
              （与 `.lg-row > u` 那条注释同一个坑）。 */
-      const tg = tagOf(e, rv.i);
+      const tg = tagOf(e);
       const row = el('div', `log-row ${tg}${tg === 'mkt' ? ' alert' : ''}`);
       row.append(el('i', `log-tag ${tg}`, LOG_TAGS[tg]));
       row.append(
