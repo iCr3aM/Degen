@@ -6196,11 +6196,16 @@ section('9ao · 现实地板 godFloor ＋ 潜在基线 latentOf ＋ 步进行固
       && godSrcAo.includes('const npcC = Math.min(SHOCK.riseMax, Math.max(SHOCK.fallMax, npcPart));')
       && godSrcAo.includes('if (!s.god) return shockFactorOf(playerPart + npcPart, false);')
       && godSrcAo.includes('return Math.max(f, SHOCK.godFloor);'));
-    check('9ao⑦ 结构：render 空桶填 latentOf ＋ 买卖比含基线 ＋ 日志列表固定高',
+    check('9ao⑦ 结构：render 空桶填 latentOf ＋ 买卖比含基线 ＋ 日志列表固定高（70/30 分段·方向列·年月日时分）',
       rendSrcAo.includes('const base = o ? o.notional : latent(k, dir);')   // 2026-10-09 强平注入改形：base ＋ isYou 加量
       && rendSrcAo.includes('aUsd += oa ? oa.notional : latent(ka, 1);')
-      && rendSrcAo.includes("list.style.height = `${maxRows * rowH}px`;")
-      && styleSrcAo.includes('.gfd-list { overflow-y: auto;'));
+      && rendSrcAo.includes("list.style.height = `${nRows * rowH}px`;")
+      && rendSrcAo.includes("sec('开平仓'") && rendSrcAo.includes("sec('爆仓'")   // 2026-10-11：70/30 分区
+      && rendSrcAo.includes('Math.round(totalRows * 0.7)')                    // 上段 70%
+      && rendSrcAo.includes("el('s', null, '方向')")                          // 新增方向列
+      && rendSrcAo.includes('fmtDate(GAME.start + r.i * HOUR_MS)')            // 时间到「年月日时分」
+      && styleSrcAo.includes('.gfd-list { overflow-y: auto;')
+      && styleSrcAo.includes('.gfd-sec'));
   }
 }
 
@@ -6425,7 +6430,7 @@ section('9as · 自动新闻（币种权重）＋ 自动造量 ＋ 自动拉盘 
     check('9as⑧ 互斥：拉盘开着时造量分支短路（`!g.autoPump && g.autoWash`）',
       src.includes('if (!g.pin && !g.autoPump && g.autoWash) {'));
   }
-  /* ⑤ 自动新闻：autoNews 开 ⇒ 到点播报一条 + 重排 120~336h（5~14 日）；方向开关生效。 */
+  /* ⑤ 自动新闻：autoNews 开 ⇒ 到点播报一条 + 重排 960~1920h（40~80 日，2026-10-11 二次收敛）；方向开关生效。 */
   {
     const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 5, 10)) });
     god.enableGod(s);

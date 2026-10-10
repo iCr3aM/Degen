@@ -2563,8 +2563,8 @@ export function openGodPick() {
  */
 const ABOUT = [
   ['一局是什么',
-    '2013 年 1 月 → 2024 年 12 月，行情就是 BTC / ETH / XRP / DOGE / SOL 的真实历史小时线。'
-    + '从 $1,000 起步，赚到多少都算你的 —— 活到 2024-12-31 收盘即通关，爆仓归零即收场。'],
+    '2013 年 1 月起，行情就是 BTC / ETH / XRP / DOGE / SOL 的真实历史小时线（上帝·架空另开一条合成世界线，可玩到 2033）。'
+    + '从 $1,000 起步，赚到多少都算你的 —— 活到本局终点收盘即通关，爆仓归零即收场。'],
   ['两个工具',
     '杠杆：借钱买币 / 借币做空，按借入量计日息，维持线按所与杠杆档不同（约 4.5–15%）；1x 是最低档，初开的多头不借不计息、不参与强平 ——'
     + '但减保证金（滚仓）会把保证金抽走、等于开始借钱，实际杠杆上升，此后照常计息、照常有强平线。'
@@ -2580,7 +2580,7 @@ const ABOUT = [
     '巨鲸 NPC 会在关键时刻推价，新闻会在年代节点冒出来，市场流动性逐年增长 ——'
     + '一笔钱在 2013 年是巨鲸，到 2024 年只是零头。仓位相对市场越大，你自己的冲击就越贵。'],
   ['两种收场',
-    '爆仓归零，或活到 2024 收盘。每局的结局会写进交易档案；'
+    '爆仓归零，或活到本局终点收盘（普通 / 史实 2024-12-31，上帝·架空 2033-12-31）。每局的结局会写进交易档案；'
     + '主菜单的挑战模式另有五个年代开局（冰封寒冬、ICO 狂潮、312 前夜、10U 战神、LUNA 归零周）。'],
 ];
 
@@ -3288,7 +3288,7 @@ function godManipPage(s, gx) {
      ⚠️ 输入框照旧不挂 `data-*`（`bind.js` preventDefault）；预览随 `input` 事件即时重算。 */
 
   /* 常驻读数（2026-10-09 沉浸增强）—— **与新闻文案同源**：`newsVars` 正是新闻占位符的产出处，
-     这里印的 `现价 / 24h / 偏离 / 热度` 与史实新闻、假新闻里出现的数字**逐字一致**
+     这里印的 `现价 / 24h / 偏离 / 热度` 与史实新闻、消息里出现的数字**逐字一致**
      （同一函数、同一时刻 ⇒ 改一处两处同变，杜绝「面板一个数、新闻又一个数」）。
      ⚠️ 2026-10-10 用户拍板「面板数据要实时更新」：这行挂 `data-lvprice`，由 `syncGodLive`
      每帧用 `newsVars` 重算写入（不重建整块 ⇒ 不打断输入框）。 */
@@ -3855,46 +3855,58 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     }
     box.append(stepRow);
   } else if (page === 4) {
-    /* 日志页（页 4 · 2026-10-08 用户拍板⑤）：aggr 式大单 tape —— 引擎侧 `s.feed`（会话级，
-       rewindTo 清空），只显示本币、最新在上。六型分色（开多▲绿实 / 开空▼红实 / 平多△绿空 /
-       平空▽红空 / 爆多💥粉 / 爆空💥橙），行背景深浅 = 引擎 `feedTier` 的当日流动性比例五档
-       （0.1% / 0.5% / 1% / 2% / 5%）。玩家主动开/平不上 tape（主日志已有）；强平是全市场事实流。
-       与订单簿同一套装框纪律：行数按面板高算够就截到够（不滚动），数据仍在环形缓冲里。
-       ⚠️ 2026-10-09 用户拍板⑥：底部加**过滤档**（与 `FEED_STEPS` 一一对应，选中第 i 档
-       ⇒ 只留 `t ≥ i` 的行）—— 数据仍全在 `s.feed` 环形缓冲里，过滤只作用在**显示**上
-       （与订单簿步进同一套会话级纪律，状态 `logFilt` 由 `main.js` 持有）。 */
+    /* 日志页（页 4 · 2026-10-08 用户拍板⑤；2026-10-11 分段改版）：aggr 式大单 tape —— 引擎侧
+       `s.feed`（会话级，rewindTo 清空），只显示本币、最新在上。六型分色（开多▲绿实 / 开空▼红实 /
+       平多△绿空 / 平空▽红空 / 爆多💥粉 / 爆空💥橙），行背景深浅 = 引擎 `feedTier` 的当日流动性
+       比例五档（0.1% / 0.5% / 1% / 2% / 5%）。玩家主动开/平不上 tape（主日志已有）；强平是全市场事实流。
+       ⚠️ **2026-10-11 用户拍板**：把「**开平仓**」与「**爆仓**」**分区**显示 ——
+         上段开平仓（k 0–3）占 **70%**、下段爆仓（k 4–5）占 **30%**，各带段标题、各自定高列表；
+         两段定高之和 = 可用高 ⇒ **铺满**（仍在**同一页**，不换页）。
+       同时：① 每行新增「**方向**」列（多 / 空）—— 字形只表开/平，方向文字让玩家一眼看懂；
+         ② 时间改报**年月日时分**（`fmtDate`）—— 本浮窗是独立浮层，顶栏的日期未必可见
+         （与 K 线页日志条「只报时分」是**不同入口、不同口径**）。
+       ⚠️ 2026-10-09 用户拍板⑥：底部**过滤档**（与 `FEED_STEPS` 一一对应，选中第 i 档 ⇒ 只留
+       `t ≥ i` 的行）—— 数据仍全在 `s.feed` 环形缓冲里，过滤只作用在**显示**上，过滤行位置恒定。 */
     const lf = Math.max(0, Math.min(FEED_STEPS.length - 1, logFilt | 0));
     const desk = window.matchMedia && window.matchMedia('(min-width: 1280px)').matches;
     const rowH = desk ? 15 : 13;
     const fh = floatGeo().h;
-    const maxRows = Math.max(6, Math.floor((fh - 104) / rowH));
-    /* 行列表装进**固定高度**容器（2026-10-09 · 用户拍板「过滤按钮要固定，不能随内容跳动」）：
-       高度恒 = maxRows × rowH，行少时容器留白、行多（理论不会，过滤后 ≤ maxRows）滚动 ——
-       底部过滤行因此钉死在同一位置，不再随 tape 行数上下跳。 */
-    const list = el('div', 'gfd-list');
-    list.style.height = `${maxRows * rowH}px`;
-    box.append(list);
-    const rows = (s.feed || []).filter(r => r.sym === s.sym && r.t >= lf).slice(-maxRows).reverse();
+    /* 行数按面板高现算：扣掉 列头 ＋ 两条段标题（各 ≈ 一行）＋ 底部过滤行 ＋ 边距（104 沿用旧口径）。
+       上段 70% / 下段 30%（各至少 2 行）；两段列表高度之和 = 可用高 ⇒ 铺满、过滤行钉死。 */
+    const totalRows = Math.max(6, Math.floor((fh - 104 - 2 * rowH) / rowH));
+    const topRows = Math.max(2, Math.round(totalRows * 0.7));
+    const botRows = Math.max(2, totalRows - topRows);
+    const all = (s.feed || []).filter(r => r.sym === s.sym && r.t >= lf);
+    /* 六型 → [字形, 类型类, 方向]：k 0/1 = 开多/开空、2/3 = 平多/平空、4/5 = 爆多/爆空。
+       颜色走 --up/--down（红涨绿跌主题自动跟随），爆仓两色按拍板写死。 */
+    const K = [['▲', 'gfd-ol', '多'], ['▼', 'gfd-os', '空'], ['△', 'gfd-cl', '多'], ['▽', 'gfd-cs', '空'], ['💥', 'gfd-lq', '多'], ['💥', 'gfd-ls', '空']];
+    /* 列头（**单一**，两段共用 —— 段标题只写段名，不重复列名）：类型 方向 价格 名义 数量 时间 */
     const head = el('div', 'gfd-head');
-    head.append(el('i'), el('span', null, '价格'), el('b', null, '名义'), el('em', null, '数量'), el('u', null, '时间'));
-    box.prepend(head);
-    if (!rows.length) {
-      list.append(el('div', 'god-fnote', `暂无大单 —— 超过当日流动性 ${feedPctLabel(lf)} 的合约开/平/爆仓会上这里。`));
-    } else {
-      /* 六型 → [字形, 类型类]：颜色走 --up/--down（红涨绿跌主题自动跟随），爆仓两色按拍板写死。 */
-      const K = [['▲', 'gfd-ol'], ['▼', 'gfd-os'], ['△', 'gfd-cl'], ['▽', 'gfd-cs'], ['💥', 'gfd-lq'], ['💥', 'gfd-ls']];
-      for (const r of rows) {
-        const [gl, cls] = K[r.k] || ['·', ''];
+    head.append(el('i'), el('s', null, '方向'), el('span', null, '价格'), el('b', null, '名义'), el('em', null, '数量'), el('u', null, '时间'));
+    box.append(head);
+    /* 一段 = 段标题 ＋ **固定高度**列表（2026-10-09 用户拍板「过滤按钮要固定，不能随内容跳动」：
+       高度恒 = nRows × rowH，行少留白、行多滚动 —— 底部过滤行因此不随 tape 行数上下跳）。 */
+    const sec = (name, nRows, rows, note) => {
+      box.append(el('div', 'gfd-sec', name));
+      const list = el('div', 'gfd-list');
+      list.style.height = `${nRows * rowH}px`;
+      if (!rows.length) list.append(el('div', 'god-fnote', note));
+      else for (const r of rows) {
+        const [gl, cls, dir] = K[r.k] || ['·', '', '—'];
         const row = el('div', `gfd-row ${cls} t${r.t}`);
         row.append(
           el('i', null, gl),
+          el('s', null, dir),
           el('span', null, fmtFloatPrice(r.p)),
           el('b', null, fmtMoneyShort(r.n)),
           el('em', null, fmtQty(r.n / r.p)),
-          el('u', null, fmtHour(GAME.start + r.i * HOUR_MS)));
+          el('u', null, fmtDate(GAME.start + r.i * HOUR_MS)));
         list.append(row);
       }
-    }
+    };
+    const emptyNote = `暂无大单 —— 超过当日流动性 ${feedPctLabel(lf)} 的合约开/平/爆仓会上这里。`;
+    sec('开平仓', topRows, all.filter(r => r.k <= 3).slice(-topRows).reverse(), emptyNote);
+    sec('爆仓', botRows, all.filter(r => r.k >= 4).slice(-botRows).reverse(), '—');
     /* 底部过滤档（2026-10-09 用户拍板⑥）：与订单簿步进同一族样式（`.gb-steps` / `.gb-step`），
        标签走 `feedPctLabel`（与引擎阈值同源）；选中档高亮随每帧重画跟随。 */
     const filtRow = el('div', 'gb-steps');
@@ -4002,8 +4014,9 @@ export function syncOverlays(s) {
 
 /**
  * 自动新闻的 **ETA 文本**（2026-10-11）—— `autoNewsAt − s.i` 小时后到点。
- * ⚠️ 间隔自 2026-10-11 起调到 5~14 游戏日 ⇒ 直接报「228 小时后」又长又不直观，还会挤那一行
- *    （面板宽度固定、不许换行）⇒ **≥ 48 小时折成「N 天后」**；48h 以下仍报小时，
+ * ⚠️ 间隔自 2026-10-11 起是 `AUTO_NEWS_GAP` = **960~1920 游戏小时 ⇒ 40~80 游戏日**
+ *    （口径对齐普通模式的新闻频率；旧口径 12~36h 密了 60 倍）⇒ 直接报「1440 小时后」又长又不直观，
+ *    还会挤那一行（面板宽度固定、不许换行）⇒ **≥ 48 小时折成「N 天后」**；48h 以下仍报小时，
  *    与手动消息冷却（8h）同一量纲、同一读法。
  * @param {number} at  `s.god.autoNewsAt`（未写过时非有限 ⇒ 按 0 处理）
  * @param {number} now 当前小时 `s.i`

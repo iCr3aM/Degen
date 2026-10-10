@@ -2270,19 +2270,31 @@ button { user-select: none; -webkit-user-select: none; }
 .gb-step.on { color: var(--accent); background: var(--accent-soft); }
 
 /* 日志页（2026-10-08 · 用户拍板⑤）：aggr 式大单 tape —— 六型分色 ＋ 流动性比例五档背景。
-   列全部固定宽不换行（用户红线）：类型 14px / 价格弹性 / 名义 56px / 数量 52px / 时间 38px，
-   与 .gb-row 同一套 9px/13px 字号纪律。分色：开平多空走 --up/--down（红涨绿跌主题跟随），
-   爆多 #EC407A / 爆空 #FF9800 按拍板写死；行背景 t0 透明 → t4 最深（档位 = feedTier，五档
-   0.1% / 0.5% / 1% / 2% / 5%，2026-10-09 补 1%）。 */
+   列全部固定宽不换行（用户红线）：类型 14px / 方向 20px / 价格弹性 / 名义 56px / 数量 52px /
+   时间 78px（2026-10-11 起报「年月日时分」⇒ 加宽），与 .gb-row 同一套 9px/13px 字号纪律。
+   2026-10-11 用户拍板：日志页按「开平仓 70% ／ 爆仓 30%」**分区**，故多一条 `.gfd-sec` 段标题。
+   分色：开平多空走 --up/--down（红涨绿跌主题跟随），爆多 #EC407A / 爆空 #FF9800 按拍板写死；
+   行背景 t0 透明 → t4 最深（档位 = feedTier，五档 0.1% / 0.5% / 1% / 2% / 5%）。 */
 .gfd-head { display: flex; align-items: center; gap: 4px; font-size: 9px; line-height: 13px; color: var(--mut); }
+/* 段标题（2026-10-11 · 开平仓 / 爆仓 分区）：一条压深底的窄行，只写段名、不重复列名（LESS IS MORE）。 */
+.gfd-sec {
+  font-size: 9px;
+  line-height: 13px;
+  font-weight: 600;
+  padding: 0 2px;
+  color: color-mix(in srgb, var(--fg) 68%, var(--mut));
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
 /* 行列表固定高度容器（2026-10-09 · 用户拍板「过滤按钮要固定」）：行少留白、行多滚动，
    底部过滤行位置恒定 —— 高度由 render 按面板高现算（maxRows × 行高）。 */
 .gfd-list { overflow-y: auto; min-height: 0; }
 .gfd-head i { flex: 0 0 14px; }
 .gfd-head span { flex: 1 1 auto; }
+/* 方向列（2026-10-11 用户拍板）：多 / 空 —— 字形只表开/平，方向文字让玩家一眼看懂。 */
+.gfd-head s, .gfd-row s { flex: 0 0 20px; text-decoration: none; text-align: center; color: var(--mut); }
 .gfd-head b, .gfd-row b { flex: 0 0 56px; font-weight: 600; text-align: right; overflow: hidden; white-space: nowrap; }
 .gfd-head em, .gfd-row em { flex: 0 0 52px; font-style: normal; text-align: right; overflow: hidden; white-space: nowrap; }
-.gfd-head u, .gfd-row u { flex: 0 0 38px; text-decoration: none; text-align: right; color: var(--mut); }
+.gfd-head u, .gfd-row u { flex: 0 0 78px; text-decoration: none; text-align: right; color: var(--mut); overflow: hidden; white-space: nowrap; }
 .gfd-row { display: flex; align-items: center; gap: 4px; font-size: 9px; line-height: 13px; overflow: hidden; }
 .gfd-row i { flex: 0 0 14px; font-style: normal; }
 .gfd-row span { flex: 1 1 auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -2290,10 +2302,10 @@ button { user-select: none; -webkit-user-select: none; }
 .gfd-row.t2 { background: color-mix(in srgb, var(--fg) 8%, transparent); }
 .gfd-row.t3 { background: color-mix(in srgb, var(--fg) 13%, transparent); }
 .gfd-row.t4 { background: color-mix(in srgb, var(--fg) 19%, transparent); }
-.gfd-ol i, .gfd-ol span, .gfd-cl i, .gfd-cl span { color: var(--up); }
-.gfd-os i, .gfd-os span, .gfd-cs i, .gfd-cs span { color: var(--down); }
-.gfd-lq i, .gfd-lq span, .gfd-row.gfd-lq b { color: #ec407a; }
-.gfd-ls i, .gfd-ls span, .gfd-row.gfd-ls b { color: #ff9800; }
+.gfd-ol i, .gfd-ol span, .gfd-cl i, .gfd-cl span, .gfd-ol s, .gfd-cl s { color: var(--up); }
+.gfd-os i, .gfd-os span, .gfd-cs i, .gfd-cs span, .gfd-os s, .gfd-cs s { color: var(--down); }
+.gfd-lq i, .gfd-lq span, .gfd-row.gfd-lq b, .gfd-lq s { color: #ec407a; }
+.gfd-ls i, .gfd-ls span, .gfd-row.gfd-ls b, .gfd-ls s { color: #ff9800; }
 
 /* ══════════════ 桌面端分档：详情浮窗扩大 ＋ 容器再放宽（2026-10-08 用户拍板）══════════════
    用户原话「做桌面端（桌面网页版）适配，详细适配，比如详情浮窗可以扩大」。浮窗那三档尺寸改由
@@ -2329,8 +2341,13 @@ button { user-select: none; -webkit-user-select: none; }
   /* ── 桌面日志页（浮窗 tape）字号对齐（2026-10-09 用户报「桌面端字体偏小」）──
      `.gfd-row/.gfd-head` 原来漏了这一档覆盖、停在手机的 9px/13px，与同结构的订单簿
      `.gb-*`（已 11/15）**不一致**。11px 下最长列 `$123.4M`(7 字) ≈ 46px ≤ 56px、
-     数量 `0.0167`(6 字) ≈ 40px ≤ 52px、时间 `23:00`(5 字) ≈ 33px ≤ 38px，均不截断。 */
+     数量 `0.0167`(6 字) ≈ 40px ≤ 52px、时间 `2024-03-15 14:00`(16 字) ≈ 88px ≤ 96px，均不截断。 */
   .gfd-head, .gfd-row { font-size: 11px; line-height: 15px; }
+  /* 2026-10-11：方向列 22px、时间列 96px（11px 下「2024-03-15 14:00」16 字 ≈ 88px）；
+     段标题同步 11/15（与手机端同为一行高，render 的行高预算不乱）。 */
+  .gfd-head s, .gfd-row s { flex: 0 0 22px; }
+  .gfd-head u, .gfd-row u { flex: 0 0 96px; }
+  .gfd-sec { font-size: 11px; line-height: 15px; }
   /* ── 桌面日志条加高（2026-10-08 拍板加高；2026-10-09 用户要求「还能加更多行」）──
      6 行 × 20px = 120px，与 `render.LOG_ROWS` 的 ≥1280px 分支**同源**（断点一致）；
      手机 / 平板仍是基础规则的 40px（2 行）—— 本块只对桌面生效，手机端逐位不变。
