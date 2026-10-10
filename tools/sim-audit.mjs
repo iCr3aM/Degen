@@ -5470,9 +5470,13 @@ section('9ag · 插针剧本 ＋ 消息 ＋ 强平叠加（伺服走真实吃单
     check('9ag② 消息确定性：双局热度脚/花费/播报文本逐位相同',
       ra.ok && rb.ok && Math.abs(dA - dB) < 1e-12 && Math.abs(ra.cost - rb.cost) < 1e-9
       && a.log[0].text === b.log[0].text);
-    /* ⚠️ 2026-10-08 M4d：热度脚区间随 `GOD_NEWS_RANGE` 上调（0.2~0.4 → 0.28~0.55）。 */
-    check('9ag② 消息物理：热度一脚 ∈ [0.28,0.55] ＋ 位移真动了 ＋ news 金底芯片 ＋ 模板含币符号',
-      dA >= 0.28 - 1e-9 && dA <= 0.55 + 1e-9 && engine.lastPrice(a, 'BTC') !== pA
+    /* ⚠️ 2026-10-08 M4d：热度脚区间随 `GOD_NEWS_RANGE` 上调（0.2~0.4 → 0.28~0.55）。
+       ⚠️ 2026-10-11 P3：D/E/F/G 四类轻度收敛（`GOD_NEWS_HEAT` ≤ 1）⇒ 下界放宽到
+          `GOD_NEWS_RANGE.min × 最轻类缩放`；非类化模板仍是原区间（12j④ 单独证缩放生效）。 */
+    const hkMin9 = Math.min(...Object.values(god.GOD_NEWS_HEAT), 1);
+    check('9ag② 消息物理：热度一脚 ∈ [min×最轻类, max] ＋ 位移真动了 ＋ news 金底芯片 ＋ 模板含币符号',
+      dA >= god.GOD_NEWS_RANGE.min * hkMin9 - 1e-9 && dA <= god.GOD_NEWS_RANGE.max + 1e-9
+      && engine.lastPrice(a, 'BTC') !== pA
       && a.log[0].tag === 'news' && a.log[0].text.includes('BTC') && ra.cost > 0);
     const c = await mkNews();
     for (const bk of Object.values(c.books)) { bk.usd = 0; bk.usdt = 0; }
@@ -7540,8 +7544,8 @@ section('12i · 现货 ETF → 深度（P1）＋ 详情页读数（CDRI / 梅耶
   s12i.world = 'fic';
   const rFic = engine.hourLiqRaw(s12i, 'BTC', s12i.i);
   s12i.world = 'hist';
-  const expect = G3.etfDepthMul('BTC', day12i);
-  check('12i② hourLiqRaw 接线：hist 档含 ETF 深度乘子（hist/fic 比值 = etfDepthMul）、fic 档恒 1',
+  const expect = G3.etfDepthMul('BTC', day12i) * G3.whaleDepthMul('BTC', day12i);
+  check('12i② hourLiqRaw 接线：hist 档含 ETF × 巨鲸深度乘子（hist/fic 比值 = 两者之积）、fic 档恒 1',
     engSrc12i.includes('eventsOff(s) ? 1 : etfDepthMul(sym, day)')
     && expect > 1 && Math.abs(rHist / rFic - expect) < 1e-9 && rHist > rFic,
     `hist/fic = ${(rHist / rFic).toFixed(4)} · 期望 ${expect.toFixed(4)}`);
@@ -7569,6 +7573,76 @@ section('12i · 现货 ETF → 深度（P1）＋ 详情页读数（CDRI / 梅耶
   check('12i④ 梅耶倍数口径 = 现价 ÷ 近 200 日收盘均值（手算对照）',
     Math.abs(engine.mayerOf(sM, 'BTC', sM.i) - want) < 1e-9,
     `${engine.mayerOf(sM, 'BTC', sM.i).toFixed(3)} vs ${want.toFixed(3)}`);
+}
+
+/* ═══════════════ 12j · 机构建仓 → 深度（P2 · A 类）＋ 消息类化热度脚（P3）（2026-10-11） ═══════════════
+   用户拍板：① P2 只做 A 类（机构建仓 / 披露 → 买侧深度增厚，与 ETF 同层）；② P3 = D 监管 /
+   E 矿业 / F 稳定币 / G 衍生品 四类热度脚**轻度收敛**。设计见 docs/references/12-news-effect-mapping.md
+   §2 / §4。断言既证机制**生效**，也证其余情形（无流量 / 无 ETF）**恒等不变**（非空洞）。 */
+section('12j · 机构建仓 → 深度（P2 · A 类）＋ 消息类化热度脚（P3）');
+{
+  const G4 = await import('../src/core/god.js');
+  const dayOf4 = t => Math.round((t - C.GAME.start) / H / 24);
+
+  /* ① whaleDepthMul：纯函数 / 买侧 ≥1 / 有界 ≤1.15 / 无流量恒 1 / 无该币记录恒 1 */
+  const wDay = dayOf4(Date.UTC(2020, 7, 20));      // MicroStrategy 2020-08-11 首次披露（$2.5 亿 / 30 天窗口内）
+  const wFar = dayOf4(at(2019, 5, 15));            // 早于任何 WHALES 条目（首条 2020-08-11）
+  const wv = G4.whaleDepthMul('BTC', wDay);
+  check('12j① whaleDepthMul：买侧深度 ≥1 / 有界 ≤1.15 / 无流量恒 1 / 无该币记录恒 1 / 纯函数',
+    wv > 1 && wv <= 1.15 && G4.whaleDepthMul('BTC', wFar) === 1 && G4.whaleDepthMul('DOGE', wDay) === 1
+    && G4.whaleDepthMul('BTC', wDay) === wv,
+    `2020-08-20 ${wv.toFixed(4)} · 2019-05 ${G4.whaleDepthMul('BTC', wFar)} · DOGE ${G4.whaleDepthMul('DOGE', wDay)}`);
+
+  /* ② 接线 ＋ **运行时非空洞**：2020-08 尚无现货 ETF（`etfDepthMul === 1`）⇒ hist/fic 比值
+     应**恰好等于** `whaleDepthMul`，且 hist 更厚。 */
+  const engSrc12j = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  const s12j = await mk({ sym: 'BTC', mode: 'fut', cash: 1e6, i: idx(at(2020, 7, 20)) });
+  const d12j = Math.floor(s12j.i / 24);
+  const rHist2 = engine.hourLiqRaw(s12j, 'BTC', s12j.i);
+  s12j.world = 'fic';
+  const rFic2 = engine.hourLiqRaw(s12j, 'BTC', s12j.i);
+  s12j.world = 'hist';
+  const expW = G4.whaleDepthMul('BTC', d12j);
+  check('12j② hourLiqRaw 接线：hist 档含 A 类深度乘子（2020-08 无 ETF ⇒ 比值 = whaleDepthMul）、fic 恒 1',
+    engSrc12j.includes('eventsOff(s) ? 1 : whaleDepthMul(sym, day)')
+    && G4.etfDepthMul('BTC', d12j) === 1 && expW > 1
+    && Math.abs(rHist2 / rFic2 - expW) < 1e-9 && rHist2 > rFic2,
+    `hist/fic = ${(rHist2 / rFic2).toFixed(4)} · 期望 ${expW.toFixed(4)}`);
+
+  /* ③ newsFxClass：D/E/F/G 分类正确；A/B（机构 / 现货 ETF）及未归类 ⇒ null（纯函数、无副作用） */
+  check('12j③ newsFxClass：D/E/F/G 分类正确、A/B 及未归类返回 null',
+    G4.newsFxClass('快讯 ｜ %Z 收紧 %S 合规要求') === 'D'
+    && G4.newsFxClass('快讯 ｜ %G 官员称正研究 %S 储备方案') === 'D'
+    && G4.newsFxClass('快讯 ｜ %Z 勒令 %S 稳定币停发') === 'D'          // 多类命中 ⇒ 取 D（顺序 D>E>F>G）
+    && G4.newsFxClass('快讯 ｜ %N 削减 %S 算力') === 'E'
+    && G4.newsFxClass('快讯 ｜ %B 销毁 %S 储备') === 'F'
+    && G4.newsFxClass('快讯 ｜ %S 永续合约资金费率走高') === 'G'
+    && G4.newsFxClass('快讯 ｜ %S 短时波动加剧，清算量放大') === 'G'
+    && G4.newsFxClass('快讯 ｜ %I 披露已建仓 %S') === null
+    && G4.newsFxClass('快讯 ｜ %S 现货 ETF 单日净流入居前') === null,
+    '九条分类枚举');
+
+  /* ④ 类化热度脚**真的生效**：同一局（同 seed / 同 `s.i` ⇒ 同一 `r1`）、同方向，把轮换指针分别
+     指向「G 类」与「未归类（A）」模板 ⇒ 两次热度脚之比应**恰好等于** `GOD_NEWS_HEAT.G`。 */
+  const mkNewsState = async () => {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
+    s.god = { lastFill: 1e9, inf: true, sb: { ...god.SB_DEFAULT } };
+    s.mkt.BTC.heat = 0.30;                       // 低温：两脚都 < 0.55，绝不被 clamp01 截断
+    return s;
+  };
+  const probe = await mkNewsState();
+  const tpls5 = G4.godNewsTplsOf('good', engine.timeOf(probe), false, 'BTC');
+  const idxA = tpls5.findIndex(t => G4.newsFxClass(t) === null);
+  const idxG = tpls5.findIndex(t => G4.newsFxClass(t) === 'G');
+  const sA5 = await mkNewsState(); sA5.god.newsN = { good: idxA, bad: 0 };
+  const sG5 = await mkNewsState(); sG5.god.newsN = { good: idxG, bad: 0 };
+  const h0A = sA5.mkt.BTC.heat, h0G = sG5.mkt.BTC.heat;
+  const okA5 = engine.godNews(sA5, 'BTC', 1).ok, okG5 = engine.godNews(sG5, 'BTC', 1).ok;
+  const dA5 = sA5.mkt.BTC.heat - h0A, dG5 = sG5.mkt.BTC.heat - h0G;
+  check('12j④ 类化热度脚生效：G 类 ÷ 未归类 = GOD_NEWS_HEAT.G（同 seed / 同小时的确定性算式）',
+    idxA >= 0 && idxG >= 0 && okA5 && okG5 && dA5 > 0 && dG5 > 0
+    && Math.abs(dG5 / dA5 - G4.GOD_NEWS_HEAT.G) < 1e-9,
+    `idxA=${idxA} idxG=${idxG} · G/A = ${(dG5 / dA5).toFixed(6)} · 期望 ${G4.GOD_NEWS_HEAT.G}`);
 }
 
 /* ═══════════════ 11 · 架空世界线：生成器 · 数据层物化 · 2033 终点（2026-10-10 · P2）═══════════════

@@ -1140,6 +1140,35 @@ export function etfDepthMul(sym, d) {
   return Math.max(ETF_DEPTH.lo, Math.min(ETF_DEPTH.hi, r));
 }
 
+/** 机构建仓 / 披露 → 深度增厚的常数（见 `whaleDepthMul`）：**+15% 封顶**，$1 亿/日 ≈ 1σ 的尺度 */
+const WHALE_DEPTH = { k: 0.15, scale: 1e8, hi: 1.15 };
+
+/**
+ * **机构建仓 / 披露 → 深度增厚乘子**（2026-10-11 用户拍板 P2 · A 类；设计见
+ * `docs/references/12-news-effect-mapping.md` §2 A 类）。
+ *
+ * 真实传导链：「企业 / 主权持续吸筹 ⇒ 现货可流通供给减少、买侧变厚」—— 本作已有前半段
+ * （`WHALES` → `whaleFlowAt` → `extFlow` 买盘），这里补后半段：把**当日净流量的规模**映射到
+ * `hourLiqRaw` 的乘子上（与 ETF 乘子同层相乘）。
+ *
+ * ⚠️ **只加不减（`≥ 1`）**：按 `docs/references/12` 的纪律，A 类**只做买侧增厚**、绝不做单边压价
+ *    （单边压价＝变相改价格）；故取 `|flow|` ⇒ 卖出披露也不减薄（避免与 `extFlow` 的卖压双重计价）。
+ * ⚠️ 走的是**深度**通道而非价格（P2-C 红线：深度只改摩擦，不改价格水平）。
+ * ⚠️ `tanh` 有界 ⇒ 夹在 `[1, hi]`；取不到流量（未上线 / 无该币记录 / 摊平窗口外）⇒ **恒 1**
+ *    —— 调用方按 `mul === 1` 走 IEEE 精确恒等，无关年代与币种**逐位不变**。
+ * ⚠️ 只在**史实**世界生效（架空局的披露走 `ficnews` 另一套），调用方（`engine.hourLiqRaw`）
+ *    已用 `eventsOff` 闸掉。
+ * @param {string} sym
+ * @param {number} d 游戏窗口天序号（与 `whaleFlowAt` 同尺）
+ * @returns {number} 深度乘子（1 = 无影响）
+ */
+export function whaleDepthMul(sym, d) {
+  const f = whaleFlowAt(sym, d);
+  if (!f) return 1;
+  const r = 1 + WHALE_DEPTH.k * Math.tanh(Math.abs(f) / WHALE_DEPTH.scale);
+  return Math.min(WHALE_DEPTH.hi, r);
+}
+
 /**
  * 现货 ETF 月报的**立场账本键** `{ name:'现货 ETF', dir, sym }`——以 **BTC 净额**定方向
  * （ETH 月报同期才有、且量级小一个数位；`ETF_FLOW.BTC` 覆盖全期，做主口径）。
@@ -2192,4 +2221,38 @@ export function godNewsTplsOf(key, time, free = false, sym = null) {
     if (tplUsable(e.t, time, o)) out.push(e.t);
   }
   return out;
+}
+
+/**
+ * **消息类 → 热度脚收敛系数**（P3 · 2026-10-11 用户拍板）。
+ *
+ * 动机（设计见 `docs/references/12-news-effect-mapping.md` §2 D/E/F/G）：这四类消息讲的是
+ * 「监管 / 供给侧 / 稳定币 / 资金面」的**叙事**，对现货买盘的直接拉动弱于机构建仓（A）/ 现货
+ * ETF（B）—— 真实市场里它们更多作用在**结构与情绪**，而不是买盘推力。故只**轻度收敛**其热度脚。
+ *
+ * ⚠️ **只轻度收敛**（×0.75~0.90）：底噪仍显著高于幌骗（`MANIP_SPOOF_NUDGE` 0.18）—— 消息仍是
+ *    玩家操盘机制的核心（`GOD_NEWS_RANGE` 头注「比幌骗大」），不得把这四类打成幌骗量级。
+ * ⚠️ **A/B/C/H 及未归类模板保持 `GOD_NEWS_RANGE` 原值**（逐位不变）。四枚系数是**设计取值**、可调。
+ */
+export const GOD_NEWS_HEAT = { D: 0.85, E: 0.75, F: 0.85, G: 0.90 };
+
+/**
+ * **模板 → 消息类**（仅 P3 需要的 D/E/F/G 四类；其余返回 `null` = 走默认热度脚）。
+ *
+ * 由模板**占位符 / 关键词自动派生**（无需给 200 条词条逐一标注）：
+ *   · `%Z` 监管 / `%G` 国家 ⇒ **D 监管**；
+ *   · `%N` 矿业 ⇒ **E 矿业**；
+ *   · `%B` 稳定币（或含「稳定币」字样）⇒ **F 稳定币**；
+ *   · 含「资金费率 / 合约交投 / 清算量 / 杠杆」⇒ **G 衍生品**。
+ * ⚠️ 判定顺序 D → E → F → G：同时命中多类时取前者（`%Z 勒令…稳定币停发` 归 D 更贴切）。
+ * @param {string} tpl 已选定的模板（`fillNews` 之前的原文，含占位符）
+ * @returns {'D'|'E'|'F'|'G'|null}
+ */
+export function newsFxClass(tpl) {
+  if (typeof tpl !== 'string') return null;
+  if (tpl.includes('%Z') || tpl.includes('%G')) return 'D';
+  if (tpl.includes('%N')) return 'E';
+  if (tpl.includes('%B') || tpl.includes('稳定币')) return 'F';
+  if (/资金费率|合约交投|清算量|杠杆/.test(tpl)) return 'G';
+  return null;
 }

@@ -21,7 +21,7 @@ import { ficNewsAt } from './ficnews.js';
 import { entsOfTpl, literalEnts, resolveEnts, putStance, stanceConflict, tplUsable } from './entities.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, LADDER, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, GOD_NEWS_CD, GOD_NEWS_Q, GOD_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfDepthMul, etfFlowAt, etfNewsAt, etfNewsMeta, exDevOf, instSeedOf, godNewsTplsOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt, whaleNewsMeta } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, GOD_NEWS_CD, GOD_NEWS_HEAT, GOD_NEWS_Q, GOD_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfDepthMul, etfFlowAt, etfNewsAt, etfNewsMeta, exDevOf, instSeedOf, godNewsTplsOf, newsFxClass, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleDepthMul, whaleFlowAt, whaleNewsAt, whaleNewsMeta } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -1302,7 +1302,13 @@ export function hourLiqRaw(s, sym, i) {
      ⚠️ 只改**摩擦**（深度），不改价格水平（P2-C 红线）；架空局没有真实申赎 ⇒ `eventsOff` 闸掉；
         `mul === 1` 走 IEEE 精确恒等 ⇒ 非 ETF 年代 / 币种逐位不变。 */
   const etf = eventsOff(s) ? 1 : etfDepthMul(sym, day);
-  return etf === 1 ? raw : raw * etf;
+  /* **机构建仓 / 披露 → 深度增厚**（2026-10-11 用户拍板 P2 · A 类）：与 ETF 乘子**同层相乘** ——
+     A 类只做**买侧增厚**（`whaleDepthMul ≥ 1`），真实传导链是「企业 / 主权持续吸筹 ⇒ 买侧变厚」。
+     ⚠️ 同样只改摩擦、不改价格（P2-C 红线）；架空局的披露走 `ficnews` 另一套 ⇒ `eventsOff` 闸掉；
+        两个乘子都恒 1 时 `mul === 1` 走 IEEE 精确恒等 ⇒ 无关年代与币种逐位不变。 */
+  const wh = eventsOff(s) ? 1 : whaleDepthMul(sym, day);
+  const mul = etf * wh;
+  return mul === 1 ? raw : raw * mul;
 }
 
 /* ───────────────── 读数：梅耶倍数（价 ÷ 200 日 MA）─────────────────────────
@@ -5385,7 +5391,6 @@ export function godNews(s, sym, dir) {
   /* 币种门控（2026-10-11 用户报「币种穿帮」）：BTC 减半 / ETH 共识切换 / XRP 案 / BTC 现货 ETF
      这类**币专属史实**只在本币的消息里出现（否则会播成「【XRP 快讯】XRP 完成共识切换」）。 */
   const tpls = godNewsTplsOf(key, time, free, sym);
-  const nudge = (GOD_NEWS_RANGE.min + r1 * (GOD_NEWS_RANGE.max - GOD_NEWS_RANGE.min)) * dir;
   const notional = Math.max(MANIP_MIN, GOD_NEWS_Q * hourLiqBase(s, sym, s.i));
   const p = manipPreview(s, sym, dir, notional);
   if (!debit(s, p.cost)) {
@@ -5395,7 +5400,6 @@ export function godNews(s, sym, dir) {
   }
   pushFlow(s, sym, dir, notional, 1, 'fut', true);
   exCharge(s, notional * p.feeRate);   // 跟风单的手续费部分进交易所收入账（同 godManipPush · config.EXREV）
-  mktOf(s, sym).heat = clamp01(mktOf(s, sym).heat + nudge);
   /* 轮换选条：取第 n 条、n+1 存档（坏值 / 缺键回 0）。 */
   if (!s.god.newsN) s.god.newsN = { good: 0, bad: 0 };
   const n = Number.isFinite(s.god.newsN[key]) ? s.god.newsN[key] : 0;
@@ -5422,6 +5426,14 @@ export function godNews(s, sym, dir) {
     chosenEnts = entsOfTpl(chosen, time, s.seed, s.i, 0, { free });
     chosenLit = literalEnts(chosen);
   }
+  /* **类化热度脚**（2026-10-11 用户拍板 P3）：D 监管 / E 矿业 / F 稳定币 / G 衍生品 四类的热度脚
+     轻度收敛（`newsFxClass` 按模板占位符 / 关键词自动归类）；A/B/C/H 及未归类模板保持
+     `GOD_NEWS_RANGE` 原值（`hk === 1` ⇒ 逐位不变）。⚠️ 归一段必须在**选条之后**：类别取自
+     已选模板；选条本身不读 `heat` ⇒ 把热度脚从选条前挪到这里无副作用（确定性不受影响）。 */
+  const fx = newsFxClass(chosen);
+  const hk = fx ? GOD_NEWS_HEAT[fx] : 1;
+  const nudge = (GOD_NEWS_RANGE.min + r1 * (GOD_NEWS_RANGE.max - GOD_NEWS_RANGE.min)) * hk * dir;
+  mktOf(s, sym).heat = clamp01(mktOf(s, sym).heat + nudge);
   s.god.newsN[key] = n + 1;
   s.god.newsAt = s.i;
   for (const e of (chosenEnts || [])) putStance(s, e.name, dir, sym);
