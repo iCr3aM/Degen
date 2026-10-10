@@ -75,7 +75,7 @@ export const ANCHORS = [
   { t: Date.UTC(2013, 10, 18), title: '美国参议院听证会：虚拟货币「合法且可监管」',
     rt: 'BTC 站上 $%V，24 小时 %C',           r: { k: 'lvl', sym: 'BTC', dir: 1, v: 900, w: 30 },   chain: 'btc',  congestion: null },
   { t: Date.UTC(2014, 1, 25),  title: '当时全球最大的交易所停机，85 万枚 BTC 蒸发',
-    rt: 'BTC 跌破 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: -1, v: 400, w: 30 },  chain: 'btc',  congestion: null, warn: true },
+    rt: 'BTC 跌破 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: -1, v: 450, w: 30 },  chain: 'btc',  congestion: null, warn: true },   // 实测低点 $418.76（人民网口径）⇒ 阈值取 450 保证真实数据能触发（2026-10-10 核对）
   /* ── 监管事件锚点（2026-10-08 · 缺口 6）—— 只出新闻与 K 线标记，零人工涨跌幅（P2-C 红线）；
         不产生链上拥堵（`congestion` 一律 null）⇒ 不进 `congestionAnchors`。 ── */
   { t: Date.UTC(2014, 2, 25),  title: '美国国税局首次表态：虚拟货币按「财产」征税，不是货币',
