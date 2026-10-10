@@ -60,8 +60,8 @@ const NEWS_DELAY = 1;
  *   `ents`        **立场账本键**（可选）—— `[{ name, dir }]`，说明「这条史实新闻讲的是谁、
  *                 对它是好是坏」。`name` 取自 `entities.js` 的实体名或 `MACRO_KEYS` 宏观键
  *                 （如「现货 ETF」），`dir` ±1。引擎在播报这一刻写进 `s.newsStance`，让
- *                 **上帝假消息**不得在 90 日内反着说同一个主体（2026-10-11 用户口径
- *                 「假消息不和真实史实新闻冲突」）。只给「点名了某个池内主体」的锚点填
+ *                 **上帝消息**不得在 90 日内反着说同一个主体（2026-10-11 用户口径
+ *                 「消息不和真实史实新闻冲突」）。只给「点名了某个池内主体」的锚点填
  *                 （减半 / 拥堵 / 分叉这类市场级事件不填 —— 它们不指向某一家）。
  *                 ⚠️ 结果条沿用同一 `ents`（事件与结果是同一件事的两次播报）。
  *
@@ -112,7 +112,7 @@ export const ANCHORS = [
   { t: Date.UTC(2021, 3, 14),  title: 'Coinbase 上市，传统资金第一次大规模进场',
     rt: 'BTC 突破 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: 1, v: 64000, w: 7 }, chain: 'btc',  congestion: { add: 45, days: 7,  ramp: 1.5, fall: 2.5 }, ents: [{ name: 'Coinbase', dir: 1 }] },
   { t: Date.UTC(2021, 8, 24),  title: '中国十部门联合发文，全面禁止加密货币交易与挖矿',
-    rt: 'BTC 当日跌约 %D',                    r: { k: 'mv', sym: 'BTC', dir: -1, pct: 0.07, w: 3 },  chain: null,   congestion: null, ents: [{ name: '中国央行', dir: -1 }, { name: '中国', dir: -1 }] },   // 两条键：假消息里既有「中国央行…」也有「中国叫停…」（见 literalEnts）
+    rt: 'BTC 当日跌约 %D',                    r: { k: 'mv', sym: 'BTC', dir: -1, pct: 0.07, w: 3 },  chain: null,   congestion: null, ents: [{ name: '中国央行', dir: -1 }, { name: '中国', dir: -1 }] },   // 两条键：消息里既有「中国央行…」也有「中国叫停…」（见 literalEnts）
   { t: Date.UTC(2021, 10, 10), title: '通胀与 ETF 预期把资金推向 BTC',
     rt: 'BTC 冲上 $%V',                      r: { k: 'lvl', sym: 'BTC', dir: 1, v: 69000, w: 14 }, chain: 'btc',  congestion: null, ents: [{ name: '现货 ETF', dir: 1 }] },
   { t: Date.UTC(2022, 4, 9),   title: '算法稳定币 UST 脱锚，LUNA 几天内归零',

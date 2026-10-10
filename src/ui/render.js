@@ -23,7 +23,7 @@ import { anchorsInRange, anchorOfAt } from '../core/anchors.js';
 import { RV_SPEEDS } from '../core/review.js';
 import { LOG_TAGS, LOG_TAG_DEFAULT, anyHeld, heldSyms, posOf, slotOf, spendableOf } from '../core/state.js';
 import { badgesOf, epitaphOf, multShown, overLabelOf, styleOf, titleOf } from '../core/titles.js';
-import { MANIP_NEWS_CD, SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
+import { GOD_NEWS_CD, SB_KEYS, SB_LABEL, SB_PRESETS, sbOf } from '../core/god.js';
 import { drawChart, drawEquityCurve, curveWindow } from './chart.js';
 import { windowFor, setYPx } from './view.js';
 import { vibSupported } from './sound.js';
@@ -209,7 +209,7 @@ const fngColor = b => (b === 'greed' || b === 'xgreed' ? 'greedy' : b === 'fear'
  *
  * ⚠️ 老存档的条目没有 `tag`（那批数据写在 `LOG_TAGS` 存在之前）⇒ 按 `LOG_TAG_DEFAULT` 回退，
  *    所以两处渲染都**必须**走这个函数，不能直接读 `e.tag`。
- * ⚠️ **芯片一律常驻**（2026-10-11 用户拍板：「假消息开头的新闻黄色方块显示要持续，不要显示
+ * ⚠️ **芯片一律常驻**（2026-10-11 用户拍板：「消息开头的新闻黄色方块显示要持续，不要显示
  *    一会儿就消失（类似世界、市场）」）—— 原先「新闻满 `NEWS_HOURS` 降级成 `sys`」那条
  *    衰老口径**已废**：新闻芯片与 `fic`（世界）/`mkt`（市场）一样，在日志停留期间一直亮着。
  *    `NEWS_HOURS` 仍留在 `anchors.js`：它是**一个锚点的新闻窗口长度**（`anchorAt` 在用），
@@ -3271,7 +3271,7 @@ function godSandboxPage(s) {
   return rows;
 }
 
-/** 页 2「操盘」—— 常驻读数 / 扫单 / 自动新闻 / 自动操盘 / 目标价 / 插针 / 假消息 / 新闻源与事件。
+/** 页 2「操盘」—— 常驻读数 / 扫单 / 自动新闻 / 自动操盘 / 目标价 / 插针 / 消息 / 新闻源与事件。
  *  ⚠️ 2026-10-10 用户拍板精简：手动填数字拉砸盘行、强平图叠加开关、底部「关闭」行三处退役；
  *     深度旋钮搬到沙盒页。 */
 function godManipPage(s, gx) {
@@ -3432,27 +3432,27 @@ function godManipPage(s, gx) {
   if (!s.god.pin) pinP.style.display = 'none';
   rows.append(pinP);
 
-  /* 假消息注入（2026-10-08 三批拍板③）：热度一脚 ＋ 小额跟风吃单 ＋ 日志播报
-     （engine.godFakeNews 一体完成），两枚按钮即两个方向。 */
+  /* 消息注入（2026-10-08 三批拍板③）：热度一脚 ＋ 小额跟风吃单 ＋ 日志播报
+     （engine.godNews 一体完成），两枚按钮即两个方向。 */
   const newsRow = el('div', 'set-row');
   const newsDn = el('button', 'set-btn', '利空');
   newsDn.dataset.godnews = '-1';
   const newsUp = el('button', 'set-btn', '利好');
   newsUp.dataset.godnews = '1';
-  /* 冷却置灰（2026-10-08 用户拍板）：距上次成功注入不足 `MANIP_NEWS_CD` 小时 ⇒ 两枚键一起灰掉
+  /* 冷却置灰（2026-10-08 用户拍板）：距上次成功注入不足 `GOD_NEWS_CD` 小时 ⇒ 两枚键一起灰掉
      （与「插针」那排同一套手感：置灰与可按要一眼分得开）。 */
   const newsCd = s.i - (Number.isFinite(s.god.newsAt) ? s.god.newsAt : -Infinity);
   newsDn.dataset.lvnews = '';
   newsUp.dataset.lvnews = '';
-  if (newsCd < MANIP_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }
-  newsRow.append(el('i', null, '假消息'), newsDn, newsUp);
+  if (newsCd < GOD_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }
+  newsRow.append(el('i', null, '消息'), newsDn, newsUp);
   rows.append(newsRow);
   /* 冷却读数（2026-10-09 沉浸增强；2026-10-10 code review Important 改**常驻 ＋ 定点刷新**）：
      置灰只说明「现在不能按」，这一行说明「还要等多久」；`newsCd` 每根递减 ⇒ 必须常驻
      让 `syncGodLive` 每帧改文本（非冷却期隐藏）。 */
   const cdP = el('p', 'god-prev', '');
   cdP.dataset.lvcd = '';
-  if (newsCd < MANIP_NEWS_CD) cdP.textContent = `冷却中 · 还需 ${MANIP_NEWS_CD - newsCd} 小时`;
+  if (newsCd < GOD_NEWS_CD) cdP.textContent = `冷却中 · 还需 ${GOD_NEWS_CD - newsCd} 小时`;
   else cdP.style.display = 'none';
   rows.append(cdP);
 
@@ -3996,7 +3996,7 @@ export function syncOverlays(s) {
  * 自动新闻的 **ETA 文本**（2026-10-11）—— `autoNewsAt − s.i` 小时后到点。
  * ⚠️ 间隔自 2026-10-11 起调到 5~14 游戏日 ⇒ 直接报「228 小时后」又长又不直观，还会挤那一行
  *    （面板宽度固定、不许换行）⇒ **≥ 48 小时折成「N 天后」**；48h 以下仍报小时，
- *    与手动假消息冷却（8h）同一量纲、同一读法。
+ *    与手动消息冷却（8h）同一量纲、同一读法。
  * @param {number} at  `s.god.autoNewsAt`（未写过时非有限 ⇒ 按 0 处理）
  * @param {number} now 当前小时 `s.i`
  */
@@ -4009,7 +4009,7 @@ function autoNewsEta(at, now) {
  * **god 浮窗的盘中轻量刷新**（2026-10-10 code review Important 修）——
  * god 主体只在页码/版本号变时重建（保住三个输入框），但下列元素是**时间/引擎驱动**的，
  * 不刷新就会停在「打开那一刻」：
- *   · 假消息冷却（`newsAt` 固定、`s.i` 推进 ⇒ 倒计时递减、到期解灰）—— 文本 ＋ 两钮 disabled；
+ *   · 消息冷却（`newsAt` 固定、`s.i` 推进 ⇒ 倒计时递减、到期解灰）—— 文本 ＋ 两钮 disabled；
  *   · 自动新闻 eta（`autoNewsAt − s.i` 递减）—— 文本；
  *   · 插针 / 扫单 / 自动化开关的置灰（`s.god.pin` 由 `godPinTick` **内部**结束 ⇒ 不经 showGod）；
  *   · 自动造量钮（还受 `autoPump` 影响）。
@@ -4018,7 +4018,7 @@ function autoNewsEta(at, now) {
 function syncGodLive(panel, s) {
   if (!(panel && s && s.god)) return;
   const g = s.god;
-  const cd = MANIP_NEWS_CD - (s.i - (Number.isFinite(g.newsAt) ? g.newsAt : -Infinity));
+  const cd = GOD_NEWS_CD - (s.i - (Number.isFinite(g.newsAt) ? g.newsAt : -Infinity));
   const cdOn = cd > 0;
   for (const b of panel.querySelectorAll('[data-lvnews]')) b.disabled = cdOn;
   const cdEl = panel.querySelector('[data-lvcd]');
@@ -4117,7 +4117,7 @@ function renderInst(inst, s, ui, defaultBody) {
     if (body) inst.panel.querySelector('.god-fpage').replaceChildren(body);
   }
   /* god 浮窗的**盘中轻量刷新**（2026-10-10 code review Important）—— god 主体只在页码/版本号
-     变时重建（保住输入框），但「假消息冷却倒计时」「自动新闻 eta」「插针/扫单置灰」是**时间/
+     变时重建（保住输入框），但「消息冷却倒计时」「自动新闻 eta」「插针/扫单置灰」是**时间/
      引擎驱动**的（`s.i` 推进、插针由 `godPinTick` 内部结束），不刷新就会停在打开那一刻。
      这里每帧按 data 标记**定点**改文本与 disabled，绝不重建整块（输入框/焦点/滚动都保住）。 */
   if (inst.id === 'god') syncGodLive(inst.panel, s);

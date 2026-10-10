@@ -5392,14 +5392,14 @@ section('9af · NPC 限价单离散簿（行为级 ＋ 显示/播报读簿 ＋ �
     && rendSrc9af.includes('b.dataset.gofstep = String(v)'));
 }
 
-/* ═══════════════════ 9ag · 插针剧本 ＋ 假消息 ＋ K线强平叠加（2026-10-08 三批拍板③） ═══════════════════
+/* ═══════════════════ 9ag · 插针剧本 ＋ 消息 ＋ K线强平叠加（2026-10-08 三批拍板③） ═══════════════════
    上帝操盘台第三批：① 插针 = 一键吃穿最大强平簇再回位 —— **没有直接设价通道**，每小时
    伺服一笔真实吃单（godManipPush 同一物理：花钱 / 吃深度 / 被硬夹），簇检测与 flushSlot
    的强平判定逐位同源（godWatchOf.liqs 的 price 就是 longAvg×(1−drop) / shortAvg×(1+drop)）
-   ⇒ 推到位的那一根 NPC 真的爆（tape k=4/k=5）；② 假消息 = 热度一脚 ＋ 小额跟风单 ＋
+   ⇒ 推到位的那一根 NPC 真的爆（tape k=4/k=5）；② 消息 = 热度一脚 ＋ 小额跟风单 ＋
    news 金底播报，**幅度**走 randFast 通道 'news'（确定性）、**选条**走轮换计数（M4d）；③ 强平叠加 = 主图右轴档位条
    （godWatchOf.liqs 同一份数据）。全部挂 s.god（不进存档）⇒ 不升 STATE_VERSION。 */
-section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃单物理 ＋ 全链路确定性）');
+section('9ag · 插针剧本 ＋ 消息 ＋ 强平叠加（伺服走真实吃单物理 ＋ 全链路确定性）');
 {
   const rd9ag = p => fs.readFileSync(path.join(ROOT, p), 'utf8');
   const engSrc9ag = rd9ag('src/core/engine.js');
@@ -5415,22 +5415,22 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     engSrc9ag.includes('export function godPinStart(s, sym, dir)')
     && engSrc9ag.includes('export function godPinTick(s)')
     && engSrc9ag.includes('export function godPinStop(s)')
-    && engSrc9ag.includes('export function godFakeNews(s, sym, dir)')
+    && engSrc9ag.includes('export function godNews(s, sym, dir)')
     && engSrc9ag.includes('if (s.pending) return;\n\n  /* 交易所收入分流')
     && engSrc9ag.includes('exRevSweep(s);\n\n  /* 插针剧本伺服')   // 2026-10-09 回流管道：排在伺服 / NPC 刻度之前
     && engSrc9ag.includes('godPinTick(s);\n\n  /* 自动扫单伺服')   // 2026-10-09：扫单伺服紧随插针（同一时序纪律）
     && engSrc9ag.includes('godEatTick(s);\n\n  /* 自动化伺服')     // 2026-10-10：自动化伺服紧随扫单
     && engSrc9ag.includes('godAutoTick(s, worldNewsHit);\n\n  /* NPC 情绪 / 踩踏级联')
     /* 2026-10-08 M4k：作废行扩成对象体（插针 ＋ 沙盒世界偏向台阶 `sbBias` 一起清）；
-       M4d：再并进假消息的冷却 / 轮换计数（`newsAt` / `newsN`）。 */
+       M4d：再并进消息的冷却 / 轮换计数（`newsAt` / `newsN`）。 */
     && engSrc9ag.includes('if (s.god) {')
     && engSrc9ag.includes('s.god.pin = null;')
     && engSrc9ag.includes('s.god.sbBias = null;')
     && engSrc9ag.includes('s.god.newsAt = null;')
     && engSrc9ag.includes('s.god.newsN = null;'));
-  check('9ag① god.js：MANIP_PIN 五参 ＋ MANIP_NEWS 利好/利空模板 ＋ %S 占位',
+  check('9ag① god.js：MANIP_PIN 五参 ＋ GOD_NEWS 利好/利空模板 ＋ %S 占位',
     godSrc9ag.includes('export const MANIP_PIN = { qStep: 0.35, overshoot: 0.005, backTol: 0.004, maxN: 8, maxH: 36 };')
-    && godSrc9ag.includes('export const MANIP_NEWS = {')
+    && godSrc9ag.includes('export const GOD_NEWS = {')
     && godSrc9ag.includes('good:') && godSrc9ag.includes('bad:')
     && engSrc9ag.includes('fillNewsEnts(s, sym, chosen, { salt: chosenSalt, free })'));
   check('9ag① 接线：main 分派两键 ＋ 处理器 ＋ bind ACTION_KEYS ＋ render 按钮 ＋ 置灰样式',
@@ -5454,7 +5454,7 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     && !mainSrc9ag.includes('onClosePanel') && !mainSrc9ag.includes('d.sclose')
     && !bindSrc9ag.includes("'sclose'"));
 
-  /* ② 假消息：确定性（双局逐位同果）＋ 物理三件套 ＋ 资金闸 */
+  /* ② 消息：确定性（双局逐位同果）＋ 物理三件套 ＋ 资金闸 */
   {
     const mkNews = async () => {
       const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e7, i: idx(at(2021, 5, 10)) });
@@ -5465,20 +5465,20 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     const a = await mkNews(), b = await mkNews();
     const hA = a.mkt.BTC.heat, hB = b.mkt.BTC.heat;
     const pA = engine.lastPrice(a, 'BTC'), pB = engine.lastPrice(b, 'BTC');
-    const ra = engine.godFakeNews(a, 'BTC', 1), rb = engine.godFakeNews(b, 'BTC', 1);
+    const ra = engine.godNews(a, 'BTC', 1), rb = engine.godNews(b, 'BTC', 1);
     const dA = a.mkt.BTC.heat - hA, dB = b.mkt.BTC.heat - hB;
-    check('9ag② 假消息确定性：双局热度脚/花费/播报文本逐位相同',
+    check('9ag② 消息确定性：双局热度脚/花费/播报文本逐位相同',
       ra.ok && rb.ok && Math.abs(dA - dB) < 1e-12 && Math.abs(ra.cost - rb.cost) < 1e-9
       && a.log[0].text === b.log[0].text);
-    /* ⚠️ 2026-10-08 M4d：热度脚区间随 `MANIP_NEWS_RANGE` 上调（0.2~0.4 → 0.28~0.55）。 */
-    check('9ag② 假消息物理：热度一脚 ∈ [0.28,0.55] ＋ 位移真动了 ＋ news 金底芯片 ＋ 模板含币符号',
+    /* ⚠️ 2026-10-08 M4d：热度脚区间随 `GOD_NEWS_RANGE` 上调（0.2~0.4 → 0.28~0.55）。 */
+    check('9ag② 消息物理：热度一脚 ∈ [0.28,0.55] ＋ 位移真动了 ＋ news 金底芯片 ＋ 模板含币符号',
       dA >= 0.28 - 1e-9 && dA <= 0.55 + 1e-9 && engine.lastPrice(a, 'BTC') !== pA
       && a.log[0].tag === 'news' && a.log[0].text.includes('BTC') && ra.cost > 0);
     const c = await mkNews();
     for (const bk of Object.values(c.books)) { bk.usd = 0; bk.usdt = 0; }
     c.god.inf = false; c.god.lastFill = 0;
-    const rc = engine.godFakeNews(c, 'BTC', 1);
-    check('9ag② 假消息资金闸：无限资金关 ＋ 账户归零 ⇒ 拒绝且不播报',
+    const rc = engine.godNews(c, 'BTC', 1);
+    check('9ag② 消息资金闸：无限资金关 ＋ 账户归零 ⇒ 拒绝且不播报',
       !rc.ok && /资金不足/.test(rc.why) && c.log[0] == null);
   }
 
@@ -5564,7 +5564,7 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
    M4b：上帝「深度」旋钮（`godLiqMulOf`）⇒ 一处 `gm` 闸门（`godScale`）贯通市场规模类分母 / 读数
         （NPC 靶心 / 基底 / OI / 量柱 / 簿 / 基金池 / 对抗性暴露）；玩家自己的名义额**不过闸**（红线 A）；
    M4c：爆仓潮 / ADL 阈值同源放大（`liqEventScaleOf = gm × npc`）＋ 日志冷却（`NPC.liqEventCd`）；
-   M4d：上帝新闻（模板各 16 条 ＋ 冷却 `MANIP_NEWS_CD` ＋ 轮换去重 ＋ 「新闻源与事件」开关）；
+   M4d：上帝新闻（模板各 16 条 ＋ 冷却 `GOD_NEWS_CD` ＋ 轮换去重 ＋ 「新闻源与事件」开关）；
    M4f：桌面日志条 2 → 6 行（`LOG_ROWS` 断点与 CSS 同源）。
    ⚠️ 全部在 `gm === 1` / 缺键时**逐位早退** ⇒ 普通 / 挑战局零回归（9p 恒等断言咬住这一条）。 */
 section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新闻（结构锚 ＋ 行为锚）');
@@ -5594,19 +5594,19 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     && engSrc9ah.includes('const thr = liqDay > 0 ? liqDay * NPC.liqEventFrac * liqEventScaleOf(s, sym) : 0;')
     && engSrc9ah.includes('if (s.i - last >= NPC.liqEventCd) {')
     && /if \(s\.i - last >= NPC\.liqEventCd\) \{[\s\S]*?pushLog\(s, `爆仓潮[\s\S]*?adl\(s, sym, m,/.test(engSrc9ah));
-  check('9ah① M4d 结构：MANIP_NEWS_CD ＋ 模板各 16 条 ＋ 冷却 / 轮换 ＋ extFlow / 播报双闸（总闸改判世界属性）',
-    godSrc9ah.includes('export const MANIP_NEWS_CD = 8;')
-    && /export const MANIP_NEWS = \{[\s\S]*?good: \[[\s\S]*?\],[\s\S]*?bad: \[[\s\S]*?\],\s*\};/.test(godSrc9ah)
+  check('9ah① M4d 结构：GOD_NEWS_CD ＋ 模板各 16 条 ＋ 冷却 / 轮换 ＋ extFlow / 播报双闸（总闸改判世界属性）',
+    godSrc9ah.includes('export const GOD_NEWS_CD = 8;')
+    && /export const GOD_NEWS = \{[\s\S]*?good: \[[\s\S]*?\],[\s\S]*?bad: \[[\s\S]*?\],\s*\};/.test(godSrc9ah)
     && (godSrc9ah.match(/'快讯 ｜/g) || []).length >= 80
     && engSrc9ah.includes('const cd = s.i - last;')
-    && engSrc9ah.includes('if (cd < MANIP_NEWS_CD) return { ok: false, why: `冷却中（还需 ${MANIP_NEWS_CD - cd} 小时）` };')
+    && engSrc9ah.includes('if (cd < GOD_NEWS_CD) return { ok: false, why: `冷却中（还需 ${GOD_NEWS_CD - cd} 小时）` };')
     && engSrc9ah.includes('s.god.newsN[key] = n + 1;')
     && engSrc9ah.includes('const extFlow = eventsOff(s) ? 0 : (whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx));')
     && engSrc9ah.includes('if (!eventsOff(s)) {')
     && engSrc9ah.includes('s.god.newsAt = null;')
     && engSrc9ah.includes('s.god.newsN = null;'));
   check('9ah① M4d/M4e/M4f 接线：冷却置灰 ＋ 手动操盘行摘除（godpump 三处清零）＋ 日志条 6 行/120px（godreal 已退役）',
-    rendSrc9ah.includes('if (newsCd < MANIP_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }')
+    rendSrc9ah.includes('if (newsCd < GOD_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }')
     /* 2026-10-10 用户拍板「删手动操盘行」：`godpump` 一键组合拳 ＋ 长按连发整链退役
        （render 输入框 / main 处理器与节拍器 / bind 键表三处一起摘，缺一处 = 死键或点了没反应）。 */
     && !mainSrc9ah.includes('function onGodPump(')
@@ -5680,26 +5680,26 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e8, i: idx(at(2021, 5, 10)) });
     god.enableGod(s);
     s.god.inf = true; s.god.lastFill = 1e9;
-    const a = engine.godFakeNews(s, 'BTC', 1);
+    const a = engine.godNews(s, 'BTC', 1);
     /* ⚠️ 播报文本必须**当场**取 —— `advanceOneHour` 每小时会插别的日志把队首顶掉。 */
     const seen = new Set([s.log[0].text]);
     engine.advanceOneHour(s);
-    const b = engine.godFakeNews(s, 'BTC', 1);              // 1h 后仍在 8h 冷却里 ⇒ 拒
+    const b = engine.godNews(s, 'BTC', 1);              // 1h 后仍在 8h 冷却里 ⇒ 拒
     check('9ah④ M4d 行为：假新闻可发 ＋ 冷却期内拒发',
       a.ok && !b.ok && /冷却/.test(b.why),
       `二次 ${b.ok ? 'ok' : b.why}`);
     /* 16 连发（每次隔 9h > 冷却）⇒ 16 条文本两两不同（轮换去重生效） */
     for (let k = 0; k < 15; k++) {
       for (let h = 0; h < 9; h++) engine.advanceOneHour(s);
-      const r = engine.godFakeNews(s, 'BTC', 1);
+      const r = engine.godNews(s, 'BTC', 1);
       if (r.ok) seen.add(s.log[0].text);
     }
     check('9ah④ M4d 行为：连按 16 次 ⇒ 16 条播报两两不同（轮换计数去重）＋ 全部含币符号',
       seen.size === 16 && [...seen].every(t => t.includes('BTC')),
       `去重后 ${seen.size} 条`);
     check('9ah④ M4d 常数：利好 / 利空各 100 条（6 类风格 ＋ 早期年代风味 ＋ 年代扩容 40 ＋ 真实机构 14）＋ 冷却 8h',
-    god.MANIP_NEWS.good.length === 100 && god.MANIP_NEWS.bad.length === 100 && god.MANIP_NEWS_CD === 8,
-    `good=${god.MANIP_NEWS.good.length} bad=${god.MANIP_NEWS.bad.length}`);
+    god.GOD_NEWS.good.length === 100 && god.GOD_NEWS.bad.length === 100 && god.GOD_NEWS_CD === 8,
+    `good=${god.GOD_NEWS.good.length} bad=${god.GOD_NEWS.bad.length}`);
   }
 }
 
@@ -5736,7 +5736,7 @@ section('9ai · 新闻占位符 newsVars / fillNews ＋ 上帝终局 s.god.ended
         先按 `timeOf(s)` 解析出真实机构名再填），用旧 `fillNews` 会残留 `%X`。 */
   const nv = engine.newsVars(s, 'BTC');
   const flat = tpl => (typeof tpl === 'string' ? tpl : tpl.t);
-  const fake = god.MANIP_NEWS.good.concat(god.MANIP_NEWS.bad).map(tpl => engine.fillNewsEnts(s, 'BTC', flat(tpl)));
+  const fake = god.GOD_NEWS.good.concat(god.GOD_NEWS.bad).map(tpl => engine.fillNewsEnts(s, 'BTC', flat(tpl)));
   const badFake = fake.filter(t => /%[A-Za-z]/.test(t) || t.includes('\n') || !t.includes('BTC'));
   check('9ai② 假新闻模板 200 条填充后无残留占位符 / 无换行 / 全部含币符号',
     badFake.length === 0, badFake.join(' | '));
@@ -5997,7 +5997,7 @@ section('9al · 玩家仓位可见性（热力图/巨鲸/订单/tape）＋ 插�
 }
 
 /* ═══════════════════ 9am · 假新闻年代门控（2026-10-09 审计「假新闻年代口径」§四） ═══════════════════
-   选条前 `manipTplsOf(key, timeOf(s))` 过滤 —— 裸字符串全期可用，`{ t, from }` 锚定史实首发日。
+   选条前 `godNewsTplsOf(key, timeOf(s))` 过滤 —— 裸字符串全期可用，`{ t, from }` 锚定史实首发日。
    审计锚（§四.4）：① 四采样点过滤池无越期禁词；② 池大小下限（保「连按不重样」的量）；
    ③ 条目唯一；④ 引擎行为：2013 年播报不含越期词；⑤ 门控边界逐位判定。 */
 section('9am · 假新闻年代门控：四采样点禁词 ＋ 池下限 ＋ 唯一性 ＋ 引擎行为');
@@ -6013,7 +6013,7 @@ section('9am · 假新闻年代门控：四采样点禁词 ＋ 池下限 ＋ 唯
   ];
   for (const { at, ban } of SAMPLES) {
     for (const key of ['good', 'bad']) {
-      const pool = god.manipTplsOf(key, at);
+      const pool = god.godNewsTplsOf(key, at);
       const hit = ban.filter(w => pool.some(t => t.includes(w)));
       /* ⚠️ 2026-10-11 新增：池内每条都必须 **`tplUsable`**（占用的实体 kind 此刻池非空）——
          否则模板会渲染出解析不出机构名的半截句（如 2013-06 的 `%T`/`%O`/`%P` 槽）。 */
@@ -6031,7 +6031,7 @@ section('9am · 假新闻年代门控：四采样点禁词 ＋ 池下限 ＋ 唯
     const ban = SAMPLES[0].ban;
     const texts = [];
     for (let k = 0; k < 6; k++) {
-      const r = engine.godFakeNews(s, 'BTC', k % 2 ? -1 : 1);
+      const r = engine.godNews(s, 'BTC', k % 2 ? -1 : 1);
       if (r.ok) texts.push(s.log[0].text);        // 播报必须当场取（同 9ah④）
       for (let h = 0; h < 9; h++) engine.advanceOneHour(s);
     }
@@ -6042,9 +6042,9 @@ section('9am · 假新闻年代门控：四采样点禁词 ＋ 池下限 ＋ 唯
   }
   /* ③ 门控边界：`time == from` 可出场、`from − 1ms` 不出场（`>=` 判定，逐位）。 */
   {
-    const g = god.MANIP_NEWS.good.find(e => typeof e !== 'string' && e.from === Date.UTC(2016, 4, 13));
-    const before = god.manipTplsOf('good', Date.UTC(2016, 4, 13) - 1).includes(g.t);
-    const on = god.manipTplsOf('good', Date.UTC(2016, 4, 13)).includes(g.t);
+    const g = god.GOD_NEWS.good.find(e => typeof e !== 'string' && e.from === Date.UTC(2016, 4, 13));
+    const before = god.godNewsTplsOf('good', Date.UTC(2016, 4, 13) - 1).includes(g.t);
+    const on = god.godNewsTplsOf('good', Date.UTC(2016, 4, 13)).includes(g.t);
     check('9am③ 边界：`time == from` 可出场、`from − 1ms` 不出场（`>=` 判定）', !before && on);
   }
 }
@@ -6477,11 +6477,11 @@ section('9as · 自动新闻（币种权重）＋ 自动造量 ＋ 自动拉盘 
      · 硬编码价格 / 百分比（`$123` / `50%`）。
    允许的数值只有播报那一刻的**占位符真值**：`%L` 现价 · `%C` 带符号 24h · `%A` 成交额 ·
    `%R` 资金费率 · `%H` 热度 · `%M` 位移。
-   护栏：解析 god.js 的 MANIP_NEWS 块 ⇒ 抽出全部含「快讯」的字面量逐条扫禁词 ＋ 硬编码数字。 */
+   护栏：解析 god.js 的 GOD_NEWS 块 ⇒ 抽出全部含「快讯」的字面量逐条扫禁词 ＋ 硬编码数字。 */
 section('9at · 假新闻禁「可证伪数据断言」（禁词 ＋ 硬编码 ＋ %c）');
 {
   const src = fs.readFileSync(path.join(ROOT, 'src/core/god.js'), 'utf8');
-  const head = src.indexOf('export const MANIP_NEWS = {');
+  const head = src.indexOf('export const GOD_NEWS = {');
   const blk = src.slice(head, src.indexOf('\n};', head));
   const tpls = [...blk.matchAll(/'([^']*)'/g)].map(m => m[1]).filter(t => t.includes('快讯'));
   const BAN = /首破|创新高|创纪录|创年内新高|历史新高|历史新低|三年低位|腰斩|归零|跌逾|急挫|暴跌|飙升|大涨|重挫|跳水|跌破|失守|崩盘|破纪录|翻倍|关口|逼近五成|五成|三成|两成|八成|九成|%c/;
@@ -6501,7 +6501,7 @@ section('9at · 假新闻禁「可证伪数据断言」（禁词 ＋ 硬编码 �
   /* ④ **上线闸**（2026-10-10 用户报「XRP 还没上线却出现 XRP 的新闻」）：
      建 2013 局、把 8 币全加载（复刻 `prefetchAllCoins` 全量预热），并**手动注入** XRP 格子
      （复刻旧 `npcOtherTick` 给未上市币建格）⇒ `autoNewsSym` 600 次一律不得抽到未上市币；
-     `godFakeNews` 对未上市币必须 ok:false。 */
+     `godNews` 对未上市币必须 ok:false。 */
   const s13 = await mk({ sym: 'BTC', mode: 'fut', cash: 1e8, i: idx(at(2013, 6, 15)) });
   god.enableGod(s13);
   for (const sy of ['BTC', 'ETH', 'XRP', 'DOGE', 'SOL']) await market.loadCoin(sy);
@@ -6515,8 +6515,8 @@ section('9at · 假新闻禁「可证伪数据断言」（禁词 ＋ 硬编码 �
   }
   check('9at④ 未上市币不进新闻：2013 局注入 XRP 格子后 autoNewsSym 恒返回已上市币',
     badSym === '', badSym || '600 次全过');
-  const xr = engine.godFakeNews(s13, 'XRP', 1);
-  check('9at④ godFakeNews 对未上市币拒发（ok:false ＋ why 提「还没上线」）',
+  const xr = engine.godNews(s13, 'XRP', 1);
+  check('9at④ godNews 对未上市币拒发（ok:false ＋ why 提「还没上线」）',
     xr.ok === false && String(xr.why).includes('还没上线'), JSON.stringify(xr));
   const srcAt = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   check('9at④ 结构：autoNewsSym 过滤 unlock/已加载 ＋ npcOtherTick 跳过未上市币',
@@ -6958,17 +6958,17 @@ section('12c · 架空局内推进 → 快讯入日志（运行时）');
   check('12c③ 史实新闻与架空快讯互斥（架空局 eventsOff 为真）', engine.eventsOff(s) === true);
 }
 
-section('12d · 新闻分工：架空带数值 · 假消息只做叙事 · 芯片两枚色相');
+section('12d · 新闻分工：架空带数值 · 消息只做叙事 · 芯片两枚色相');
 {
   const G = await import('../src/core/god.js');
-  const all = [...G.MANIP_NEWS.good, ...G.MANIP_NEWS.bad];
+  const all = [...G.GOD_NEWS.good, ...G.GOD_NEWS.bad];
   const tpls = all.map(e => (typeof e === 'string' ? e : e.t));
   const num = tpls.filter(t => /%[LCcARH]/.test(t));
-  check('12d① 假消息只做叙事：全部模板零数值占位符', num.length === 0, num.slice(0, 3).join(' | '));
-  check('12d② 假消息模板数 100 ＋ 100（含 ⑨ 真实机构扩容）',
-    G.MANIP_NEWS.good.length === 100 && G.MANIP_NEWS.bad.length === 100,
-    `${G.MANIP_NEWS.good.length}/${G.MANIP_NEWS.bad.length}`);
-  check('12d③ 假消息每条仍以「快讯 ｜ 」开头且含 %S',
+  check('12d① 消息只做叙事：全部模板零数值占位符', num.length === 0, num.slice(0, 3).join(' | '));
+  check('12d② 消息模板数 100 ＋ 100（含 ⑨ 真实机构扩容）',
+    G.GOD_NEWS.good.length === 100 && G.GOD_NEWS.bad.length === 100,
+    `${G.GOD_NEWS.good.length}/${G.GOD_NEWS.bad.length}`);
+  check('12d③ 消息每条仍以「快讯 ｜ 」开头且含 %S',
     tpls.every(t => t.startsWith('快讯 ｜ ') && t.includes('%S')));
 
   const FN = await import('../src/core/ficnews.js');
@@ -7025,8 +7025,8 @@ section('12e · 世界价格档（低/中/高）· 面板只选择不输入（20
 
 /* ═══════════════ 12f · 新闻时隙互斥 ＋ 自动新闻 50x 收敛（2026-10-11 用户拍板） ═══════════════
    ① 架空快讯在 50x 下太密 ⇒ 按 50x 基准收敛（1/200 ⇒ ≈ 每 4 真实秒一条，见 §12a⑧）；
-   ② 自动新闻（假消息）的出现时间同样收敛（120~336h ⇒ 50x 下 ≈ 2.4~6.7 秒一条）；
-   ③ 假消息**不与世界新闻抢同一根 K 线**（架空 / 史实同理）—— 到点遇世界新闻则顺延 1h。
+   ② 自动新闻（消息）的出现时间同样收敛（120~336h ⇒ 50x 下 ≈ 2.4~6.7 秒一条）；
+   ③ 消息**不与世界新闻抢同一根 K 线**（架空 / 史实同理）—— 到点遇世界新闻则顺延 1h。
    ⚠️ 本节只碰**单个 state**，不 `installWorld`（那条纪律留给最后的 §11）。 */
 section('12f · 新闻时隙互斥 ＋ 自动新闻 50x 收敛');
 {
@@ -7048,7 +7048,7 @@ section('12f · 新闻时隙互斥 ＋ 自动新闻 50x 收敛');
     && /return h >= 48 \?/.test(rendSrcF)
     && (rendSrcF.match(/autoNewsEta\(/g) || []).length >= 3);
 
-  /* ③ 运行时 · 单元：到点遇世界新闻 ⇒ 让路（不播假消息、时刻顺延 1h） */
+  /* ③ 运行时 · 单元：到点遇世界新闻 ⇒ 让路（不播消息、时刻顺延 1h） */
   {
     const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 5, 10)) });
     god.enableGod(s);
@@ -7057,7 +7057,7 @@ section('12f · 新闻时隙互斥 ＋ 自动新闻 50x 收敛');
     s.god.autoNews = 1; s.god.autoNewsAt = s.i; s.god.newsAt = null;
     const n0 = s.log.length;
     engine.godAutoTick(s, true);                      // 世界新闻命中
-    check('12f④ 假消息让路：世界新闻命中 ⇒ 不播假消息、autoNewsAt 顺延 1h',
+    check('12f④ 消息让路：世界新闻命中 ⇒ 不播消息、autoNewsAt 顺延 1h',
       s.god.autoNewsAt === s.i + 1 && s.log.length === n0 && !Number.isFinite(s.god.newsAt),
       `next=+${s.god.autoNewsAt - s.i}h logΔ=${s.log.length - n0} newsAt=${s.god.newsAt}`);
 
@@ -7065,12 +7065,12 @@ section('12f · 新闻时隙互斥 ＋ 自动新闻 50x 收敛');
     const i0 = s.i;
     s.god.autoNewsAt = s.i; s.god.newsAt = null;
     engine.godAutoTick(s, false);
-    check('12f⑤ 假消息正常播报：重排落在 960~1920h（40~80 日）',
+    check('12f⑤ 消息正常播报：重排落在 960~1920h（40~80 日）',
       s.god.newsAt === i0 && s.god.autoNewsAt >= i0 + 960 && s.god.autoNewsAt <= i0 + 1920,
       `newsAt=${s.god.newsAt} next=+${s.god.autoNewsAt - i0}h`);
   }
 
-  /* ⑤ 运行时 · 集成：在**真有架空快讯**的那一根推进 ⇒ 快讯在、假消息让路（同一根不叠两条） */
+  /* ⑤ 运行时 · 集成：在**真有架空快讯**的那一根推进 ⇒ 快讯在、消息让路（同一根不叠两条） */
   {
     const SEED = 4242;
     let ix = -1;
@@ -7083,13 +7083,13 @@ section('12f · 新闻时隙互斥 ＋ 自动新闻 50x 收敛');
     s.god.autoNews = 1; s.god.autoNewsAt = s.i; s.god.newsAt = null;   // 恰好与快讯同根到点
     engine.advanceOneHour(s);
     const ficHit = s.log.some(e => e.tag === 'fic' && String(e.text).includes('快讯'));
-    check('12f⑥ 集成：架空快讯那一根 ⇒ 快讯在、假消息让路（autoNewsAt 顺延、无假消息）',
+    check('12f⑥ 集成：架空快讯那一根 ⇒ 快讯在、消息让路（autoNewsAt 顺延、无消息）',
       ix > 0 && ficHit && s.god.autoNewsAt === ix + 1 && !Number.isFinite(s.god.newsAt),
       `ix=${ix} fic=${ficHit} next=+${s.god.autoNewsAt - ix}h newsAt=${s.god.newsAt}`);
   }
 
   /* ⑥ 运行时 · 集成（**史实世界同理**：用户原话「上帝模式史实模式中同理」）——
-     找一根真有史实锚点新闻的 K 线，把假消息 armed 到同一根 ⇒ 锚点新闻在、假消息让路。 */
+     找一根真有史实锚点新闻的 K 线，把消息 armed 到同一根 ⇒ 锚点新闻在、消息让路。 */
   {
     const A = await import('../src/core/anchors.js');
     let ah = -1;
@@ -7101,7 +7101,7 @@ section('12f · 新闻时隙互斥 ＋ 自动新闻 50x 收敛');
     s.god.autoNews = 1; s.god.autoNewsAt = s.i; s.god.newsAt = null;          // 恰与史实锚点同根
     engine.advanceOneHour(s);
     const histHit = s.log.some(e => e.tag === 'news' && A.newsStartAt(ah) && String(e.text) === A.newsStartAt(ah).title);
-    check('12f⑦ 集成（史实局）：史实锚点新闻那一根 ⇒ 锚点在、假消息让路',
+    check('12f⑦ 集成（史实局）：史实锚点新闻那一根 ⇒ 锚点在、消息让路',
       ah > 0 && histHit && s.god.autoNewsAt === ah + 1 && !Number.isFinite(s.god.newsAt),
       `ah=${ah} news=${histHit} next=+${s.god.autoNewsAt - ah}h newsAt=${s.god.newsAt}`);
   }
@@ -7109,11 +7109,11 @@ section('12f · 新闻时隙互斥 ＋ 自动新闻 50x 收敛');
 
 /* ═══════════════ 12g · 频率对照：普通模式基准 vs 上帝模式两场景（2026-10-11 用户点名要查） ═══════════════
    用户要求：「检查普通模式（非上帝）下的新闻频率 ⇒ 参考它优化上帝模式；最后检查架空快讯、
-   架空快讯＋自动假消息（游戏中开 / 关）两种情况出现的频率」。
+   架空快讯＋自动消息（游戏中开 / 关）两种情况出现的频率」。
    本节**实测**三组：① 普通模式（史实 12 年全跑，按引擎 pushLog 去重口径数玩家实际看到的条数）；
-   ② 上帝·架空「自动假消息 关」＝ 只有架空快讯；③ 上帝·架空「自动假消息 开」＝ 快讯 ＋ 假消息。
+   ② 上帝·架空「自动消息 关」＝ 只有架空快讯；③ 上帝·架空「自动消息 开」＝ 快讯 ＋ 消息。
    ⚠️ 不 installWorld（那条纪律留给最后的 §11）。 */
-section('12g · 新闻频率对照：普通模式基准 → 上帝模式（架空快讯 关/开 自动假消息）');
+section('12g · 新闻频率对照：普通模式基准 → 上帝模式（架空快讯 关/开 自动消息）');
 {
   const FN = await import('../src/core/ficnews.js');
 
@@ -7140,7 +7140,7 @@ section('12g · 新闻频率对照：普通模式基准 → 上帝模式（架�
     basePerYear >= 4 && basePerYear <= 9,
     `${shown} 条 / ${yrs.toFixed(2)} 年 = ${basePerYear.toFixed(1)} 条/年 · 50x 每 ${baseSec50x.toFixed(1)} 秒`);
 
-  /* ② 架空快讯（自动假消息 关）：用出现率实测（同 §12a⑧ 口径） */
+  /* ② 架空快讯（自动消息 关）：用出现率实测（同 §12a⑧ 口径） */
   const H = 400000;
   const ficN = FN.ficNewsSample(12345, 0, H).length;
   const ficPerYear = ficN / H * 8760;
@@ -7149,7 +7149,7 @@ section('12g · 新闻频率对照：普通模式基准 → 上帝模式（架�
     ficPerYear >= basePerYear * 0.6 && ficPerYear <= basePerYear * 1.6,
     `${ficPerYear.toFixed(1)} 条/年 · 50x 每 ${ficSec50x.toFixed(1)} 秒（基准 ${basePerYear.toFixed(1)} 条/年）`);
 
-  /* ③ 自动假消息：按真实 `godAutoTick` 逐段推进，量它的**实际间隔均值**（不读常数） */
+  /* ③ 自动消息：按真实 `godAutoTick` 逐段推进，量它的**实际间隔均值**（不读常数） */
   const g = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 0, 1)) });
   god.enableGod(g);
   g.god.inf = true; g.god.lastFill = 1e12;
@@ -7167,21 +7167,21 @@ section('12g · 新闻频率对照：普通模式基准 → 上帝模式（架�
   const autoPerYear = 8760 / autoMeanGap;
   const autoSec50x = autoMeanGap / 50;
 
-  /* ④ 合计（开自动假消息）：三条 —— 快讯 ＋ 假消息（互斥只删同根极少数碰撞，量级不受影响） */
+  /* ④ 合计（开自动消息）：三条 —— 快讯 ＋ 消息（互斥只删同根极少数碰撞，量级不受影响） */
   const combPerYear = ficPerYear + autoPerYear;
   const combSec50x = 1 / ((1 / ficSec50x + 1 / autoSec50x));
-  check('12g③ 架空快讯 ＋ 自动假消息（auto 开）合计 ≈ 基准的 1.5–2.6 倍',
+  check('12g③ 架空快讯 ＋ 自动消息（auto 开）合计 ≈ 基准的 1.5–2.6 倍',
     combPerYear >= basePerYear * 1.5 && combPerYear <= basePerYear * 2.6,
-    `${combPerYear.toFixed(1)} 条/年 · 50x 每 ${combSec50x.toFixed(1)} 秒（快讯 ${ficPerYear.toFixed(1)} ＋ 假消息 ${autoPerYear.toFixed(1)}）`);
-  check('12g④ 自动假消息均值间隔落在常量区间（960~1920h ⇒ 40~80 日）',
+    `${combPerYear.toFixed(1)} 条/年 · 50x 每 ${combSec50x.toFixed(1)} 秒（快讯 ${ficPerYear.toFixed(1)} ＋ 消息 ${autoPerYear.toFixed(1)}）`);
+  check('12g④ 自动消息均值间隔落在常量区间（960~1920h ⇒ 40~80 日）',
     autoMeanGap >= 960 && autoMeanGap <= 1920,
     `实测均值 ${autoMeanGap.toFixed(0)}h = ${(autoMeanGap / 24).toFixed(1)} 日 · 50x 每 ${autoSec50x.toFixed(1)} 秒`);
-  console.log(`     频度总览：普通模式 ${basePerYear.toFixed(1)} 条/年 | 架空快讯 ${ficPerYear.toFixed(1)} | 快讯+假消息 ${combPerYear.toFixed(1)} 条/年`);
+  console.log(`     频度总览：普通模式 ${basePerYear.toFixed(1)} 条/年 | 架空快讯 ${ficPerYear.toFixed(1)} | 快讯+消息 ${combPerYear.toFixed(1)} 条/年`);
 }
 
 /* ═══════════════ 12h · 真实实体注册表 ＋ 搭配正确性 ＋ 立场账本（2026-10-11 用户需求） ═══════════════
    用户要求：词库机构名换**现实名称**（带时间门控、搭配正确、不能出现「苹果上线永续合约」）、
-   且**新闻不打架**（架空快讯说某实体利好 ⇒ 随后的假消息不得说它利空）。
+   且**新闻不打架**（架空快讯说某实体利好 ⇒ 随后的消息不得说它利空）。
    ⚠️ 不 installWorld（那条纪律留给最后的 §11）。 */
 section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场账本');
 {
@@ -7231,7 +7231,7 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
      科技公司/非交易所只存在于 %O/%P/%I/%T 槽 ⇒「苹果上线永续合约」结构上不可能（kind 即能力）。 */
   {
     const may13 = Date.UTC(2016, 4, 13);
-    const allNews = [...G2.MANIP_NEWS.good, ...G2.MANIP_NEWS.bad];
+    const allNews = [...G2.GOD_NEWS.good, ...G2.GOD_NEWS.bad];
     const perpBad = allNews.filter(e => {
       const t = typeof e === 'string' ? e : e.t;
       if (!t.includes('永续')) return false;
@@ -7295,7 +7295,7 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
       && (() => { const s2 = { i: 5000 + ENT.STANCE_WINDOW_H + 1, newsStance: { Binance: { dir: 1, at: 5000 } } };
         return ENT.stanceConflict(s2, 'Binance', -1) === false; })());
 
-    /* 引擎集成：把 Binance 标成「利好」，之后连发利空假消息 ⇒ 输出里绝不出现 Binance */
+    /* 引擎集成：把 Binance 标成「利好」，之后连发利空消息 ⇒ 输出里绝不出现 Binance */
     const mkState = async () => {
       const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 0, 1)) });
       god.enableGod(s);
@@ -7310,7 +7310,7 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
       const texts = [];
       for (let k = 0; k < 40; k++) {
         s.i += 24; s.god.newsAt = null;                    // 绕开冷却
-        const r = engine.godFakeNews(s, 'BTC', -1);
+        const r = engine.godNews(s, 'BTC', -1);
         if (r.ok) texts.push(String(s.log[0].text));
       }
       return texts;
@@ -7322,7 +7322,7 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
     const anyExch = free.filter(t => exchPool.some(n => t.includes(n))).length;
     check('12h⑤ 非空洞前置：不设账本时，`%X` 确实解析成真实交易所名（≥1 条）',
       anyExch >= 1, `含交易所名的播报 ${anyExch}/${free.length} 条`);
-    check('12h⑤ 引擎集成：Binance 标成利好后再发利空假消息 ⇒ 输出里绝不出现 Binance',
+    check('12h⑤ 引擎集成：Binance 标成利好后再发利空消息 ⇒ 输出里绝不出现 Binance',
       blocked.length >= 30 && blocked.every(t => !t.includes('Binance')),
       `播报 ${blocked.length} 条 · 含 Binance ${blocked.filter(t => t.includes('Binance')).length} 条`);
   }
@@ -7392,7 +7392,7 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
   }
 
   /* ⑥b **币种一致性**（2026-10-11 用户报「【DOGE 快讯】VanEck 被拒现货**比特币** ETF 申请」）——
-     凡正文里带币名的词条都加了 `coins` 门控（只在对应币的快讯里出现），假消息一侧加 `sym`。 */
+     凡正文里带币名的词条都加了 `coins` 门控（只在对应币的快讯里出现），消息一侧加 `sym`。 */
   {
     const FN3 = await import('../src/core/ficnews.js');
     const COIN_WORD = { BTC: ['比特币', 'BTC'], ETH: ['以太坊'], XRP: ['瑞波', 'XRP'], DOGE: ['狗狗币', 'DOGE'], SOL: ['Solana'] };
@@ -7408,11 +7408,11 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
     }
     check('12h⑥b 币种一致：架空快讯正文里出现的币名必与 `%S` 同币（40 万根 0 穿帮）',
       n >= 200 && bad === 0, `样本 ${n} 条 · 穿帮 ${bad} 条${ex ? ' 例：' + ex : ''}`);
-    /* 假消息：币专属史实按 `sym` 门控（DOGE 不播「减半」/「现货 ETF」；ETH 才播「共识切换」） */
+    /* 消息：币专属史实按 `sym` 门控（DOGE 不播「减半」/「现货 ETF」；ETH 才播「共识切换」） */
     const t24 = Date.UTC(2024, 6, 1);
-    const dogeP = G2.manipTplsOf('good', t24, false, 'DOGE');
-    const ethP = G2.manipTplsOf('good', t24, false, 'ETH');
-    check('12h⑥b 币种一致：假消息的币专属模板按 `sym` 门控（DOGE 无「减半 / 现货 ETF」，ETH 有「共识切换」）',
+    const dogeP = G2.godNewsTplsOf('good', t24, false, 'DOGE');
+    const ethP = G2.godNewsTplsOf('good', t24, false, 'ETH');
+    check('12h⑥b 币种一致：消息的币专属模板按 `sym` 门控（DOGE 无「减半 / 现货 ETF」，ETH 有「共识切换」）',
       dogeP.length >= 40 && !dogeP.some(x => x.includes('减半')) && !dogeP.some(x => x.includes('现货 ETF'))
       && ethP.some(x => x.includes('共识切换')) && !ethP.some(x => x.includes('减半')),
       `DOGE ${dogeP.length} 条 · ETH ${ethP.length} 条`);
@@ -7444,14 +7444,14 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
     check('12h⑥c 能力门控（架空快讯 80 万根）：XRP/SOL 挖矿、BTC/DOGE/XRP 质押 = 0 条',
       n >= 300 && bad === 0, `样本 ${n} 条${ex ? ' 例：' + ex : ''}`);
     const R = /算力|矿场|矿池|矿机|矿工|挖矿|质押/;
-    const pool = sym => G2.manipTplsOf('good', t24, false, sym).concat(G2.manipTplsOf('bad', t24, false, sym));
-    check('12h⑥c 能力门控（假消息）：XRP 池里挖矿 / 质押 / 算力类模板 = 0 条',
+    const pool = sym => G2.godNewsTplsOf('good', t24, false, sym).concat(G2.godNewsTplsOf('bad', t24, false, sym));
+    check('12h⑥c 能力门控（消息）：XRP 池里挖矿 / 质押 / 算力类模板 = 0 条',
       pool('XRP').length >= 40 && pool('XRP').every(x => !R.test(x)),
       `${pool('XRP').length} 条 · 命中 ${pool('XRP').filter(x => R.test(x)).length}`);
   }
 
-  /* ⑦ **真实史实新闻也进立场账本** ＋ 假消息不得反向（2026-10-11 用户口径
-     「确认上帝面板中的假消息不和上帝模式中出现的真实史实新闻冲突」）—— 非空洞集成。 */
+  /* ⑦ **真实史实新闻也进立场账本** ＋ 消息不得反向（2026-10-11 用户口径
+     「确认上帝面板中的消息不和上帝模式中出现的真实史实新闻冲突」）—— 非空洞集成。 */
   {
     const A = await import('../src/core/anchors.js');
     const valid = new Set([...ENT.ficPool(0), ...ENT.MACRO_KEYS]);
@@ -7488,11 +7488,11 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
       `${srcNews ? srcNews.title : 'null'} · 账本=${JSON.stringify(sA.newsStance && sA.newsStance.Coinbase)}`);
     /* (e) **非空洞差分**：定位那条把 Coinbase 写死在句子里（无占位符）的模板，从它开始选条 ——
        无账本时它会被原样播出（证明「测试对象存在且可达」）；账本记 Coinbase=−1 后，
-       同一条「利好」假消息被换掉，输出里不再有 Coinbase。 */
+       同一条「利好」消息被换掉，输出里不再有 Coinbase。 */
     const tplCoin = '快讯 ｜ Coinbase 登陆公开证券市场，%S 受关注';
-    /* ⚠️ 下标必须在**与 `godFakeNews` 同一张池**里取（同一个 `sym` + `free`）——
+    /* ⚠️ 下标必须在**与 `godNews` 同一张池**里取（同一个 `sym` + `free`）——
        否则币种/能力过滤会让两边的序号错位，测的就不是那条模板了。 */
-    const poolG = G2.manipTplsOf('good', Date.UTC(2023, 5, 5), false, 'BTC');
+    const poolG = G2.godNewsTplsOf('good', Date.UTC(2023, 5, 5), false, 'BTC');
     const iCoin = poolG.indexOf(tplCoin);
     const fireAtCoin = async (ledger) => {
       const sX = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: tgt });
@@ -7502,14 +7502,14 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
       sX.newsStance = ledger;
       sX.god.newsN = { good: iCoin, bad: 0 };
       sX.god.newsAt = null;
-      const r = engine.godFakeNews(sX, 'BTC', 1);
+      const r = engine.godNews(sX, 'BTC', 1);
       return { ok: r.ok, text: sX.log[0] ? String(sX.log[0].text) : '' };
     };
     const ctlH = await fireAtCoin({});
     const blkH = await fireAtCoin({ Coinbase: { dir: -1, at: tgt } });
     check('12h⑦ 非空洞前置：无账本时那条「写死 Coinbase」的模板真的会播（输出含 Coinbase）',
       iCoin >= 0 && ctlH.ok && ctlH.text.includes('Coinbase'), `i=${iCoin} text=${ctlH.text}`);
-    check('12h⑦ 引擎集成：真实新闻把 Coinbase 记成利空后，同一条「利好」假消息被换掉（不含 Coinbase）',
+    check('12h⑦ 引擎集成：真实新闻把 Coinbase 记成利空后，同一条「利好」消息被换掉（不含 Coinbase）',
       blkH.ok && !blkH.text.includes('Coinbase'), blkH.text);
   }
 }

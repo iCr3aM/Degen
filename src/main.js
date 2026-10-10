@@ -12,7 +12,7 @@ import { anyHeld, createState, heldSyms, posOf, pushLog } from './core/state.js'
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
 import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, installWorld, closeAt, candleAt, volumeAt } from './core/market.js';
 import { FIC_VER, generateWorld } from './core/ficgen.js';
-import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godPinStart, godPinStop, godFakeNews, godEatBook, godTargetPush } from './core/engine.js';
+import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godPinStart, godPinStop, godNews, godEatBook, godTargetPush } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
 import { loadCareers, removeCareer } from './core/careers.js';
@@ -1215,7 +1215,7 @@ function dispatch(node, ev) {
 
   /* ── 上帝终局拦截（2026-10-09 用户拍板）──
      走完全程后本局已「软结束」：时钟停死、账不再变。上帝入口（`god` 连点 / 面板）与全部操盘
-     （跳时间 / 填资金 / 沙盒 / 操盘 / 假消息 / 插针 / 深度旋钮）一律失效 ——
+     （跳时间 / 填资金 / 沙盒 / 操盘 / 消息 / 插针 / 深度旋钮）一律失效 ——
      否则「无法继续」会被跳时间 / 重开后门绕过。仅保留三页浏览、顶栏「继续」与「返回主菜单」。
      ⚠️ 这一闸**只管上帝操作那一批键**（`god* / sb*`）：切页、设置项、`home`、`pause`、`godback`
         都不在此列，照常派发。 */
@@ -1264,7 +1264,7 @@ function dispatch(node, ev) {
     const [dir, pct] = String(d.godtgt).split(':').map(Number);
     return onGodTarget(dir, pct);
   }
-  /* ── 插针 / 假消息 / 强平叠加（2026-10-08 三批拍板③）── 同一处境：只出现在上帝面板里，
+  /* ── 插针 / 消息 / 强平叠加（2026-10-08 三批拍板③）── 同一处境：只出现在上帝面板里，
      以 `s.god` 非空兜底（状态机不靠 DOM）。 */
   if (d.godpin !== undefined) {
     if (!s.god) return;
@@ -1929,13 +1929,13 @@ function onGodPin(node) {
   after();
 }
 
-/* ── 假消息注入（2026-10-08 三批拍板③）── 成功时日志本身就是那条「新闻」（引擎播），
+/* ── 消息注入（2026-10-08 三批拍板③）── 成功时日志本身就是那条「新闻」（引擎播），
    这里只拦失败；花费不另播一条（那条新闻就是这一脚的全部可见后果，LESS IS MORE）。 */
 function onGodNews(node) {
   const dir = Number(node.dataset.godnews);
-  const r = godFakeNews(s, s.sym, dir);
+  const r = godNews(s, s.sym, dir);
   if (!r.ok) {
-    pushLog(s, `假消息失败 · ${r.why}`, 'bad');
+    pushLog(s, `消息失败 · ${r.why}`, 'bad');
     snd.deny();
   } else {
     /* 成功时补一记**播报铃**（2026-10-09 沉浸增强）：引擎那两条假新闻日志的 `kind` 是

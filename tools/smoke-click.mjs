@@ -78,7 +78,7 @@ const STEPS = [
   ['上帝 · 月档', '[data-godmon]', 1],
   ['上帝 · 深度档', '[data-godliq]', 1],
   ['上帝 · 插针', '[data-godpin="1"]'],
-  ['上帝 · 假消息', '[data-godnews="1"]'],
+  ['上帝 · 消息', '[data-godnews="1"]'],
   ['上帝 · 新闻源与事件开关', '[data-godreal]'],
   ['上帝 · 世界预设', '[data-sbpreset]'],
   ['上帝 · 随机种子', '[data-sbroll]'],

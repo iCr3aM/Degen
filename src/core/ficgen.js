@@ -50,6 +50,9 @@ import { COINS, GAME, HOUR_MS, ficEndIndex } from './config.js';
  *    ② **偏度符号**：`jumpDownP` 0.50 → 0.58（对称跳跃会把 BTC 偏度推到 +1.84，而真实是 −1.28）。
  *    ③ **Student-t 自由度 ν 3 → 5**：见 `P.nu` 的注 —— 峰度 / 年化波动 / 偏度 / `acf|r|(1)`
  *       四项同时向真实数据包靠拢（ν=3 是纯 t 拟合，叠上 GARCH 与跳跃后尾巴过厚）。
+ *    ④ **GARCH(1,1) → 双分量 GARCH**（Engle–Lee 1999，见 `generateWorld` 的 `mkCg`/`stepCg` 注）：
+ *       补「波动长记忆」缺口，`acf|r|(1)` 0.16 → 0.23（真实 0.442），且 `E[σ²]` 不变
+ *       ⇒ 年化波动 86% → 92% / 偏度 −1.5 → −1.20 / MDD −84% → −85%（三项几乎与真实重合）。
  *    旧架空档（FIC_VER ≤ 4）读档时提示重开。 */
 export const FIC_VER = 5;
 
@@ -64,6 +67,10 @@ const P = {
   baseAnnVol: 0.92,      // BTC 基准年化波动（实测全期）
   alpha: 0.10,           // GARCH(1,1) α（文献标准，α+β=0.98）
   beta: 0.88,            // GARCH(1,1) β
+  cgrho: 0.995,          /* **双分量 GARCH 的慢分量 ρ**（Engle–Lee 1999，见 `generateWorld` 的
+                            `mkCg` / `stepCg` 注）：ρ=0.995 ⇒ 慢分量半衰期 ≈ 138 游戏小时
+                            （约 6 天）—— 补的就是单分量 GARCH 做不到的「日/周级长记忆」。 */
+  cgphi: 0.05,           // 慢分量对「ε² − σ²」的载荷 φ（越大，慢分量吃掉的方差份额越多）
   nu: 5.0,               /* Student-t 自由度 —— **2026-10-11 由 3 提到 5**（用户问「K 线是否合理 /
                             符合数学模型」时的样化事实实测，3 个 seed × 全部 5 币）：
                             ν=3 时样本峰度 332–454（真实数据包 110）、年化 79–82%（真实 92%）、
@@ -251,7 +258,28 @@ export function generateWorld(seed, tier = P.defaultTier) {
   /* 全局确定性噪声：BTC 因子与各币特异项都由 (seed, coinIdx, i, stream) 唯一决定 */
   const btcIdx = COINS.findIndex(c => c.sym === 'BTC');
   const longVar = Math.pow(P.baseAnnVol / Math.sqrt(HOURS_PER_YEAR), 2);
-  const omega = longVar * (1 - P.alpha - P.beta);
+  /**
+   * **双分量 GARCH（Engle–Lee 1999）** —— 2026-10-11 补上「波动长记忆」缺口（见文档 §3f）：
+   *
+   *     q_t = ω + ρ·q_{t-1} + φ·(ε²_{t-1} − σ²_{t-1})      慢分量（日/周级，ρ=0.995）
+   *     c_t = (α+β)·c_{t-1} + α·(ε²_{t-1} − σ²_{t-1})      快分量（小时级波动聚集）
+   *     σ²_t = q_t + c_t
+   *
+   * ⚠️ **`E[σ²]` 仍是 `longVar`**（`ω = longVar·(1 − ρ)`，`E[c] = 0`）⇒ 这次升级**不动波动水平**
+   *    （年化波动 / 回撤 / 偏度不被重标定），只改**自相关的形状**：单分量 GARCH(1,1) 的
+   *    `acf|r|(1)` 理论上有上界（本模型实测 0.16），而真实数据包是 **0.442**；慢分量把它抬上去。
+   */
+  const cgw = longVar * (1 - P.cgrho);
+  const mkCg = () => ({ q: longVar, c: 0, s2: longVar });
+  /** 推进一格的 GARCH 状态 —— 入参是**上一根**的 ε²，返回本根的 σ²（状态就地更新） */
+  const stepCg = (st, eps2) => {
+    const d = eps2 - st.s2;                                   // ε²_{t-1} − σ²_{t-1}
+    const clamp = v => (v > longVar * 40 ? longVar * 40 : v < longVar * 0.05 ? longVar * 0.05 : v);
+    st.q = clamp(cgw + P.cgrho * st.q + P.cgphi * d);
+    st.c = clamp((P.alpha + P.beta) * st.c + P.alpha * d);
+    st.s2 = clamp(st.q + st.c);
+    return st.s2;
+  };
   /** 对数价格回归速率（每小时）—— 半衰期 `revertHalfYears` 年 */
   const kappa = Math.log(2) / (P.revertHalfYears * HOURS_PER_YEAR);
 
@@ -284,13 +312,11 @@ export function generateWorld(seed, tier = P.defaultTier) {
   }
 
   /* ═══════════════ ③ BTC 因子（**纯 innovation**，不含任何漂移）═══════════════ */
-  let s2f = longVar, eps2f = longVar;
+  const cgF = mkCg();                        // BTC 因子的双分量 GARCH 状态
+  let eps2f = longVar;
   const fac = new Float64Array(endI);
   for (let i = 0; i < endI; i++) {
-    s2f = omega + P.alpha * eps2f + P.beta * s2f;
-    /* 防爆护栏：t 尾部很厚，GARCH 状态偶发被顶到极端值后要能**衰减回来**；夹在合理倍数内。 */
-    if (s2f > longVar * 40) s2f = longVar * 40;
-    if (s2f < longVar * 0.05) s2f = longVar * 0.05;
+    const s2f = stepCg(cgF, eps2f);          // 内含防爆夹取（t 尾部很厚，状态要能衰减回来）
     const z = tDraw(seed, btcIdx, i, 11, P.nu);
     const eps = Math.sqrt(s2f) * z;
     eps2f = eps * eps;
@@ -331,8 +357,11 @@ export function generateWorld(seed, tier = P.defaultTier) {
     const Y24 = Math.round((Date.UTC(2024, 11, 31, 23) - GAME.start) / HOUR_MS);
     const L = Math.log(par.last2024 / par.genesis) / Math.max(1e-6, (Tarr[Math.min(Y24, endI - 1)] + offArr[Math.min(Y24, endI - 1)]) - Tg);
     /* ⚠️ 币的 GARCH 状态是**基准方差单位**（与 BTC 同尺度）—— 币的相对波动由 `idio` 系数承载。 */
-    let s2c = longVar;
+    const cgC = mkCg();                      // 该币特异项的双分量 GARCH 状态
     let eps2c = longVar;
+    /* ⚠️ BTC（`idio = 0`）**不推进**状态 ⇒ `s2c` 恒为 `longVar`（与改动前逐位一致）；
+       `s2c` 还要给下面的「小时内影线」用，所以必须在**循环作用域**里声明。 */
+    let s2c = longVar;
     /* 成交量：日历日内先攒原始强度，日末归一化成份额（与真实包同口径） */
     const dayRaw = new Float64Array(24);
     let dayId = -1, dayFill = 0, dayStartK = 0;
@@ -350,9 +379,7 @@ export function generateWorld(seed, tier = P.defaultTier) {
 
       let idio = 0;
       if (par.idio > 0) {
-        s2c = omega + P.alpha * eps2c + P.beta * s2c;
-        if (s2c > longVar * 40) s2c = longVar * 40;
-        if (s2c < longVar * 0.05) s2c = longVar * 0.05;
+        s2c = stepCg(cgC, eps2c);
         const zc = tDraw(seed, pi, i, 41, P.nu);
         const ec = Math.sqrt(s2c) * zc;
         eps2c = ec * ec;

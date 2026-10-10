@@ -21,7 +21,7 @@ import { ficNewsAt } from './ficnews.js';
 import { entsOfTpl, literalEnts, resolveEnts, putStance, stanceConflict, tplUsable } from './entities.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, LADDER, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS_CD, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfFlowAt, etfNewsAt, etfNewsMeta, exDevOf, instSeedOf, manipTplsOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt, whaleNewsMeta } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, GOD_NEWS_CD, GOD_NEWS_Q, GOD_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfFlowAt, etfNewsAt, etfNewsMeta, exDevOf, instSeedOf, godNewsTplsOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt, whaleNewsMeta } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -5029,9 +5029,9 @@ export function autoNewsSym(s) {
 /** 自动新闻的**间隔区间**（游戏小时，2026-10-11 二次收敛 · 用户拍板「参考**普通模式**的新闻频率」）
  *  ⚠️ 基准（实测）：普通模式玩家实际看到 **74 条 / 12 年 ≈ 6.2 条/年**（50x 下 ≈ 每 28.4 真实秒一条，
  *     见 `ficnews.js` 头注里那段量法）。架空快讯已对齐该密度（60 游戏日一条）。
- *  自动假消息是**玩家主动开启**的额外流（布下的假消息），故取其**同量级**：
+ *  自动消息是**玩家主动开启**的额外流（布下的消息），故取其**同量级**：
  *  区间 = 40~80 游戏日（960~1920h，均值 1440h = 60 日）⇒ 均值 6.1 条/年、50x 下 ≈ 19~38 秒一条。
- *  ⚠️ 于是「架空快讯 ＋ 自动假消息」合计 ≈ **12 条/年 ≈ 普通模式的 2 倍**（开与关两种口径见审计 §12g）。
+ *  ⚠️ 于是「架空快讯 ＋ 自动消息」合计 ≈ **12 条/年 ≈ 普通模式的 2 倍**（开与关两种口径见审计 §12g）。
  *  ⚠️ 旧口径 12~36h（均值 24h ≈ 365 条/年）比普通模式密 60 倍，是用户此前报「太频繁」的主因之一。 */
 const AUTO_NEWS_GAP = [960, 1920];
 
@@ -5041,11 +5041,11 @@ const AUTO_NEWS_GAP = [960, 1920];
  *
  *   · **自动新闻**（`s.god.autoNews`）：0 = 好坏混合 / 1 = 纯利好 / −1 = 纯利空。
  *     到点（`s.god.autoNewsAt`）**按币种权重随机抽一个币**（`autoNewsSym`，见其头注）、
- *     随机取一条**当年代过门控**的模板播报（走 `godFakeNews` 全套：热度脚 ＋ 小额跟风 ＋ 播报），
+ *     随机取一条**当年代过门控**的模板播报（走 `godNews` 全套：热度脚 ＋ 小额跟风 ＋ 播报），
  *     下次时刻 = 本根 ＋ **`AUTO_NEWS_GAP` 随机**（`randFast` 确定性 —— 断点续跑可复现），
- *     天然大于 `MANIP_NEWS_CD`(8h) 冷却。
- *     ⚠️ **时隙互斥**（2026-10-11 用户拍板「假消息不要和世界新闻打架」）：本根若已经有**世界新闻**
- *        （架空快讯 / 史实的锚点 ＋ 结果条 ＋ 巨鲸披露 ＋ ETF 月度），假消息**让路顺延 1 小时**
+ *     天然大于 `GOD_NEWS_CD`(8h) 冷却。
+ *     ⚠️ **时隙互斥**（2026-10-11 用户拍板「消息不要和世界新闻打架」）：本根若已经有**世界新闻**
+ *        （架空快讯 / 史实的锚点 ＋ 结果条 ＋ 巨鲸披露 ＋ ETF 月度），消息**让路顺延 1 小时**
  *        （`worldNewsHit` 由 `advanceOneHour` 算出并传入，不消耗那一次随机间隔）—— 同一根 K 线的
  *        日志条只留给一条新闻，玩家不会看到两条叠在同一行。
  *   · **自动拉盘**（`s.god.autoPump` = ±1）：每根一次组合拳（幌骗→洗售→吃单），
@@ -5083,14 +5083,14 @@ export function godAutoTick(s, worldNewsHit = false) {
      是**合法的「好坏混合」档**，用 `if (g.autoNews && …)` 会把 0 当「关」⇒ 混合档永不触发；
      用类型判断顺带挡住 UI 误传的 `false` / `undefined`（关闭态一律写 `null` 或 `delete`）。 */
   if (typeof g.autoNews === 'number' && (g.autoNewsAt ?? 0) <= s.i) {
-    /* ⚠️ **时隙互斥**（2026-10-11 用户拍板「假消息不要和世界新闻打架」）——
+    /* ⚠️ **时隙互斥**（2026-10-11 用户拍板「消息不要和世界新闻打架」）——
        本根已经有世界新闻（架空快讯 / 史实的锚点 ＋ 结果条 ＋ 巨鲸 ＋ ETF 披露）时，
-       假消息**让路**：只把时刻顺延 1 小时、下一根再判，**不消耗那一次随机间隔**。 */
+       消息**让路**：只把时刻顺延 1 小时、下一根再判，**不消耗那一次随机间隔**。 */
     if (worldNewsHit) { g.autoNewsAt = s.i + 1; return; }
     /* 币种按权重随机抽（2026-10-10）—— 抽到哪个币，新闻就播哪个币（%S 与读数都跟着它）。 */
     const sym = autoNewsSym(s);
     const dir = g.autoNews === 0 ? (randFast(s.seed, hashStr(sym), s.i, 0, 7) > 0.5 ? 1 : -1) : g.autoNews;
-    godFakeNews(s, sym, dir);
+    godNews(s, sym, dir);
     g.autoNewsAt = s.i + AUTO_NEWS_GAP[0]
       + Math.floor(randFast(s.seed, hashStr('autoN'), s.i, 0, 11) * (AUTO_NEWS_GAP[1] - AUTO_NEWS_GAP[0] + 1));
   }
@@ -5197,7 +5197,7 @@ export function godPinStop(s) {
 }
 
 /* ═══════════ 新闻文案 · 数值绑定（2026-10-09 用户拍板「新闻里的数必须符合游戏实际数值」）═══════════
- * 病根：真实新闻的结果条（`anchors.rt`）与假新闻模板（`god.MANIP_NEWS`）里的数字都是**写死的史实**，
+ * 病根：真实新闻的结果条（`anchors.rt`）与假新闻模板（`god.GOD_NEWS`）里的数字都是**写死的史实**，
  * 与游戏内行情脱节 —— 玩家在上帝 / 普通 / 挑战局把某币拉涨 100%，新闻却仍报一个固定值。
  * 修法：模板改用**占位符**，数值一律从**此刻的 `s`** 现算（同一个 `newsVars` 出口，与操盘台读数同源）。
  *
@@ -5291,10 +5291,10 @@ export function fillNews(tpl, vars) {
  * **新闻发射的统一入口**（2026-10-11 新闻真实化）—— `newsVars`（币价/涨幅/热度…）＋
  * `entities.resolveEnts`（真实机构名，按 `timeOf(s)` 门控）合成一份字典后跑 `fillNews`。
  *
- * ⚠️ 两条叙事型管道（架空快讯 / 上帝假消息）都走它，实体口径才唯一。
+ * ⚠️ 两条叙事型管道（架空快讯 / 上帝消息）都走它，实体口径才唯一。
  * ⚠️ `seed` 默认 `s.seed`（上帝局）；架空快讯要传 `s.ficSeed` —— 与 `ficNewsAt` 同一条世界线，
  *    否则「同一条快讯」在两处会抽出不同的机构名。
- * ⚠️ `salt` 供「立场账本」冲突时重抽实体（见 `godFakeNews` / 架空播报分支）。
+ * ⚠️ `salt` 供「立场账本」冲突时重抽实体（见 `godNews` / 架空播报分支）。
  * @param {object} s
  * @param {string} sym
  * @param {string} tpl 模板（可含 `%S/%L…` 与实体占位符 `%X/%Z…`）
@@ -5308,22 +5308,22 @@ export function fillNewsEnts(s, sym, tpl, { salt = 0, seed = s.seed, ctx, free =
 }
 
 /**
- * 操盘台「**假消息**」—— 真实操纵三件套之一（SEC/CFTC 起诉书里的标准动作）。游戏内三件套：
- *   ① 热度一脚（`MANIP_NEWS_RANGE`，比幌骗大 —— 新闻是全市场广播，不是盘口假单）；
- *   ② 一笔小额真实吃单（`MANIP_NEWS_Q × 本时深度`，走 `pushFlow` 全额物理 —— 「信的人
+ * 操盘台「**消息**」—— 真实操纵三件套之一（SEC/CFTC 起诉书里的标准动作）。游戏内三件套：
+ *   ① 热度一脚（`GOD_NEWS_RANGE`，比幌骗大 —— 新闻是全市场广播，不是盘口假单）；
+ *   ② 一笔小额真实吃单（`GOD_NEWS_Q × 本时深度`，走 `pushFlow` 全额物理 —— 「信的人
  *      真的去买」；代价照付，无限资金同吃单先补后扣）；
- *   ③ 日志播报（`news` 金底芯片，与史实新闻同族；模板见 `god.MANIP_NEWS`）。
+ *   ③ 日志播报（`news` 金底芯片，与史实新闻同族；模板见 `god.GOD_NEWS`）。
  * 确定性：**幅度**走 `randFast` 通道 `'news'`（同一存档同一小时同一条 —— 重放不漂移）。
  * ⚠️ **选条**改为逐方向**轮换计数**（`s.god.newsN`，2026-10-08 用户报「会重复显示新闻」）：
  *    每按一次取下一条、取满一整轮才回第一条 ⇒ 连按 16 次不重样；计数是会话级、不落盘。
- *    2026-10-09 起选条前先过**年代门控**（`manipTplsOf`）：早期年代只从「当时可能存在」的
- *    模板里轮换 —— 2013 年不会播「现货 ETF 净流入」这类穿帮快讯（`god.MANIP_NEWS` 头注）。
- * ⚠️ **冷却**（`MANIP_NEWS_CD`）：距上次成功注入不足 `MANIP_NEWS_CD` 小时就拒绝 ——
+ *    2026-10-09 起选条前先过**年代门控**（`godNewsTplsOf`）：早期年代只从「当时可能存在」的
+ *    模板里轮换 —— 2013 年不会播「现货 ETF 净流入」这类穿帮快讯（`god.GOD_NEWS` 头注）。
+ * ⚠️ **冷却**（`GOD_NEWS_CD`）：距上次成功注入不足 `GOD_NEWS_CD` 小时就拒绝 ——
  *    公告连发既不真实也会刷屏（面板两枚按钮由 `render.js` 现算置灰）。
  * @param {number} dir +1 利好 / −1 利空
  * @returns {{ok:true, cost:number}|{ok:false, why:string}}
  */
-export function godFakeNews(s, sym, dir) {
+export function godNews(s, sym, dir) {
   if (!s.god) return { ok: false, why: '非上帝模式' };
   if (dir !== 1 && dir !== -1) return { ok: false, why: '方向非法' };
   /* 上线闸（2026-10-10 用户报「XRP 还没上线却出现 XRP 的新闻」）：手动 / 自动新闻都必须
@@ -5333,23 +5333,23 @@ export function godFakeNews(s, sym, dir) {
   /* 冷却闸：`newsAt` 未写过 ⇒ `−Infinity` ⇒ 恒可发（旧局 / 首次点击逐位不变）。 */
   const last = Number.isFinite(s.god.newsAt) ? s.god.newsAt : -Infinity;
   const cd = s.i - last;
-  if (cd < MANIP_NEWS_CD) return { ok: false, why: `冷却中（还需 ${MANIP_NEWS_CD - cd} 小时）` };
+  if (cd < GOD_NEWS_CD) return { ok: false, why: `冷却中（还需 ${GOD_NEWS_CD - cd} 小时）` };
   const r1 = randFast(s.seed, hashStr(sym), s.i, 0, hashStr('news'));
   const key = dir > 0 ? 'good' : 'bad';
   const time = timeOf(s);
-  /* 年代门控 ＋ 实体门控**都在 `manipTplsOf` 里**（2026-10-11 起）—— 选条前按此刻过滤：
+  /* 年代门控 ＋ 实体门控**都在 `godNewsTplsOf` 里**（2026-10-11 起）—— 选条前按此刻过滤：
      2013 年不会出现「现货 ETF 净流入」这类穿帮快讯，也不会出现「实体池还空着」（如 2013-06 的
      `%T`/`%O`/`%P`）的半截句。轮换计数在过滤后子序列上取模（跨年代边界跳条可接受）。
-     实体解析一律在**选条之后**（`fillNewsEnts`），`manipTplsOf` 仍只返回 `string[]`。 */
+     实体解析一律在**选条之后**（`fillNewsEnts`），`godNewsTplsOf` 仍只返回 `string[]`。 */
   /* 架空自由池（2026-10-11 用户拍板「改为按槽分档」）：架空局里公司 / 国家 / 实体**不必与
      现实一致**（苹果公司、英伟达、各国…都能出现，2013 年即可），但**槽仍要对**（公司只进
      公司类槽、国家只进国家槽）；史实局（含上帝·史实）严格照旧。 */
   const free = s.world === 'fic';
   /* 币种门控（2026-10-11 用户报「币种穿帮」）：BTC 减半 / ETH 共识切换 / XRP 案 / BTC 现货 ETF
-     这类**币专属史实**只在本币的假消息里出现（否则会播成「【XRP 快讯】XRP 完成共识切换」）。 */
-  const tpls = manipTplsOf(key, time, free, sym);
-  const nudge = (MANIP_NEWS_RANGE.min + r1 * (MANIP_NEWS_RANGE.max - MANIP_NEWS_RANGE.min)) * dir;
-  const notional = Math.max(MANIP_MIN, MANIP_NEWS_Q * hourLiqBase(s, sym, s.i));
+     这类**币专属史实**只在本币的消息里出现（否则会播成「【XRP 快讯】XRP 完成共识切换」）。 */
+  const tpls = godNewsTplsOf(key, time, free, sym);
+  const nudge = (GOD_NEWS_RANGE.min + r1 * (GOD_NEWS_RANGE.max - GOD_NEWS_RANGE.min)) * dir;
+  const notional = Math.max(MANIP_MIN, GOD_NEWS_Q * hourLiqBase(s, sym, s.i));
   const p = manipPreview(s, sym, dir, notional);
   if (!debit(s, p.cost)) {
     if (!(s.god.inf && s.god.lastFill > 0)) return { ok: false, why: '资金不足（跟风单要付手续费＋冲击成本）' };
@@ -5797,12 +5797,12 @@ export function advanceOneHour(s) {
      史实局（含上帝·史实）恒开、架空局恒关。 */
   /* ⚠️ **世界新闻命中标记**（2026-10-11）：本根是否已播过一条「世界新闻」——
      架空快讯 / 史实的锚点 ＋ 结果条 ＋ 巨鲸披露 ＋ ETF 月度。传给 `godAutoTick` 做**时隙互斥**
-     （假消息不与世界新闻抢同一根 K 线的日志条）。 */
+     （消息不与世界新闻抢同一根 K 线的日志条）。 */
   let worldNewsHit = false;
   if (!eventsOff(s)) {
-    /* **史实新闻 = 立场账本的另一半**（2026-10-11 用户口径「假消息不和真实史实新闻冲突」）——
+    /* **史实新闻 = 立场账本的另一半**（2026-10-11 用户口径「消息不和真实史实新闻冲突」）——
        四条史实管道（锚点事件 / 锚点结果 / 巨鲸披露 / ETF 月报）都在播报这一刻把「讲的是谁、
-       对它是好是坏」记进 `s.newsStance`，随后的上帝假消息（`godFakeNews`）据此避让反向。 */
+       对它是好是坏」记进 `s.newsStance`，随后的上帝消息（`godNews`）据此避让反向。 */
     const news = newsStartAt(s.i);
     if (news) {
       pushLog(s, news.title, 'news'); worldNewsHit = true;
@@ -5870,7 +5870,7 @@ export function advanceOneHour(s) {
       if (t === h.from) {
         pushLog(s, `${ex.name} 停机维护 ｜ 只能平仓，不能开仓`, 'bad', 'mkt');
         /* 停机是**点名该交易所**的利空事实 ⇒ 记进立场账本（2026-10-11「检查所有可以有
-           真实名称的条目」）：随后的假消息不得反着说这家所（恢复交易不记 —— 中性）。 */
+           真实名称的条目」）：随后的消息不得反着说这家所（恢复交易不记 —— 中性）。 */
         putStance(s, ex.name, -1, null);
       }
       if (t === h.to) pushLog(s, `${ex.name} 恢复交易`, 'ok');
@@ -5951,7 +5951,7 @@ export function advanceOneHour(s) {
   godEatTick(s);
 
   /* 自动化伺服（2026-10-09 拍板：自动新闻三开关 ＋ 自动造量 ＋ 自动拉盘）—— 同一时序纪律，
-     互斥裁决在引擎单点（见 `godAutoTick` 头注）；`worldNewsHit` 让假消息避开本根的世界新闻。 */
+     互斥裁决在引擎单点（见 `godAutoTick` 头注）；`worldNewsHit` 让消息避开本根的世界新闻。 */
   godAutoTick(s, worldNewsHit);
 
   /* NPC 情绪 / 踩踏级联（§73.5）：基础行情（这一根的 K 线）算完之后跑一次 ——
@@ -6084,7 +6084,7 @@ export function rewindTo(s, to) {
     s.god.eat = null;   // 自动扫单（2026-10-09）同样作废 —— 跳转后的世界要玩家重新拍板方向
     s.god.autoNewsAt = null;   // 自动新闻的「下次时刻」是跳转前读数 ⇒ 重排（开关本身保留）
     s.god.sbBias = null;
-    /* 假消息冷却与轮换计数（2026-10-08）也是「跳转前世界」的读数 ⇒ 一并作废，
+    /* 消息冷却与轮换计数（2026-10-08）也是「跳转前世界」的读数 ⇒ 一并作废，
        否则跳时间后冷却可能落在未来（按钮永远灰着）。 */
     s.god.newsAt = null;
     s.god.newsN = null;

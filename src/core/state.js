@@ -511,7 +511,7 @@ export function createState(scenId = DEFAULT_SCENARIO) {
 
     /**
      * **交易所收入累计**（2026-10-09 审计「资金回流」§二）—— 玩家侧费用（开/平仓手续费 ＋ 转账费 ＋
-     * 借贷利息 ＋ OTC 溢价 ＋ 上帝吃单/洗售/假消息手续费）先累计进这本账，每小时由
+     * 借贷利息 ＋ OTC 溢价 ＋ 上帝吃单/洗售/消息手续费）先累计进这本账，每小时由
      * `engine.exRevSweep` 分流（10% → `s.fund`、5% → 护盘储备、85% = 运营利润不落账）。
      * 见 `config.EXREV` 头注（现实锚 ＋ 排除项 ＋ 无玩家自洽）。
      * ⚠️ 老存档无此键 ⇒ `exCharge` 懒建（不升 `STATE_VERSION`）；`rewindTo` 回退时清零
