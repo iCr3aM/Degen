@@ -6935,6 +6935,27 @@ section('11c · 数据层物化 · 架空卡开放（运行时 ＋ 静态）');
     /export function installWorld\(/.test(fs.readFileSync(path.join(ROOT, 'src/core/market.js'), 'utf8')));
 }
 
+section('11d · 时间轴：架空玩到 2033 收官 / 史实仍 2024 收官（运行时）');
+{
+  const s = createState('classic');
+  s.world = 'fic';
+  s.ficSeed = 555;
+  s.endI = C.endIndexOf('classic', 'fic');
+  god.enableGod(s);
+  s.i = s.endI - 3;
+  for (let k = 0; k < 5; k++) engine.advanceOneHour(s);
+  check('11d① 架空局推进到终点：收官（god.ended 立起 ＋ 时钟停住 ＋ i 夹在末根）',
+    s.god.ended === true && s.paused === true && s.i === s.endI - 1, `i=${s.i} endI=${s.endI}`);
+  check('11d② 末根日期 = 2033-12-31',
+    new Date(C.GAME.start + (s.endI - 1) * C.HOUR_MS).toISOString().startsWith('2033-12-31'));
+
+  const sh = createState('classic');
+  sh.i = sh.endI - 3;
+  for (let k = 0; k < 5; k++) engine.advanceOneHour(sh);
+  check('11d③ 史实局仍 2024-12-31 收官（endI=105192，i 夹在末根）',
+    sh.endI === 105192 && sh.i === sh.endI - 1, `endI=${sh.endI} i=${sh.i}`);
+}
+
 /* ═══════════════════ 总账 ═══════════════════ */
 section('总账');
 console.log(`通过 ${pass} · 失败 ${fail}`);
