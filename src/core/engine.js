@@ -15,6 +15,7 @@
 import { GAME, HOUR_MS, COINS, EXCHANGES, EXREV, LIQ, MARGIN, MIN_NOTIONAL, minNotionalAt, notionalMaxLevAt, openNeedAt, OTC, SUPPLY_SHARE, FLOAT, ADV, USDT_LIVE, BAND, coinOf, exchangeOf, hasFinancingAt, hasLeverageKindAt, isChallenge, maxLeverageAt, feeRateOf, marginDailyRateAt, railAt, railFeeOf, cashCurAt, loanAmountAt, otcPremiumOf, otcMinAt, otcUnlockAt, usdtPriceAt, haltedAt } from './config.js';
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCandleAt, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
+import { ficNewsAt } from './ficnews.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, LADDER, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
 import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS_CD, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, manipTplsOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
@@ -901,7 +902,7 @@ export function totalUnrealized(s) {
  */
 export function equity(s) {
   let sum = cashMtmOf(s);
-  if (s.transfer) sum += s.transfer.amount * (s.transfer.cur === 'usdt' ? usdtPriceAt(timeOf(s)) : 1);
+  if (s.transfer) sum += s.transfer.amount * (s.transfer.cur === 'usdt' ? usdtPriceAt(timeOf(s), s.world) : 1);
   for (const sym of heldSyms(s)) {
     const pos = s.positions[sym];
     const p = exMarkPrice(s, sym, pos.ex);
@@ -925,7 +926,7 @@ export function equity(s) {
  */
 export function cashMtmOf(s, ex = s.ex) {
   const b = bookOf(s, ex);
-  return b.usd + b.usdt * usdtPriceAt(timeOf(s));
+  return b.usd + b.usdt * usdtPriceAt(timeOf(s), s.world);
 }
 
 /**
@@ -975,8 +976,8 @@ export function sampleEquity(s) {
  * @param {number} i 已经自增后的当前小时序号（`s.i`）
  */
 export function markUsdt(s, i) {
-  const p0 = usdtPriceAt(GAME.start + (i - 1) * HOUR_MS);
-  const p1 = usdtPriceAt(GAME.start + i * HOUR_MS);
+  const p0 = usdtPriceAt(GAME.start + (i - 1) * HOUR_MS, s.world);
+  const p1 = usdtPriceAt(GAME.start + i * HOUR_MS, s.world);
   if (p0 === p1) return;                        // 常态（$1.000 平段）⇒ 一分钱都不动，零开销
   const qty = usdtHeldOf(s);
   if (!(qty > 0)) return;
@@ -5386,7 +5387,7 @@ export function buyUsdt(s, frac = 1) {
   const usd = b.usd * Math.max(0.0001, Math.min(1, frac));
   if (!(usd > 0)) return { ok: false, why: '当前所没有美元可兑换' };
 
-  const price = usdtPriceAt(t);        // 1 USDT = $price
+  const price = usdtPriceAt(t, s.world);        // 1 USDT = $price
   const got = usd / price;             // 花掉的美元买到了多少 U
   b.usd -= usd;
   b.usdt += got;
@@ -5721,6 +5722,13 @@ export function advanceOneHour(s) {
     if (wnews) pushLog(s, wnews, 'news', 'mkt');
     const enews = etfNewsAt(s.i);
     if (enews) pushLog(s, enews, 'news', 'mkt');
+  } else {
+    /* ⚠️ **架空世界**（2026-10-10 · P3）：与上面 4 条史实新闻**互斥**（`eventsOff` 判世界属性）。
+       快讯由 `(ficSeed, i)` 现算（纯函数，读档重算一致），词库是组合式的（越丰富越好）；
+       模板只含事实性占位符（%S 币 / %L 现价 / %A 成交额 / %R 资金费率）—— **不注入涨跌幅**。
+       与史实新闻一样，它只是个「填充态」，同一小时里更具体的事件（停机 / 归零）会压在上面。 */
+    const fn = ficNewsAt(s.ficSeed, s.i);
+    if (fn) pushLog(s, fillNews(fn.tpl, newsVars(s, fn.sym)), 'news');
   }
 
   for (const ex of EXCHANGES) {

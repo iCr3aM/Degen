@@ -1107,8 +1107,13 @@ export const USDT_ANCHORS = [
  *
  * ⚠️ 与「升序取最后一个 `from <= t`」那套**阶梯**不同：这里必须**插值**，
  *    否则危机就成了一条永远踩不到的水平线（单日冲击的锚点对只在插值下才成形）。
+ * ⚠️ **架空世界**（`world === 'fic'`，2026-10-10 · P2）：那张锚点表是**史实**，架空局一概不用，
+ *    改走 `ficUsdtPriceAt`（一条平缓的均值回归曲线）—— 见 `ficUsdtPriceAt`。
+ * @param {number} t 毫秒时刻
+ * @param {'hist'|'fic'} [world] 世界属性（缺省 `'hist'`）
  */
-export function usdtPriceAt(t) {
+export function usdtPriceAt(t, world = 'hist') {
+  if (world === 'fic') return ficUsdtPriceAt(t);
   const a = USDT_ANCHORS;
   if (t <= a[0][0]) return a[0][1];
   for (let i = 1; i < a.length; i++) {
@@ -1119,6 +1124,19 @@ export function usdtPriceAt(t) {
     }
   }
   return a[a.length - 1][1];
+}
+
+/**
+ * **架空世界**的 USDT 价（2026-10-10 · 架空模式 P3）—— 史实那 27 条锚点（Wells Fargo / Bitfinex
+ * 信任危机 / 519 / UST 脱锚 / FTX…）全是**现实事件**，架空世界里它们根本没发生过。
+ *
+ * 口径：**一条平缓的均值回归曲线** —— 常态在 1.000 附近 ±0.6% 缓慢摆动，永无单日尖峰。
+ * ⚠️ 它是 `t` 的**确定性纯函数**（不含 seed）—— 汇率是世界常数，与行情世界线无关。
+ * ⚠️ 与史实锚点表**双向**（可折价也可溢价）这条保留：只是幅度收窄到量级正确（真实常态 $0.995–1.005）。
+ */
+export function ficUsdtPriceAt(t) {
+  const d = (t - GAME.start) / 86400e3;          // 自开局的**天**数
+  return 1 + 0.006 * Math.sin(2 * Math.PI * d / 430) + 0.003 * Math.sin(2 * Math.PI * d / 97 + 1.3);
 }
 
 /** 数据包目录（public 下的静态资源，打包时原样拷贝到 dist/data/） */

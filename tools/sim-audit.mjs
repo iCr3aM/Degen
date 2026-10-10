@@ -6756,6 +6756,95 @@ section('10e · 重开确认：已有存档的槽必须先武装再点');
   check('10e③ onScenario 仍走 hasSave(challenge) 武装', /function onScenario\([\s\S]*?hasSave\('challenge'\)[\s\S]*?armMenu\(node\)/.test(mainSrc));
 }
 
+/* ═══════════════ 12 · 架空新闻 ＋ 消费端退场（2026-10-10 · P3）═══════════════ */
+section('12a · ficnews：确定性 · 节奏 · 丰富度 · 不注入涨跌幅');
+{
+  const FN = await import('../src/core/ficnews.js');
+
+  /* 确定性：同 seed 逐条一致；不同 seed 序列不同 */
+  const a = FN.ficNewsSample(12345, 0, 4000).map(x => x.tpl);
+  const b = FN.ficNewsSample(12345, 0, 4000).map(x => x.tpl);
+  const c = FN.ficNewsSample(99999, 0, 4000).map(x => x.tpl);
+  check('12a① 同 seed 快讯序列逐条一致', a.length === b.length && a.every((v, i) => v === b[i]));
+  const overlap = a.filter(t => c.includes(t)).length;
+  check('12a② 不同 seed 序列重叠率 < 35%（每局都不一样）', a.length > 50 && overlap / a.length < 0.35,
+    `overlap=${overlap}/${a.length}`);
+
+  /* 节奏：4000 根里应出现数十条（1/20 ≈ 200），且不致刷屏 */
+  check('12a③ 节奏合理（4000 根 → 80–360 条）', a.length >= 80 && a.length <= 360, `${a.length} 条`);
+
+  /* 丰富度：样本内去重率高（组合词库的功劳） */
+  const uniq = new Set(a).size;
+  check('12a④ 丰富度：样本内去重率 > 70%', uniq / a.length > 0.7, `${uniq}/${a.length}`);
+
+  /* 红线：永不含涨跌幅占位符（%C / %c），全部含 %S，无绝对水位禁词 */
+  const BAN = /首破|创新高|创纪录|历史新高|历史新低|腰斩|归零|破纪录|翻倍|关口|%C|%c/;
+  const bad = a.filter(t => BAN.test(t) || !t.includes('%S'));
+  check('12a⑤ 红线：无涨跌幅占位符（%C/%c）/ 无水位禁词 / 全部含 %S', bad.length === 0, bad.slice(0, 3).join(' | '));
+
+  /* 词库规模 */
+  check('12a⑥ 组合空间 ≥ 20000（越丰富越好）', FN.FICNEWS_COMBOS >= 20000, String(FN.FICNEWS_COMBOS));
+
+  /* 只抽已上市的币 */
+  const early = FN.ficNewsSample(12345, 100, 2000);
+  const C13 = await import('../src/core/config.js');
+  const notListed = early.filter(x => C13.coinOf(x.sym).unlock > C13.GAME.start + 100 * C13.HOUR_MS);
+  check('12a⑦ 只抽此刻已上线的币（2013 初不会出现未来币）', notListed.length === 0, notListed.map(x => x.sym).join(','));
+}
+
+section('12b · 消费端退场：拥堵锚点 / USDT 锚点（架空局）');
+{
+  /* 拥堵：史实锚点窗口（2017-05-20 起 10 天）在架空局**不加成** —— hist 应显著高于 fic。 */
+  const sH = await mk({ i: idx(at(2017, 4, 25)) });
+  const sF = await mk({ i: idx(at(2017, 4, 25)) });
+  sF.world = 'fic';
+  const cH = (await import('../src/core/congestion.js')).congestionOf(sH);
+  const cF = (await import('../src/core/congestion.js')).congestionOf(sF);
+  check('12b① 拥堵史实锚点在架空局退场（hist 高于 fic）', cH > cF + 20, `hist=${cH.toFixed(1)} / fic=${cF.toFixed(1)}`);
+
+  /* USDT：史实危机锚点（2018-10-15 = 0.880）在架空局退场 —— fic 恒在 1.000 附近。 */
+  const tCrisis = at(2018, 9, 15);
+  const pH = C.usdtPriceAt(tCrisis, 'hist');
+  const pF = C.usdtPriceAt(tCrisis, 'fic');
+  check('12b② USDT 史实锚点在架空局退场（hist 崩到 0.88 / fic 平缓）',
+    pH < 0.95 && Math.abs(pF - 1) < 0.02, `hist=${pH.toFixed(3)} / fic=${pF.toFixed(3)}`);
+  check('12b③ 缺省 world = hist（史实锚点照旧）', C.usdtPriceAt(tCrisis) === pH);
+
+  /* 静态：三处 world 门 + 引擎架空分支 */
+  const congSrc = fs.readFileSync(path.join(ROOT, 'src/core/congestion.js'), 'utf8');
+  const cfgSrc = fs.readFileSync(path.join(ROOT, 'src/core/config.js'), 'utf8');
+  const engSrc = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('12b④ 拥堵锚点按世界属性门控', /s\.world === 'fic' \? 0 : anchorAddAt\(t\)/.test(congSrc));
+  check('12b⑤ usdtPriceAt 世界感知 ＋ fic 平滑曲线', /world === 'fic'\) return ficUsdtPriceAt\(t\)/.test(cfgSrc)
+    && /export function ficUsdtPriceAt\(/.test(cfgSrc));
+  check('12b⑥ 引擎消费端全部传 s.world', (engSrc.match(/usdtPriceAt\(.*?s\.world\)/g) || []).length >= 4,
+    String((engSrc.match(/usdtPriceAt\(.*?s\.world\)/g) || []).length));
+  check('12b⑦ 引擎架空新闻分支（ficNewsAt + fillNews）',
+    /const fn = ficNewsAt\(s\.ficSeed, s\.i\);/.test(engSrc) && /fillNews\(fn\.tpl, newsVars\(s, fn\.sym\)\)/.test(engSrc));
+}
+
+section('12c · 架空局内推进 → 快讯入日志（运行时）');
+{
+  const s = await mk({ i: 100 });
+  s.world = 'fic';
+  s.ficSeed = 24680;
+  let hits = 0, sample = '';
+  const seen = new Set();
+  for (let k = 0; k < 800; k++) {
+    engine.advanceOneHour(s);
+    for (const e of s.log) {
+      const txt = String(e.text);
+      if (e.tag === 'news' && txt.includes('快讯') && !seen.has(txt)) {
+        seen.add(txt); hits++; if (!sample) sample = txt;
+      }
+    }
+  }
+  check('12c① 架空局推进出现架空快讯（tag=news）', hits >= 5, `${hits} 条`);
+  check('12c② 快讯文案已填充真值、无残留占位符 / 无换行',
+    !!sample && sample.includes('快讯') && !/%[A-Za-z]/.test(sample) && !sample.includes('\n'), sample);
+  check('12c③ 史实新闻与架空快讯互斥（架空局 eventsOff 为真）', engine.eventsOff(s) === true);
+}
+
 /* ═══════════════ 11 · 架空世界线：生成器 · 数据层物化 · 2033 终点（2026-10-10 · P2）═══════════════
    ⚠️ 放在**全文件最末尾**：11c 会把合成世界线灌进 `market` 的全局缓存（`installWorld`），
       之后任何读行情的小节都会读到合成数据 —— 所以必须最后跑。 */

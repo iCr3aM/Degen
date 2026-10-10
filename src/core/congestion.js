@@ -118,11 +118,15 @@ export function decayPulse(s) {
 
 /* ───────────────── 拥堵指数 ───────────────── */
 
-/** 当前拥堵指数 = clamp(年代基础值 ＋ 锚点加成 ＋ 玩家脉冲, 0, 100) */
+/** 当前拥堵指数 = clamp(年代基础值 ＋ 锚点加成 ＋ 玩家脉冲, 0, 100)
+ *  ⚠️ **架空世界**（`s.world === 'fic'`，2026-10-10 · P3）：② 那条史实锚点窗口（2017-05 / 2017-12 /
+ *     2021-04…）是**现实事件**，架空局一概不加 —— 只留 ① 年代基础值 ＋ ③ 玩家脉冲（spec §6）。
+ *     年代基础值 `YEAR_BASE` 本就是合成模型（非史实数据），故保留。 */
 export function congestionOf(s) {
   const t = GAME.start + s.i * HOUR_MS;
   const y = new Date(t).getUTCFullYear();
-  return clamp(baseOfYear(y) + anchorAddAt(t) + pulseOf(s), 0, 100);
+  const anchor = s.world === 'fic' ? 0 : anchorAddAt(t);
+  return clamp(baseOfYear(y) + anchor + pulseOf(s), 0, 100);
 }
 
 /**

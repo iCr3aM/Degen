@@ -1373,7 +1373,7 @@ export function update(refs, s, view) {
     /* U 那一格的副行：**脱锚/溢价时把汇率写出来**（缺口 2 · 2026-10-08）—— 权益现在按市值重估
        （`engine.cashMtmOf`），U 一折价总资产就跟着缩，不写出汇率玩家只会觉得「数字自己少了」。
        常态（|p − 1| ≤ 0.1%）不写，保持那一行的干净（LESS IS MORE）。 */
-    const uP = usdtPriceAt(now);
+    const uP = usdtPriceAt(now, s.world);
     setText(refs.asUsdtSub, Math.abs(uP - 1) > 0.001 ? `${share(usdt)} ｜ 1 U = $${uP.toFixed(3)}` : share(usdt));
 
     /* 总资产（B6-c · §7.12 ④⑤）：全屏**唯一的主数值**（18px）＋ 换值闪一下。
@@ -1425,7 +1425,7 @@ export function update(refs, s, view) {
     const usdtLive = now >= USDT_LIVE;
     refs.uCard.hidden = !usdtLive;
     if (usdtLive) {
-      setText(refs.uPrice, `1 USDT = $${usdtPriceAt(now).toFixed(3)}`);
+      setText(refs.uPrice, `1 USDT = $${usdtPriceAt(now, s.world).toFixed(3)}`);
       /* 买 U 这一排**不吃暂停闸门、也不吃下单一小时锁**（2026-10-04 用户拍板）：
          它是**纯换汇** —— `engine.buyUsdt` 按 `usdtPriceAt(now)` 把当前所的美元换成 USDT，
          **不写 `s.lockI`、无市场冲击**（价格是时间的纯函数）⇒ 两道闸门对它都无防作弊意义。
