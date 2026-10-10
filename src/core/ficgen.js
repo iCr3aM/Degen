@@ -32,11 +32,14 @@
 import { COINS, GAME, HOUR_MS, ficEndIndex } from './config.js';
 
 /** 生成器版本号 —— **改参数必须 +1**（见文件头）
- *  v2（2026-10-10 · 用户复盘后调参）：① 中位世界线抬到**史实量级**（BTC 2024 中位 ≈ $9 万）；
- *  ② 回撤收浅（BTC 全期中位最大回撤 95% → 目标 ~85%）。改法：`bullDrift` 1.3→1.73、
- *  `bearDrift` −1.0→−0.55（牛更强、熊更浅）、`regimeVolBear` 1.35→1.15（熊不额外放大波动）、
- *  `jumpDownP` 0.52→0.50（跳跃上下更均衡）。旧架空档（FIC_VER=1）读档时提示重开。 */
-export const FIC_VER = 2;
+ *  v2（2026-10-10）：中位世界线抬到史实量级、回撤收浅（`bullDrift`/`bearDrift`/饱和项）。
+ *  v3（2026-10-11 · 用户复盘「山寨回撤太深、低位抬到约中位一半」）：
+ *    ① 长期成长由**随机累积**改为**确定性潜力线** `T(i)` ＋ **有界牛熊周期偏移** `off(i)`
+ *       （各世界差在路径、不差在终点）⇒ 2024 的 p5 由「中位的 3%」抬到「约中位的一半」；
+ *    ② 逐币 `volRatio`/`beta` 改用**近年代（2021–2024）**实测（全期值与 `volScale` 年代项重复计价，
+ *       把山寨回撤推到 −99%）⇒ 山寨回撤明显收浅。
+ *    旧架空档（FIC_VER ≤ 2）读档时提示重开。 */
+export const FIC_VER = 3;
 
 /* 终点 `ficEndIndex()` 与 `FIC_END` 的唯一真源在 `config.js`（2026-10-10 · 架空 P2）——
    这里只**透传**，免得两处 2034-01-01 走岔。 */
@@ -55,31 +58,46 @@ const P = {
   jumpDownP: 0.50,       // 跳跃向下的比例（上下更均衡 —— v2 调参，原 0.52）
   regimeVolBull: 0.85,   // 牛市波动乘子
   regimeVolBear: 1.0,    // 熊市波动乘子（v2：原 1.35 → 1.15 → 1.0，收两档让回撤变浅）
-  bullDrift: 1.85,       // 牛市年化对数漂移（乘 gs 与 sat；v2：原 1.3 —— 中位世界线抬到史实量级）
-  bearDrift: -0.55,      // 熊市年化对数漂移（乘 gs 与 sat；v2：原 −1.0）
   bullMeanYears: 2.2,    // 牛市期望逗留
-  bearMeanYears: 0.75,   // 熊市期望逗留（v2：原 0.9 —— 熊更短，回撤收浅）
+  bearMeanYears: 0.75,   // 熊市期望逗留（熊更短，回撤收浅）
   regimeMinYears: 0.2,   // 体制最短逗留
-  /* **期望收益饱和**（2026-10-10 · v2 调参）：期望收益随价格**递减** —— 市场越成熟、市值越大，
-     再翻一倍越难（「收益随规模递减」是横截面上的稳健经验事实）。形式 = `1/(1+(P/Psat)^k)`：
-     早期 P≪Psat ⇒ sat≈1（不影响 2013 起步段），价格逼近 Psat 后漂移快速收敛 ⇒ **软上限**。
-     它同时解决两个工程问题：① 21 年复利把 BTC 推到七位数美元、② 撞上 Int32 编码天花板（≈$21.5M）。 */
-  satPrice: 250000,      // 饱和价位（美元）
-  satExp: 2.0,           // 饱和陡度（v2 试算后定：指数调高 ⇒ 高位漂移收得更快，顶不再失控）
-  revertHalfYears: 0.75, // 对数价格向「市场趋势线」回归的半衰期（防高波动山寨长期漂到 0）
+  /* ── v3（2026-10-11 · 用户复盘：「山寨回撤太深」「低位抬到约中位一半」）────────────
+     把「长期成长」从**随机累积**改成**确定性潜力线** `T(i)`（所有世界共用一条），
+     牛熊改成**有界的周期偏移**（围绕潜力线上下摆动）。于是各世界差在「路径」
+     （哪年牛、哪年熊、插针分布、波动聚集），**不差在终点** ⇒ 低位被抬起来、
+     深回撤也被收浅；同时 `T(i)` 与 `off(i)` 都是 `i` 的确定性函数，纯函数性不变。
+     ⚠️ 旧参数 `bullDrift` / `bearDrift` 由此退役（它们的职责一分为二：`targetDrift` 管终点、
+     `bullOff`/`bearOff` 管周期）。 */
+  targetDrift: 1.12,     // 潜力线年化对数增速（乘 `growthScale(y)` 与 `sat`；v3 按「2024 中位 ≈ $93K」定标）
+  bullOff: 0.35,         // 牛市周期偏移（对数）—— 牛市中价格高于潜力线
+  bearOff: -0.25,        // 熊市周期偏移（对数）—— 熊浅，回撤因此收浅
+  offSmoothDays: 45,     // 周期偏移的 EMA 平滑窗口（天）—— 避免牛熊切换处出现台阶
+  /* **潜力线饱和**（v2 引入）：成长随价格递减 —— 市场越成熟、市值越大越难翻倍。
+     形式 `1/(1+(P/Psat)^k)`，早期 P≪Psat ⇒ sat≈1（不影响 2013 起步段），逼近 Psat 后收敛 ⇒ 软上限。 */
+  satPrice: 400000,      // 饱和价位（美元）
+  satExp: 2.0,           // 饱和陡度
+  /* 对数价格向**潜力线**回归的速率（OU）—— 它决定「路径偏离的幅度」：
+     半衰期越短 ⇒ 价格越贴潜力线 ⇒ 分布越窄（低位抬高、回撤收浅）。
+     v3：0.75 → 0.50 年（配合有界周期偏移，把 2024 的 p5 抬到约中位的一半）。 */
+  revertHalfYears: 0.50,
 };
 
-/* ── 逐币参数 ────────────────────────────────────────────────────────
- * `volRatio` = 该币年化波动 ÷ BTC（实测）；`beta` = 对 BTC 因子回归载荷（实测）；
- * `idio` = 特异波动系数，由 (volRatio² − β²)^0.5 反解 —— 保证合成后**总波动**等于实测；
- * `genesis` = 该币上线那根的第一个价（量级锚，写死常量，运行时不读数据包）；
- * `scale` = 物化编码的整数缩放（10 的幂，与真实包同口径）。 */
+/* ── 逐币参数（v3：波动/β 用**近年代 2021–2024**，长期水平用**真实首末价**，见 calib-fic.mjs）────
+ * ① `volRatio`/`beta`/`idio` 取近年代实测（全期值与 `volScale(y)` 年代项重复计价，会把山寨回撤推到 −99%）：
+ *    实测 2021–2024 年化波动 BTC 64% / DOGE 147% / XRP 106% / ETH 80% / SOL 126%；
+ *    β：ETH 1.07 / XRP 1.00 / DOGE 1.17 / SOL 1.28；`idio = √(volRatio² − β²)`。
+ * ② `genesis`/`last2024` 是数据包里的**真实首末收盘**（`public/data/index.json` 的 `first`/`last`）——
+ *    潜力线据此**定标**：每个币上线价锚在真实首价、2024-12-31 锚在真实末价（中位世界 ≈ 史实量级），
+ *    两端之间的**形状**由市场潜力线 `T(i)` 与各币的长期成长载荷 `L` 决定（L 在运行时反解）。
+ *    ⚠️ 长期水平**不能**沿用小时 β（那是短周期联动）：真实数据里山寨自上线起的对数涨幅**高于** BTC 同期
+ *       （ETH 1.21× / XRP 1.16× / DOGE 1.08× / SOL 2.01×），故 L 单独反解，与 `beta` 各管一段。
+ * ③ `scale` = 物化编码的整数缩放（10 的幂，与真实包同口径）。 */
 const COIN_PARAMS = {
-  BTC:  { volRatio: 1.00,  beta: 1.00, idio: 0.00, genesis: 13.0,    scale: 1e2 },
-  ETH:  { volRatio: 2.04,  beta: 0.81, idio: 1.868, genesis: 2.80,   scale: 1e2 },
-  XRP:  { volRatio: 4.95,  beta: 0.83, idio: 4.880, genesis: 0.0058, scale: 1e4 },
-  DOGE: { volRatio: 2.47,  beta: 1.00, idio: 2.260, genesis: 0.0019, scale: 1e6 },
-  SOL:  { volRatio: 1.435, beta: 1.28, idio: 0.650, genesis: 3.00,   scale: 1e2 },
+  BTC:  { volRatio: 1.00, beta: 1.00, idio: 0.000, genesis: 12.20,    last2024: 93576,   scale: 1e2 },
+  ETH:  { volRatio: 1.26, beta: 1.07, idio: 0.669, genesis: 3.00,     last2024: 3337.78, scale: 1e2 },
+  XRP:  { volRatio: 1.66, beta: 1.00, idio: 1.319, genesis: 0.0053754, last2024: 2.0836, scale: 1e4 },
+  DOGE: { volRatio: 2.31, beta: 1.17, idio: 1.991, genesis: 0.00188943, last2024: 0.316, scale: 1e6 },
+  SOL:  { volRatio: 1.98, beta: 1.28, idio: 1.510, genesis: 2.9515,   last2024: 189.31,  scale: 1e2 },
 };
 
 /* 日流动性年代曲线（BTC 美元/天，实测中位；2025 起为平滑外推 —— 架空世界的合理延展） */
@@ -193,42 +211,56 @@ export function generateWorld(seed) {
   /** 对数价格回归速率（每小时）—— 半衰期 `revertHalfYears` 年 */
   const kappa = Math.log(2) / (P.revertHalfYears * HOURS_PER_YEAR);
 
-  /* BTC 因子逐小时递推（其余币依赖它，故先生成 BTC，其余币在第二遍用它的因子） */
+  /* ═══════════════ ① 世界潜力线 T(i)（确定性 · 所有世界共用）═══════════════ */
+
+  /** 对数潜力线：从幼稚价起步，按 `targetDrift × growthScale(y) × sat` 逐年收敛（见 `P.satPrice` 注） */
+  const Tarr = new Float64Array(endI);
+  {
+    let T = Math.log(COIN_PARAMS.BTC.genesis);
+    for (let i = 0; i < endI; i++) {
+      const sat = 1 / (1 + Math.pow(Math.exp(T) / P.satPrice, P.satExp));
+      T += P.targetDrift * growthScale(yearOf(i)) / HOURS_PER_YEAR * sat;
+      Tarr[i] = T;
+    }
+  }
+
+  /* ═══════════════ ② 牛熊周期偏移 off(i)（有界 · 时序由种子定）═══════════════
+   * 牛熊不再是「长期水平差」（那会把世界的终点拉开），而是**围绕潜力线的上下摆动**：
+   * 牛市段 +`bullOff`、熊市段 +`bearOff`（负），并在段的边界做 EMA 平滑（避免台阶）。
+   * 起点归零 ⇒ 每个世界都从 $13 那一根开盘。 */
+  const offArr = new Float64Array(endI);
+  {
+    const a = 1 - Math.exp(-1 / (P.offSmoothDays * 24));
+    const raw0 = regimeArr[0] === 0 ? P.bullOff : P.bearOff;
+    let s = raw0;
+    for (let i = 0; i < endI; i++) {
+      s += ((regimeArr[i] === 0 ? P.bullOff : P.bearOff) - s) * a;
+      offArr[i] = s - raw0;
+    }
+  }
+
+  /* ═══════════════ ③ BTC 因子（**纯 innovation**，不含任何漂移）═══════════════ */
   let s2f = longVar, eps2f = longVar;
-  const factor = new Float64Array(endI);   // 每小时的 BTC 因子（含体制漂移）
-  const trend = new Float64Array(endI);    // 市场「趋势线」的累计对数漂移（各币回归的靶心）
-  const muHr = new Float64Array(endI);     // 逐小时**已饱和**的市场漂移（各币共用同一份）
-  let cum = 0;
-  let btcPx = COIN_PARAMS.BTC.genesis;     // 跑一条隐式 BTC 价，供饱和项用
+  const fac = new Float64Array(endI);
   for (let i = 0; i < endI; i++) {
     s2f = omega + P.alpha * eps2f + P.beta * s2f;
-    /* 防爆护栏：t(3) 尾部极厚，GARCH 状态偶发被顶到极端值后要能**衰减回来**；夹在合理倍数内，
-       不改变正常时段的统计（只在 40× 基准方差以上才生效）。 */
+    /* 防爆护栏：t(3) 尾部极厚，GARCH 状态偶发被顶到极端值后要能**衰减回来**；夹在合理倍数内。 */
     if (s2f > longVar * 40) s2f = longVar * 40;
     if (s2f < longVar * 0.05) s2f = longVar * 0.05;
     const z = tDraw(seed, btcIdx, i, 11, P.nu);
     const eps = Math.sqrt(s2f) * z;
     eps2f = eps * eps;
     const reg = regimeArr[i];
-    const y = yearOf(i);
-    const volM = (reg === 0 ? P.regimeVolBull : P.regimeVolBear) * volScale(y);
+    const volM = (reg === 0 ? P.regimeVolBull : P.regimeVolBear) * volScale(yearOf(i));
     let jump = 0;
     if (rnd(seed, btcIdx, i, 23) < P.jumpP) {
       const down = rnd(seed, btcIdx, i, 29) < P.jumpDownP;
       const amp = -Math.log(Math.max(1e-9, rnd(seed, btcIdx, i, 31))) * P.jumpMean;
       jump = (down ? -1 : 1) * amp;
     }
-    /* 期望收益**饱和**（市场成熟 / 市值越大越难翻倍）——软上限，见 `P.satPrice` 注。 */
-    const sat = 1 / (1 + Math.pow(Math.max(1e-9, btcPx) / P.satPrice, P.satExp));
-    const mu = (reg === 0 ? P.bullDrift : P.bearDrift) * growthScale(y) / HOURS_PER_YEAR * sat;
-    muHr[i] = mu;
     /* 单根 ±60% 上限（现实里最极端的插针也在其内）—— 纯护栏，正常时段不触发 */
-    const rr0 = mu + volM * eps + jump;
-    const rr = rr0 > 0.6 ? 0.6 : rr0 < -0.6 ? -0.6 : rr0;
-    factor[i] = rr;
-    btcPx *= Math.exp(rr);
-    cum += mu;
-    trend[i] = cum;
+    const rr = volM * eps + jump;
+    fac[i] = rr > 0.6 ? 0.6 : rr < -0.6 ? -0.6 : rr;
   }
 
   /* 逐币生成 OHLC ＋ 成交量 */
@@ -248,9 +280,13 @@ export function generateWorld(seed) {
     const ints = new Int32Array(count * 4);
     const vol = new Uint8Array(count);
 
-    let price = par.genesis;
-    /* ⚠️ 币的 GARCH 状态是**基准方差单位**（与 BTC 同尺度）—— 币的相对波动由 `idio` 系数承载，
-       不能把它也乘进这里（否则 `idio²×s2c` 会得到「基准 × volRatio²」的两重放大）。 */
+    let lnP = Math.log(par.genesis);
+    const Tg = Tarr[g0] + offArr[g0];        // 该币**上线那一刻**的潜力线（周期偏移在此归零）
+    /* **长期成长载荷 L**：把市场潜力线的增量按比例搬到本币，使得「2024-12-31 的靶心 = 真实末价」。
+       两端锚定 ⇒ 中位世界在上市那年与 2024 年末都落在真实量级上，中间是市场潜力线的形状。 */
+    const Y24 = Math.round((Date.UTC(2024, 11, 31, 23) - GAME.start) / HOUR_MS);
+    const L = Math.log(par.last2024 / par.genesis) / Math.max(1e-6, (Tarr[Math.min(Y24, endI - 1)] + offArr[Math.min(Y24, endI - 1)]) - Tg);
+    /* ⚠️ 币的 GARCH 状态是**基准方差单位**（与 BTC 同尺度）—— 币的相对波动由 `idio` 系数承载。 */
     let s2c = longVar;
     let eps2c = longVar;
     /* 成交量：日历日内先攒原始强度，日末归一化成份额（与真实包同口径） */
@@ -261,13 +297,12 @@ export function generateWorld(seed) {
 
     for (let k = 0; k < count; k++) {
       const i = g0 + k;
-      const f = factor[i];                    // BTC 因子（含体制漂移）
       const reg = regimeArr[i];
-      const y = yearOf(i);
-      const volM = (reg === 0 ? P.regimeVolBull : P.regimeVolBear) * volScale(y);
-      const muA = muHr[i];                 // 与 BTC 共用的**已饱和**市场漂移（见 P.satPrice 注）
+      const volM = (reg === 0 ? P.regimeVolBull : P.regimeVolBear) * volScale(yearOf(i));
 
-      /* 该币收益 = β·(因子 − 漂移) + 自身漂移 + 特异项 + 自身跳跃 */
+      /* 该币的**潜力靶心**：上线价 × L·(市场潜力线 ＋ 周期偏移) 的增量（L 见上方注释） */
+      const target = Math.log(par.genesis) + L * ((Tarr[i] + offArr[i]) - Tg);
+
       let idio = 0;
       if (par.idio > 0) {
         s2c = omega + P.alpha * eps2c + P.beta * s2c;
@@ -284,22 +319,27 @@ export function generateWorld(seed) {
         const amp = -Math.log(Math.max(1e-9, rnd(seed, pi, i, 61))) * P.jumpMean * par.volRatio;
         jumpC = (down ? -1 : 1) * amp;
       }
-      const rcRaw = par.beta * (f - muA) + muA + idio + jumpC
-        /* 对数价格向**市场趋势线**回归（OU）—— 高波动山寨（XRP 实测 455% 年化）若无此约束，
-           21 年的对数随机游走会漂到 e⁻²⁵（价格归零）。回归靶心 = 上线价 × 市场趋势累积。 */
-        + kappa * (Math.log(par.genesis) + par.beta * (trend[i] - trend[g0]) - Math.log(price));
+      /* 该币收益 = **潜力线的前向增量（feed-forward）** ＋ **向靶心的 OU 纠偏** ＋ β·市场 innovation
+         ＋ 自身特异项 ＋ 自身跳跃。
+         ⚠️ 前向增量不能省：只靠 OU 追一条**在增长**的靶心会留下系统性滞后（实测 −30%，
+            `E[dev] = −(d靶心/dt)/κ`）—— 加上前向项后价格零滞后地贴着潜力线走。 */
+      const j = i + 1 < endI ? i + 1 : i;
+      const dTgt = L * ((Tarr[j] + offArr[j]) - (Tarr[i] + offArr[i]));
+      const rcRaw = dTgt + kappa * (target - lnP) + par.beta * fac[i] + idio + jumpC;
       const rc = rcRaw > 0.7 ? 0.7 : rcRaw < -0.7 ? -0.7 : rcRaw;
 
       /* 隐藏强度：AR(1)，与「本小时的绝对收益」同向（量价同源） */
       logAct = 0.82 * logAct + 0.30 * norm(seed, pi, i, 71);
       const act = Math.min(6, Math.exp(logAct));
 
-      const o = price;
-      /* 价格地板 = 2 个编码量子 —— 保证 `round(price × scale) ≥ 2`，编码永远非零
-         （山寨极端下跌路线上曾出现「价格低于量子 ⇒ 编码成 0 ⇒ 收盘归零」）。 */
+      const o = Math.exp(lnP);
+      const lnNext = lnP + rc;
+      /* 价格地板 = 2 个编码量子（保证编码非零）／天花板 = 1.8e9 ÷ scale（保证 Int32 不溢出）。
+         ⚠️ 天花板是**编码护栏**，不是价格模型的一部分 —— 只在极端世界线的尾部生效。 */
       const floor = 2 / par.scale;
-      let c = o * Math.exp(rc);
-      if (c < floor) c = floor;
+      const capLog = Math.log(1.8e9 / par.scale);
+      const lnClamped = Math.max(Math.log(floor), Math.min(capLog, lnNext));
+      const c = Math.exp(lnClamped);
       /* 小时内影线：由 σ·act 抽一段外扩路径（含插针带宽） */
       const sigH = Math.sqrt(s2c) * volM * act;
       const wu = sigH * Math.abs(norm(seed, pi, i, 83)) * 0.9;
@@ -307,10 +347,7 @@ export function generateWorld(seed) {
       const up = Math.max(o, c), dn = Math.min(o, c);
       const h = up * Math.exp(wu);
       const l = dn * Math.exp(-wd);
-      /* 价格地板 = 2 个编码量子（保证编码非零）／天花板 = 1.8e9 ÷ scale（保证 Int32 不溢出）。
-         ⚠️ 天花板是**编码护栏**，不是价格模型的一部分 —— 只在极端世界线的**尾部**（>99 分位、
-         21 年复利 + 3σ 偏离）生效，中位与 p95 之内都远够不着。 */
-      price = c < floor ? floor : (c > 1.8e9 / par.scale ? 1.8e9 / par.scale : c);
+      lnP = lnClamped;
 
       const sc = par.scale;
       const base = k * 4;

@@ -202,6 +202,70 @@ console.log('\n── ④ 山寨对 BTC 因子的 β 载荷 与 残差年化波�
   }
 }
 
+console.log('\n── ④b 近年代（2021–2024）年化波动 与 对 BTC 的 β（供 v3 调参）──');
+{
+  const btc = coins.BTC, rb = rets.BTC;
+  const g0 = Math.round((btc.start - mf.start) / HOUR_MS);
+  const btcByH = new Float64Array(g0 + rb.length).fill(NaN);
+  for (let i = 0; i < rb.length; i++) btcByH[g0 + i] = rb[i];
+  const tLo = Date.UTC(2021, 0, 1), tHi = Date.UTC(2025, 0, 1);
+  const win = (startMs, r) => {
+    const a = Math.max(1, Math.round((tLo - startMs) / HOUR_MS));
+    const b = Math.min(r.length, Math.round((tHi - startMs) / HOUR_MS));
+    return a < b ? r.slice(a, b) : null;
+  };
+  const bseg = win(btc.start, rb);
+  const bvol = std(Array.from(bseg)) * Math.sqrt(HOURS_PER_YEAR);
+  console.log(`  BTC 近年代年化波动 = ${(bvol * 100).toFixed(0)}%`);
+  console.log('sym    annVol%   ratio(vs BTC)  beta(2021-24)  idio=√(ratio²−β²)');
+  for (const sym of SYMS) {
+    const c = coins[sym], r = rets[sym];
+    const seg = win(c.start, r);
+    if (!seg) { console.log(`  ${sym.padEnd(5)} (no data)`); continue; }
+    const vol = std(Array.from(seg)) * Math.sqrt(HOURS_PER_YEAR);
+    const ratio = vol / bvol;
+    let beta = 1, idio = 0;
+    if (sym !== 'BTC') {
+      const a0 = Math.round((c.start - mf.start) / HOUR_MS);
+      const X = [], Y = [];
+      for (let i = 1; i < r.length; i++) {
+        const t = c.start + i * HOUR_MS;
+        if (t < tLo || t >= tHi) continue;
+        const bf = btcByH[a0 + i];
+        if (Number.isFinite(bf)) { X.push(bf); Y.push(r[i]); }
+      }
+      const mx = mean(X), my = mean(Y);
+      let cov = 0, vx = 0;
+      for (let i = 0; i < X.length; i++) { cov += (X[i] - mx) * (Y[i] - my); vx += (X[i] - mx) * (X[i] - mx); }
+      beta = cov / vx;
+      idio = Math.sqrt(Math.max(0, ratio * ratio - beta * beta));
+    }
+    console.log(`  ${sym.padEnd(5)} ${(vol * 100).toFixed(0).padStart(6)}   ${ratio.toFixed(2).padStart(9)}     ${beta.toFixed(2).padStart(8)}      ${idio.toFixed(3)}`);
+  }
+}
+
+console.log('\n── ④c 长期成长载荷 growthLoad（各币上线→2024-12 的真实涨幅 ÷ BTC 同期涨幅）──');
+{
+  /* 用途：**长期水平**不能沿用小时 β（那是短周期联动），要单独取「上线至今的涨幅比」。
+     BTC 归一化到 1；山寨普遍 <1（长期跑输 BTC），SOL 例外。 */
+  const btc = coins.BTC, rb = rets.BTC;
+  const b0 = Math.round((btc.start - mf.start) / HOUR_MS);
+  const btcAt = idx => {                       // idx = 全局小时序号
+    const k = idx - b0;
+    return (k >= 0 && k < btc.closes.length) ? btc.closes[k] : NaN;
+  };
+  const g = mf.start;                         // 清单起点 = 游戏起点（2013-01-01）
+  console.log('sym    first→last 真实涨幅   同期 BTC 涨幅   growthLoad');
+  for (const sym of SYMS) {
+    const c = coins[sym];
+    const gS = c.start, gE = c.start + (c.count - 1) * HOUR_MS;
+    const lc = Math.log(c.closes[c.count - 1] / c.closes[0]);
+    const lb = Math.log(btcAt(Math.round((gE - g) / HOUR_MS)) / btcAt(Math.round((gS - g) / HOUR_MS)));
+    const load = sym === 'BTC' ? 1 : lc / lb;
+    console.log(`  ${sym.padEnd(5)} ×${(Math.exp(lc)).toExponential(2).padStart(9)}  ×${(Math.exp(lb)).toExponential(2).padStart(9)}   ${load.toFixed(2)}`);
+  }
+}
+
 console.log('\n── ⑤ 日流动性年代增长曲线（BTC 每日 中位/分位，美元/天）──');
 {
   const meta = mf.liq;
