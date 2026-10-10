@@ -56,6 +56,7 @@
   --accent: #4da3ff;
   --accent-soft: rgba(77, 163, 255, .16);   /* 选中态淡底：`.on` 一律走这个变量，不再各写各的 rgba */
   --gold: #ffc44d;
+  --world: #a98bff;       /* 架空世界新闻的芯片色（2026-10-10 · P3）：与史实金底 `--gold` 刻意分开一枚紫相 */
   /* ── v20（2026-10-01）玩家自己成交额的量柱色 ─────────────────────
      量柱本体是「涨跌色 × .30」，玩家自己那一段改成**不透明的专色**（见 `chart.js`）：
      杠杆一枚蓝（与主色同相，读作「你自己的」）、合约一枚金（与开仓价那根虚线同相，
@@ -67,6 +68,7 @@
      视觉**逐位不变**，只是把「金底 / 绿底 / 红底 / 蓝底上写什么颜色的字」收进一处。
      ⚠️ 它们一律是**深色**（压在亮填充上才读得清），不要拿去当普通文字色。 */
   --on-gold: #1a1405;
+  --on-world: #150a2e;
   --on-up: #04140f;
   --on-down: #1a0508;
   --on-accent: #04121f;
@@ -665,9 +667,11 @@ b, strong { font-weight: 600; }
 .lg-row.alert { border-left-color: var(--down); background: rgba(255, 91, 106, .09); }
 
 /* 类别芯片（2026-10-03）：一枚 **2 字短标签 ＋ 一个色相**，回答「这是哪一类事件」；
-   正文的颜色仍由 `kind` 给，回答「这一笔是好是坏」。六类的分工见 `state.LOG_TAGS`。
+   正文的颜色仍由 `kind` 给，回答「这一笔是好是坏」。七类的分工见 `state.LOG_TAGS`。
    ⚠️ `sys` 刻意**不加底色**（纯暗字）—— 闸门提示是最轻的一类，它不该跟「资金费」「爆仓」
-      抢注意力；其余五类一律实底，缩到 11px 也分得开。 */
+      抢注意力；其余六类一律实底，缩到 11px 也分得开。
+   ⚠️ `fic`（架空世界新闻）与 `news`（史实新闻）**刻意两枚色相**：金 vs 紫 —— 架空局里两者
+      可能同屏，玩家要能一眼分出「这条是世界在播的」还是「真历史的那条」。 */
 .log-tag {
   flex: none;
   font-style: normal;
@@ -681,6 +685,7 @@ b, strong { font-weight: 600; }
 .log-tag.liq   { background: var(--down);  color: var(--on-down); }
 .log-tag.mkt   { background: var(--down);  color: var(--on-down); }
 .log-tag.news  { background: var(--gold);  color: var(--on-gold); }
+.log-tag.fic   { background: var(--world); color: var(--on-world); }
 
 /* 时间那一格（2026-09-29 需求 1）：与浮层 `.log-row u` 同款 —— **恒为次要灰**，
    不随正文的 kind 染色（容器上的老做法会把爆仓那条的时间一起染红）。 */
@@ -698,8 +703,10 @@ b, strong { font-weight: 600; }
   white-space: nowrap;
 }
 /* 新闻那条：只把**正文**提亮（`.lg-row.news > span` (0,2,1) 盖过 `.mut` (0,1,0)）——
-   与旧 `.logline.news > span` 同一先例，时间不动。 */
+   与旧 `.logline.news > span` 同一先例，时间不动。
+   ⚠️ 架空世界新闻（`fic`）同一条待遇（同一手，见 `.log-tag.fic` 那段）。 */
 .lg-row.news > span { color: var(--fg); }
+.lg-row.fic > span { color: var(--fg); }
 
 /* ══════════════ 操作区 ══════════════
    日志条 ↔ 操作区那道细分隔线（2026-10-03 用户拍板）：这一道把「读信息」与「点按钮」分开，

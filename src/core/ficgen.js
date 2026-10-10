@@ -31,8 +31,12 @@
 
 import { COINS, GAME, HOUR_MS, ficEndIndex } from './config.js';
 
-/** 生成器版本号 —— **改参数必须 +1**（见文件头） */
-export const FIC_VER = 1;
+/** 生成器版本号 —— **改参数必须 +1**（见文件头）
+ *  v2（2026-10-10 · 用户复盘后调参）：① 中位世界线抬到**史实量级**（BTC 2024 中位 ≈ $9 万）；
+ *  ② 回撤收浅（BTC 全期中位最大回撤 95% → 目标 ~85%）。改法：`bullDrift` 1.3→1.73、
+ *  `bearDrift` −1.0→−0.55（牛更强、熊更浅）、`regimeVolBear` 1.35→1.15（熊不额外放大波动）、
+ *  `jumpDownP` 0.52→0.50（跳跃上下更均衡）。旧架空档（FIC_VER=1）读档时提示重开。 */
+export const FIC_VER = 2;
 
 /* 终点 `ficEndIndex()` 与 `FIC_END` 的唯一真源在 `config.js`（2026-10-10 · 架空 P2）——
    这里只**透传**，免得两处 2034-01-01 走岔。 */
@@ -48,14 +52,20 @@ const P = {
   nu: 3.0,               // Student-t 自由度（文献 ν≈3–4，实测尾部更厚 ⇒ 取下沿）
   jumpP: 0.0027,         // 每小时跳跃概率（实测 BTC 插针频率 0.274%）
   jumpMean: 0.0585,      // 跳跃幅度均值（实测 5.85%）
-  jumpDownP: 0.52,       // 跳跃向下的比例（崩盘略多于拉升）
+  jumpDownP: 0.50,       // 跳跃向下的比例（上下更均衡 —— v2 调参，原 0.52）
   regimeVolBull: 0.85,   // 牛市波动乘子
-  regimeVolBear: 1.35,   // 熊市波动乘子（熊更躁）
-  bullDrift: 1.3,        // 牛市年化对数漂移（乘 gs；牛市更黏、更长）
-  bearDrift: -1.0,       // 熊市年化对数漂移（乘 gs；熊更短、更急）
+  regimeVolBear: 1.0,    // 熊市波动乘子（v2：原 1.35 → 1.15 → 1.0，收两档让回撤变浅）
+  bullDrift: 1.85,       // 牛市年化对数漂移（乘 gs 与 sat；v2：原 1.3 —— 中位世界线抬到史实量级）
+  bearDrift: -0.55,      // 熊市年化对数漂移（乘 gs 与 sat；v2：原 −1.0）
   bullMeanYears: 2.2,    // 牛市期望逗留
-  bearMeanYears: 0.9,    // 熊市期望逗留（熊市短而急 —— 牛熊时间占比 ≈ 71% : 29%）
+  bearMeanYears: 0.75,   // 熊市期望逗留（v2：原 0.9 —— 熊更短，回撤收浅）
   regimeMinYears: 0.2,   // 体制最短逗留
+  /* **期望收益饱和**（2026-10-10 · v2 调参）：期望收益随价格**递减** —— 市场越成熟、市值越大，
+     再翻一倍越难（「收益随规模递减」是横截面上的稳健经验事实）。形式 = `1/(1+(P/Psat)^k)`：
+     早期 P≪Psat ⇒ sat≈1（不影响 2013 起步段），价格逼近 Psat 后漂移快速收敛 ⇒ **软上限**。
+     它同时解决两个工程问题：① 21 年复利把 BTC 推到七位数美元、② 撞上 Int32 编码天花板（≈$21.5M）。 */
+  satPrice: 250000,      // 饱和价位（美元）
+  satExp: 2.0,           // 饱和陡度（v2 试算后定：指数调高 ⇒ 高位漂移收得更快，顶不再失控）
   revertHalfYears: 0.75, // 对数价格向「市场趋势线」回归的半衰期（防高波动山寨长期漂到 0）
 };
 
@@ -187,7 +197,9 @@ export function generateWorld(seed) {
   let s2f = longVar, eps2f = longVar;
   const factor = new Float64Array(endI);   // 每小时的 BTC 因子（含体制漂移）
   const trend = new Float64Array(endI);    // 市场「趋势线」的累计对数漂移（各币回归的靶心）
+  const muHr = new Float64Array(endI);     // 逐小时**已饱和**的市场漂移（各币共用同一份）
   let cum = 0;
+  let btcPx = COIN_PARAMS.BTC.genesis;     // 跑一条隐式 BTC 价，供饱和项用
   for (let i = 0; i < endI; i++) {
     s2f = omega + P.alpha * eps2f + P.beta * s2f;
     /* 防爆护栏：t(3) 尾部极厚，GARCH 状态偶发被顶到极端值后要能**衰减回来**；夹在合理倍数内，
@@ -199,7 +211,6 @@ export function generateWorld(seed) {
     eps2f = eps * eps;
     const reg = regimeArr[i];
     const y = yearOf(i);
-    const muA = (reg === 0 ? P.bullDrift : P.bearDrift) * growthScale(y);
     const volM = (reg === 0 ? P.regimeVolBull : P.regimeVolBear) * volScale(y);
     let jump = 0;
     if (rnd(seed, btcIdx, i, 23) < P.jumpP) {
@@ -207,10 +218,16 @@ export function generateWorld(seed) {
       const amp = -Math.log(Math.max(1e-9, rnd(seed, btcIdx, i, 31))) * P.jumpMean;
       jump = (down ? -1 : 1) * amp;
     }
+    /* 期望收益**饱和**（市场成熟 / 市值越大越难翻倍）——软上限，见 `P.satPrice` 注。 */
+    const sat = 1 / (1 + Math.pow(Math.max(1e-9, btcPx) / P.satPrice, P.satExp));
+    const mu = (reg === 0 ? P.bullDrift : P.bearDrift) * growthScale(y) / HOURS_PER_YEAR * sat;
+    muHr[i] = mu;
     /* 单根 ±60% 上限（现实里最极端的插针也在其内）—— 纯护栏，正常时段不触发 */
-    const rr = muA / HOURS_PER_YEAR + volM * eps + jump;
-    factor[i] = rr > 0.6 ? 0.6 : rr < -0.6 ? -0.6 : rr;
-    cum += muA / HOURS_PER_YEAR;
+    const rr0 = mu + volM * eps + jump;
+    const rr = rr0 > 0.6 ? 0.6 : rr0 < -0.6 ? -0.6 : rr0;
+    factor[i] = rr;
+    btcPx *= Math.exp(rr);
+    cum += mu;
     trend[i] = cum;
   }
 
@@ -248,7 +265,7 @@ export function generateWorld(seed) {
       const reg = regimeArr[i];
       const y = yearOf(i);
       const volM = (reg === 0 ? P.regimeVolBull : P.regimeVolBear) * volScale(y);
-      const muA = (reg === 0 ? P.bullDrift : P.bearDrift) * growthScale(y) / HOURS_PER_YEAR;
+      const muA = muHr[i];                 // 与 BTC 共用的**已饱和**市场漂移（见 P.satPrice 注）
 
       /* 该币收益 = β·(因子 − 漂移) + 自身漂移 + 特异项 + 自身跳跃 */
       let idio = 0;
@@ -290,7 +307,10 @@ export function generateWorld(seed) {
       const up = Math.max(o, c), dn = Math.min(o, c);
       const h = up * Math.exp(wu);
       const l = dn * Math.exp(-wd);
-      price = c;
+      /* 价格地板 = 2 个编码量子（保证编码非零）／天花板 = 1.8e9 ÷ scale（保证 Int32 不溢出）。
+         ⚠️ 天花板是**编码护栏**，不是价格模型的一部分 —— 只在极端世界线的**尾部**（>99 分位、
+         21 年复利 + 3σ 偏离）生效，中位与 p95 之内都远够不着。 */
+      price = c < floor ? floor : (c > 1.8e9 / par.scale ? 1.8e9 / par.scale : c);
 
       const sc = par.scale;
       const base = k * 4;

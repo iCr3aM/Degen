@@ -5725,10 +5725,11 @@ export function advanceOneHour(s) {
   } else {
     /* ⚠️ **架空世界**（2026-10-10 · P3）：与上面 4 条史实新闻**互斥**（`eventsOff` 判世界属性）。
        快讯由 `(ficSeed, i)` 现算（纯函数，读档重算一致），词库是组合式的（越丰富越好）；
-       模板只含事实性占位符（%S 币 / %L 现价 / %A 成交额 / %R 资金费率）—— **不注入涨跌幅**。
+       模板只含事实性占位符（%S 币 / %L 现价 / %A 成交额 / %R 资金费率 / %H 热度）—— **不注入涨跌幅**。
+       芯片用 `fic`（紫底「世界」，与史实 `news` 金底分开），两者同屏一眼可辨。
        与史实新闻一样，它只是个「填充态」，同一小时里更具体的事件（停机 / 归零）会压在上面。 */
     const fn = ficNewsAt(s.ficSeed, s.i);
-    if (fn) pushLog(s, fillNews(fn.tpl, newsVars(s, fn.sym)), 'news');
+    if (fn) pushLog(s, fillNews(fn.tpl, newsVars(s, fn.sym)), 'news', 'fic');
   }
 
   for (const ex of EXCHANGES) {

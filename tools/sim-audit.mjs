@@ -6834,15 +6834,42 @@ section('12c · 架空局内推进 → 快讯入日志（运行时）');
     engine.advanceOneHour(s);
     for (const e of s.log) {
       const txt = String(e.text);
-      if (e.tag === 'news' && txt.includes('快讯') && !seen.has(txt)) {
+      if (e.tag === 'fic' && txt.includes('快讯') && !seen.has(txt)) {
         seen.add(txt); hits++; if (!sample) sample = txt;
       }
     }
   }
-  check('12c① 架空局推进出现架空快讯（tag=news）', hits >= 5, `${hits} 条`);
+  check('12c① 架空局推进出现架空快讯（tag=fic · 紫底世界芯片）', hits >= 5, `${hits} 条`);
   check('12c② 快讯文案已填充真值、无残留占位符 / 无换行',
     !!sample && sample.includes('快讯') && !/%[A-Za-z]/.test(sample) && !sample.includes('\n'), sample);
   check('12c③ 史实新闻与架空快讯互斥（架空局 eventsOff 为真）', engine.eventsOff(s) === true);
+}
+
+section('12d · 新闻分工：架空带数值 · 假消息只做叙事 · 芯片两枚色相');
+{
+  const G = await import('../src/core/god.js');
+  const all = [...G.MANIP_NEWS.good, ...G.MANIP_NEWS.bad];
+  const tpls = all.map(e => (typeof e === 'string' ? e : e.t));
+  const num = tpls.filter(t => /%[LCcARH]/.test(t));
+  check('12d① 假消息只做叙事：全部模板零数值占位符', num.length === 0, num.slice(0, 3).join(' | '));
+  check('12d② 假消息模板数仍为 86 ＋ 86', G.MANIP_NEWS.good.length === 86 && G.MANIP_NEWS.bad.length === 86,
+    `${G.MANIP_NEWS.good.length}/${G.MANIP_NEWS.bad.length}`);
+  check('12d③ 假消息每条仍以「快讯 ｜ 」开头且含 %S',
+    tpls.every(t => t.startsWith('快讯 ｜ ') && t.includes('%S')));
+
+  const FN = await import('../src/core/ficnews.js');
+  const sample = FN.ficNewsSample(4242, 0, 4000);
+  const withNum = sample.filter(x => /%[LARH]/.test(x.tpl)).length;
+  check('12d④ 架空新闻有数值展示（≥40% 带 %L/%A/%R/%H）', sample.length > 50 && withNum / sample.length >= 0.4,
+    `${(withNum / Math.max(1, sample.length) * 100).toFixed(0)}%`);
+  check('12d⑤ 架空新闻仍不含涨跌幅（%C / %c —— 项目红线）', !sample.some(x => /%[Cc]/.test(x.tpl)));
+
+  const S = await import('../src/core/state.js');
+  const css = fs.readFileSync(path.join(ROOT, 'src/ui/style.css'), 'utf8');
+  const engFic = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('12d⑥ 架空新闻芯片色：LOG_TAGS.fic ＋ CSS `.log-tag.fic` ＋ 引擎播报传 fic',
+    S.LOG_TAGS.fic === '世界' && /\.log-tag\.fic\s*\{/.test(css) && css.includes('--world:')
+    && /pushLog\(s, fillNews\(fn\.tpl, newsVars\(s, fn\.sym\)\), 'news', 'fic'\)/.test(engFic));
 }
 
 /* ═══════════════ 11 · 架空世界线：生成器 · 数据层物化 · 2033 终点（2026-10-10 · P2）═══════════════
