@@ -192,6 +192,75 @@ for (const e of ENTITIES) (BY_KIND[e.kind] || (BY_KIND[e.kind] = [])).push(e);
 /** 某 kind 的成员总数（与时间无关；`FICNEWS_COMBOS` 估算组合空间用） */
 export const countOf = kind => (BY_KIND[kind] || []).length;
 
+/* ══════════════════ 架空自由池（2026-10-11 · 用户拍板） ══════════════════
+
+   用户口径：「公司、国家、实体也不需要和现实的一样 —— 我们是架空世界（可以出现苹果公司、
+   英伟达公司等等）」。⇒ **架空局**（`s.world === 'fic'`，见 `save.worldOf`）不走上面那张
+   真实注册表的时间门／能力域，改用**自由池**：任何实体可搭任何动作（架空里「苹果公司上线
+   永续合约」是合理的，而**史实世界**里它仍是错的 —— 那条口径一个字没改）。
+
+   ⚠️ 自由池 = `ENTITIES` 的**全部名字**（忽略 kind、忽略 `from`/`to`）∪ `FIC_EXTRA`。
+      所以架空局里既有 Coinbase / 美国 SEC 这样的真实名，也有苹果 / 英伟达这样的巨头名，
+      **还有国家 / 地区与央行 / 国际组织** —— 且 2013 年就能出现（架空世界本就没有这条时间线）。
+   ⚠️ **只有实体（谁）自由**：产品／概念仍按现实日期门控（永续合约 2016-05-13、现货 ETF
+      2024-01-11…见 `ficnews.FAMS` 的 `objs`）—— 用户拍板「保留少量概念门」。
+   ⚠️ 不写进上面的 `ENTITIES`：那张表是**史实口径的唯一真相源**，自由池是**派生**出来的。
+   ⚠️ **本表只放"名字"**：不要放与 `ENTITIES` 同义/近形的别名（曾在草稿里出现 `摩根大通公司`
+      ／`摩根士丹利国际`／`贝莱德集团`，与表内 `摩根大通`／`摩根士丹利`／`BlackRock` 撞义甚至
+      互为子串 —— 已删）。
+   ⚠️ 中英文名字**允许互为子串**（`日本` ⊂ `日本 FSA`、`韩国` ⊂ `韩国银行`、`挪威` ⊂
+      `挪威主权基金`…）—— 这在**抽签**上无害（各自是独立实体），只在 `literalEnts` 的字面
+      扫描里会同时命中长短两个；那里用**最长命中抑制**抹掉短名（见 `literalEnts`）。 */
+export const FIC_EXTRA = [
+  /* 科技巨头 */
+  '苹果公司', '英伟达', '谷歌', '微软', 'Meta', '亚马逊', '三星', '索尼', '台积电',
+  '英特尔', '高通', '甲骨文', '字节跳动', '腾讯', '阿里巴巴', '小米', '华为', '京东',
+  '美团', '百度', '网易',
+  /* 传统巨头 / 消费品牌 */
+  '沃尔玛', '星巴克', '耐克', '迪士尼', '可口可乐', '麦当劳', '丰田汽车', '大众汽车', '波音',
+  '壳牌', '伯克希尔', '辉瑞', '强生',
+  /* 支付 / 金融科技 */
+  '蚂蚁集团', '软银', '红杉资本',
+  /* 国家 / 地区（用户 2026-10-11：「不止公司名，国家名称也可以有」）——
+     ⚠️ 这些是**池内名字**，不代表"现实中该国承认/储备 BTC"；架空局里它们可以搭任何动作。
+        史实局一概不用（那边只有 `ENTITIES` 的 6 个 gov ＋ 时间门控）。 */
+  '美国', '中国', '日本', '德国', '法国', '英国', '韩国', '印度', '俄罗斯', '巴西',
+  '加拿大', '澳大利亚', '新加坡', '瑞士', '阿联酋', '沙特阿拉伯', '意大利', '西班牙',
+  '荷兰', '瑞典', '挪威', '波兰', '墨西哥', '阿根廷', '印尼', '越南', '泰国', '菲律宾',
+  '马来西亚', '土耳其', '南非', '埃及', '以色列', '爱尔兰', '葡萄牙', '希腊', '奥地利',
+  '比利时', '丹麦', '芬兰', '新西兰', '智利',
+  /* 央行 / 国际组织（同一口径：架空局里可搭任何动作） */
+  '美联储', '欧洲央行', '日本央行', '英国央行', '印度央行', '韩国银行',
+  '国际货币基金组织', '世界银行', '国际清算银行',
+];
+
+/**
+ * 自由池（去重、保序：真实注册表全体在前，`FIC_EXTRA` 在后）。
+ * ⚠️ 抽签按坐标做（`randFast(seed, hash(kind), i, …)`）⇒ 池的**顺序与长度**变了，同一个
+ *    `(seed, i, salt)` 抽到的名字也会变 —— 但架空快讯本就是 `(ficSeed, i)` 现算、不进存档，
+ *    所以这只影响「读档重算是否与存档期一致」的**外观**，不影响任何状态。改本表请连同
+ *    `sim-audit` §12h 的架空自由池断言一起过。
+ */
+const FIC_POOL = (() => {
+  const seen = new Set(), out = [];
+  for (const e of ENTITIES) if (!seen.has(e.name)) { seen.add(e.name); out.push(e.name); }
+  for (const n of FIC_EXTRA) if (!seen.has(n)) { seen.add(n); out.push(n); }
+  return out;
+})();
+
+/** 架空局此刻可用的**全体实体名**（忽略 kind 与 `from`/`to`；`time` 仅为对齐签名） */
+export function ficPool(_time) { return FIC_POOL; }
+
+/** 自由池规模（`FICNEWS_COMBOS` 估算组合空间用） */
+export const ficCount = () => FIC_POOL.length;
+
+/**
+ * **宏观关键词**（2026-10-11）—— 不是机构，但同样会「打架」的新闻主体，立场账本把它们
+ * 当**一等实体键**看待。现在只有一枚：「现货 ETF」—— 真实月报说「净流入」、假消息说
+ * 「单日净流出」就是自相矛盾，而这两条都没有机构占位符（主体是 ETF 这个整体）。
+ */
+export const MACRO_KEYS = ['现货 ETF'];
+
 /** 模板里出现的占位符（去重、保序） */
 export function phsIn(tpl) {
   const out = [];
@@ -220,8 +289,10 @@ export function entitiesOf(kind, time) {
 /**
  * 模板在 `time` 时刻**能不能用**：它占用的每个 kind 都必须有非空可用池。
  * 空池（例如 2013 年早期的 `etf`）⇒ 该模板从候选池剔除，不会出现「解析不出实体」的半截句。
+ * @param {{free?:boolean}} [o] `free:true`（架空局）⇒ 自由池恒非空，恒可用。
  */
-export function tplUsable(tpl, time) {
+export function tplUsable(tpl, time, o = {}) {
+  if (o.free) return true;                      // 架空自由池：任何 slot 都抽得到名字
   for (const k of kindsIn(tpl)) if (!entitiesOf(k, time).length) return false;
   return true;
 }
@@ -237,16 +308,17 @@ export function tplUsable(tpl, time) {
  * @param {number} seed 随机种子（架空局传 `s.ficSeed`、上帝局传 `s.seed`）
  * @param {number} i 绝对小时序号
  * @param {number} [salt] 重抽盐（默认 0）
+ * @param {{free?:boolean}} [o] `free:true`（架空局）⇒ 任意 kind 占位符都从**自由池**抽
  * @returns {Record<string,string>} 占位符 → 名称（池空时该占位符不产出 ⇒ `fillNews` 会原样保留，
  *   但调用方须先用 `tplUsable` 挡掉空池模板）
  */
-export function resolveEnts(tpl, time, seed, i, salt = 0) {
+export function resolveEnts(tpl, time, seed, i, salt = 0, o = {}) {
   const out = {};
   let k = 0;
   for (const ph of phsIn(tpl)) {
     const kind = PH_KIND[ph];
     if (!kind) continue;                        // 非实体占位符（%S/%L…）跳过
-    const pool = entitiesOf(kind, time);
+    const pool = o.free ? FIC_POOL : entitiesOf(kind, time);
     if (!pool.length) continue;
     const r = randFast(
       seed >>> 0, hashStr(kind), i | 0,
@@ -292,8 +364,8 @@ export function putStance(s, name, dir, sym = null) {
 }
 
 /** 模板里成对出现的占位符与名称（供调用方逐名判冲突） */
-export function entsOfTpl(tpl, time, seed, i, salt = 0) {
-  const map = resolveEnts(tpl, time, seed, i, salt);
+export function entsOfTpl(tpl, time, seed, i, salt = 0, o = {}) {
+  const map = resolveEnts(tpl, time, seed, i, salt, o);
   return Object.keys(map).map(ph => ({ ph, name: map[ph] }));
 }
 
@@ -301,4 +373,45 @@ export function entsOfTpl(tpl, time, seed, i, salt = 0) {
 export function kindOfName(name) {
   for (const e of ENTITIES) if (e.name === name) return e.kind;
   return null;
+}
+
+/* ── 字面名扫描（2026-10-11）─────────────────────────────────────────────
+   有几条假消息模板把真实当事方**写死在句子里**（`Mt.Gox 暂停提现` / `FTX 交易所轰然倒塌` /
+   `Coinbase 登陆公开证券市场`…），不走占位符 ⇒ `entsOfTpl` 看不见它们，立场账本也就拦不住
+   「真新闻说 Coinbase 利空、假消息却报它利好」。`literalEnts` 把这些字面名捞出来，
+   与占位符解析结果**并集**后再判冲突。
+   ⚠️ 拉丁名按**词边界**匹配（`Block` 不能命中 `Blockstream`、`Meta` 不能命中 `Metaplanet`）；
+      中文名直接 `includes`（表内已核对无互为子串者）。 */
+
+/** 拉丁 / 数字 / 点 视作「词内字符」——用于给 ASCII 实体名卡边界 */
+const WORDY = /[A-Za-z0-9.]/;
+
+/** `tpl` 是否字面含有实体名 `n`（ASCII 名卡词边界；中文名直接包含） */
+function hasName(tpl, n) {
+  const ascii = /^[\x00-\x7F]+$/.test(n);
+  let pos = tpl.indexOf(n);
+  while (pos >= 0) {
+    if (!ascii) return true;
+    const before = pos > 0 ? tpl[pos - 1] : '';
+    const after = tpl[pos + n.length] || '';
+    if (!WORDY.test(before) && !WORDY.test(after)) return true;
+    pos = tpl.indexOf(n, pos + 1);
+  }
+  return false;
+}
+
+/**
+ * 模板正文里**字面出现**的实体名（真实注册表 ∪ 自由池 ∪ 宏观关键词）。去重、保序。
+ * ⚠️ 只用于「立场账本」比对，不参与正文填充 —— 这些名字本来就已经写在句子里了。
+ * ⚠️ **最长命中抑制**：中文没有词边界，`日本` 与 `日本 FSA` 会同时命中 ⇒ 只留长的那一个
+ *    （`日本` 是 `日本 FSA` 的子串 ⇒ 抹掉）。否则一句「日本 FSA 出台…」会同时给 `日本`
+ *    记一笔账，日后拦掉无关的假消息。拉丁名已由 `hasName` 的词边界挡住（`Block` ≠ `Blockstream`）。
+ */
+export function literalEnts(tpl) {
+  const t = String(tpl);
+  const raw = [];
+  for (const e of ENTITIES) if (hasName(t, e.name) && !raw.includes(e.name)) raw.push(e.name);
+  for (const n of FIC_EXTRA) if (hasName(t, n) && !raw.includes(n)) raw.push(n);
+  for (const k of MACRO_KEYS) if (t.includes(k) && !raw.includes(k)) raw.push(k);
+  return raw.filter(n => !raw.some(m => m !== n && m.includes(n)));
 }

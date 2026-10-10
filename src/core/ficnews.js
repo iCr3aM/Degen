@@ -14,13 +14,14 @@
  *      ⚠️ 2026-10-10 用户拍板「**架空新闻可以有相关数值展示**、假消息只做叙事」——
  *        数值展示**收敛到本模块**（约 70% 的快讯带一段读数）；上帝假消息（`god.MANIP_NEWS`）
  *        已拆掉全部数值占位符，两边就此分工明确、不再重叠。
- *   ③ **真实机构名 ＋ 时间门控**（2026-10-11 用户拍板）：句子里机构一律走 **kind 占位符**
- *      （`%X` 交易所 / `%Z` 监管 / `%G` 国家 / `%O` 上市公司 / `%N` 矿业 / `%K` 基建 /
- *      `%I` 机构 / `%P` 支付券商 / `%T` ETF），由 `entities.js` 按**能力域**给名、按
- *      `timeOf(i)` 门控 —— 2013 年的新闻不会出现 2017 才成立的 Binance。
- *      「线上化搭配正确」靠 **kind 即能力** 保证：交易所只进交易所槽、科技公司只在
- *      `%O/%I/%P/%T` 槽 ⇒「苹果公司上线永续合约」在**结构上不可能**出现。
- *      匿名者（巨鲸地址 / 休眠钱包）**不进注册表**，仍用匿名词表。
+ *   ③ **主体 = 自由池**（2026-10-11 用户拍板：架空世界不必与现实一致）：句子里机构一律走
+ *      **kind 占位符**（`%X` 交易所 / `%Z` 监管 / `%G` 国家 / `%O` 上市公司 / `%N` 矿业 /
+ *      `%K` 基建 / `%I` 机构 / `%P` 支付券商 / `%T` ETF），但**架空局**里由 `entities.ficPool`
+ *      给名 —— 忽略 kind、忽略 `from`/`to`，任何实体可搭任何动作（苹果公司、英伟达、Coinbase…
+ *      同在池中，2013 年就能出现；架空里「苹果公司上线永续合约」是合理的）。
+ *      ⚠️ 与**史实世界**的分界：史实（含上帝·史实）仍走 `entities.entitiesOf` 的真实名 ＋
+ *         **kind 即能力** ＋ 时间门控 ——「苹果上线永续合约」在那边结构上不可能。
+ *      匿名者（巨鲸地址 / 休眠钱包）**不进池**，仍用匿名词表。
  *   ④ 词库是**组合式**的：`句子族 × 动作 × 对象 × 收尾 × 数值尾`，组合空间十万级 ⇒
  *      每一局的快讯序列都不同、局内也极少重样。
  *
@@ -31,7 +32,10 @@
  */
 
 import { COINS, GAME, HOUR_MS } from './config.js';
-import { entitiesOf, countOf, PH_KIND } from './entities.js';
+/* 架空快讯只服务**架空世界** ⇒ 实体一律走**自由池**（2026-10-11 用户拍板：架空局里
+   公司 / 国家 / 实体不必与现实一致，苹果公司、英伟达…都能出现，且任何实体可搭任何动作）；
+   产品 / 概念的门控（永续合约 2016-05-13、现货 ETF 2024-01-11…）仍按现实日期。 */
+import { ficCount, ficPool } from './entities.js';
 
 /* ── 确定性 RNG（与 ficgen 同一族的哈希，坐标决定取值、与访问顺序无关）── */
 function h32(x) {
@@ -207,9 +211,9 @@ const FAMS = [
   { ph: '%T', acts: [V('获批', 1), V('上市', 1), V('启动赎回', 0)], objs: ETF_LIST },
 ];
 
-/** 组在 `time` 此刻可用：主体池非空（匿名族恒真）＋ 至少一个动作/对象已到期 */
+/** 组在 `time` 此刻可用：主体池非空（自由池恒非空 ＋ 匿名族恒真）＋ 至少一个动作/对象已到期 */
 function groupUsable(g, time) {
-  if (g.ph && !entitiesOf(PH_KIND[g.ph], time).length) return false;
+  if (g.ph && !ficPool(time).length) return false;
   if (!g.acts.some(a => time >= a.from)) return false;
   if (g.objs && !g.objs.length) return false;
   if (g.objs && !g.objs.some(o => time >= o.from)) return false;
@@ -297,7 +301,7 @@ export function ficNewsSample(seed, i0, n) {
 
 /** 词库规模（组合空间的下界，供验收断言）—— `Σ 主体数 × 动作数 × 对象数 × 收尾数` */
 export const FICNEWS_COMBOS = FAMS.reduce((sum, g) => {
-  const ents = g.ph ? countOf(PH_KIND[g.ph]) : g.wh.length;
+  const ents = g.ph ? ficCount() : g.wh.length;
   const objs = g.objs ? g.objs.length : 1;
   return sum + ents * g.acts.length * objs * TAIL.length;
 }, 0);

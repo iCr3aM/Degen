@@ -937,28 +937,31 @@ export function instSeedOf(sym, t) {
  *      市场里被**移走并锁住**，当时并没有砸出来，写成一笔卖盘是编的；
  *   ② **政府拍卖**（2014–2015 共 187,381 枚，含 Draper 那 29,656 枚）—— 场外拍卖、不触现货薄子，
  *      且成交价与逐场金额无一致一手数据。
+ * `ent` = 本条披露的**立场账本键**（`[实体名, 方向]`，实体名取自 `entities.js`；无可归属的池内
+ *   实体时为 `null`）—— 只用于「真实史实新闻 vs 上帝假消息」的互斥，不改播报文案。
+ *   2026-10-11 用户口径：「确认上帝面板中的假消息不和上帝模式中的真实史实新闻冲突」。
  */
 export const WHALES = [
   /* ── 买入：上市公司 / 主权资产负债表进场 ── */
-  { t: Date.UTC(2020, 7, 11),  sym: 'BTC', dir: 1, usd: 2.50e8, days: 30, who: 'MicroStrategy 首次披露' },
-  { t: Date.UTC(2020, 9, 8),   sym: 'BTC', dir: 1, usd: 5.00e7, days: 20, who: 'Square（Block）披露' },
-  { t: Date.UTC(2020, 11, 10), sym: 'BTC', dir: 1, usd: 1.00e8, days: 30, who: 'MassMutual 披露' },
-  { t: Date.UTC(2021, 1, 8),   sym: 'BTC', dir: 1, usd: 1.50e9, days: 30, who: '特斯拉披露' },
-  { t: Date.UTC(2021, 1, 24),  sym: 'BTC', dir: 1, usd: 1.026e9, days: 30, who: 'MicroStrategy 增持' },
-  { t: Date.UTC(2021, 8, 7),   sym: 'BTC', dir: 1, usd: 1.04e7, days: 14, who: '萨尔瓦多把 BTC 列为法币并买入首批 200 枚' },
-  { t: Date.UTC(2024, 2, 11),  sym: 'BTC', dir: 1, usd: 8.217e8, days: 30, who: 'MicroStrategy 增持' },
-  { t: Date.UTC(2024, 5, 20),  sym: 'BTC', dir: 1, usd: 7.86e8,  days: 30, who: 'MicroStrategy 增持' },
-  { t: Date.UTC(2024, 8, 13),  sym: 'BTC', dir: 1, usd: 1.11e9,  days: 30, who: 'MicroStrategy 增持' },
-  { t: Date.UTC(2024, 10, 11), sym: 'BTC', dir: 1, usd: 2.03e9,  days: 30, who: 'MicroStrategy 增持' },
-  { t: Date.UTC(2024, 10, 18), sym: 'BTC', dir: 1, usd: 4.60e9,  days: 30, who: 'MicroStrategy 增持' },
-  { t: Date.UTC(2024, 10, 25), sym: 'BTC', dir: 1, usd: 5.40e9,  days: 30, who: 'MicroStrategy 增持' },
-  { t: Date.UTC(2024, 11, 16), sym: 'BTC', dir: 1, usd: 1.54e9,  days: 30, who: 'MicroStrategy 增持' },
+  { t: Date.UTC(2020, 7, 11),  sym: 'BTC', dir: 1, usd: 2.50e8, days: 30, who: 'MicroStrategy 首次披露', ent: ['MicroStrategy', 1] },
+  { t: Date.UTC(2020, 9, 8),   sym: 'BTC', dir: 1, usd: 5.00e7, days: 20, who: 'Square（Block）披露', ent: ['Block', 1] },
+  { t: Date.UTC(2020, 11, 10), sym: 'BTC', dir: 1, usd: 1.00e8, days: 30, who: 'MassMutual 披露', ent: null },
+  { t: Date.UTC(2021, 1, 8),   sym: 'BTC', dir: 1, usd: 1.50e9, days: 30, who: '特斯拉披露', ent: ['Tesla', 1] },
+  { t: Date.UTC(2021, 1, 24),  sym: 'BTC', dir: 1, usd: 1.026e9, days: 30, who: 'MicroStrategy 增持', ent: ['MicroStrategy', 1] },
+  { t: Date.UTC(2021, 8, 7),   sym: 'BTC', dir: 1, usd: 1.04e7, days: 14, who: '萨尔瓦多把 BTC 列为法币并买入首批 200 枚', ent: ['萨尔瓦多', 1] },
+  { t: Date.UTC(2024, 2, 11),  sym: 'BTC', dir: 1, usd: 8.217e8, days: 30, who: 'MicroStrategy 增持', ent: ['MicroStrategy', 1] },
+  { t: Date.UTC(2024, 5, 20),  sym: 'BTC', dir: 1, usd: 7.86e8,  days: 30, who: 'MicroStrategy 增持', ent: ['MicroStrategy', 1] },
+  { t: Date.UTC(2024, 8, 13),  sym: 'BTC', dir: 1, usd: 1.11e9,  days: 30, who: 'MicroStrategy 增持', ent: ['MicroStrategy', 1] },
+  { t: Date.UTC(2024, 10, 11), sym: 'BTC', dir: 1, usd: 2.03e9,  days: 30, who: 'MicroStrategy 增持', ent: ['MicroStrategy', 1] },
+  { t: Date.UTC(2024, 10, 18), sym: 'BTC', dir: 1, usd: 4.60e9,  days: 30, who: 'MicroStrategy 增持', ent: ['MicroStrategy', 1] },
+  { t: Date.UTC(2024, 10, 25), sym: 'BTC', dir: 1, usd: 5.40e9,  days: 30, who: 'MicroStrategy 增持', ent: ['MicroStrategy', 1] },
+  { t: Date.UTC(2024, 11, 16), sym: 'BTC', dir: 1, usd: 1.54e9,  days: 30, who: 'MicroStrategy 增持', ent: ['MicroStrategy', 1] },
   /* ── 卖出 ── */
-  { t: Date.UTC(2021, 3, 26),  sym: 'BTC', dir: -1, usd: 2.72e8, days: 14,  who: '特斯拉一季报减持' },
-  { t: Date.UTC(2022, 6, 20),  sym: 'BTC', dir: -1, usd: 9.36e8, days: 14,  who: '特斯拉减持约七成持仓' },
-  { t: Date.UTC(2023, 2, 31),  sym: 'BTC', dir: -1, usd: 2.157e8, days: 60, who: '美国政府处置 Silk Road 案 9,861 枚' },
-  { t: Date.UTC(2024, 5, 19),  sym: 'BTC', dir: -1, usd: 2.85e9, days: 24,  who: '德国政府抛售 Movie2k 案 49,858 枚' },
-  { t: Date.UTC(2024, 6, 5),   sym: 'BTC', dir: -1, usd: 8.10e9, days: 120, who: 'Mt.Gox 受托人向债权人分发 14.2 万枚' },
+  { t: Date.UTC(2021, 3, 26),  sym: 'BTC', dir: -1, usd: 2.72e8, days: 14,  who: '特斯拉一季报减持', ent: ['Tesla', -1] },
+  { t: Date.UTC(2022, 6, 20),  sym: 'BTC', dir: -1, usd: 9.36e8, days: 14,  who: '特斯拉减持约七成持仓', ent: ['Tesla', -1] },
+  { t: Date.UTC(2023, 2, 31),  sym: 'BTC', dir: -1, usd: 2.157e8, days: 60, who: '美国政府处置 Silk Road 案 9,861 枚', ent: ['美国', -1] },   // 键取假消息模板里的字面名（「美国 FBI / 美国国税局…」）
+  { t: Date.UTC(2024, 5, 19),  sym: 'BTC', dir: -1, usd: 2.85e9, days: 24,  who: '德国政府抛售 Movie2k 案 49,858 枚', ent: ['德国', -1] },   // 同上（「德国财政部 / 德国政府…」）
+  { t: Date.UTC(2024, 6, 5),   sym: 'BTC', dir: -1, usd: 8.10e9, days: 120, who: 'Mt.Gox 受托人向债权人分发 14.2 万枚', ent: ['Mt.Gox', -1] },
 ];
 
 /** 巨鲸队列里第 `d` 天（游戏窗口天序号）的**净有向流量**（美元/天）—— 纯函数 */
@@ -1072,12 +1075,24 @@ export function amtOf(usd) {
  * 与 `advanceOneHour` 里那批历史时刻同一套 `===` 判等 ⇒ 一局内只说一次，不需要状态位。
  */
 export function whaleNewsAt(i) {
+  const e = whaleOfDay(i);
+  return e ? `机构动向 ｜ ${e.who} ${e.dir > 0 ? '买入' : '卖出'} ${amtOf(e.usd)}美元 BTC` : null;
+}
+
+/** 命中的 WHALES 条目（`whaleNewsAt` / `whaleNewsMeta` 共用的查表） */
+function whaleOfDay(i) {
   const d = Math.floor(i / 24);
-  for (const e of WHALES) {
-    if (Math.round((e.t - GAME.start) / HOUR_MS / 24) !== d) continue;
-    return `机构动向 ｜ ${e.who} ${e.dir > 0 ? '买入' : '卖出'} ${amtOf(e.usd)}美元 BTC`;
-  }
+  for (const e of WHALES) if (Math.round((e.t - GAME.start) / HOUR_MS / 24) === d) return e;
   return null;
+}
+
+/**
+ * 巨鲸披露的**立场账本键**（`{name, dir}`，无可归属实体时 `null`）—— 引擎在播报这一刻
+ * 记进 `s.newsStance`，避免随后的假消息反着说同一个实体（2026-10-11 用户口径）。
+ */
+export function whaleNewsMeta(i) {
+  const e = whaleOfDay(i);
+  return e && e.ent ? { name: e.ent[0], dir: e.ent[1] } : null;
 }
 
 /**
@@ -1096,6 +1111,26 @@ export function etfNewsAt(i) {
   }
   if (!parts.length) return null;
   return `现货 ETF ｜ ${dt.getUTCMonth() === 0 ? 12 : dt.getUTCMonth()} 月净流入 ${parts.join(' ｜ ')}美元`;
+}
+
+/**
+ * 现货 ETF 月报的**立场账本键** `{ name:'现货 ETF', dir, sym }`——以 **BTC 净额**定方向
+ * （ETH 月报同期才有、且量级小一个数位；`ETF_FLOW.BTC` 覆盖全期，做主口径）。
+ *
+ * ⚠️ **只记宏观键、不记发行方池**（2026-10-11 判断）：月报讲的是「ETF 整体净流入/流出」，
+ *    不指向某一家发行方；若把 7 家发行方逐月标向，2024 年「ETF 发行方」会被**长期占住**，
+ *    假消息里的 `%T` 模板（提交/获批 ETF 申请）整年都抽不出发行方 —— 那是跨层级的误伤。
+ *    真正会打架的是「月报净流入 ↔ 假消息『现货 ETF 单日净流出居前』」这一对（两条都不含
+ *    机构占位符），所以记在 `MACRO_KEYS` 的「现货 ETF」这个键上，由 `literalEnts` 拦。
+ */
+export function etfNewsMeta(i) {
+  const ms = dayMs(Math.floor(i / 24));
+  const dt = new Date(ms);
+  if (dt.getUTCDate() !== 1) return null;
+  const prev = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() - 1, 1);
+  const hit = ETF_FLOW.BTC && ETF_FLOW.BTC.months.find(mo => mo[0] === prev);
+  if (!hit || !hit[1]) return null;
+  return { name: '现货 ETF', dir: hit[1] > 0 ? 1 : -1, sym: 'BTC' };
 }
 
 /* ───────────────────── NPC 杠杆可得性的年代封顶（缺口 17 · 2026-10-03 拍板） ───────────────────── */
@@ -2103,16 +2138,21 @@ export const MANIP_NEWS = {
  *    （调用方 `godFakeNews` 直接轮换取模，`fillNews` 无需感知混合类型）。
  * 审计锚（sim-audit 9am）：对 2013-06 / 2015-06 / 2019-06 / 2023-06 四采样点枚举过滤集，
  * 断言无越期禁词 ＋ 池大小下限 ＋ 条目唯一 ＋ 池内每条 `tplUsable`。
+ * ⚠️ **第三道闸 `free`**（2026-10-11 架空自由池）：架空局（`s.world === 'fic'`）里实体口径
+ *    是「任何实体可搭任何动作」⇒ `tplUsable` 恒真，第二道闸整条让开；史实局（含上帝·史实）
+ *    一个字不放宽。
  * @param {'good'|'bad'} key 方向
  * @param {number} time 此刻毫秒（`timeOf(s)`）
+ * @param {boolean} [free] 架空自由池（缺省 false = 史实严格口径）
  * @returns {string[]}
  */
-export function manipTplsOf(key, time) {
+export function manipTplsOf(key, time, free = false) {
   const arr = MANIP_NEWS[key] || [];
+  const o = { free };
   const out = [];
   for (const e of arr) {
-    if (typeof e === 'string') { if (tplUsable(e, time)) out.push(e); continue; }
-    if (time >= e.from && tplUsable(e.t, time)) out.push(e.t);
+    if (typeof e === 'string') { if (tplUsable(e, time, o)) out.push(e); continue; }
+    if (time >= e.from && tplUsable(e.t, time, o)) out.push(e.t);
   }
   return out;
 }

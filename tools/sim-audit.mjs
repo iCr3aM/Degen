@@ -3914,9 +3914,10 @@ section('9ac · 巨鲸/机构队列 WHALES：逐位摊平 ＋ 买卖都含 ＋ �
     god.whaleNewsAt(iw) || 'null');
   check('9ac⑤ 非披露日 ⇒ null（日粒度 floor 判等 ⇒ 一局一次）',
     god.whaleNewsAt(iw + 24) === null && god.whaleNewsAt(idx(at(2013, 5, 1))) === null);
-  check('9ac⑤ 接线：advanceOneHour 播报 whaleNewsAt（推入日志）',
+  check('9ac⑤ 接线：advanceOneHour 播报 whaleNewsAt（推入日志 ＋ 记立场账本）',
     engSrc9ac.includes('const wnews = whaleNewsAt(s.i);')
-    && engSrc9ac.includes("if (wnews) { pushLog(s, wnews, 'news', 'mkt'); worldNewsHit = true; }"));
+    && engSrc9ac.includes("pushLog(s, wnews, 'news', 'mkt')")
+    && engSrc9ac.includes('whaleNewsMeta(s.i)'));
 }
 
 /* ═══════════════════ 9ad · 现货 ETF 日频净流入（缺口 5 · 2026-10-08） ═══════════════════
@@ -3987,9 +3988,10 @@ section('9ad · 现货 ETF 月度净流入：起用日 ＋ 交易日摊平 ＋ �
 
   /* ⑦ 接线 ＋ 不升版本 */
   const engSrc9ad = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
-  check('9ad⑦ 接线：advanceOneHour 播报 etfNewsAt（推入日志）',
+  check('9ad⑦ 接线：advanceOneHour 播报 etfNewsAt（推入日志 ＋ 记立场账本）',
     engSrc9ad.includes('const enews = etfNewsAt(s.i);')
-    && engSrc9ad.includes("if (enews) { pushLog(s, enews, 'news', 'mkt'); worldNewsHit = true; }"));
+    && engSrc9ad.includes("pushLog(s, enews, 'news', 'mkt')")
+    && engSrc9ad.includes('etfNewsMeta(s.i)'));
   check('9ad⑦ 不升 STATE_VERSION（纯表 ＋ 纯函数，零新状态）', STATE_VERSION === 32, `v=${STATE_VERSION}`);
 }
 
@@ -5430,7 +5432,7 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     godSrc9ag.includes('export const MANIP_PIN = { qStep: 0.35, overshoot: 0.005, backTol: 0.004, maxN: 8, maxH: 36 };')
     && godSrc9ag.includes('export const MANIP_NEWS = {')
     && godSrc9ag.includes('good:') && godSrc9ag.includes('bad:')
-    && engSrc9ag.includes('fillNewsEnts(s, sym, chosen, { salt: chosenSalt })'));
+    && engSrc9ag.includes('fillNewsEnts(s, sym, chosen, { salt: chosenSalt, free })'));
   check('9ag① 接线：main 分派两键 ＋ 处理器 ＋ bind ACTION_KEYS ＋ render 按钮 ＋ 置灰样式',
     mainSrc9ag.includes('if (d.godpin !== undefined)') && mainSrc9ag.includes('if (d.godnews !== undefined)')
     && mainSrc9ag.includes('function onGodPin')
@@ -5786,7 +5788,7 @@ section('9ai · 新闻占位符 newsVars / fillNews ＋ 上帝终局 s.god.ended
   const mainSrc = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
   check('9ai⑧ 引擎：真实结果条与假新闻播报都走「填真值」的口径（数值同源）',
     engSrc.includes('fillNews(rnews.rt, newsVars(')
-    && engSrc.includes('fillNewsEnts(s, sym, chosen, { salt: chosenSalt })'));
+    && engSrc.includes('fillNewsEnts(s, sym, chosen, { salt: chosenSalt, free })'));
   check('9ai⑧ 上帝终局接线：engine 立 ended / main 见 ended 弹遮罩 / render 有独立 renderGodEnd',
     engSrc.includes('if (s.over || s.pending || (s.god && s.god.ended)) return;')
     && mainSrc.includes('s.god && s.god.ended')
@@ -6875,7 +6877,7 @@ section('12a · ficnews：确定性 · 节奏 · 丰富度 · 不注入涨跌幅
   check('12a⑤ 红线：无涨跌幅占位符（%C/%c）/ 无水位禁词 / 全部含 %S', bad.length === 0, bad.slice(0, 3).join(' | '));
 
   /* 词库规模 */
-  check('12a⑥ 组合空间 ≥ 100000（6 族 ＋ 真实机构池，2026-10-11 扩容）', FN.FICNEWS_COMBOS >= 100000, String(FN.FICNEWS_COMBOS));
+  check('12a⑥ 组合空间 ≥ 100000（17 族 ＋ 架空自由池 186 名，2026-10-11 扩容）', FN.FICNEWS_COMBOS >= 100000, String(FN.FICNEWS_COMBOS));
 
   /* 只抽已上市的币 —— **逐条按它自己那一刻的小时号校验**（样本跨多年，不能用单一阈值）。
      ⚠️ 2026-10-11：样本扩到 20000 根后 DOGE/XRP 会（**正确地**）出现在它们上市之后 ——
@@ -6929,7 +6931,7 @@ section('12b · 消费端退场：拥堵锚点 / USDT 锚点（架空局）');
     String((engSrc.match(/usdtPriceAt\(.*?s\.world\)/g) || []).length));
   check('12b⑦ 引擎架空新闻分支（ficNewsAt(seed,i,salt) + fillNewsEnts）',
     /ficNewsAt\(s\.ficSeed, s\.i, k\)/.test(engSrc)
-    && /fillNewsEnts\(s, fn\.sym, fn\.tpl, \{ salt: fnSalt, seed: s\.ficSeed \}\)/.test(engSrc));
+    && /fillNewsEnts\(s, fn\.sym, fn\.tpl, \{ salt: fnSalt, seed: s\.ficSeed, free: true \}\)/.test(engSrc));
 }
 
 section('12c · 架空局内推进 → 快讯入日志（运行时）');
@@ -6982,7 +6984,7 @@ section('12d · 新闻分工：架空带数值 · 假消息只做叙事 · 芯�
   const engFic = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   check('12d⑥ 架空新闻芯片色：LOG_TAGS.fic ＋ CSS `.log-tag.fic` ＋ 引擎播报传 fic',
     S.LOG_TAGS.fic === '世界' && /\.log-tag\.fic\s*\{/.test(css) && css.includes('--world:')
-    && /pushLog\(s, fillNewsEnts\(s, fn\.sym, fn\.tpl, \{ salt: fnSalt, seed: s\.ficSeed \}\), 'news', 'fic'\)/.test(engFic));
+    && /pushLog\(s, fillNewsEnts\(s, fn\.sym, fn\.tpl, \{ salt: fnSalt, seed: s\.ficSeed, free: true \}\), 'news', 'fic'\)/.test(engFic));
 }
 
 section('12e · 世界价格档（低/中/高）· 面板只选择不输入（2026-10-11）');
@@ -7323,6 +7325,122 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
     check('12h⑤ 引擎集成：Binance 标成利好后再发利空假消息 ⇒ 输出里绝不出现 Binance',
       blocked.length >= 30 && blocked.every(t => !t.includes('Binance')),
       `播报 ${blocked.length} 条 · 含 Binance ${blocked.filter(t => t.includes('Binance')).length} 条`);
+  }
+
+  /* ⑥ **架空自由池**（2026-10-11 用户拍板：「公司 / 国家 / 实体也不需要和现实的一样 ——
+     我们是架空世界（可以出现苹果公司、英伟达公司等等）」）—— 架空局不走真实注册表的时间门 /
+     能力域，改用自由池（`ENTITIES` 全部名字 ∪ `FIC_EXTRA`）；史实局一个字不放宽。 */
+  {
+    const pool = ENT.ficPool(0);
+    const pool2013 = ENT.ficPool(Date.UTC(2013, 5, 15));
+    const t13 = Date.UTC(2013, 5, 15);
+    check('12h⑥ 架空自由池：含真实机构名 ＋ 巨头名 ＋ 国家 / 央行 / 国际组织（2026-10-11「不止公司名」）',
+      pool.length >= 180 && pool.includes('Coinbase') && pool.includes('苹果公司') && pool.includes('英伟达')
+      && pool.includes('日本') && pool.includes('德国') && pool.includes('阿联酋') && pool.includes('美联储')
+      && pool.includes('国际清算银行'),
+      `n=${pool.length}`);
+    /* FIC_EXTRA 卫生：无重名 ＋ 不与 ENTITIES 名字撞（同义别名曾在草稿里出现，见该表头注） */
+    const entNames = new Set(ENT.ENTITIES.map(e => e.name));
+    const dupExtra = ENT.FIC_EXTRA.filter((n, i) => ENT.FIC_EXTRA.indexOf(n) !== i);
+    const clashExtra = ENT.FIC_EXTRA.filter(n => entNames.has(n));
+    check('12h⑥ FIC_EXTRA 卫生：去重 ＋ 与真实实体表不撞名',
+      dupExtra.length === 0 && clashExtra.length === 0,
+      `重名 ${dupExtra.join('/') || '无'} · 撞名 ${clashExtra.join('/') || '无'}`);
+    /* literalEnts 最长命中抑制（中文无词边界：「日本 FSA」命中时不再单记「日本」） */
+    check('12h⑥ literalEnts 最长命中抑制：`日本 FSA 出台…` ⇒ 只留 `日本 FSA`、不留 `日本`',
+      JSON.stringify(ENT.literalEnts('快讯 ｜ 日本 FSA 出台 %S 交易牌照制度')) === JSON.stringify(['日本 FSA'])
+      && JSON.stringify(ENT.literalEnts('快讯 ｜ %K 上线 Blockstream 节点服务')) === JSON.stringify(['Blockstream']),
+      ENT.literalEnts('快讯 ｜ 日本 FSA 出台 %S 交易牌照制度').join(','));
+    check('12h⑥ 自由池忽略时间门：2013 年池内已有 Binance / 苹果公司（史实局同一时刻的交易所池没有 Binance）',
+      pool2013.includes('Binance') && pool2013.includes('苹果公司')
+      && !ENT.entitiesOf('exch', t13).includes('Binance'));
+    /* 行为级：free 模式下所有 kind 槽共用同一池 ⇒ `%X`（交易所槽）抽得到巨头名 / 国家名，
+       `%G`（国家槽）抽得到公司名 —— 能力域不再约束（用户：「任何实体可搭任何动作」）。 */
+    const names = new Set();
+    const govNames = new Set();
+    for (let k = 0; k < 400; k++) {
+      const r = ENT.resolveEnts('%X 上线 %S 现货交易', t13, 424242, k, 0, { free: true });
+      if (r['%X']) names.add(r['%X']);
+      const g = ENT.resolveEnts('%G 通过 %S 加密法案', t13, 535353, k, 0, { free: true });
+      if (g['%G']) govNames.add(g['%G']);
+    }
+    const extraHit = ENT.FIC_EXTRA.filter(n => names.has(n));
+    const countryHit = ENT.FIC_EXTRA.filter(n => govNames.has(n));
+    check('12h⑥ 架空 free 模式：`%X`（交易所槽）抽得到巨头 / 国家名（能力域不再约束）',
+      extraHit.length >= 1, extraHit.slice(0, 4).join('/') || '无');
+    check('12h⑥ 架空 free 模式：`%G`（国家槽）抽得到公司 / 央行名（同一池，任何实体可搭任何动作）',
+      countryHit.length >= 1, countryHit.slice(0, 4).join('/') || '无');
+    check('12h⑥ 架空 free 模式：`tplUsable` 恒真（2013 年的 ETF / 上市公司模板也算可用）',
+      ENT.tplUsable('快讯 ｜ %T 提交 %S 现货 ETF 申请', t13, { free: true })
+      && ENT.tplUsable('快讯 ｜ %O 公告：将 %S 纳入资产负债表', t13, { free: true })
+      && !ENT.tplUsable('快讯 ｜ %T 提交 %S 现货 ETF 申请', t13));
+    /* free 与史实**逐位不同**：同一 (seed,time,i,salt) 两条口径抽出不同的名字（2013 年更明显） */
+    const aFree = ENT.resolveEnts('%X 与 %Z 就 %S 达成合作', t13, 987654, 1000, 0, { free: true });
+    const aStrict = ENT.resolveEnts('%X 与 %Z 就 %S 达成合作', t13, 987654, 1000, 0);
+    check('12h⑥ free / 史实两种口径互不相同（同一坐标抽出不同实体）',
+      aFree['%X'] !== aStrict['%X'] || aFree['%Z'] !== aStrict['%Z'],
+      `free=${aFree['%X']}/${aFree['%Z']} · strict=${aStrict['%X']}/${aStrict['%Z']}`);
+  }
+
+  /* ⑦ **真实史实新闻也进立场账本** ＋ 假消息不得反向（2026-10-11 用户口径
+     「确认上帝面板中的假消息不和上帝模式中出现的真实史实新闻冲突」）—— 非空洞集成。 */
+  {
+    const A = await import('../src/core/anchors.js');
+    const valid = new Set([...ENT.ficPool(0), ...ENT.MACRO_KEYS]);
+    /* (a) 锚点 `ents` 结构合法：name 在（池 ∪ 宏观键）内、dir ±1 */
+    const badA = A.allAnchors().filter(a => (a.ents || []).some(e => !valid.has(e.name) || (e.dir !== 1 && e.dir !== -1)));
+    const nEnts = A.allAnchors().filter(a => a.ents && a.ents.length).length;
+    check('12h⑦ 锚点 `ents`：name 全部在（实体池 ∪ 宏观键）内、dir ±1',
+      badA.length === 0 && nEnts >= 8, `带 ents 的锚点 ${nEnts} 条` + (badA.length ? ` 非法 ${badA.map(a => a.title).join('/')}` : ''));
+    /* (b) 巨鲸 / ETF 月报的账本键合法 */
+    const wbad = G2.WHALES.filter(e => e.ent && (!valid.has(e.ent[0]) || (e.ent[1] !== 1 && e.ent[1] !== -1)));
+    const em = G2.etfNewsMeta(idx(at(2024, 8, 1)));      // 2024-09-01 播 8 月（BTC 净流出 ⇒ −1）
+    check('12h⑦ 巨鲸 / ETF 月报账本键：实体名合法 ＋ 方向 ±1（8 月净流出 ⇒ −1）',
+      wbad.length === 0 && !!em && em.name === '现货 ETF' && em.dir === -1,
+      `${JSON.stringify(em)}${wbad.length ? ` 非法 ${wbad.length}` : ''}`);
+    /* (c) 引擎接线：四条史实管道都在播报那一刻写账本 */
+    const engSrcH = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+    check('12h⑦ 引擎接线：锚点事件 / 结果条 / 巨鲸披露 / ETF 月报 / 交易所停机 都写账本',
+      engSrcH.includes('for (const e of (news.ents || [])) putStance(')
+      && engSrcH.includes('for (const e of (rnews.ents || [])) putStance(')
+      && engSrcH.includes('if (wm) putStance(s, wm.name, wm.dir')
+      && engSrcH.includes('if (em) putStance(s, em.name, em.dir')
+      && engSrcH.includes('putStance(s, ex.name, -1, null)'));
+    /* (d) **运行时集成**：推进到 2023-06-05（SEC 诉币安与 Coinbase）那一根 ⇒ 新闻出、账本记 Coinbase=−1 */
+    const tgt = idx(at(2023, 5, 5)) + 1;                 // 该锚点 `newsStartOf` = 事件日 + 1h
+    const sA = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: tgt - 1 });
+    god.enableGod(sA);
+    sA.god.inf = true; sA.god.lastFill = 1e11;
+    engine.tickMarket(sA, 'BTC');
+    engine.advanceOneHour(sA);
+    const srcNews = A.newsStartAt(tgt);
+    check('12h⑦ 运行时：推进到 2023-06-05 锚点 ⇒ 日志出该条真实新闻 ＋ 账本记 Coinbase=−1',
+      !!srcNews && String(sA.log.map(l => l.text).join('|')).includes('证监会起诉币安')
+      && !!(sA.newsStance && sA.newsStance.Coinbase) && sA.newsStance.Coinbase.dir === -1,
+      `${srcNews ? srcNews.title : 'null'} · 账本=${JSON.stringify(sA.newsStance && sA.newsStance.Coinbase)}`);
+    /* (e) **非空洞差分**：定位那条把 Coinbase 写死在句子里（无占位符）的模板，从它开始选条 ——
+       无账本时它会被原样播出（证明「测试对象存在且可达」）；账本记 Coinbase=−1 后，
+       同一条「利好」假消息被换掉，输出里不再有 Coinbase。 */
+    const tplCoin = '快讯 ｜ Coinbase 登陆公开证券市场，%S 受关注';
+    const poolG = G2.manipTplsOf('good', Date.UTC(2023, 5, 5));
+    const iCoin = poolG.indexOf(tplCoin);
+    const fireAtCoin = async (ledger) => {
+      const sX = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: tgt });
+      god.enableGod(sX);
+      sX.god.inf = true; sX.god.lastFill = 1e12;
+      engine.tickMarket(sX, 'BTC');
+      sX.newsStance = ledger;
+      sX.god.newsN = { good: iCoin, bad: 0 };
+      sX.god.newsAt = null;
+      const r = engine.godFakeNews(sX, 'BTC', 1);
+      return { ok: r.ok, text: sX.log[0] ? String(sX.log[0].text) : '' };
+    };
+    const ctlH = await fireAtCoin({});
+    const blkH = await fireAtCoin({ Coinbase: { dir: -1, at: tgt } });
+    check('12h⑦ 非空洞前置：无账本时那条「写死 Coinbase」的模板真的会播（输出含 Coinbase）',
+      iCoin >= 0 && ctlH.ok && ctlH.text.includes('Coinbase'), `i=${iCoin} text=${ctlH.text}`);
+    check('12h⑦ 引擎集成：真实新闻把 Coinbase 记成利空后，同一条「利好」假消息被换掉（不含 Coinbase）',
+      blkH.ok && !blkH.text.includes('Coinbase'), blkH.text);
   }
 }
 

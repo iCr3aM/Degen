@@ -18,10 +18,10 @@ import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { ficNewsAt } from './ficnews.js';
 /* 真实实体注册表（2026-10-11 新闻真实化）：两条新闻管道共用 —— 模板写 kind 占位符，
    发射层在这里解析成真实机构名（按 `timeOf(s)` 门控 ＋ 立场账本防「打架」）。 */
-import { entsOfTpl, resolveEnts, putStance, stanceConflict, tplUsable } from './entities.js';
+import { entsOfTpl, literalEnts, resolveEnts, putStance, stanceConflict, tplUsable } from './entities.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, LADDER, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS_CD, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, manipTplsOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS_CD, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfFlowAt, etfNewsAt, etfNewsMeta, exDevOf, instSeedOf, manipTplsOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt, whaleNewsMeta } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -5298,11 +5298,12 @@ export function fillNews(tpl, vars) {
  * @param {object} s
  * @param {string} sym
  * @param {string} tpl 模板（可含 `%S/%L…` 与实体占位符 `%X/%Z…`）
- * @param {{salt?:number, seed?:number, ctx?:object}} [o]
+ * @param {{salt?:number, seed?:number, ctx?:object, free?:boolean}} [o]
+ *   `free` = 架空自由池（`s.world === 'fic'`）⇒ 任意 kind 占位符都从全局自由池抽。
  * @returns {string}
  */
-export function fillNewsEnts(s, sym, tpl, { salt = 0, seed = s.seed, ctx } = {}) {
-  const vars = { ...newsVars(s, sym, ctx), ...resolveEnts(tpl, timeOf(s), seed, s.i, salt) };
+export function fillNewsEnts(s, sym, tpl, { salt = 0, seed = s.seed, ctx, free = false } = {}) {
+  const vars = { ...newsVars(s, sym, ctx), ...resolveEnts(tpl, timeOf(s), seed, s.i, salt, { free }) };
   return fillNews(tpl, vars);
 }
 
@@ -5340,7 +5341,10 @@ export function godFakeNews(s, sym, dir) {
      2013 年不会出现「现货 ETF 净流入」这类穿帮快讯，也不会出现「实体池还空着」（如 2013-06 的
      `%T`/`%O`/`%P`）的半截句。轮换计数在过滤后子序列上取模（跨年代边界跳条可接受）。
      实体解析一律在**选条之后**（`fillNewsEnts`），`manipTplsOf` 仍只返回 `string[]`。 */
-  const tpls = manipTplsOf(key, time);
+  /* 架空自由池（2026-10-11 用户拍板）：架空局里公司 / 国家 / 实体**不必与现实一致**
+     （可以出现苹果公司、英伟达…，且任何实体可搭任何动作）；史实局（含上帝·史实）严格照旧。 */
+  const free = s.world === 'fic';
+  const tpls = manipTplsOf(key, time, free);
   const nudge = (MANIP_NEWS_RANGE.min + r1 * (MANIP_NEWS_RANGE.max - MANIP_NEWS_RANGE.min)) * dir;
   const notional = Math.max(MANIP_MIN, MANIP_NEWS_Q * hourLiqBase(s, sym, s.i));
   const p = manipPreview(s, sym, dir, notional);
@@ -5359,20 +5363,30 @@ export function godFakeNews(s, sym, dir) {
      若与账本里「同实体反向、且仍在窗口内」冲突 ⇒ 换 salt 重抽实体（≤4 次）；整条模板都冲突
      就往后挪一条（`off+1`）。挪条**不动** `newsN`：它是「玩家按了几次」的计数，不能被避让改写。
      全池都冲突（极罕见：窗口 90 日、池 ≥20）⇒ 退回本轮第一条，保证玩家操作永不被卡住。 */
-  let chosen = null, chosenSalt = 0, chosenEnts = null;
+  let chosen = null, chosenSalt = 0, chosenEnts = null, chosenLit = null;
   for (let off = 0; off < tpls.length && chosen == null; off++) {
     const cand = tpls[(n + off) % tpls.length];
-    if (!entsOfTpl(cand, time, s.seed, s.i, 0).length) { chosen = cand; break; }   // 无实体槽：天然不冲突
+    const ph = entsOfTpl(cand, time, s.seed, s.i, 0, { free });
+    /* **字面名**（2026-10-11）——有几条模板把真实当事方写死在句子里（`Mt.Gox 暂停提现` /
+       `Coinbase 登陆公开证券市场`…），不走占位符；不捞出来的话账本拦不住它们「反着说」。 */
+    const lit = literalEnts(cand);
+    if (!ph.length && !lit.length) { chosen = cand; chosenLit = lit; break; }   // 无任何实体：天然不冲突
+    if (lit.some(nm => stanceConflict(s, nm, dir))) continue;   // 字面名冲突 ⇒ 换下一条（salt 改不了字面名）
     for (let salt = 0; salt <= 4; salt++) {
-      const es = entsOfTpl(cand, time, s.seed, s.i, salt);
-      if (!es.some(e => stanceConflict(s, e.name, dir))) { chosen = cand; chosenSalt = salt; chosenEnts = es; break; }
+      const es = entsOfTpl(cand, time, s.seed, s.i, salt, { free });
+      if (!es.some(e => stanceConflict(s, e.name, dir))) { chosen = cand; chosenSalt = salt; chosenEnts = es; chosenLit = lit; break; }
     }
   }
-  if (chosen == null) { chosen = tpls[n % tpls.length]; chosenEnts = entsOfTpl(chosen, time, s.seed, s.i, 0); }
+  if (chosen == null) {
+    chosen = tpls[n % tpls.length];
+    chosenEnts = entsOfTpl(chosen, time, s.seed, s.i, 0, { free });
+    chosenLit = literalEnts(chosen);
+  }
   s.god.newsN[key] = n + 1;
   s.god.newsAt = s.i;
   for (const e of (chosenEnts || [])) putStance(s, e.name, dir, sym);
-  pushLog(s, fillNewsEnts(s, sym, chosen, { salt: chosenSalt }), dir > 0 ? 'ok' : 'bad', 'news');
+  for (const nm of (chosenLit || [])) putStance(s, nm, dir, sym);
+  pushLog(s, fillNewsEnts(s, sym, chosen, { salt: chosenSalt, free }), dir > 0 ? 'ok' : 'bad', 'news');
   return { ok: true, cost: p.cost };
 }
 
@@ -5617,6 +5631,7 @@ function collapseExchange(s, ex) {
   const hit = lost + margin;
   pushLog(s, hit > 0 ? `${ex.name} 归零 ｜ 损失 ${fmtMoney(hit)}` : `${ex.name} 归零`,
     hit > 0 ? 'bad' : 'info', 'mkt');
+  putStance(s, ex.name, -1, null);      // 点名该所的利空事实（2026-10-11：所有带真实名的条目都记账本）
 
   return checkRuin(s);
 }
@@ -5644,6 +5659,7 @@ function applyHackCut(s, ex) {
     ? `${ex.name} 被盗 ｜ 普损 ${fmtRate(ex.hack.cut, 3)} 损失 ${fmtMoney(lost)}`
     : `${ex.name} 被盗 ｜ 普损 ${fmtRate(ex.hack.cut, 3)}`,
     lost > 0 ? 'bad' : 'info', 'mkt');
+  putStance(s, ex.name, -1, null);      // 被盗 = 点名该所的利空事实
 
   return checkRuin(s);
 }
@@ -5756,6 +5772,7 @@ export function advanceOneHour(s) {
     if (ex.close == null) continue;
     if (t === ex.close - WARN_LEAD && s.ex === ex.id) {
       pushLog(s, `${ex.name} 提现异常，7 天后将停止一切交易`, 'bad', 'mkt');
+      putStance(s, ex.name, -1, null);  // 「提现异常」= 点名该所的利空事实
     }
     if (t === ex.close && collapseExchange(s, ex)) return;
   }
@@ -5780,23 +5797,42 @@ export function advanceOneHour(s) {
      （假消息不与世界新闻抢同一根 K 线的日志条）。 */
   let worldNewsHit = false;
   if (!eventsOff(s)) {
+    /* **史实新闻 = 立场账本的另一半**（2026-10-11 用户口径「假消息不和真实史实新闻冲突」）——
+       四条史实管道（锚点事件 / 锚点结果 / 巨鲸披露 / ETF 月报）都在播报这一刻把「讲的是谁、
+       对它是好是坏」记进 `s.newsStance`，随后的上帝假消息（`godFakeNews`）据此避让反向。 */
     const news = newsStartAt(s.i);
-    if (news) { pushLog(s, news.title, 'news'); worldNewsHit = true; }
+    if (news) {
+      pushLog(s, news.title, 'news'); worldNewsHit = true;
+      for (const e of (news.ents || [])) putStance(s, e.name, e.dir, null);
+    }
     /* **第二条 · 结果**（2026-10-01 拍板）：第一条只讲事件、不带数字；数字全部由这里给，
        且**必然在它真的发生之后 1 小时**才播（判定与窗口口径见 `anchors.resultNewsStartAt`）。
        ⚠️ 同一个小时里两条都命中时，后 push 的结果条压在事件条上面 —— 那是对的：
           「结果」永远比「起因」更值得占着日志条那一行。 */
     const rnews = resultNewsStartAt(s);
-    if (rnews) { pushLog(s, fillNews(rnews.rt, newsVars(s, rnews.r.sym || s.sym, { r: rnews.r, at: rnews.at })), 'news'); worldNewsHit = true; }
+    if (rnews) {
+      pushLog(s, fillNews(rnews.rt, newsVars(s, rnews.r.sym || s.sym, { r: rnews.r, at: rnews.at })), 'news'); worldNewsHit = true;
+      /* 结果条沿用同一 `ents`（同一条锚点的第二次播报），方向以本条为准（`r.dir`）。 */
+      const rd = rnews.r && rnews.r.dir ? rnews.r.dir : 0;
+      for (const e of (rnews.ents || [])) putStance(s, e.name, rd || e.dir, rnews.r.sym || null);
+    }
 
     /* **外部买盘的两条披露播报**（缺口 4 / 缺口 5 · 2026-10-08）：
        · 巨鲸/机构：命中披露日那根小时播一条（买卖都含），摊平窗口与靶心注入同一个表（`whaleFlowAt`）；
        · 现货 ETF：每月 1 日播上月 BTC/ETH 净额（月初才拿得到月报）。
        两者都用 `===` / 日号判等，一局内天然只说一次，不需要状态位。 */
     const wnews = whaleNewsAt(s.i);
-    if (wnews) { pushLog(s, wnews, 'news', 'mkt'); worldNewsHit = true; }
+    if (wnews) {
+      pushLog(s, wnews, 'news', 'mkt'); worldNewsHit = true;
+      const wm = whaleNewsMeta(s.i);
+      if (wm) putStance(s, wm.name, wm.dir, 'BTC');
+    }
     const enews = etfNewsAt(s.i);
-    if (enews) { pushLog(s, enews, 'news', 'mkt'); worldNewsHit = true; }
+    if (enews) {
+      pushLog(s, enews, 'news', 'mkt'); worldNewsHit = true;
+      const em = etfNewsMeta(s.i);
+      if (em) putStance(s, em.name, em.dir, em.sym);
+    }
   } else {
     /* ⚠️ **架空世界**（2026-10-10 · P3）：与上面 4 条史实新闻**互斥**（`eventsOff` 判世界属性）。
        快讯由 `(ficSeed, i)` 现算（纯函数，读档重算一致），词库是组合式的（越丰富越好）；
@@ -5811,12 +5847,12 @@ export function advanceOneHour(s) {
     for (let k = 0; k <= 3; k++) {
       const cand = ficNewsAt(s.ficSeed, s.i, k);
       if (!cand) break;
-      const es = entsOfTpl(cand.tpl, timeOf(s), s.ficSeed, s.i, k);
+      const es = entsOfTpl(cand.tpl, timeOf(s), s.ficSeed, s.i, k, { free: true });
       if (!es.some(e => stanceConflict(s, e.name, cand.dir))) { fn = cand; fnSalt = k; break; }
     }
     if (fn) {
-      pushLog(s, fillNewsEnts(s, fn.sym, fn.tpl, { salt: fnSalt, seed: s.ficSeed }), 'news', 'fic');
-      for (const e of entsOfTpl(fn.tpl, timeOf(s), s.ficSeed, s.i, fnSalt)) putStance(s, e.name, fn.dir, fn.sym);
+      pushLog(s, fillNewsEnts(s, fn.sym, fn.tpl, { salt: fnSalt, seed: s.ficSeed, free: true }), 'news', 'fic');
+      for (const e of entsOfTpl(fn.tpl, timeOf(s), s.ficSeed, s.i, fnSalt, { free: true })) putStance(s, e.name, fn.dir, fn.sym);
       worldNewsHit = true;
     }
   }
@@ -5828,7 +5864,12 @@ export function advanceOneHour(s) {
     // 停机维护（B24 · BitMEX 2020-03-13）：窗口内**只平不开**。
     // ⚠️ 受「新闻源与事件」总闸（2026-10-09）：停机是一条史实利空事件 ⇒ 上帝关事件时不播不限。
     if (!eventsOff(s)) for (const h of ex.halts || []) {
-      if (t === h.from) pushLog(s, `${ex.name} 停机维护 ｜ 只能平仓，不能开仓`, 'bad', 'mkt');
+      if (t === h.from) {
+        pushLog(s, `${ex.name} 停机维护 ｜ 只能平仓，不能开仓`, 'bad', 'mkt');
+        /* 停机是**点名该交易所**的利空事实 ⇒ 记进立场账本（2026-10-11「检查所有可以有
+           真实名称的条目」）：随后的假消息不得反着说这家所（恢复交易不记 —— 中性）。 */
+        putStance(s, ex.name, -1, null);
+      }
       if (t === h.to) pushLog(s, `${ex.name} 恢复交易`, 'ok');
     }
     /* 杠杆阶梯：**首档 > 1x** 才叫「这类杠杆上线」（1x 是最低档、不算上线，不播）；
