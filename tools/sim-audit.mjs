@@ -6204,6 +6204,8 @@ section('9ao · 现实地板 godFloor ＋ 潜在基线 latentOf ＋ 步进行固
       && rendSrcAo.includes('Math.round(totalRows * 0.7)')                    // 上段 70%
       && rendSrcAo.includes("el('s', null, '方向')")                          // 新增方向列
       && rendSrcAo.includes('fmtDate(GAME.start + r.i * HOUR_MS)')            // 时间到「年月日时分」
+      && rendSrcAo.includes("box.append(el('div', 'gfd-sec', name))")         // 段标题必须挂载
+      && rendSrcAo.includes('box.append(list);')                              // ⚠️ 段列表必须挂载（2026-10-11 回归：漏挂 ⇒ 整页空白）
       && styleSrcAo.includes('.gfd-list { overflow-y: auto;')
       && styleSrcAo.includes('.gfd-sec'));
   }

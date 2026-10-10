@@ -3890,6 +3890,7 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
       box.append(el('div', 'gfd-sec', name));
       const list = el('div', 'gfd-list');
       list.style.height = `${nRows * rowH}px`;
+      box.append(list);                       // ⚠️ 必须挂载（漏了它 ⇒ 整页只剩列头＋段标题）
       if (!rows.length) list.append(el('div', 'god-fnote', note));
       else for (const r of rows) {
         const [gl, cls, dir] = K[r.k] || ['·', '', '—'];
