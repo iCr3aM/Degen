@@ -99,4 +99,12 @@ console.log('\n【BTC 牛/熊时间占比（30 日动量定号，跨种子平均
   const n = bTot + sTot;
   console.log(`  牛 ${(bTot / n * 100).toFixed(1)}%  :  熊 ${(sTot / n * 100).toFixed(1)}%   （样本 ${K} 条）`);
 }
+/* ── 供绘图用的紧凑输出：每年 p5/p50/p95（各币）────────────────────────── */
+console.log('\n【紧凑数据 · 供绘图】格式 = SYM | 起始年 | p5[],p50[],p95[]（逐年，保留 4 位有效）');
+for (const s of SYMS) {
+  const ys = YEARS.filter(y => price[s][y].length);
+  if (!ys.length) continue;
+  const arr = k => ys.map(y => Number(pct(price[s][y], k).toPrecision(4))).join(',');
+  console.log(`DATA ${s} ${ys[0]} ${arr(.05)} ${arr(.5)} ${arr(.95)}`);
+}
 console.log('');
