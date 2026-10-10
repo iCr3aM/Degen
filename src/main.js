@@ -23,7 +23,7 @@ import {
   pickExchange, confirmExchange, closePicker, openIntro, openMenu, showPage, openLog, menuNote,
   renderReview, openNodeCard, openYearPick, openGuide, renderCareers, openPoster,
   isStandalone, toggleInstallGuide, menuRemoveInstall, closeMenuDlg, openSavePick, openScenPick,
-  openAbout, redrawChart, openMarginDlg, updateFloat, focusFloat, godBody, syncOverlays,
+  openAbout, openGodPick, redrawChart, openMarginDlg, updateFloat, focusFloat, godBody, syncOverlays,
 } from './ui/render.js';
 import { bindActions, bindChart } from './ui/bind.js';
 import { panBy, zoomBy, resetView, setMode, viewOf } from './ui/view.js';
@@ -75,23 +75,23 @@ function stashSlot(slot) {
   try { localStorage.setItem(SLOT_KEY, slot); } catch { /* 隐私模式：存不下就退回 load() */ }
 }
 
-/* ── 上帝信箱（2026-10-07 用户拍板「重开本局 = 重开上帝模式」）──────────────
-   「下一局是否继续上帝模式」的一次性信箱，与上面两枚同一副骨架。
-   ⚠️ 为什么必须有它：上帝状态 `s.god` 不进存档（`save.js` 落盘剔除），而「重开本局」
-      走的是投信箱 ＋ reload —— reload 必然把内存里的 `s.god` 冲掉，不投信箱的话
-      上帝局一重开就**无声掉回普通局**，玩家会以为上帝还在。 */
+/* ── 上帝信箱（2026-10-07 拍板；2026-10-10 升级为携带世界属性）──────────────
+   「下一局以上帝模式开局」的一次性信箱，与上面两枚同一副骨架 —— **值即 `s.world`**（`'hist'` / `'fic'`）。
+   ⚠️ 为什么还需要它：`stashScen` 只带年代 id、带不动世界属性，而上帝开局走的是「投信箱 ＋ reload」。
+   ⚠️ `s.god` 自 2026-10-10 起**进存档**（上帝已是一等公民模式，见 `save.js`）—— 本信箱只管
+      「这一趟开机要不要 `enableGod` ＋ 设 `world`」，与存档职责不重叠。 */
 const GOD_KEY = 'degen_next_god';
 
 function takePendingGod() {
   try {
     const v = localStorage.getItem(GOD_KEY);
     if (v !== null) localStorage.removeItem(GOD_KEY);
-    return v;
+    return v || null;          // 'hist' | 'fic' | null
   } catch { return null; }
 }
 
-function stashGod() {
-  try { localStorage.setItem(GOD_KEY, '1'); } catch { /* 隐私模式：重开掉回普通局，可接受 */ }
+function stashGod(world = 'hist') {
+  try { localStorage.setItem(GOD_KEY, world); } catch { /* 隐私模式：重开掉回普通局，可接受 */ }
 }
 
 /* 这一趟开机是**开新局**（信箱里有年代）还是**读档**（信箱里有槽 / 缺省读）：
@@ -105,11 +105,15 @@ const pendingSlot = takePendingSlot();
 const pendingGod = takePendingGod();
 const saved = pendingScen ? null : (pendingSlot ? loadSlot(pendingSlot) : load());
 let s = saved || createState(pendingScen || DEFAULT_SCENARIO);
-/* 上帝重开（2026-10-07）：信箱有货 ⇒ 这一局**从第一根 K 线起就是上帝局** ——
-   开局第一件事 `enableGod`（顺带把新手提示压掉，见 `god.js`）。
-   ⚠️ 挑战没有上帝（与 `onGodLogo` 第一行同一条封锁）：信箱与挑战局凑上（不该发生）直接吞。 */
+/* 上帝开局（2026-10-07；2026-10-10 携带世界属性）：信箱有货 ⇒ 这一局**从第一根 K 线起就是上帝局** ——
+   开局第一件事 `enableGod`（顺带把新手提示压掉，见 `god.js`）＋ 落世界属性。
+   ⚠️ 挑战没有上帝（与 `onGodLogo` 第一行同一条封锁）：信箱与挑战局凑上（不该发生）直接吞。
+   ⚠️ 架空（`'fic'`）的行情生成器在 P2 落地 —— 本阶段信箱只会收到 `'hist'`。 */
 const bootGod = !!pendingGod && !isChallenge(s.scen);
-if (bootGod) enableGod(s);
+if (bootGod) {
+  enableGod(s);
+  s.world = pendingGod === 'fic' ? 'fic' : 'hist';
+}
 const isNewGame = !saved;
 /* 刚在主菜单挑完年代（或点「开始游戏」）⇒ 这一趟开机**跳过主菜单**，直接进开场白
    （否则会弹回菜单，等于白点）。 */
@@ -138,6 +142,11 @@ let menuTimer = 0;
    而年代卡是 `b` ＋ `u` ＋ `span` 三行结构（只换 `b` 那一行）。这套差异收在 `armMenu` 里，
    `cancelMenuArm` 只管调用，不关心按钮长什么样。 */
 let menuArmUndo = null;
+
+/* 上帝入口解锁（2026-10-10 改造）：连点 5 次只**解锁**（本会话内菜单多出「上帝模式」按钮），
+   不再直接进局 —— 与「挑战模式」同形：点按钮 → 弹层选卡 → 开新局（`onGodWorld`）。
+   ⚠️ 会话级（不进 `s`、不进存档）：与旧版「连点即开」同一处境，每次开机重新连点。 */
+let godUnlocked = false;
 
 /* ── PWA（2026-10-01）────────────────────────────────────────────────
    `installEvt`：浏览器交出来的 `beforeinstallprompt` 事件，抓到后**拦下自带横幅**
@@ -482,7 +491,7 @@ async function boot() {
       clock.start();
     }
     after();
-  } else openMenuClean({ canLoad: menuSlots().length > 0 });
+  } else openMenuClean({ canLoad: menuSlots().length > 0, godUnlocked });
 }
 
 /**
@@ -1069,6 +1078,7 @@ function dispatch(node, ev) {
   if (d.slot !== undefined) return onSlot(d.slot);
   /* 年代开局（M1）：主菜单「挑战模式」里那五张卡，值是年代 id，见 `onScenario`。 */
   if (d.scen !== undefined) return onScenario(d.scen, node);
+  if (d.godworld !== undefined) return onGodWorld(node);
   /* 主菜单弹窗的「返回」（2026-10-02）：只摘掉那一层，背后那屏主菜单原样留着 ——
      ⚠️ 不能用 `closePicker()`，它清的是整个 `#overlay`（菜单也在里面）。 */
   if (d.menuback !== undefined) return closeMenuDlg();
@@ -1116,7 +1126,7 @@ function dispatch(node, ev) {
 
   /* ── 上帝终局拦截（2026-10-09 用户拍板）──
      走完全程后本局已「软结束」：时钟停死、账不再变。上帝入口（`god` 连点 / 面板）与全部操盘
-     （跳时间 / 填资金 / 沙盒 / 操盘 / 假消息 / 插针 / 深度旋钮 / 新闻源与事件）一律失效 ——
+     （跳时间 / 填资金 / 沙盒 / 操盘 / 假消息 / 插针 / 深度旋钮）一律失效 ——
      否则「无法继续」会被跳时间 / 重开后门绕过。仅保留三页浏览、顶栏「继续」与「返回主菜单」。
      ⚠️ 这一闸**只管上帝操作那一批键**（`god* / sb*`）：切页、设置项、`home`、`pause`、`godback`
         都不在此列，照常派发。 */
@@ -1125,7 +1135,7 @@ function dispatch(node, ev) {
     || d.godtab !== undefined || d.godinf !== undefined || d.godliq !== undefined
     || d.godpin !== undefined || d.godnews !== undefined
     || d.godeat !== undefined || d.godeatauto !== undefined || d.godtgt !== undefined
-    || d.godreal !== undefined || d.sb !== undefined
+    || d.sb !== undefined
     || d.godautonews !== undefined || d.godautonewsoff !== undefined
     || d.godautowash !== undefined || d.godautopump !== undefined
     || d.sbpreset !== undefined || d.sbseed !== undefined || d.sbroll !== undefined)) {
@@ -1175,17 +1185,8 @@ function dispatch(node, ev) {
     if (!s.god) return;
     return onGodNews(node);
   }
-  /* ── 上帝面板「新闻源与事件」开关（2026-10-08 用户拍板；2026-10-09 扩名）：翻 `s.god.noRealNews`
-     （默认 true = 关）—— 关掉后 4 条真实新闻播报 ＋ `extFlow`（巨鲸/ETF 有向买盘）＋ 交易所停机
-     （播报＋只平不开）＋ 被盗/归零削减 ＋ 破产预警遮罩 ＋ K 线锚点刻度一起熄火（引擎 `eventsOff` 总闸）。 */
-  if (d.godreal !== undefined) {
-    if (!s.god) return;
-    s.god.noRealNews = !s.god.noRealNews;
-    pushLog(s, s.god.noRealNews ? '上帝模式 ｜ 新闻源与事件已关闭' : '上帝模式 ｜ 新闻源与事件已开启', 'sys');
-    showGod();
-    after();
-    return;
-  }
+  /* ⚠️ 「新闻源与事件」开关已删除（2026-10-10 用户拍板）：事件总闸改判世界属性
+     （引擎 `eventsOff`）—— 史实局（含上帝·史实）恒开、架空局恒关，上帝面板不再有这枚开关。 */
   /* ── 上帝沙盒（2026-10-05）── 与上面几枚同一处境：只出现在上帝面板里，
      同样以 `s.god` 非空兜底（状态机不靠 DOM）。 */
   if (d.sb !== undefined || d.sbpreset !== undefined || d.sbseed !== undefined || d.sbroll !== undefined) {
@@ -1523,14 +1524,16 @@ function onGodTap(node) {
 }
 
 /**
- * 主菜单图标**连点 5 次 ⇒ 直接进局**（2026-10-07 用户拍板）。
+ * 主菜单图标**连点 5 次 ⇒ 解锁「上帝模式」按钮**（2026-10-07 入口改型；**2026-10-10 改为只解锁**）。
  *
- * 菜单只在「开机 / 本局结束后回菜单 / 设置页回菜单」三个时刻出现，而这三个时刻 `s`
- * 都已经是**当前这一局**（或全新一局）⇒ 第 5 击当场 `enableGod` ＋ 开盘 ＋ 弹面板，
- * 不需要 reload、也不需要玩家再点「读取存档 / 开始游戏」任何东西。
+ * ⚠️ **不再直接进局**（用户 2026-10-10 拍板）：连点只把本会话的 `godUnlocked` 立起来，
+ *    菜单随即重开、多出一枚「上帝模式」按钮 —— 点它再选**史实 / 架空**开新局（`onGodWorld`）。
+ *    与「挑战模式」完全同形（按钮 → 弹层 → 开新局）。
  *
  * ⚠️ **挑战模式没有上帝模式**（2026-10-01 用户拍板）：挑战是「速通」，填资金 / 跳日期都会
  *    把难度归零。连点直接吞掉，连计数都不起 —— 免得玩家点了五次以为坏了。
+ * ⚠️ **普通局中途连点开上帝**这条后门已删除（2026-10-10）：上帝能力只能从菜单开新局获得 ——
+ *    否则「这一局归普通槽还是上帝槽」说不清。
  */
 function onGodLogo() {
   if (isChallenge(s.scen)) return;
@@ -1539,26 +1542,11 @@ function onGodLogo() {
   godTapAt = now;
   if (godTaps < GOD_TAPS) return;
   godTaps = 0;
-  /* 本局已结束：对局进不去（结算 / 菜单都一样），给一句提示而不是无声失败。
-     ⚠️ 上帝终局（2026-10-09）也走这一条 —— 否则连点会把 `s.paused` 解掉、时钟重新跑起来，
-        「无法继续」就被这条后门绕过了。 */
-  if (s.over || (s.god && s.god.ended)) { menuNote('本局已结束，没有可以进入的对局'); snd.deny(); return; }
-  enableGod(s);
-  closePicker();                      // 收掉主菜单（顺带任何残留弹层）
-  tab = 'trade';                      // 进局落在交易页（与 `onSlot` 同槽分支同一条）
-  if (isNewGame) pushLog(s, openLogText(), 'info');   // 全新一局补开局日志（`beginGame` 同款）
-  pushLog(s, '上帝模式已开启 ｜ 仅本局有效（存档不记），操盘台在面板第 3 页', 'ok');
+  if (godUnlocked) { menuNote('上帝模式已在菜单里（点它选史实 / 架空）'); return; }
+  godUnlocked = true;
   snd.begin();
-  godSel = null;                      // 面板选择器回到「当前日期」起手
-  godFloatPage = 0;                   // 页签回到第 1 页
-  /* 待决态（救济金遮罩）不续跑也不展面板 —— 遮罩接管；其余场合当场开盘 ＋ 展开上帝面板。 */
-  if (!s.pending) {
-    s.paused = false;
-    s.speed = 1;
-    clock.start();
-    showGod();
-  }
-  after();
+  openMenuClean({ canLoad: menuSlots().length > 0, godUnlocked });
+  menuNote('上帝模式已解锁 —— 点菜单里的「上帝模式」');
 }
 
 /** 上帝面板的统一出口（2026-10-10 浮窗化）—— 面板按「页码 / 版本号」重建（含输入框，不能每帧抹），
@@ -2007,6 +1995,7 @@ function onMenu(kind, node) {
   if (kind === 'install') return onInstall();
   if (kind === 'about') { openAbout(); return; }
   if (kind === 'scen') { openScenPick(); return; }
+  if (kind === 'god') { openGodPick(); return; }
   /* kind === 'start'：开一局新的经典全程（普通槽）。已有普通档才需要二次确认。 */
   if (hasSave('normal')) {
     if (!armedOn(node)) { armMenu(node); return; }
@@ -2031,7 +2020,7 @@ function onMenu(kind, node) {
  *    那时候手上这个槽的进度才是最新的。代价只是几次 `JSON.parse`，可忽略。
  */
 function menuSlots() {
-  const cur = saveSlotOf(s.scen);
+  const cur = saveSlotOf(s);
   /* 第二项：**当前这一局的槽**（给「回菜单又接着玩」留一个入口）—— 但全新一局且**还没落盘**时
      不算（`!isNewGame` 或该槽已有档），否则会在没有任何档的情况下凭空列出「普通模式」。
      ⚠️ **本局已结束（`s.over`）时不再列出**（2026-10-04 用户拍板）：`engine.endGame` 已经清掉
@@ -2090,11 +2079,13 @@ function maskReload() {
  *    这正是「普通 / 挑战各一槽、互不覆盖」的落点。`disableSave` 必须在 `wipe` 之前：
  *    否则 reload 的 `beforeunload` 会把刚删掉的档原样写回来。
  */
-function startNewGame(scenId) {
+function startNewGame(scenId, { god = false, world = 'hist' } = {}) {
   closePicker();
   stashScen(scenId);
+  if (god) stashGod(world);
   disableSave();
-  wipe(saveSlotOf(scenId));
+  /* 目标槽必须按**即将开的那一局**推导（上帝局 ⇒ 上帝槽），不能用当前内存里的 `s`。 */
+  wipe(saveSlotOf({ scen: scenId, god: god ? {} : null, world }));
   maskReload();
 }
 
@@ -2104,7 +2095,7 @@ function onSlot(slot) {
   /* 点的就是当前这一局 ⇒ 直接开盘续跑，不必绕一趟 reload。
      ⚠️ 顺手 `paused = false` ＋ `speed = 1`：与 `onTab` 的「切回交易页 ⇒ 自动续跑」同一条口径 ——
         玩家可能是从设置页回菜单再进来的（那时 `paused` 被置真），不这样点一下会「开盘了却不动」。 */
-  if (saveSlotOf(s.scen) === slot && hasSave(slot)) {
+  if (saveSlotOf(s) === slot && hasSave(slot)) {
     tab = 'trade';
     /* ⚠️ **待决态不许续跑**（2026-10-02 审计修）：自动存档可能正好落在「刚爆仓、还没决定领不领
        救济金」那一拍（`s.pending` 与 `s.paused` 在 `engine` 里同时被置真，随后被落盘）。
@@ -2156,6 +2147,23 @@ function onScenario(id, node) {
     cancelMenuArm();
   }
   startNewGame(id);
+}
+
+/**
+ * 上帝模式弹层的两张卡（`data-godworld="hist|fic"`）—— 开一局**全新的 2013 年上帝对局**。
+ *
+ * ⚠️ 与「开始游戏」同一套双重确认：目标槽（`godHist`）已有存档时**先武装、再点一次**才真重开
+ *    （用户 2026-10-10 明确要求「四槽已有存档一定要提示是否重开」）。
+ * ⚠️ 架空（`'fic'`）卡在本阶段**置灰**（K 线生成器 P2 落地），点不到这里；P2 打开并写 `ficSeed`/`ficVer`。
+ */
+function onGodWorld(node) {
+  const world = node.dataset.godworld === 'fic' ? 'fic' : 'hist';
+  if (world === 'fic') return;
+  if (hasSave('godHist')) {
+    if (!armedOn(node)) { armMenu(node); return; }
+    cancelMenuArm();
+  }
+  startNewGame(DEFAULT_SCENARIO, { god: true, world });
 }
 
 /** 这一枚键是不是**就是**当前被武装的那一枚。
@@ -3041,11 +3049,12 @@ function doRestart() {
      原来「经典全程重开完先回菜单」那条分叉一并取消：一是那条路上 reload 后 `load()` 缺省
      会掉进**挑战档**（普通槽刚被清空），反而把玩家带到另一局去；二是「重开本局」本来就该
      直接开这一局新的（开场白或直接开盘），弹回菜单等于让玩家再点一次。
-     ⚠️ **上帝局的重开 = 重开上帝模式**（2026-10-07 用户拍板）：先投上帝信箱再 reload ——
-        `s.god` 不进存档（`save.js` 落盘剔除），不投信箱 reload 回来就是普通局，玩家会以为
-        上帝还在。设置页「重开本局」与结束遮罩「重新开始」两枚入口都走这里，一并覆盖。 */
-  if (s.god) stashGod();
-  startNewGame(s.scen);
+     ⚠️ **上帝局的重开 = 重开上帝模式**（2026-10-07 拍板；2026-10-10 补世界属性）：`s.god` 自
+        2026-10-10 起**进存档**，但本函数走的是「清槽 ＋ reload」⇒ 仍要投上帝信箱；且必须把
+        **世界属性**一起带上（架空局重开不能掉回史实世界）。设置页「重开本局」与结束遮罩
+        「重新开始」两枚入口都走这里，一并覆盖。 */
+  const god = !!s.god;
+  startNewGame(s.scen, { god, world: god && s.world === 'fic' ? 'fic' : 'hist' });
 }
 
 /** 开机面板上那枚「清除存档并重开」（`render.js` 的 `renderBoot`）—— 两个槽一起清。 */

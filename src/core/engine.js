@@ -721,19 +721,20 @@ export function latentOf(sigma, cap, liq, price, pLo, pHi, side) {
 }
 
 /**
- * 上帝模式「新闻源与事件」总闸（2026-10-09 · 用户拍板把「新闻源」扩成「新闻源与事件」）：
+ * 史实事件注入总闸（2026-10-09 建立；**2026-10-10 改判世界属性**）：
  * `true` ⇒ 真实历史的**全部事件注入**一起熄火 ——
  *   ① 4 条新闻播报（事件条 / 结果条 / 巨鲸披露 / ETF 月报）；
  *   ② `extFlow`（巨鲸 / ETF 有向买盘）；
  *   ③ 交易所停机（BitMEX 2020-03-13：播报 ＋「只平不开」限制）；
- *   ④ 交易所被盗削减（Bitfinex 2016-08-02 普损）与归零（`close`，当前档无此配置，防御性同闸）；
+ *   ④ 交易所被盗削减（Bitfinex 2016-08-02 普损）与归零；
  *   ⑤ 破产预警遮罩（`warnAnchorAt`）与 K 线上的历史锚点刻度（render 侧）。
- * 普通局 / 挑战局无 `s.god` ⇒ 恒 false，全部事件照常 —— 口径与真实历史逐位一致。
+ * **判据 = 世界属性**：`'fic'`（架空）恒关；`'hist'`（含**上帝·史实**）恒开 ——
+ *    玩家在上帝·史实局里要的就是「真历史 ＋ 上帝面板」（2026-10-10 用户拍板）。
  * ⚠️ 只关「事件注入」这一层：**底价仍是真实历史 K 线**（崩盘本身就在数据里，本作从不人为制造涨跌幅）；
  *    市场自身行为（护盘 / 爆仓潮 / 极端行情保护带）不是历史事件，不在此闸内。
  */
 export function eventsOff(s) {
-  return !!(s.god && s.god.noRealNews);
+  return s.world === 'fic';
 }
 
 export function godWatchOf(s, sym = s.sym) {
@@ -3385,9 +3386,9 @@ function npcBuild(s, sym, m, i) {
      ⚠️ 位移仍走既有链路（`npcNet` → `syncNpcDrift` × `NPC.synthGive`）—— 真实行情已含涨幅，
         这一层只让「玩家此刻在跟谁对着干」在盘口可见，不写 `s.flow`、零新状态（不升存档版）。 */
   const dayIdx = dayIndexOf(i);
-  /* ⚠️ 上帝模式「新闻源与事件」（2026-10-08 起，2026-10-09 扩容，`s.god.noRealNews` 默认 true）
+  /* ⚠️ 事件注入总闸（2026-10-08 起；**2026-10-10 改判世界属性**，`eventsOff`）
      ⇒ `extFlow` 归零：巨鲸 / ETF 的**有向买盘**不再注入靶心，价格只随玩家操作走。
-     普通局 / 挑战局无 `s.god` ⇒ 逐位不变。 */
+     史实局（含上帝·史实）恒开、架空局恒关。 */
   const extFlow = eventsOff(s) ? 0 : (whaleFlowAt(sym, dayIdx) + etfFlowAt(sym, dayIdx));
   let npcRealisedSum = 0;
   for (let k = 0; k < NPC.ladder.length; k++) {
@@ -5699,9 +5700,9 @@ export function advanceOneHour(s) {
      ⚠️ 顺序即日志条的**先后**：`pushLog` 把最新的插在队首，同一个小时里最后写的那句才是
         日志条上显示的那句。新闻放在最前 —— 它是个 24 小时的「填充态」，该让位给同一小时里
         更具体的事件（与 P2-C「新闻让位于更新的日志」同一条口径）。 */
-  /* ⚠️ 上帝模式「新闻源与事件」（2026-10-08 起，2026-10-09 扩容，`s.god.noRealNews` 默认 true）
+  /* ⚠️ 事件注入总闸（2026-10-08 起；**2026-10-10 改判世界属性**，`eventsOff`）
      ⇒ 下面 4 条真实新闻的日志**一律不播**，配合 `extFlow` 归零一起让价格与播报都只随玩家操作走。
-     普通局 / 挑战局无 `s.god` ⇒ 闸门不生效，逐位不变。 */
+     史实局（含上帝·史实）恒开、架空局恒关。 */
   if (!eventsOff(s)) {
     const news = newsStartAt(s.i);
     if (news) pushLog(s, news.title, 'news');

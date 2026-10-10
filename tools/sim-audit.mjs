@@ -1391,8 +1391,8 @@ section('10 · 存档往返（JSON 序列化 ⇒ 逐位可复现 · 两槽互不
 
     /* ── 两槽并存（`degen_save_normal` / `degen_save_challenge`）互不覆盖 ── */
     const chal = await mk({ scen: 'degen', sym: 'BTC' });
-    check('10 槽位由 scen 推导：经典 ⇒ normal', save.saveSlotOf(s.scen) === 'normal', s.scen);
-    check('10 槽位由 scen 推导：年代局 ⇒ challenge', save.saveSlotOf(chal.scen) === 'challenge', chal.scen);
+    check('10 槽位推导：经典 ⇒ normal', save.saveSlotOf(s) === 'normal', s.scen);
+    check('10 槽位推导：年代局 ⇒ challenge', save.saveSlotOf(chal) === 'challenge', chal.scen);
     check('10 槽位显示名', save.slotName('normal') === '普通模式' && save.slotName('challenge') === '挑战模式');
     mem.clear();
     check('10 写 normal 槽成功', save.save(s) === true);
@@ -1402,32 +1402,31 @@ section('10 · 存档往返（JSON 序列化 ⇒ 逐位可复现 · 两槽互不
     check('10 两槽各自内容不同（scen 不同）', !!ln && !!lc && ln.scen !== lc.scen, `normal=${ln && ln.scen} / challenge=${lc && lc.scen}`);
     check('10 开局缺省先读 normal 槽（普通优先于挑战）', save.load().scen === 'classic');
 
-    /* ── 上帝状态不进存档（2026-10-07 用户拍板「一次性游戏」）──
-       落盘的永远是普通局：save 剔除 god / godRuined（`save.js` 的 EPHEMERAL）；
-       「这局用过上帝」由 `stat.god` 作证（结算 / 生涯档案要认得出它）。
-       旧档兼容：历史版本落过 god 的档，读侧剥掉、不弃档（不升 STATE_VERSION）。 */
+    /* ── 上帝状态**进存档**（2026-10-10 用户拍板 · 架空模式 P1；翻转 2026-10-07「一次性游戏」）──
+       上帝已是一等公民模式（有自己的槽 `godHist` / `godFic`）：`s.god` 随档落盘，读档回来仍在上帝局。
+       `godRuined`（归零补满提示闩锁）仍是会话级、落盘剔除。
+       「这局用过上帝」另有 `stat.god` 作证（结算 / 生涯档案要认得出它）。 */
     const sG = await mk({ scen: 'classic', sym: 'BTC', cash: 50000, i: idx(at(2020, 5)) });
     god.enableGod(sG);
     engine.godFillCash(sG, 123456);
     check('10 前置：内存里 god 在且 stat.god 已置位', !!sG.god && sG.stat.god === true);
     check('10 上帝局落盘成功', save.save(sG) === true);
-    const objG = JSON.parse(mem.get('degen_save_normal'));
-    check('10 档文顶层没有 god / godRuined 键（不进存档）',
-      !('god' in objG) && !('godRuined' in objG),
-      `残留 ${['god', 'godRuined'].filter(k => k in objG).join('/') || '无'}`);
+    const objG = JSON.parse(mem.get('degen_save_godhist'));
+    check('10 档文顶层带 god（上帝进存档）＋ 不带 godRuined（会话级）',
+      ('god' in objG) && !('godRuined' in objG),
+      `god=${'god' in objG} godRuined=${'godRuined' in objG}`);
     check('10 stat.god 作证保留（结算 / 生涯认得出这局用过上帝）',
       objG.stat && objG.stat.god === true);
-    const backG = save.loadSlot('normal');
-    check('10 读回来是普通局且进度还在',
-      !!backG && backG.god === undefined && backG.godRuined === undefined
+    const backG = save.loadSlot('godHist');
+    check('10 读回来仍是上帝局且进度还在',
+      !!backG && !!backG.god && backG.godRuined === undefined
       && Math.abs(engine.equity(backG) - 123456) < 1e-6,
       backG ? `equity=${f(engine.equity(backG), 2)}` : 'null');
-    /* 旧档兼容：手工回写一份带 god 的档（历史版本形态），读回来被剥掉且不弃档 */
-    mem.set('degen_save_normal', JSON.stringify(
-      { ...objG, god: { lastFill: 9, inf: true, sb: { ...god.SB_DEFAULT } }, godRuined: true }));
-    const backL = save.loadSlot('normal');
-    check('10 旧档带 god 也读得出且被剥掉（不弃档）',
-      !!backL && backL.god === undefined && backL.godRuined === undefined, '');
+    /* 旧档兼容：手工回写一份带 godRuined 的档，读回来剥掉 godRuined、保留 god、不弃档 */
+    mem.set('degen_save_godhist', JSON.stringify({ ...objG, godRuined: true }));
+    const backL = save.loadSlot('godHist');
+    check('10 旧档带 godRuined 也读得出且被剥掉、god 保留（不弃档）',
+      !!backL && backL.godRuined === undefined && !!backL.god, '');
 
     save.wipe('normal');
     check('10 wipe(normal) 后该槽 hasSave 为假', save.hasSave('normal') === false);
@@ -2899,13 +2898,13 @@ section('9r · 上帝操盘台：吃单位移=预览 · 洗售零位移 · 幌�
 section('9s · 上帝局重开保上帝（doRestart 投信箱 → 开机 bootGod 落位）');
 {
   const mainSrc = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
-  check('9s `doRestart` 上帝局先投信箱（`if (s.god) stashGod()`）',
-    /if \(s\.god\) stashGod\(\);/.test(mainSrc));
+  check('9s `doRestart` 上帝局投信箱（经 `startNewGame(..., { god, world })` 带上世界属性）',
+    /function doRestart\(\)[\s\S]*?startNewGame\(s\.scen, \{ god, world:/.test(mainSrc));
   check('9s 开机消费信箱 ＋ 挑战局封锁（bootGod = pendingGod && !isChallenge）',
     /const bootGod = !!pendingGod && !isChallenge\(s\.scen\);/.test(mainSrc));
   /* 源序：`enableGod` 必须作用在**开局那一份** `s` 上 —— 写在 createState / 读档之前就是空放。 */
   const iCreate = mainSrc.indexOf('createState(pendingScen || DEFAULT_SCENARIO)');
-  const iEnable = mainSrc.indexOf('if (bootGod) enableGod(s);');
+  const iEnable = mainSrc.indexOf('enableGod(s);');
   check('9s `enableGod` 落在开局对象建立之后（源序）',
     iCreate >= 0 && iEnable > iCreate, `createState@${iCreate} enableGod@${iEnable}`);
   check('9s 上帝重开不走开场白（fromScenarioPick 分支认 bootGod，直接 beginGame）',
@@ -5230,8 +5229,8 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     check('9ae⑤ 行为：rewindTo 清空 feed ＋ 跳后照常推进', Array.isArray(s9ae.feed) && s9ae.feed.length === 0);
   }
 
-  check('9ae⑥ 存档 / 状态：EPHEMERAL 含 feed ＋ createState 带 feed:[]',
-    saveSrc9y.includes("const EPHEMERAL = ['god', 'godRuined', 'feed']") && stateSrc9y.includes('feed: [],'));
+  check('9ae⑥ 存档 / 状态：EPHEMERAL 含 feed（不含 god，2026-10-10 起上帝进存档）＋ createState 带 feed:[]',
+    saveSrc9y.includes("const EPHEMERAL = ['godRuined', 'feed']") && stateSrc9y.includes('feed: [],'));
 
   check('9ae⑦ UI：页表（上帝 5 页 / 普通 3 页）＋ render 页 4 分支（gfd-*）＋ 样式（六型分色＋五档背景）',
     mainSrc9y.includes("const GOD_FLOAT_PAGES = [[0, '热力'], [1, '巨鲸'], [2, '深度'], [3, '订单'], [4, '日志']]")
@@ -5285,7 +5284,7 @@ section('9af · NPC 限价单离散簿（行为级 ＋ 显示/播报读簿 ＋ �
     && engSrc9af.includes('if (!s.lob) s.lob = {};'));
   check('9af① 状态 / 存档：createState 带 lob:{} ＋ 不进 EPHEMERAL（随 {...s} 落盘）＋ 不进 SHAPE（旧档不弃）',
     stateSrc9af.includes('lob: {}')
-    && saveSrc9af.includes("const EPHEMERAL = ['god', 'godRuined', 'feed']")
+    && saveSrc9af.includes("const EPHEMERAL = ['godRuined', 'feed']")
     && !/const SHAPE = \{[^}]*lob/.test(saveSrc9af));
   check('9af① 旋钮：SB_KEYS 六键含 lob ＋ sbOf 归一 lob ＋ 四预设全带 lob=1',
     godSrc9af.includes("SB_KEYS = ['heat', 'mood', 'npc', 'shock', 'res', 'lob']")
@@ -5593,11 +5592,10 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     && engSrc9ah.includes('const thr = liqDay > 0 ? liqDay * NPC.liqEventFrac * liqEventScaleOf(s, sym) : 0;')
     && engSrc9ah.includes('if (s.i - last >= NPC.liqEventCd) {')
     && /if \(s\.i - last >= NPC\.liqEventCd\) \{[\s\S]*?pushLog\(s, `爆仓潮[\s\S]*?adl\(s, sym, m,/.test(engSrc9ah));
-  check('9ah① M4d 结构：MANIP_NEWS_CD ＋ 模板各 16 条 ＋ 冷却 / 轮换 ＋ noRealNews 默认 true ＋ extFlow / 播报双闸',
+  check('9ah① M4d 结构：MANIP_NEWS_CD ＋ 模板各 16 条 ＋ 冷却 / 轮换 ＋ extFlow / 播报双闸（总闸改判世界属性）',
     godSrc9ah.includes('export const MANIP_NEWS_CD = 8;')
     && /export const MANIP_NEWS = \{[\s\S]*?good: \[[\s\S]*?\],[\s\S]*?bad: \[[\s\S]*?\],\s*\};/.test(godSrc9ah)
     && (godSrc9ah.match(/'快讯 ｜/g) || []).length >= 80
-    && godSrc9ah.includes('if (s.god.noRealNews == null) s.god.noRealNews = true;')
     && engSrc9ah.includes('const cd = s.i - last;')
     && engSrc9ah.includes('if (cd < MANIP_NEWS_CD) return { ok: false, why: `冷却中（还需 ${MANIP_NEWS_CD - cd} 小时）` };')
     && engSrc9ah.includes('s.god.newsN[key] = n + 1;')
@@ -5605,11 +5603,8 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     && engSrc9ah.includes('if (!eventsOff(s)) {')
     && engSrc9ah.includes('s.god.newsAt = null;')
     && engSrc9ah.includes('s.god.newsN = null;'));
-  check('9ah① M4d/M4e/M4f 接线：godreal 三处 ＋ 冷却置灰 ＋ 手动操盘行摘除（godpump 三处清零）＋ 日志条 6 行/120px',
-    bindSrc9ah.includes("'godreal'")
-    && mainSrc9ah.includes('if (d.godreal !== undefined)') && mainSrc9ah.includes('s.god.noRealNews = !s.god.noRealNews;')
-    && rendSrc9ah.includes("realBtn.dataset.godreal = ''")
-    && rendSrc9ah.includes('if (newsCd < MANIP_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }')
+  check('9ah① M4d/M4e/M4f 接线：冷却置灰 ＋ 手动操盘行摘除（godpump 三处清零）＋ 日志条 6 行/120px（godreal 已退役）',
+    rendSrc9ah.includes('if (newsCd < MANIP_NEWS_CD) { newsDn.disabled = true; newsUp.disabled = true; }')
     /* 2026-10-10 用户拍板「删手动操盘行」：`godpump` 一键组合拳 ＋ 长按连发整链退役
        （render 输入框 / main 处理器与节拍器 / bind 键表三处一起摘，缺一处 = 死键或点了没反应）。 */
     && !mainSrc9ah.includes('function onGodPump(')
@@ -5678,20 +5673,19 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
       `不联动 ${base.oldN}→${big.oldN} 条 · 联动 ${base.newN}→${big.newN} 条`);
   }
 
-  /* ④ M4d 行为：noRealNews 默认 true ＋ 冷却拒发 ＋ 16 连发轮换不重样 */
+  /* ④ M4d 行为：假新闻冷却拒发 ＋ 16 连发轮换不重样 */
   {
     const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e8, i: idx(at(2021, 5, 10)) });
     god.enableGod(s);
     s.god.inf = true; s.god.lastFill = 1e9;
-    const defOff = s.god.noRealNews === true;
     const a = engine.godFakeNews(s, 'BTC', 1);
     /* ⚠️ 播报文本必须**当场**取 —— `advanceOneHour` 每小时会插别的日志把队首顶掉。 */
     const seen = new Set([s.log[0].text]);
     engine.advanceOneHour(s);
     const b = engine.godFakeNews(s, 'BTC', 1);              // 1h 后仍在 8h 冷却里 ⇒ 拒
-    check('9ah④ M4d 行为：进入上帝模式默认关真实新闻 ＋ 冷却期内拒发',
-      defOff && a.ok && !b.ok && /冷却/.test(b.why),
-      `noRealNews=${s.god.noRealNews} · 二次 ${b.ok ? 'ok' : b.why}`);
+    check('9ah④ M4d 行为：假新闻可发 ＋ 冷却期内拒发',
+      a.ok && !b.ok && /冷却/.test(b.why),
+      `二次 ${b.ok ? 'ok' : b.why}`);
     /* 16 连发（每次隔 9h > 冷却）⇒ 16 条文本两两不同（轮换去重生效） */
     for (let k = 0; k < 15; k++) {
       for (let h = 0; h < 9; h++) engine.advanceOneHour(s);
@@ -5778,10 +5772,11 @@ section('9ai · 新闻占位符 newsVars / fillNews ＋ 上帝终局 s.god.ended
   engine.rewindTo(s, idx(at(2021, 1, 1)));
   check('9ai⑥ rewindTo 复位 `s.god.ended = false`', s.god.ended === false, String(s.god.ended));
 
-  /* ⑦ 落盘剔除：`s.god` 属 EPHEMERAL ⇒ ended 随会话级状态一起不落盘。 */
+  /* ⑦ 落盘（2026-10-10 翻转）：`s.god` 自本轮起**进存档**（上帝已是一等公民模式，见 `save.js`）——
+     旧版「EPHEMERAL 含 god ⇒ ended 不落盘」已作废。 */
   const saveSrc = fs.readFileSync(path.join(ROOT, 'src/core/save.js'), 'utf8');
-  check('9ai⑦ save.js 的 EPHEMERAL 含 `god`（ended 不落盘 / 不升档位）',
-    /const EPHEMERAL = \[[^\]]*'god'/.test(saveSrc));
+  check('9ai⑦ save.js 的 EPHEMERAL 不再含 `god`（上帝状态进存档）',
+    !/const EPHEMERAL = \[[^\]]*'god'/.test(saveSrc));
 
   /* ⑧ 接线锚：真实结果条 / 假新闻都经 `fillNews(newsVars(…))`；终局走 ended 而非 endGame。 */
   const engSrc = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
@@ -5856,12 +5851,13 @@ section('9aj · 上帝沙盒旋钮 SB_KEYS × 面板档位表 SB_STEPS（2026-10
     && /if \(rv\) \{ updateFloat\(null, null\)/.test(mainSrcAj));
 }
 
-/* ═══════════════════ 9ak · 上帝「新闻源与事件」总闸（2026-10-09 扩容） ═══════════════════
-   「新闻源」扩名成「新闻源与事件」：上帝关（`s.god.noRealNews` 默认 true）⇒ 全部史实事件注入
+/* ═══════════════════ 9ak · 史实事件总闸（2026-10-09 建立；2026-10-10 改判世界属性） ═══════════════════
+   架空世界（`s.world === 'fic'`）⇒ 全部史实事件注入
    一起熄火 —— 新闻播报 ×4 / extFlow / 交易所停机（播报＋只平不开）/ 被盗削减 / 交易所归零 /
-   破产预警遮罩 / K 线锚点刻度。普通局与挑战局无 `s.god` ⇒ 闸恒开，口径与真实历史逐位一致
+   破产预警遮罩 / K 线锚点刻度。**判据自 2026-10-10 起 = 世界属性**（`s.world === 'fic'`）：
+   史实局（含上帝·史实）⇒ 闸恒开，口径与真实历史逐位一致
    （普通局停机/被盗的史实行为另由 §2.2 / §11 / 本节④⑥ 咬住）。 */
-section('9ak · 上帝「新闻源与事件」总闸：普通/挑战照常 · 上帝关 ⇒ 全部熄火');
+section('9ak · 史实事件总闸：史实局照常 · 架空世界（fic）⇒ 全部熄火');
 {
   const readSrcAk = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
   const engSrcAk = readSrcAk('src/core/engine.js');
@@ -5869,27 +5865,28 @@ section('9ak · 上帝「新闻源与事件」总闸：普通/挑战照常 · �
   const mainSrcAk = readSrcAk('src/main.js');
 
   /* ① 结构：总闸导出 ＋ 引擎全部闸口 ＋ render/main 随扩名 */
-  check('9ak① 结构：eventsOff 导出 ＋ 引擎七处闸口（extFlow/播报/停机播报/停机限制/归零/被盗/预警）',
-    /export function eventsOff\(s\) \{\s*return !!\(s\.god && s\.god\.noRealNews\);\s*\}/.test(engSrcAk)
+  check('9ak① 结构：eventsOff 导出（判据 = 世界属性）＋ 引擎七处闸口（extFlow/播报/停机播报/停机限制/归零/被盗/预警）',
+    /export function eventsOff\(s\) \{\s*return s\.world === 'fic';\s*\}/.test(engSrcAk)
     && engSrcAk.includes('const extFlow = eventsOff(s) ? 0 :')
     && engSrcAk.includes('if (!eventsOff(s)) {')                       // 4 条新闻播报
     && engSrcAk.includes('if (!eventsOff(s)) for (const h of ex.halts || []) {')   // 停机播报
     && engSrcAk.includes('if (!eventsOff(s) && haltedAt(timeOf(s), s.ex)) {')      // 停机限制
     && engSrcAk.split('if (!eventsOff(s)) for (const ex of EXCHANGES) {').length >= 3  // 归零＋被盗
     && engSrcAk.includes('if (s.hintOn && !eventsOff(s)) {'));          // 破产预警遮罩
-  check('9ak② render：停机状态词 / K 线锚点刻度随总闸熄火 ＋ 面板行改「新闻源与事件」',
+  check('9ak② render：停机状态词 / K 线锚点刻度随总闸熄火（面板开关行已随 2026-10-10 退役）',
     renderSrcAk.includes('!eventsOff(s) && haltedAt(now, s.ex)')
-    && renderSrcAk.includes('anchors: !eventsOff(s),')
-    && renderSrcAk.includes("el('i', null, '新闻源与事件')"));
-  check('9ak③ main：开关日志文案随扩名更新（关/开两条）',
-    mainSrcAk.includes('新闻源与事件已关闭') && mainSrcAk.includes('新闻源与事件已开启'));
+    && renderSrcAk.includes('anchors: !eventsOff(s),'));
+  check('9ak③ 「新闻源与事件」开关整条退役（main 分派 / render 面板行皆无）',
+    !mainSrcAk.includes('d.godreal !== undefined')
+    && !renderSrcAk.includes('dataset.godreal')
+    && !renderSrcAk.includes("el('i', null, '新闻源与事件')"));
 
   /* ② 行为：BitMEX 停机窗口（2020-03-13 02:00–03:00）—— 普通局拒 / 上帝关事件放 */
-  const openAt = async (t, godOn) => {
+  const openAt = async (t, fic) => {
     const s = await mk({ sym: 'BTC', mode: 'margin', i: idx(t) });
     s.ex = 'bitmex'; s.lev = 1;
     s.books.bitmex = { usd: 1000, usdt: 1000 };
-    if (godOn) god.enableGod(s);
+    if (fic) { god.enableGod(s); s.world = 'fic'; }
     return { s, r: engine.openTrade(s, 'long') };
   };
   {
@@ -5898,8 +5895,8 @@ section('9ak · 上帝「新闻源与事件」总闸：普通/挑战照常 · �
     check('9ak④ 普通局：停机窗口内拒「停机维护」/ 恢复即放（史实口径不变，与 §11 互证）',
       !A.r.ok && /停机维护/.test(A.r.why || '') && B.r.ok);
     const G = await openAt(at(2020, 2, 13, 2), true);
-    check('9ak⑤ 上帝关事件：同一停机窗口可开仓（停机这条史实事件被真正关闭）',
-      G.r.ok && G.s.god.noRealNews === true, G.r.ok ? 'ok' : `拒(${G.r.why})`);
+    check('9ak⑤ 架空世界：同一停机窗口可开仓（停机这条史实事件被真正关闭）',
+      G.r.ok && G.s.world === 'fic', G.r.ok ? 'ok' : `拒(${G.r.why})`);
   }
 
   /* ③ 行为：Bitfinex 被盗削减（B21 · 2016-08-02 普损 36.067%）—— 普通局照削、上帝关事件不动账 */
@@ -5907,7 +5904,7 @@ section('9ak · 上帝「新闻源与事件」总闸：普通/挑战照常 · �
     const run = async (godOn) => {
       const s = await mk({ sym: 'BTC', mode: 'margin', i: idx(at(2016, 7, 2)) - 1 });
       s.books.bitfinex = { usd: 1000, usdt: 1000 };
-      if (godOn) god.enableGod(s);
+      if (godOn) { god.enableGod(s); s.world = 'fic'; }
       engine.advanceOneHour(s);              // 跨到 2016-08-02 00:00 那一根
       return { book: s.books.bitfinex, hacked: (s.log || []).some(l => /被盗/.test(l.text || l.msg || '')) };
     };
@@ -5916,7 +5913,7 @@ section('9ak · 上帝「新闻源与事件」总闸：普通/挑战照常 · �
     check('9ak⑥ 普通局：被盗日普损 36.067% 照削 ＋ 有播报（B21 史实口径不变）',
       Math.abs(N.book.usd - 639.33) < 1e-6 && Math.abs(N.book.usdt - 639.33) < 1e-6 && N.hacked,
       `usd=${f(N.book.usd, 2)} usdt=${f(N.book.usdt, 2)} log=${N.hacked}`);
-    check('9ak⑦ 上帝关事件：被盗日余额分文不动 ＋ 无播报',
+    check('9ak⑦ 架空世界：被盗日余额分文不动 ＋ 无播报',
       G.book.usd === 1000 && G.book.usdt === 1000 && !G.hacked,
       `usd=${f(G.book.usd, 2)} usdt=${f(G.book.usdt, 2)} log=${G.hacked}`);
   }
@@ -5928,7 +5925,7 @@ section('9ak · 上帝「新闻源与事件」总闸：普通/挑战照常 · �
     const run = async (godOn) => {
       const s = await mk({ sym: 'BTC', mode: 'margin', i: warnI - 1 });
       s.hintOn = true;
-      if (godOn) { god.enableGod(s); s.hintOn = true; }
+      if (godOn) { god.enableGod(s); s.world = 'fic'; s.hintOn = true; }
       engine.advanceOneHour(s);
       return { pending: s.pending, warnAt: s.warnAt };
     };
@@ -5937,7 +5934,7 @@ section('9ak · 上帝「新闻源与事件」总闸：普通/挑战照常 · �
     check('9ak⑧ 普通局（hintOn）：Mt.Gox 前 7 天弹破产预警遮罩（v11 口径不变）',
       N.pending === 'warn' && N.warnAt === idx(at(2014, 1, 25)),
       `pending=${N.pending} warnAt=${N.warnAt}`);
-    check('9ak⑨ 上帝关事件：同一时刻不弹预警（遮罩也是史实利空事件的播报）',
+    check('9ak⑨ 架空世界：同一时刻不弹预警（遮罩也是史实利空事件的播报）',
       G.pending == null && G.warnAt == null,
       `pending=${G.pending} warnAt=${G.warnAt}`);
   }
@@ -6653,6 +6650,109 @@ section('9aw · 弹层读数实时刷新 ＋ 选中态/置灰共存 ＋ 粒度�
     css.includes('.chart-head .chip.on { border-color: var(--accent); color: var(--accent); }')
     && rend.includes("refs.modeBtn.classList.toggle('on', win.mode === '1d');")
     && rend.includes("refs.rvModeBtn.classList.toggle('on', win.mode === '1d');"));
+}
+
+/* ═══════════════ 10a · 四槽推导与上帝入库（2026-10-10 · 架空模式 P1） ═══════════════ */
+section('10a · 四槽存档：槽位推导 · 上帝状态入库 · 旧档兼容');
+{
+  /* localStorage 打桩（save.js 只用 get/set/remove 三个方法）—— 放在末尾，不影响前面的段 */
+  globalThis.localStorage = (() => {
+    const m = new Map();
+    return {
+      getItem: k => (m.has(k) ? m.get(k) : null),
+      setItem: (k, v) => { m.set(k, String(v)); },
+      removeItem: k => { m.delete(k); },
+    };
+  })();
+  const SV = await import('../src/core/save.js');
+  const ST = await import('../src/core/state.js');
+  const mk = extra => Object.assign(ST.createState('classic'), extra);
+
+  check('10a 槽位清单是四槽（顺序：普通/挑战/上帝史实/上帝架空）',
+    JSON.stringify(SV.SAVE_SLOTS) === JSON.stringify(['normal', 'challenge', 'godHist', 'godFic']),
+    SV.SAVE_SLOTS.join(','));
+  check('10a 槽名逐槽正确',
+    SV.slotName('normal') === '普通模式' && SV.slotName('godHist') === '上帝·史实' && SV.slotName('godFic') === '上帝·架空');
+
+  check('10a 普通局 → normal', SV.saveSlotOf(mk({})) === 'normal');
+  check('10a 挑战局 → challenge', SV.saveSlotOf(mk({ scen: 'degen' })) === 'challenge');
+  check('10a 上帝(史实) → godHist', SV.saveSlotOf(mk({ god: {} })) === 'godHist');
+  check('10a 上帝(架空) → godFic', SV.saveSlotOf(mk({ god: {}, world: 'fic' })) === 'godFic');
+  check('10a worldOf 缺格兜底 hist', SV.worldOf(mk({})) === 'hist' && SV.worldOf(mk({ world: 'fic' })) === 'fic');
+
+  /* 上帝状态落盘 → 读回仍在（旧铁律「上帝不进存档」已翻转） */
+  const st = mk({ god: { lastFill: 12345 } });
+  SV.save(st);
+  check('10a 上帝局写进 godHist 槽', !!globalThis.localStorage.getItem('degen_save_godhist'));
+  const back = SV.loadSlot('godHist');
+  check('10a 读回后 s.god 保留（lastFill 逐位一致）',
+    !!back && !!back.god && back.god.lastFill === 12345);
+  check('10a 读回后 s.world 已归一化', back.world === 'hist');
+
+  /* 旧档兼容：无 god / world 的档仍落普通槽、读得出来 */
+  SV.save(mk({}));
+  check('10a 旧档（无 god/world）落普通槽', !!globalThis.localStorage.getItem('degen_save_normal'));
+  check('10a 旧档读回世界属性兜底 hist', SV.loadSlot('normal').world === 'hist');
+}
+
+/* ═══════════════ 10b · 世界属性字段（2026-10-10 · 架空 P1） ═══════════════ */
+section('10b · createState 世界属性：world 默认 hist / ficSeed / ficVer 占位');
+{
+  const ST = await import('../src/core/state.js');
+  const st = ST.createState('classic');
+  check('10b world 默认 hist', st.world === 'hist');
+  /* ⚠️ 字段名是 `ficSeed` / `ficVer`，**不是** `seed` —— `s.seed` 早已被 `GAME.seed`
+     （细粒度模拟的全局 RNG 种子）占用，同名会互相覆盖。 */
+  check('10b ficSeed / ficVer 占位为 null（架空 P2 才填）', st.ficSeed === null && st.ficVer === null);
+  const cn = ST.createState('degen');
+  check('10b 挑战局同样带 world', cn.world === 'hist' && cn.scen === 'degen');
+}
+
+/* ═══════════════ 10c · 上帝入口改造：解锁变量 · 菜单按钮 · 弹层动作键（P1） ═══════════════ */
+section('10c · 上帝入口：菜单按钮 ＋ 弹层选卡 ＋ 连点只解锁不进局');
+{
+  const readSrc = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const mainSrc = readSrc('src/main.js');
+  const rendSrc = readSrc('src/ui/render.js');
+  const bindSrc = readSrc('src/ui/bind.js');
+  check('10c① main 有会话级解锁变量 godUnlocked', /let godUnlocked = false/.test(mainSrc));
+  check('10c② onGodLogo 不再直接 enableGod', !/function onGodLogo\(\)[\s\S]{0,400}?enableGod\(s\)/.test(mainSrc));
+  check('10c③ onGodLogo 里置 godUnlocked = true 并重开菜单', /godUnlocked = true/.test(mainSrc));
+  check('10c④ 新增 onGodWorld 处理器', /function onGodWorld\(/.test(mainSrc));
+  check('10c⑤ 弹层卡片动作键 godworld 已注册', /'godworld'/.test(bindSrc));
+  check('10c⑥ render 导出 openGodPick 且两张卡齐（hist / fic）',
+    /export function openGodPick\(/.test(rendSrc)
+    && /dataset\.godworld/.test(rendSrc)
+    && /card\('hist'/.test(rendSrc) && /card\('fic'/.test(rendSrc));
+  check('10c⑦ 菜单按钮带 data-menu="god"', /dataset\.menu = 'god'/.test(rendSrc));
+}
+
+/* ═══════════════ 10d · 退场：新闻源开关删除 · eventsOff 改判世界属性（P1） ═══════════════ */
+section('10d · 删除 noRealNews 开关：史实局事件恒开、架空局（P2）恒关');
+{
+  const readSrc = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const E = await import('../src/core/engine.js');
+  const godSrc = readSrc('src/core/god.js');
+  const bindSrc = readSrc('src/ui/bind.js');
+  const mainSrc = readSrc('src/main.js');
+  const rendSrc = readSrc('src/ui/render.js');
+  check('10d① eventsOff：普通局恒 false', E.eventsOff({ world: 'hist' }) === false);
+  check('10d② eventsOff：上帝·史实局也 false（真新闻照常）', E.eventsOff({ world: 'hist', god: {} }) === false);
+  check('10d③ eventsOff：架空局 true', E.eventsOff({ world: 'fic' }) === true);
+  check('10d④ 源码不再出现旧字段 s.god.noRealNews',
+    !/s\.god\.noRealNews/.test(godSrc) && !/s\.god\.noRealNews/.test(rendSrc)
+    && !/s\.god\.noRealNews/.test(mainSrc) && !/noRealNews/.test(E.eventsOff.toString()));
+  check('10d⑤ 动作键 godreal 已摘除', !/'godreal'/.test(bindSrc));
+}
+
+/* ═══════════════ 10e · 重开确认：四槽各自武装（P1） ═══════════════ */
+section('10e · 重开确认：已有存档的槽必须先武装再点');
+{
+  const readSrc = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const mainSrc = readSrc('src/main.js');
+  check('10e① onGodWorld 走 hasSave → armMenu 武装', /function onGodWorld\([\s\S]*?hasSave\('godHist'\)[\s\S]*?armMenu\(node\)/.test(mainSrc));
+  check('10e② onMenu(start) 仍走 hasSave(normal) 武装', /kind === 'start'[\s\S]{0,200}?hasSave\('normal'\)/.test(mainSrc));
+  check('10e③ onScenario 仍走 hasSave(challenge) 武装', /function onScenario\([\s\S]*?hasSave\('challenge'\)[\s\S]*?armMenu\(node\)/.test(mainSrc));
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

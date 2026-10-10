@@ -173,6 +173,14 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      */
     endI: scenarioEndIndex(sc.id),
 
+    /* 世界属性（2026-10-10 · 架空模式）：`'hist'` = 真实历史数据包（缺省）、`'fic'` = 架空生成器。
+       ⚠️ 三个字段走**读侧缺格兜底**（`save.worldOf`），因此**不升 `STATE_VERSION`**。
+       ⚠️ 世界线种子**不叫 `seed`** —— 上面那枚 `s.seed`（`GAME.seed`）是细粒度模拟的全局 RNG 种子，
+         同名会互相覆盖。架空世界线用独立的 `ficSeed`（uint32）＋ `ficVer`（生成器版本号）。 */
+    world: 'hist',
+    ficSeed: null,
+    ficVer: null,
+
     /**
      * 本局的全局随机种子（S0 · 细粒度模拟的地基）—— 所有细刻度随机数的唯一源头
      * （见 `rng.js` 的 `rand`）。现在恒为 `GAME.seed`，S4 肉鸽化时才改由玩家输入 / 日期派生。

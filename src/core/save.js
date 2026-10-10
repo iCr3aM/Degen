@@ -1,47 +1,54 @@
 /**
- * 存档（GDD §19.1：localStorage）—— **普通模式 / 挑战模式各一个槽**（2026-10-01 拍板）
+ * 存档（GDD §19.1：localStorage）—— **四个槽**（2026-10-10 用户拍板 · 架空模式 P1）
  * ===============================================================
- * 只存**关键状态**，绝不存行情 —— K 线来自预置数据包，任何时候都能重新读出来。
+ * 只存**关键状态**，绝不存行情 —— K 线来自预置数据包（或架空生成器），任何时候都能重新读出来。
  *
- * ⚠️ **两个键，不是一局一处字段**（用户 2026-10-01）：
- *    `degen_save_normal` / `degen_save_challenge` —— 一局普通、一局挑战可以**同时存在**，
- *    互不覆盖。槽位由 `s.scen` 推导（`saveSlotOf`），**不新增任何持久字段**。
- *    为什么不做「挑战多槽」：挑战是「速通」，同一时间只该有一局在打；新开一局挑战覆盖旧的挑战档，
- *    与「重开本局」同一语义（LESS IS MORE）。
+ * ⚠️ **四个键**：`degen_save_normal` / `degen_save_challenge` / `degen_save_godhist` / `degen_save_godfic`
+ *    —— 四局可以**同时存在**，互不覆盖。槽位由 `saveSlotOf(s)` 推导（上帝局看 `s.world`，
+ *    其余看 `s.scen`），**不新增额外持久字段**。
+ *    为什么不做「挑战多槽」：挑战是「速通」，同一时间只该有一局在打（LESS IS MORE）。
  *
- * ⚠️ **本轮不做存档兼容**（2026-09-29 用户拍板）：版本对不上就直接**丢弃、重开新局**，
- *    原来那条 `migrate()` 迁移链已整条删除（少一层要维护的冗余代码；正式版以后再补）。
+ * ⚠️ **本轮不做存档兼容**（2026-09-29 用户拍板）：版本对不上就直接**丢弃、重开新局**。
  *
  * ⚠️ 一个闸门：`disabled`。删档时必须先关闸，否则 `beforeunload` 会把刚删掉的档原样写回来。
  *
- * ⚠️ **上帝状态不进存档**（2026-10-07 用户拍板「一次性游戏」）：`s.god` / `s.godRuined`
- *    在序列化时整对剔除 —— 落盘的永远是普通局，读档回来上帝模式就没有了（要再来一回，
- *    得去主菜单再连点 5 次）。本局会话内上帝照常有效、打完照常结算；
- *    「这局用过上帝」由 `s.stat.god`（统计布尔）落盘作证，结算 / 生涯档案认得出它。
+ * ⚠️ **上帝状态进存档**（2026-10-10 翻转 2026-10-07 的「一次性游戏」裁决）：`s.god` 正常落盘 ——
+ *    上帝模式已升级为一等公民模式（有自己的槽），读档回来仍在上帝局里。
+ *    ⚠️ 旧档（2026-10-07 ~ 2026-10-10 期间落盘的）里没有 `s.god` ⇒ 天然读成普通局，**不升版**。
+ *    「这局用过上帝」另有 `s.stat.god`（统计布尔）作证，结算 / 生涯档案认得出它。
  */
 
 import { STATE_VERSION } from './state.js';
 import { isChallenge } from './config.js';
 
-/** 不落盘的**会话级**键：上帝本体 ＋ 归零补满的提示闩锁（后者离开 god 就没有意义）
+/** 不落盘的**会话级**键：归零补满的提示闩锁（无实害：`inf` 开启时归零本就自动补满）
     ＋ 大单事件流（2026-10-08 tape：「最近发生的事」，读档重攒，不进存档）。 */
-const EPHEMERAL = ['god', 'godRuined', 'feed'];
+const EPHEMERAL = ['godRuined', 'feed'];
 
 const KEY_OF = {
   normal: 'degen_save_normal',
   challenge: 'degen_save_challenge',
+  godHist: 'degen_save_godhist',
+  godFic: 'degen_save_godfic',
 };
 
-/** 两个槽的键名（顺序即菜单里的展示顺序：普通在前、挑战在后） */
-export const SAVE_SLOTS = ['normal', 'challenge'];
+/** 四个槽的键名（顺序即菜单里的展示顺序） */
+export const SAVE_SLOTS = ['normal', 'challenge', 'godHist', 'godFic'];
 
-/** 槽位的显示名（菜单「读取存档」里那两行） */
-export const slotName = slot => (slot === 'challenge' ? '挑战模式' : '普通模式');
+/** 槽位的显示名（「读取存档」里那几行；挑战槽在菜单里另用年代名覆盖，见 `main.menuSlots`） */
+const SLOT_NAME = { normal: '普通模式', challenge: '挑战模式', godHist: '上帝·史实', godFic: '上帝·架空' };
+export const slotName = slot => SLOT_NAME[slot] || SLOT_NAME.normal;
 
-/** 一局属于哪个槽 —— 只由 `s.scen` 是不是挑战局决定，不新增持久字段。
+/** **世界属性**（2026-10-10）：`'hist'` = 真实历史数据包；`'fic'` = 架空生成器。
+ *  ⚠️ 缺格一律兜底 `'hist'`（旧档 / 普通局 / 挑战局全都没有这个字段）。 */
+export const worldOf = s => (s && s.world === 'fic' ? 'fic' : 'hist');
+
+/** 一局属于哪个槽 —— 上帝局看 `s.world`，其余看 `s.scen`；不新增持久字段。
  *  ⚠️ 名字刻意不叫 `slotOf`：`state.js` 已经有一个同名的 `slotOf(s, cur, ex)`（读**账本**里
  *     某个币种那格的余额），是两件毫不相干的事 —— 同名会让两边读起来互相误导。 */
-export const saveSlotOf = scenId => (isChallenge(scenId) ? 'challenge' : 'normal');
+export const saveSlotOf = s =>
+  s && s.god ? (worldOf(s) === 'fic' ? 'godFic' : 'godHist')
+    : (isChallenge(s && s.scen) ? 'challenge' : 'normal');
 
 let disabled = false;
 
@@ -59,7 +66,7 @@ export function save(s) {
        「这局用过上帝」的作证）原样保留。不深拷贝：JSON.stringify 只读，浅拷贝够用。 */
     const flat = { ...s };
     for (const k of EPHEMERAL) delete flat[k];
-    localStorage.setItem(KEY_OF[saveSlotOf(s.scen)], JSON.stringify(flat));
+    localStorage.setItem(KEY_OF[saveSlotOf(s)], JSON.stringify(flat));
     return true;
   } catch {
     return false;               // 隐私模式 / 配额满：玩得下去，只是不落盘
@@ -101,10 +108,10 @@ function parse(slot) {
     if (!raw) return null;
     const s = JSON.parse(raw);
     if (!s || typeof s !== 'object' || s.v !== STATE_VERSION || !shaped(s) || s.over) return null;
-    /* 旧档兼容（2026-10-07 上帝状态改为不进存档）：历史版本落过 `god` / `godRuined` 的档，
-       读回来一律剥掉 —— 普通进度原样保留、不因此弃档（所以不升 `STATE_VERSION`）。 */
-    delete s.god;
+    /* 旧档兼容（2026-10-10 上帝状态改为进存档）：历史版本落过 `godRuined` 的档剥掉它
+       （`s.god` 自本轮起**保留** —— 上帝已是一等公民模式）；`world` 缺格归一化成 `'hist'`。 */
     delete s.godRuined;
+    s.world = worldOf(s);
     return s;
   } catch {
     return null;

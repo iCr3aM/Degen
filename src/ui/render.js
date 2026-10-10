@@ -2327,7 +2327,7 @@ export function openIntro(scenId) {
  * ⚠️ 底部那行构建日期由 `vite.config.js` 的 `define` 注入（`__BUILD_DATE__`，UTC+8）——
  *    上传服务器后一眼能看出拿到的是不是最新版。
  */
-export function openMenu({ canLoad = false } = {}) {
+export function openMenu({ canLoad = false, godUnlocked = false } = {}) {
   closePicker();
   const ov = document.getElementById('overlay');
   if (!ov) return;
@@ -2359,6 +2359,15 @@ export function openMenu({ canLoad = false } = {}) {
   const scen = el('button', 'act chan', '挑战模式');
   scen.dataset.menu = 'scen';
   btns.append(scen);
+  /* 上帝模式（2026-10-10 改造）—— **连点 5 次解锁后才出现**（`main.js` 的 `onGodLogo`）；
+     点它自己不开始游戏，而是弹出史实 / 架空两张卡（`openGodPick`），与「挑战模式」同形。
+     ⚠️ 未解锁时这一枚**不出现**（连点前菜单里没有「上帝」二字）；它追加在挑战模式之后，
+        解锁发生在某次整盒重建里，不推挤已有按钮。 */
+  if (godUnlocked) {
+    const god = el('button', 'act chan', '上帝模式');
+    god.dataset.menu = 'god';
+    btns.append(god);
+  }
   const review = el('button', 'act chan', '历史回顾');
   review.dataset.menu = 'review';
   btns.append(review);
@@ -2512,6 +2521,31 @@ export function openScenPick() {
       row.append(el('span', null, sc.blurb));
       list.append(row);
     }
+    box.append(list);
+  });
+}
+
+/**
+ * 上帝模式选择弹层（2026-10-10 改造）—— 两张卡：**上帝·史实** / **上帝·架空**。
+ *
+ * ⚠️ 行为与「挑战模式」同形：卡片是 `<button>`、动作键 `data-godworld`（值 `'hist'|'fic'`）、
+ *    有档时先武装再点一次（武装状态机在 `main.js` 的 `onGodWorld`，与年代卡共用 `armMenu`）。
+ * ⚠️ 架空卡本阶段**置灰**（`disabled`）—— K 线生成器在 P2；置灰而非隐藏，是为了让玩家看见这条路。
+ */
+export function openGodPick() {
+  openMenuDlg('上帝模式', box => {
+    const list = dlgRows();
+    const card = (world, name, sub, blurb, off) => {
+      const row = el('button', 'scen');
+      row.dataset.godworld = world;
+      row.append(el('b', null, name));
+      row.append(el('u', null, sub));
+      row.append(el('span', null, blurb));
+      if (off) row.disabled = true;
+      list.append(row);
+    };
+    card('hist', '上帝·史实', '2013 → 2024', '真历史 K 线 ＋ 真新闻，但你有上帝面板：填资金、跳日期、拉盘砸盘。', false);
+    card('fic', '上帝·架空', '2013 → 2033', '合成世界线 ＋ 架空新闻，每一局都不一样。（P2 开放）', true);
     box.append(list);
   });
 }
@@ -3417,15 +3451,8 @@ function godManipPage(s, gx) {
   else cdP.style.display = 'none';
   rows.append(cdP);
 
-  /* 「新闻源与事件」开关（2026-10-08 用户拍板；2026-10-09 由「新闻源」扩名）：进入上帝模式
-     **默认关** —— 4 条真实新闻播报 ＋ 巨鲸/ETF 有向买盘（`extFlow`）＋ 交易所停机（播报＋
-     「只平不开」）＋ 被盗/归零削减 ＋ 破产预警遮罩 ＋ K 线历史锚点刻度，**全部一起熄火**
-     （总闸 = 引擎 `eventsOff`）。价格与播报只随玩家操作走；面板上可重新打开。 */
-  const realRow = el('div', 'set-row');
-  const realBtn = el('button', s.god.noRealNews ? 'set-btn' : 'set-btn on', s.god.noRealNews ? '关' : '开');
-  realBtn.dataset.godreal = '';
-  realRow.append(el('i', null, '新闻源与事件'), realBtn);
-  rows.append(realRow);
+  /* ⚠️ 「新闻源与事件」开关已删除（2026-10-10 用户拍板）：史实局（含上帝·史实）事件**恒开**、
+     架空局恒关 —— 判据改由世界属性 `s.world` 推导（引擎 `eventsOff`），不再需要这枚开关。 */
 
   /* ⚠️ 「强平图」叠加开关已删除（2026-10-10 用户拍板「此功能无用」）—— K 线右轴那排
      强平档位条与它的会话开关一起退役（render 入参 / chart 绘制块同批摘除，见审计 9ag①）。
