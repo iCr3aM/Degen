@@ -6872,6 +6872,42 @@ section('12d · 新闻分工：架空带数值 · 假消息只做叙事 · 芯�
     && /pushLog\(s, fillNews\(fn\.tpl, newsVars\(s, fn\.sym\)\), 'news', 'fic'\)/.test(engFic));
 }
 
+section('12e · 世界价格档（低/中/高）· 面板只选择不输入（2026-10-11）');
+{
+  const FG = await import('../src/core/ficgen.js');
+  const s0 = 20260808;
+  const wl = FG.generateWorld(s0, 'low'), wm = FG.generateWorld(s0, 'mid'), wh = FG.generateWorld(s0, 'high');
+  const last = w => { const a = FG.closesOf(w, 'BTC'); return a[a.length - 1]; };
+  const rl = last(wl) / last(wm), rh = last(wh) / last(wm);
+  check('12e① 价格档低 < 中 < 高（BTC 2033）', last(wl) < last(wm) && last(wm) < last(wh),
+    `${f(last(wl), 0)} / ${f(last(wm), 0)} / ${f(last(wh), 0)}`);
+  check('12e② 价格档有界（低档 ×0.6–1.0 / 高档 ×1.0–1.7，低点不至于太低）',
+    rl > 0.6 && rl < 1.0 && rh > 1.0 && rh < 1.7, `低 ×${rl.toFixed(3)} / 高 ×${rh.toFixed(3)}`);
+  const wm2 = FG.generateWorld(s0, 'mid');
+  const a = FG.closesOf(wm, 'BTC'), b = FG.closesOf(wm2, 'BTC');
+  check('12e③ (seed, tier) 纯函数：同 seed 同档逐位一致', a.every((v, i) => v === b[i]));
+  const wx = FG.generateWorld(s0, 'nope');
+  const c = FG.closesOf(wx, 'BTC');
+  check('12e④ 未知档回落默认档（mid）', a.every((v, i) => v === c[i]));
+
+  const rend = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  const mainSrc2 = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+  const bindSrc2 = fs.readFileSync(path.join(ROOT, 'src/ui/bind.js'), 'utf8');
+  const stateSrc = fs.readFileSync(path.join(ROOT, 'src/core/state.js'), 'utf8');
+  check('12e⑤ 面板「价格」行只在架空世界出现（`s.world === \'fic\'` 门控）',
+    /if \(s\.world === 'fic'\) \{\s*\n\s*const tierRow = el\('div', 'set-row'\);/.test(rend)
+    && /dataset\.godprice = k/.test(rend));
+  check('12e⑥ 种子输入框已整条删除（无 god-seed 输入元素 / 无 onSbSeed / 无 sbseed 键）',
+    !/el\('input', '[^']*god-seed/.test(rend) && !/function onSbSeed\(/.test(mainSrc2)
+    && !/function onSbRoll\(/.test(mainSrc2) && !/'sbseed'/.test(bindSrc2) && !/'sbroll'/.test(bindSrc2));
+  check('12e⑦ 动作键 godprice 已注册 ＋ main 有 onGodPrice（选后重开新局）',
+    /'godprice'/.test(bindSrc2) && /function onGodPrice\(/.test(mainSrc2)
+    && /startNewGame\(DEFAULT_SCENARIO, \{ god: true, world: 'fic' \}\)/.test(mainSrc2));
+  check('12e⑧ 存档带 `ficTier` 且回落到 mid ＋ 开机按档生成',
+    /ficTier: 'mid'/.test(stateSrc) && /s\.ficTier = pendingTier \|\| 'mid';/.test(mainSrc2)
+    && /installWorld\(generateWorld\(s\.ficSeed, s\.ficTier\)\)/.test(mainSrc2));
+}
+
 /* ═══════════════ 11 · 架空世界线：生成器 · 数据层物化 · 2033 终点（2026-10-10 · P2）═══════════════
    ⚠️ 放在**全文件最末尾**：11c 会把合成世界线灌进 `market` 的全局缓存（`installWorld`），
       之后任何读行情的小节都会读到合成数据 —— 所以必须最后跑。 */
@@ -6949,7 +6985,8 @@ section('11c · 数据层物化 · 架空卡开放（运行时 ＋ 静态）');
 
   const mainSrc = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
   const rendSrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
-  check('11c⑦ 开机：世界属性 fic ⇒ 物化生成器产出', /installWorld\(generateWorld\(s\.ficSeed\)\)/.test(mainSrc));
+  check('11c⑦ 开机：世界属性 fic ⇒ 物化生成器产出（按世界线种子 ＋ 价格档）',
+    /installWorld\(generateWorld\(s\.ficSeed, s\.ficTier\)\)/.test(mainSrc));
   check('11c⑧ 开机：newStash `ficSeed` / `ficVer` ＋ 终点按世界推',
     /s\.ficSeed = \(Math\.random\(\) \* 0xffffffff\) >>> 0;/.test(mainSrc) && /s\.ficVer = FIC_VER;/.test(mainSrc)
     && /s\.endI = endIndexOf\(s\.scen, 'fic'\);/.test(mainSrc));

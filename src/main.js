@@ -95,6 +95,23 @@ function stashGod(world = 'hist') {
   try { localStorage.setItem(GOD_KEY, world); } catch { /* 隐私模式：重开掉回普通局，可接受 */ }
 }
 
+/* ── 世界价格档信箱（2026-10-11 · 用户拍板「面板里选低/中/高，选后从头开一局」）──
+   与上面三枚同一副骨架：`'low' | 'mid' | 'high'` —— 只在**架空**世界用（史实世界无此概念）。
+   ⚠️ 值是**档名**而不是数字：种子的输入功能已整条删除，玩家只做「选择」（档内随机）。 */
+const TIER_KEY = 'degen_next_fictier';
+
+function takePendingTier() {
+  try {
+    const v = localStorage.getItem(TIER_KEY);
+    if (v !== null) localStorage.removeItem(TIER_KEY);
+    return (v === 'low' || v === 'mid' || v === 'high') ? v : null;
+  } catch { return null; }
+}
+
+function stashTier(tier = 'mid') {
+  try { localStorage.setItem(TIER_KEY, tier); } catch { /* 隐私模式：退回默认档 */ }
+}
+
 /* 这一趟开机是**开新局**（信箱里有年代）还是**读档**（信箱里有槽 / 缺省读）：
    ⚠️ 有年代信箱 ⇒ 一律开新局，**不读档** —— 否则「挑战档还在时想开一局普通」会被它捞回去。
    ⚠️ `loadSlot(slot)` / `load()` 返回 null 就是**全新一局** —— 开场叙事弹窗只在这一次出现
@@ -104,6 +121,7 @@ function stashGod(world = 'hist') {
 const pendingScen = takePendingScen();
 const pendingSlot = takePendingSlot();
 const pendingGod = takePendingGod();
+const pendingTier = takePendingTier();
 const saved = pendingScen ? null : (pendingSlot ? loadSlot(pendingSlot) : load());
 let s = saved || createState(pendingScen || DEFAULT_SCENARIO);
 /* 上帝开局（2026-10-07；2026-10-10 携带世界属性）：信箱有货 ⇒ 这一局**从第一根 K 线起就是上帝局** ——
@@ -120,6 +138,7 @@ if (bootGod) {
   if (s.world === 'fic') {
     s.ficSeed = (Math.random() * 0xffffffff) >>> 0;
     s.ficVer = FIC_VER;
+    s.ficTier = pendingTier || 'mid';   // 上帝面板选的低/中/高；没选 ⇒ 中档
     s.endI = endIndexOf(s.scen, 'fic');
   }
 }
@@ -127,6 +146,7 @@ if (bootGod) {
    ⚠️ `ficSeed` 缺失（理论上不该发生）⇒ 补一个，保证 `generateWorld` 拿得到种子。 */
 if (s.world === 'fic' && !bootGod) {
   if (!Number.isFinite(s.ficSeed)) s.ficSeed = (Math.random() * 0xffffffff) >>> 0;
+  if (s.ficTier !== 'low' && s.ficTier !== 'mid' && s.ficTier !== 'high') s.ficTier = 'mid';
   s.endI = endIndexOf(s.scen, 'fic');
 }
 /* 架空世界线**版本不符** ⇒ 与 `STATE_VERSION` 同一条纪律：提示重开（这里先只标记，`boot()` 里执行）。 */
@@ -406,7 +426,7 @@ async function boot() {
       return;
     }
     renderBoot('正在生成架空世界线…');
-    installWorld(generateWorld(s.ficSeed));
+    installWorld(generateWorld(s.ficSeed, s.ficTier));
   }
 
   await ensureCoin(s.sym);
@@ -1172,7 +1192,7 @@ function dispatch(node, ev) {
     || d.sb !== undefined
     || d.godautonews !== undefined || d.godautonewsoff !== undefined
     || d.godautowash !== undefined || d.godautopump !== undefined
-    || d.sbpreset !== undefined || d.sbseed !== undefined || d.sbroll !== undefined)) {
+    || d.sbpreset !== undefined || d.godprice !== undefined)) {
     return;
   }
 
@@ -1223,17 +1243,17 @@ function dispatch(node, ev) {
      （引擎 `eventsOff`）—— 史实局（含上帝·史实）恒开、架空局恒关，上帝面板不再有这枚开关。 */
   /* ── 上帝沙盒（2026-10-05）── 与上面几枚同一处境：只出现在上帝面板里，
      同样以 `s.god` 非空兜底（状态机不靠 DOM）。 */
-  if (d.sb !== undefined || d.sbpreset !== undefined || d.sbseed !== undefined || d.sbroll !== undefined) {
+  if (d.sb !== undefined || d.sbpreset !== undefined) {
     if (!s.god) return;
     /* ⚠️ 旧档兜底：`s.god.sb` 只在 `enableGod` 里创建，而 `STATE_VERSION` 未随新增字段升版
        ⇒ 存在「v31、god 已开、但没有 sb」的档。读侧 `sbOf` 有兜底，写侧（`onSb` /
        `onSbPreset`）直接写 `s.god.sb[key]` 会抛 TypeError ⇒ 在这里补一份恒等默认。 */
     if (!s.god.sb) s.god.sb = { ...SB_DEFAULT };
     if (d.sb !== undefined) return onSb(d.sb);
-    if (d.sbpreset !== undefined) return onSbPreset(d.sbpreset);
-    if (d.sbseed !== undefined) return onSbSeed(node);
-    return onSbRoll();
+    return onSbPreset(d.sbpreset);
   }
+  /* 世界价格档（2026-10-11 · 架空专属）—— 低/中/高 ⇒ 换一条新世界线并**从头开一局**。 */
+  if (d.godprice !== undefined) return onGodPrice(node);
   /* ── 上帝浮窗（2026-10-07）── 圆钮可能不在上帝面板里（它浮在图上）；1dfe6b0 起**普通 /
      挑战局的市场浮窗**（订单 ＋ 深度两页）也用同一套键 —— 闸门必须放宽到「浮窗 DOM 真的
      存在」（`s.god` 或市场浮窗开关开着），否则普通局的圆钮 / 页签全部点不动（原闸门
@@ -1958,7 +1978,8 @@ function onGodAutoPump(dir) {
 }
 
 /* ── 上帝沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）────────────
-   6 枚旋钮 ＋ 4 组预设 ＋ 种子，全走 `s.god.sb`（种子例外，见 `onSbSeed`）。
+   6 枚旋钮 ＋ 4 组预设，全走 `s.god.sb`（原「种子」输入框已于 2026-10-11 整条删除，
+   架空世界另有一行「价格 低/中/高」见 `onGodPrice`）。
    ⚠️ 只作用在合成层，**不碰真实 OHLC** —— 无论怎么调，行情仍是那段真实历史（见 `god.js` 头注）。 */
 
 /** 旋钮档位（`data-sb="heat:1.5"` / `"mood:-0.15"`）—— 写单枚旋钮。 */
@@ -1985,28 +2006,24 @@ function onSbPreset(id) {
   after();
 }
 
-/** 种子「应用」（输入框 `.god-seed`）—— 写的是**存档本体 `s.seed`**，不是 `s.god.sb`。
-    ⚠️ 归一成 uint32（`rng.rand` 按 `seed >>> 0` 取数）。 */
-function onSbSeed(node) {
-  const v = readGodInput(node, '.god-seed');
-  const num = Number(v);
-  if (v === null || v.trim() === '' || !Number.isFinite(num)) {
-    pushLog(s, '种子：请输入一个数', 'bad');
-    after();
-    return;
-  }
-  s.seed = num >>> 0;
-  pushLog(s, `沙盒 ｜ 种子已换为 ${s.seed}`, 'info');
-  showGod();
-  after();
-}
-
-/** 种子「随机」—— 换一条随机数流（跨所价差 / 事件时刻 / 强平细路径）。 */
-function onSbRoll() {
-  s.seed = (Math.random() * 0x100000000) >>> 0;
-  pushLog(s, `沙盒 ｜ 种子已换为 ${s.seed}`, 'info');
-  showGod();
-  after();
+/**
+ * 世界价格档（`data-godprice="low|mid|high"` · 2026-10-11 用户拍板）—— **架空世界专属**。
+ *
+ * 语义：换一条**新世界线**（开机重生 `ficSeed`，档内随机）× 指定档位（低/中/高）
+ * ⇒ **从 2013 从头开一局**。原先那枚「种子」数字输入框（`onSbSeed` / `onSbRoll`）已整条删除 ——
+ * 用户要求「种子输入功能删除，只为选择」，且史实世界的面板里不该出现任何种子相关控件。
+ *
+ * ⚠️ 走的是与「上帝卡」同一条重开路径（`startNewGame` ⇒ 投信箱 ⇒ reload）——
+ *    重开是**必须**的：`createClock` 闭包捕获的是开局那一份 `s`，原地换世界线不会生效。
+ * ⚠️ 会覆盖 `godFic` 槽（当前这一局）；档位按钮在面板里是显式动作，不再二次确认。
+ */
+function onGodPrice(node) {
+  const tier = node.dataset.godprice;
+  if (tier !== 'low' && tier !== 'mid' && tier !== 'high') return;
+  if (s.world !== 'fic') return;          // 史实世界没有「价格档」这回事
+  snd.begin();
+  stashTier(tier);
+  startNewGame(DEFAULT_SCENARIO, { god: true, world: 'fic' });
 }
 
 /* ── 主菜单（需求 4 · 方案 §2；存档拆两槽 2026-10-01；改弹窗 2026-10-02）────────

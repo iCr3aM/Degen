@@ -180,6 +180,10 @@ export function createState(scenId = DEFAULT_SCENARIO) {
     world: 'hist',
     ficSeed: null,
     ficVer: null,
+    /* **世界价格档**（2026-10-11 · 架空）：`'low' | 'mid' | 'high'` —— 架空世界在上线价与 2024-12
+       锚之上整体 ×e^u 的那一枚**有界随机乘子**（档内随机，见 `ficgen.P.tierU`）。
+       玩家在上帝面板里选；史实世界不使用（读侧缺格兜底 `'mid'` ⇒ 不升 `STATE_VERSION`）。 */
+    ficTier: 'mid',
 
     /**
      * 本局的全局随机种子（S0 · 细粒度模拟的地基）—— 所有细刻度随机数的唯一源头

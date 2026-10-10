@@ -3080,7 +3080,8 @@ export function openYearPick(curYear) {
  *    `closest('.god-float.god')`）。
  *    ⚠️ 档排上那些是**按钮**、不是输入框，照旧挂 `data-*`（`godyear` / `godmon`；`godday`
  *       已随 2026-10-08 三批的「日选择删除」一并退役）。
- *    ⚠️ 其余输入框同理（`god-cash` / `god-seed`）；`god-manip` 已随 2026-10-10 手动操盘行删除退役。
+ *    ⚠️ 其余输入框同理（`god-cash`）；`god-manip` 已随 2026-10-10 手动操盘行删除退役，
+ *       `god-seed` 已于 2026-10-11 随「种子输入功能删除」整条退役。
  * ⚠️ **「无限」开关（2026-10-07 用户拍板）与资金输入框同处一行**：它翻的是 `s.god.inf`，
  *    开启后归零**自动补满**到输入框那个数（`engine.js` 的 `checkRuin`）——
  *    与「填入」（当下填一次）语义不重叠，故并排而不是各占一行。
@@ -3172,14 +3173,14 @@ function godCashPage(s, gx) {
   return rows;
 }
 
-/** 页 1「沙盒」—— 6 枚旋钮 ＋ 4 组预设 ＋ 种子（原 `openGod` 的 `rowsB` 逐段搬）。 */
+/** 页 1「沙盒」—— 6 枚旋钮 ＋ 4 组预设（＋ 架空世界的「价格」档）（原 `openGod` 的 `rowsB` 逐段搬）。 */
 function godSandboxPage(s) {
   const rows = el('div', 'confirm-rows');
 
   /* ③ 沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）——
-     精选 **6 枚高影响旋钮 ＋ 4 组世界预设 ＋ 全局种子**，只作用在合成层（热度 / NPC / 冲击 / 共振 / 挂单密度）。
-     ⚠️ 种子走**独立输入框**（挂 `.god-seed`，**不挂 `data-*`** —— 同资金框的理由：
-        `bind.js` 会 `preventDefault`，挂上去就打不了字）。 */
+     精选 **6 枚高影响旋钮 ＋ 4 组世界预设**，只作用在合成层（热度 / NPC / 冲击 / 共振 / 挂单密度）。
+     ⚠️ 原「全局种子」输入框（`.god-seed`）已于 2026-10-11 **整条删除**（用户「种子输入功能删除，
+        只为选择」）；架空世界另有一行「价格 低/中/高」（见页面末尾），史实世界没有。 */
   const sb = sbOf(s);
 
   /* 档位表：倍率类 5 档 `[0.5,1,1.5,2,3]`；`mood` 是偏移量可负 `[-0.3,-0.15,0,0.15,0.3]`。
@@ -3248,20 +3249,21 @@ function godSandboxPage(s) {
   pRow.append(pGrp);
   rows.append(pRow);
 
-  /* 种子 —— 写的是存档本体 `s.seed`（**不是** `s.god.sb`，见 `god.js` 头注）。 */
-  const seedRow = el('div', 'set-row');
-  const seedIn = el('input', 'god-in god-seed');
-  seedIn.type = 'number';
-  seedIn.inputMode = 'numeric';
-  seedIn.min = '0';
-  seedIn.step = '1';
-  seedIn.value = String(s.seed);
-  const seedBtn = el('button', 'set-btn', '应用');
-  seedBtn.dataset.sbseed = '';
-  const seedRoll = el('button', 'set-btn', '随机');
-  seedRoll.dataset.sbroll = '';
-  seedRow.append(el('i', null, '种子'), seedIn, seedBtn, seedRoll);
-  rows.append(seedRow);
+  /* 世界价格档（2026-10-11 用户拍板）—— **只在架空世界**出现；史实世界这一行根本不存在。
+     ⚠️ 原来的「种子」数字输入框（`.god-seed` ＋ 「应用」/「随机」）已**整条删除**
+        （用户：「种子输入功能删除，只为选择」）。
+     现在只有**选择**：低 / 中 / 高 三档 —— 每按一次 ＝ 换一条**新世界线**（新种子，档内随机）
+     ＋ 从 2013 **从头开一局**。真实世界（含上帝·史实）没有这条 —— 它的 K 线是史实，无从「选」。 */
+  if (s.world === 'fic') {
+    const tierRow = el('div', 'set-row');
+    tierRow.append(el('i', null, '价格'));
+    for (const [k, label] of [['low', '低'], ['mid', '中'], ['high', '高']]) {
+      const b = el('button', (s.ficTier || 'mid') === k ? 'set-btn on' : 'set-btn', label);
+      b.dataset.godprice = k;
+      tierRow.append(b);
+    }
+    rows.append(tierRow);
+  }
 
   return rows;
 }

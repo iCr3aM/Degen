@@ -99,12 +99,12 @@ export const ACTION_KEYS = [
      分派见 `main.js` 的 `onMarginAdjust`。 */
   'mg',
   /* 上帝沙盒（2026-10-05 用户拍板「让上帝模式成为独特的沙盒游乐场」）：
-     `sb` ＝ 5 枚旋钮的档位按钮，值是子命令「键:值」（`heat:1.5` / `mood:-0.15` …）；
+     `sb` ＝ 旋钮的档位按钮，值是子命令「键:值」（`heat:1.5` / `mood:-0.15` …）；
      `sbpreset` ＝ 4 组世界预设，值是预设 id（`default` / `bull` / `bear` / `vol`）；
-     `sbseed` ＝ 种子输入框旁那枚「应用」；`sbroll` ＝ 「随机」。
-     分派见 `main.js` 的 `onSb` / `onSbPreset` / `onSbSeed` / `onSbRoll`。
-     ⚠️ 种子输入框本身**不挂 `data-*`**（同资金框：挂了会 `preventDefault` 打不了字）。 */
-  'sb', 'sbpreset', 'sbseed', 'sbroll',
+     `godprice` ＝ 世界价格档（`low` / `mid` / `high`）—— **只出现在架空世界**的面板里，
+       按一下 = 换一条新世界线 ＋ 从头开一局（2026-10-11 用户拍板：种子输入框已整条删除）。
+     分派见 `main.js` 的 `onSb` / `onSbPreset` / `onGodPrice`。 */
+  'sb', 'sbpreset', 'godprice',
   /* 上帝浮窗（2026-10-07 用户拍板「可拖拽小钮＋点开」）：
      `godfloat` ＝ 上帝面板详情行那枚「浮窗 开/关」；`godalpha` ＝ 透明档位按钮（循环 100→80→60→40）；
      `gofloat` ＝ 浮在图上的小圆钮本体（点按 = 展开/收起，拖拽逻辑在 `main.js` 的 onGodFloatChip）；

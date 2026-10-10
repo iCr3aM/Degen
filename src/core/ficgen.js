@@ -38,8 +38,11 @@ import { COINS, GAME, HOUR_MS, ficEndIndex } from './config.js';
  *       （各世界差在路径、不差在终点）⇒ 2024 的 p5 由「中位的 3%」抬到「约中位的一半」；
  *    ② 逐币 `volRatio`/`beta` 改用**近年代（2021–2024）**实测（全期值与 `volScale` 年代项重复计价，
  *       把山寨回撤推到 −99%）⇒ 山寨回撤明显收浅。
- *    旧架空档（FIC_VER ≤ 2）读档时提示重开。 */
-export const FIC_VER = 3;
+ *  v4（2026-10-11 · 用户拍板「把潜力线加回一个有界的随机乘子，但低点不要太低」）：
+ *    潜力线之上叠一枚**世界价格档** `uWorld`（低/中/高，档内按 seed 随机，±0.30 有界）——
+ *    世界整体价位 ×e^u；玩家在上帝面板（**仅架空**）三枚按钮里选，选后从头开一局。
+ *    旧架空档（FIC_VER ≤ 3）读档时提示重开。 */
+export const FIC_VER = 4;
 
 /* 终点 `ficEndIndex()` 与 `FIC_END` 的唯一真源在 `config.js`（2026-10-10 · 架空 P2）——
    这里只**透传**，免得两处 2034-01-01 走岔。 */
@@ -76,6 +79,13 @@ const P = {
      形式 `1/(1+(P/Psat)^k)`，早期 P≪Psat ⇒ sat≈1（不影响 2013 起步段），逼近 Psat 后收敛 ⇒ 软上限。 */
   satPrice: 400000,      // 饱和价位（美元）
   satExp: 2.0,           // 饱和陡度
+  /* **世界价格档**（2026-10-11 · 用户拍板）：潜力线之上再叠一枚**有界随机乘子** ——
+     每个世界在「低 / 中 / 高」三档区间里各抽一个对数偏移 `u`（仍由 seed 决定 ⇒ 纯函数性不变），
+     世界整体价位 = `e^u`（上线价与 2024-12 锚**一起**缩放，形状不变）。
+     ⚠️ 区间**刻意收紧**（±0.30 ≈ ×0.74～×1.35）：用户要求「低点不要太低」——
+     叠加原本的 OU 偏离后，低位仍在「中位的一半」量级，不会退回「中位的 3%」。 */
+  tierU: { low: [-0.30, -0.10], mid: [-0.10, 0.10], high: [0.10, 0.30] },
+  defaultTier: 'mid',    // 未指定档位时的默认（如从上帝卡直接开一局）
   /* 对数价格向**潜力线**回归的速率（OU）—— 它决定「路径偏离的幅度」：
      半衰期越短 ⇒ 价格越贴潜力线 ⇒ 分布越窄（低位抬高、回撤收浅）。
      v3：0.75 → 0.50 年（配合有界周期偏移，把 2024 的 p5 抬到约中位的一半）。 */
@@ -196,9 +206,16 @@ function buildRegimes(seed, endI) {
  *   `coins` / `liq.meta` 的形状与 `public/data/index.json` 的 `coins` / `liq` **逐字段对齐**，
  *   直接覆写 `manifest` 后，`market.js` 的 `rangeOf` / `decodeAt` / `liqOf` 全部照旧工作。
  */
-export function generateWorld(seed) {
+export function generateWorld(seed, tier = P.defaultTier) {
   const endI = ficEndIndex();
   const regimes = buildRegimes(seed, endI);
+
+  /* **世界价格档**（低/中/高）—— 在该档区间里按 seed 抽一个对数偏移，全世界价位整体 ×e^u。
+     ⚠️ 它只缩放水平、不动形状：上线价与 2024-12 锚一起走，OU / 周期偏移 / 波动全部不变。 */
+  const tierKey = P.tierU[tier] ? tier : P.defaultTier;
+  const [ulo, uhi] = P.tierU[tierKey];
+  const tierIdx = Object.keys(P.tierU).indexOf(tierKey);
+  const uWorld = ulo + (uhi - ulo) * rnd(seed, 0xab, tierIdx + 1, 5);
 
   /* 逐根体制数组（0 牛 / 1 熊）—— 两条生成回路共用，避免共享指针被推到头 */
   const regimeArr = new Uint8Array(endI);
@@ -280,7 +297,7 @@ export function generateWorld(seed) {
     const ints = new Int32Array(count * 4);
     const vol = new Uint8Array(count);
 
-    let lnP = Math.log(par.genesis);
+    let lnP = Math.log(par.genesis) + uWorld;   // 世界价格档：上线价整体 ×e^u（锚与形状一起走）
     const Tg = Tarr[g0] + offArr[g0];        // 该币**上线那一刻**的潜力线（周期偏移在此归零）
     /* **长期成长载荷 L**：把市场潜力线的增量按比例搬到本币，使得「2024-12-31 的靶心 = 真实末价」。
        两端锚定 ⇒ 中位世界在上市那年与 2024 年末都落在真实量级上，中间是市场潜力线的形状。 */
@@ -300,8 +317,9 @@ export function generateWorld(seed) {
       const reg = regimeArr[i];
       const volM = (reg === 0 ? P.regimeVolBull : P.regimeVolBear) * volScale(yearOf(i));
 
-      /* 该币的**潜力靶心**：上线价 × L·(市场潜力线 ＋ 周期偏移) 的增量（L 见上方注释） */
-      const target = Math.log(par.genesis) + L * ((Tarr[i] + offArr[i]) - Tg);
+      /* 该币的**潜力靶心**：上线价 × L·(市场潜力线 ＋ 周期偏移) 的增量（L 见上方注释）
+         ＋ 世界价格档偏移 `uWorld`（低/中/高 —— 整体水平，不动形状） */
+      const target = Math.log(par.genesis) + uWorld + L * ((Tarr[i] + offArr[i]) - Tg);
 
       let idio = 0;
       if (par.idio > 0) {
