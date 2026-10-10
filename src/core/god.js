@@ -45,7 +45,7 @@
  *    见 `engine.invalidateSigma` 的头注）。
  */
 
-import { exchangeOf, GAME, HOUR_MS } from './config.js';
+import { coinCapAt, exchangeOf, GAME, HOUR_MS } from './config.js';
 import { SLIP } from './impact.js';
 import { hashStr, rand } from './rng.js';
 /* 真实实体注册表（2026-10-11 新闻真实化）：假消息模板里的 `%X/%Z/%O…` 由引擎解析成真实机构名；
@@ -1928,7 +1928,7 @@ export const MANIP_NEWS = {
     { t: '快讯 ｜ 尼科西亚大学宣布接受 %S 缴纳学费', from: Date.UTC(2013, 10, 1) },  // 尼科西亚大学 2013-11
     { t: '快讯 ｜ Overstock 接入 %S 支付', from: Date.UTC(2014, 0, 1) },             // Overstock 2014-01（TigerDirect 同期）
     '快讯 ｜ %S 基金会宣告成立，获行业捐赠',
-    '快讯 ｜ 新一代矿机开售，%S 算力受关注',
+    { t: '快讯 ｜ 新一代矿机开售，%S 算力受关注', from: 0, need: 'mining' },
     '快讯 ｜ 主流财经媒体头版报道 %S 现象',
     /* ⑧ 年代扩容（2026-10-10 用户拍板「各年代丰富不单调」· 每向 +40 条）—— 每条锚一个真实
        「事件类型首发日」（行内注释给出依据）。
@@ -1963,10 +1963,10 @@ export const MANIP_NEWS = {
     { t: '快讯 ｜ 摩根大通试点 %S 结算代币', from: Date.UTC(2019, 1, 14) },        // 2019-02-14 JPM Coin
     { t: '快讯 ｜ %S 实物交割期货上线，机构席位进场', from: Date.UTC(2019, 8, 23), sym: 'BTC' }, // 2019-09-23 Bakkt 上线（BTC）
     /* ── 2020–2021 ── */
-    { t: '快讯 ｜ %S 链上借贷规模扩张，生态受关注', from: Date.UTC(2020, 5, 15) }, // 2020-06 DeFi Summer 启动
+    { t: '快讯 ｜ %S 链上借贷规模扩张，生态受关注', from: Date.UTC(2020, 5, 15), need: 'defi' }, // 2020-06 DeFi Summer（需智能合约链）
     { t: '快讯 ｜ 万通互惠将 %S 纳入投资组合', from: Date.UTC(2020, 11, 11), sym: 'BTC' },     // 2020-12-11 万通互惠购入 $1 亿 BTC
     { t: '快讯 ｜ %S 重返前轮高位区间，市场关注升温', from: Date.UTC(2020, 11, 16) },      // 2020-12-16 收复 2017 前高
-    { t: '快讯 ｜ %S 生态数字藏品单件拍出天价', from: Date.UTC(2021, 2, 11) },     // 2021-03-11 Beeple 成交 $6900 万
+    { t: '快讯 ｜ %S 生态数字藏品单件拍出天价', from: Date.UTC(2021, 2, 11), need: 'nft' },     // 2021-03-11 Beeple 成交 $6900 万（NFT 链）
     { t: '快讯 ｜ 特斯拉宣布接受 %S 购车', from: Date.UTC(2021, 2, 24), sym: 'BTC' },          // 2021-03-24 特斯拉开放 BTC 购车
     { t: '快讯 ｜ Coinbase 登陆公开证券市场，%S 受关注', from: Date.UTC(2021, 3, 14) },       // 2021-04-14 Coinbase 上市
     { t: '快讯 ｜ 萨尔瓦多立法确立 %S 为法定货币', from: Date.UTC(2021, 5, 9), sym: 'BTC' },   // 2021-06-09 萨尔瓦多立法（BTC）
@@ -1991,7 +1991,7 @@ export const MANIP_NEWS = {
     { t: '快讯 ｜ %S 盘面交投活跃，市场关注升温', from: Date.UTC(2024, 11, 5) },   // 2024-12-05 首破 $100,000
     /* ⑨ 真实机构扩容（2026-10-11 · 全部走 kind 占位符）—— 多一条模板就多乘一个机构池，
        同一条「交易所上线」在不同局里会是 Binance / Coinbase / Kraken… */
-    '快讯 ｜ %X 新增 %S 质押服务',
+    { t: '快讯 ｜ %X 新增 %S 质押服务', from: 0, need: 'staking' },
     '快讯 ｜ %X 恢复 %S 提现，通道畅通',
     '快讯 ｜ %X 与 %S 生态基金达成合作',
     '快讯 ｜ %X 增加 %S 冷钱包储备',
@@ -2000,8 +2000,8 @@ export const MANIP_NEWS = {
     '快讯 ｜ %F 披露增持 %S 现货头寸',
     '快讯 ｜ %Z 发布 %S 合规指引',
     { t: '快讯 ｜ %Z 批准 %S 相关牌照申请', from: Date.UTC(2017, 0, 1) },          // 牌照制度 2017+
-    '快讯 ｜ %N 扩产 %S 算力',
-    '快讯 ｜ %N 披露增持 %S 持仓储备',
+    { t: '快讯 ｜ %N 扩产 %S 算力', from: 0, need: 'mining' },
+    { t: '快讯 ｜ %N 披露增持 %S 持仓储备', from: 0, need: 'mining' },
     '快讯 ｜ %K 扩展 %S 支付结算',
     { t: '快讯 ｜ %K 引入 %S 储备证明', from: Date.UTC(2021, 0, 1) },              // 储备证明叙事 2021+
     { t: '快讯 ｜ %I 上调 %S 配置比例', from: Date.UTC(2013, 8, 1) },              // 机构配置叙事 2013-09+
@@ -2024,7 +2024,7 @@ export const MANIP_NEWS = {
     { t: '快讯 ｜ %S 现货 ETF 单日净流出居前', from: Date.UTC(2024, 0, 11), sym: 'BTC' },
     { t: '快讯 ｜ 稳定币脱锚引发 %S 市场恐慌抛售', from: Date.UTC(2015, 0, 1) },      // USDT 2014-10 后才有脱锚叙事
     '快讯 ｜ %X 遭黑客攻击，%S 被盗',
-    '快讯 ｜ %S 矿工集中抛售，抛压受关注',
+    { t: '快讯 ｜ %S 矿工集中抛售，抛压受关注', from: 0, need: 'mining' },
     { t: '快讯 ｜ Weiss Ratings 将 %S 生态展望下调至「负面」', from: Date.UTC(2018, 0, 1) }, // Weiss 加密评级 2018-01
     /* ① 交投与盘口（**纯叙事**，同 good 一侧：拆掉全部数值占位符） */
     '快讯 ｜ %S 盘面抛压显现，短线情绪转弱',
@@ -2059,8 +2059,8 @@ export const MANIP_NEWS = {
     { t: '快讯 ｜ 美国大通银行宣布停止 %S 相关账户服务', from: Date.UTC(2013, 9, 1) },  // 2013-10 Chase 等关停涉币账户
     { t: '快讯 ｜ 中国央行发布风险提示，警示 %S 投机', from: Date.UTC(2013, 11, 5) }, // 2013-12-05 五部委通知
     { t: '快讯 ｜ Mt.Gox 暂停提现，%S 投资者遭殃', from: Date.UTC(2014, 1, 7), sym: 'BTC' },      // 2014-02-07 Mt.Gox 暂停提现（BTC）
-    { t: '快讯 ｜ %S 矿池算力集中，社区紧张', from: Date.UTC(2014, 5, 1) },   // 2014-06 GHash 51% 恐慌
-    { t: '快讯 ｜ %S 矿机厂商资金链断裂宣布破产', from: Date.UTC(2014, 10, 1) },      // 2014-11 Hashfast 等
+    { t: '快讯 ｜ %S 矿池算力集中，社区紧张', from: Date.UTC(2014, 5, 1), need: 'mining' },   // 2014-06 GHash 51% 恐慌
+    { t: '快讯 ｜ %S 矿机厂商资金链断裂宣布破产', from: Date.UTC(2014, 10, 1), need: 'mining' },      // 2014-11 Hashfast 等
     '快讯 ｜ 早期参与者大额转让 %S，市场担忧抛压',
     /* ⑧ 年代扩容（2026-10-10 用户拍板「各年代丰富不单调」· 每向 +40 条）—— 与 good 同批、
        同口径（每条锚事件类型首发日；只到 2024 年，2025 锚换为 2024 年内同类型事件）。
@@ -2072,14 +2072,14 @@ export const MANIP_NEWS = {
     { t: '快讯 ｜ 美国国税局裁定 %S 按财产课税', from: Date.UTC(2014, 2, 25) },    // 2014-03-25 IRS Notice 2014-21
     { t: '快讯 ｜ 纽约州严管落地，多家 %S 平台退出', from: Date.UTC(2015, 8, 8) }, // 2015-08-08 BitLicense 生效
     { t: '快讯 ｜ %S 短线波动放大，杠杆盘活跃', from: Date.UTC(2016, 4, 13) },          // 永续杠杆普及后成常规叙事
-    { t: '快讯 ｜ %S 众筹项目遭攻击，巨额资金被盗', from: Date.UTC(2016, 5, 17) }, // 2016-06-17 The DAO 攻击
+    { t: '快讯 ｜ %S 众筹项目遭攻击，巨额资金被盗', from: Date.UTC(2016, 5, 17), need: 'defi' }, // 2016-06-17 The DAO 攻击（智能合约链）
     { t: '快讯 ｜ Bitfinex 遭袭，%S 短时波动加剧', from: Date.UTC(2016, 7, 2) },   // 2016-08-02 Bitfinex 被盗
     /* ── 2017–2019 ── */
     { t: '快讯 ｜ 中国叫停代币融资，%S 平台限期清退', from: Date.UTC(2017, 8, 4) }, // 2017-09-04 七部委公告
     { t: '快讯 ｜ %S 大幅波动，追高盘受关注', from: Date.UTC(2017, 11, 22) },      // 2017-12-22 顶部后急跌
     { t: '快讯 ｜ Facebook 封禁 %S 相关广告投放', from: Date.UTC(2018, 0, 30) },   // 2018-01-30 Facebook 广告禁令
     { t: '快讯 ｜ %Z 向 %S 交易所发传票', from: Date.UTC(2018, 2, 7) },            // 2018-03-07 SEC 发传票
-    { t: '快讯 ｜ 分叉算力战拖累，%S 走势受关注', from: Date.UTC(2018, 10, 15) }, // 2018-11-15 分叉算力战引爆熊市
+    { t: '快讯 ｜ 分叉算力战拖累，%S 走势受关注', from: Date.UTC(2018, 10, 15), need: 'mining' }, // 2018-11-15 分叉算力战（PoW）
     { t: '快讯 ｜ 多国监管联合抵制 %S 类全球币', from: Date.UTC(2019, 5, 19) },   // 2019-06-19 Libra 遭多国抵制
     { t: '快讯 ｜ %S 关注度走低，交易所裁员过冬', from: Date.UTC(2019, 0, 1) },   // 2019-01 熊市底部（类型级）
     { t: '快讯 ｜ 中国监管部门重申严打 %S 交易炒作', from: Date.UTC(2019, 10, 22) }, // 2019-11-22 央行上海总部整治
@@ -2088,14 +2088,14 @@ export const MANIP_NEWS = {
     { t: '快讯 ｜ %X 高管被查，%S 提现暂停', from: Date.UTC(2020, 9, 16) },     // 2020-10-16 OKEx 暂停提现
     { t: '快讯 ｜ 土耳其禁止 %S 用作支付工具', from: Date.UTC(2021, 3, 16) },      // 2021-04-16 土耳其央行禁令
     { t: '快讯 ｜ 特斯拉暂停 %S 支付，环保争议发酵', from: Date.UTC(2021, 4, 12), sym: 'BTC' }, // 2021-05-12 特斯拉暂停 BTC 支付
-    { t: '快讯 ｜ 中国明令叫停 %S 挖矿，矿场断电', from: Date.UTC(2021, 4, 21) },  // 2021-05-21 金融委点名挖矿
+    { t: '快讯 ｜ 中国明令叫停 %S 挖矿，矿场断电', from: Date.UTC(2021, 4, 21), need: 'mining' },  // 2021-05-21 金融委点名挖矿
     { t: '快讯 ｜ %S 短时波动加剧，清算量放大', from: Date.UTC(2021, 4, 19) },     // 2021-05-19 单日 -30%+
     { t: '快讯 ｜ 中国多部门联合定性 %S 业务非法', from: Date.UTC(2021, 8, 24) },  // 2021-09-24 十部委通知
     { t: '快讯 ｜ %S 热度回落，讨论区转淡', from: Date.UTC(2021, 11, 4) },      // 2021-12-04 Omicron 闪崩
     /* ── 2022–2023 ── */
-    { t: '快讯 ｜ %S 生态算法币暴雷，市场关注', from: Date.UTC(2022, 4, 9) },      // 2022-05-09 UST 脱锚→LUNA 螺旋
+    { t: '快讯 ｜ %S 生态算法币暴雷，市场关注', from: Date.UTC(2022, 4, 9), need: 'defi' },      // 2022-05-09 UST 脱锚→LUNA 螺旋（智能合约链）
     { t: '快讯 ｜ Celsius 暂停 %S 赎回兑付', from: Date.UTC(2022, 5, 13) },        // 2022-06-13 Celsius 冻结提现
-    { t: '快讯 ｜ %S 大幅波动，矿机折价抛售', from: Date.UTC(2022, 5, 18) },       // 2022-06-18 跌破 $20,000
+    { t: '快讯 ｜ %S 大幅波动，矿机折价抛售', from: Date.UTC(2022, 5, 18), need: 'mining' },       // 2022-06-18 跌破 $20,000（矿机抛售，PoW）
     { t: '快讯 ｜ FTX 交易所轰然倒塌，%S 市场巨震', from: Date.UTC(2022, 10, 11) }, // 2022-11-11 FTX 破产
     { t: '快讯 ｜ %Z 勒令 %S 稳定币停发', from: Date.UTC(2023, 1, 13) },           // 2023-02-13 勒令停发 BUSD
     { t: '快讯 ｜ Silvergate 等加密友好银行接连倒闭，%S 出入金受阻', from: Date.UTC(2023, 2, 10) }, // 2023-03 银行危机
@@ -2120,8 +2120,8 @@ export const MANIP_NEWS = {
     '快讯 ｜ %Z 收紧 %S 合规要求',
     { t: '快讯 ｜ %Z 启动对 %S 的合规调查', from: Date.UTC(2017, 0, 1) },          // 合规调查叙事 2017+
     { t: '快讯 ｜ %Z 处罚 %X 违规行为，%S 波动', from: Date.UTC(2017, 0, 1) },              // 监管处罚交易所 2017+
-    '快讯 ｜ %N 削减 %S 算力',
-    '快讯 ｜ %N 披露减持 %S 持仓储备',
+    { t: '快讯 ｜ %N 削减 %S 算力', from: 0, need: 'mining' },
+    { t: '快讯 ｜ %N 披露减持 %S 持仓储备', from: 0, need: 'mining' },
     '快讯 ｜ %K 上调 %S 托管费率',
     '快讯 ｜ %K 收紧 %S 提现额度',
     { t: '快讯 ｜ %I 下调 %S 配置比例', from: Date.UTC(2013, 8, 1) },              // 机构配置叙事 2013-09+
@@ -2158,7 +2158,10 @@ export function manipTplsOf(key, time, free = false, sym = null) {
   for (const e of arr) {
     if (typeof e === 'string') { if (tplUsable(e, time, o)) out.push(e); continue; }
     if (time < e.from) continue;
-    if (e.sym && sym != null && e.sym !== sym) continue;   // 币种门控
+    if (e.sym && sym != null && e.sym !== sym) continue;                        // 币种门控
+    /* 能力门控（2026-10-11「币 → 能力表」）：挖矿 / 质押 / 链上借贷 / 数字藏品只在
+       **拥有该能力**的币上出现（PoW 才有算力、PoS 才有质押；ETH 到 2022-09 为止）。 */
+    if (e.need && sym != null && !coinCapAt(sym, e.need, time)) continue;
     if (tplUsable(e.t, time, o)) out.push(e.t);
   }
   return out;

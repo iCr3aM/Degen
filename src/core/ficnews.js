@@ -32,7 +32,7 @@
  *    请一并评估是否要升 `ficgen.FIC_VER`。
  */
 
-import { COINS, GAME, HOUR_MS } from './config.js';
+import { COINS, GAME, HOUR_MS, coinCapAt } from './config.js';
 /* 架空快讯只服务**架空世界** ⇒ 实体一律走**按槽分档的自由池**（2026-10-11 用户拍板：
    架空局里公司 / 国家 / 实体不必与现实一致，苹果公司、英伟达、各国…都能出现，**但槽要对**
    —— 公司进公司类槽、国家进国家槽）；产品 / 概念的门控（永续合约 2016-05-13、
@@ -69,15 +69,18 @@ const T = (y, m = 1, d = 1) => Date.UTC(y, m - 1, d);
       「暂停提币现货交易」这种病句）。所以宁可把动词分进多条句式，也不要把不及物动词塞进
       及物句式。 */
 
-/** 动词：`{ w:词, t:方向, from:首可用毫秒(0=全期) }` */
-const V = (w, t, from = 0) => ({ w, t, from });
+/** 动词：`{ w:词, t:方向, from, need }`（`need` = 依赖的链上能力，见 `config.COIN_CAPS`） */
+const V = (w, t, from = 0, need = null) => ({ w, t, from, need });
 /**
- * 名词：`{ w:词, from:首可用毫秒(0=全期), coins:限定币种|null }`。
+ * 名词：`{ w:词, from, coins, need }`。
  * `coins` = 该词**只能**配哪几个币（`null` = 任意币）—— 修「【DOGE 快讯】VanEck 被拒现货
  * **比特币** ETF 申请」这类**币种穿帮**（2026-10-11 用户报）：带币名的词条只在对应币的
  * 快讯里出现；不带币名的词条不受限。
+ * `need` = 该词依赖的**链上能力**（`mining`/`staking`/`defi`/`nft`…）—— 修「【BTC 快讯】
+ * …质押服务」这类**能力穿帮**（2026-10-11 用户拍板「币 → 能力表」）：只在拥有该能力的币
+ * 的快讯里出现（表见 `config.COIN_CAPS`，含 ETH 转 PoS 这类**时间窗**）。
  */
-const O = (w, from = 0, coins = null) => ({ w, from, coins });
+const O = (w, from = 0, coins = null, need = null) => ({ w, from, coins, need });
 
 /* ── 收尾（情绪 / 观察，**不含任何绝对值断言**）── */
 const TAIL = [
@@ -93,8 +96,8 @@ const TAIL = [
 const MKT = [
   O('现货交易'), O('永续合约', T(2016, 5, 13)), O('期权市场', T(2017, 1)),
   O('杠杆额度'), O('指数产品', T(2019, 1)), O('跟单交易', T(2022, 1)),
-  O('网格交易', T(2021, 1)), O('借贷产品', T(2020, 1)), O('质押服务', T(2020, 12)),
-  O('托管服务', T(2018, 1)), O('法币出入金', T(2018, 1)), O('跨链桥服务', T(2021, 1)),
+  O('网格交易', T(2021, 1)), O('借贷产品', T(2020, 1)), O('质押服务', T(2020, 12), null, 'staking'),
+  O('托管服务', T(2018, 1)), O('法币出入金', T(2018, 1)), O('跨链桥服务', T(2021, 1), null, 'defi'),
   O('做市商计划', T(2019, 1)), O('合约保险基金', T(2016, 5, 13)), O('提币通道'),
   O('链上充值', T(2015, 1)), O('VIP 费率档', T(2017, 7)), O('期现套利工具', T(2019, 1)),
 ];
@@ -106,11 +109,16 @@ const ACT_EX_OP = [
 ];
 
 /* ── 匿名大户（**不进注册表**：现实本就匿名）── */
-const WHALE = ['一个巨鲸地址', '某早期矿工', '一家链上基金', '一个休眠钱包',
-  '某做市账户', '一个机构金库', '某场外大户', '一个鲸鱼集群'];
+/* 匿名大户 —— `need` = 该称呼**隐含的链上能力**（「某早期矿工」只属于 PoW 链）；
+   ⚠️ 与实体表的纪律一致：匿名者不进注册表，但**能力**照样要在（否则会播「【XRP 快讯】某早期矿工…」）。 */
+const WHALE = [
+  { w: '一个巨鲸地址' }, { w: '某早期矿工', need: 'mining' }, { w: '一家链上基金' }, { w: '一个休眠钱包' },
+  { w: '某做市账户' }, { w: '一个机构金库' }, { w: '某场外大户' }, { w: '一个鲸鱼集群' },
+];
 const ASSET = [
   O('现货仓位'), O('多头头寸'), O('稳定币储备'), O('山寨币仓位'), O('链上抵押品'),
-  O('协议治理代币'), O('冷钱包资产'), O('杠杆头寸'), O('质押凭证', T(2020, 12)),
+  O('协议治理代币', T(2020, 12), null, 'defi'), O('冷钱包资产'), O('杠杆头寸'),
+  O('质押凭证', T(2020, 12), null, 'staking'),
   O('场外持仓'), O('合约敞口', T(2016, 5, 13)), O('生息仓位', T(2020, 1)),
 ];
 
@@ -118,7 +126,7 @@ const ASSET = [
 const POLICY = [
   O('加密监管指引'), O('交易所牌照制度', T(2017, 1)), O('稳定币储备规则', T(2019, 1)),
   O('税收框架', T(2014, 1)), O('反洗钱要求', T(2013, 1)), O('现货 ETF 申请', T(2013, 7, 1)),
-  O('挖矿用电政策', T(2017, 1)), O('跨境资金申报', T(2014, 1)), O('支付牌照', T(2017, 4)),
+  O('挖矿用电政策', T(2017, 1), null, 'mining'), O('跨境资金申报', T(2014, 1)), O('支付牌照', T(2017, 4)),
   O('银行加密敞口限制', T(2018, 1)), O('加密广告规范', T(2021, 1)),
   O('投资者适当性规则', T(2019, 1)), O('交易所准备金要求', T(2020, 1)),
   O('央行数字货币研究', T(2016, 1)), O('加密犯罪量刑指引', T(2021, 1)),
@@ -148,9 +156,9 @@ const INFRA_OBJ = [
 /* ── 国家 / 地区 ── */
 const GOV_OBJ = [
   O('加密法案'), O('国家加密储备', T(2020, 1)), O('加密监管框架', T(2018, 1)),
-  O('央行数字货币', T(2016, 1)), O('挖矿合法化', T(2019, 1)), O('加密税收制度', T(2019, 1)),
-  O('数字资产立法', T(2018, 1)), O('主权挖矿计划', T(2019, 1)), O('加密支付许可', T(2020, 1)),
-  O('国家矿池', T(2021, 1)), O('加密资产托管', T(2020, 1)), O('区块链基础设施', T(2018, 1)),
+  O('央行数字货币', T(2016, 1)), O('挖矿合法化', T(2019, 1), null, 'mining'), O('加密税收制度', T(2019, 1)),
+  O('数字资产立法', T(2018, 1)), O('主权挖矿计划', T(2019, 1), null, 'mining'), O('加密支付许可', T(2020, 1)),
+  O('国家矿池', T(2021, 1), null, 'mining'), O('加密资产托管', T(2020, 1)), O('区块链基础设施', T(2018, 1)),
 ];
 
 /* ── 上市公司（把币纳入资产负债表）── */
@@ -197,14 +205,15 @@ const FAMS = [
   { ph: '%X', acts: ACT_EX_OP, objs: null },
   /* 匿名大户：**及物**（带对象）＋ **不及物**（动作自带完整语义）分家 ——
      与交易所族同一条纪律：`提币离场` 后面再接名词会拼出病句。 */
-  { ph: null, wh: WHALE, acts: [V('增持', 1), V('减持', -1), V('建仓', 1), V('清仓', -1), V('质押', 0), V('解锁', -1), V('补充抵押', 0), V('转入', 0), V('转出', -1)], objs: ASSET },
-  { ph: null, wh: WHALE, acts: [V('提币离场', -1), V('分批出货', -1), V('大额转入交易所', -1), V('撤回全部质押', -1)], objs: null },
+  { ph: null, wh: WHALE, acts: [V('增持', 1), V('减持', -1), V('建仓', 1), V('清仓', -1), V('质押', 0, 0, 'staking'), V('解锁', -1), V('补充抵押', 0), V('转入', 0), V('转出', -1)], objs: ASSET },
+  { ph: null, wh: WHALE, acts: [V('提币离场', -1), V('分批出货', -1), V('大额转入交易所', -1), V('撤回全部质押', -1, 0, 'staking')], objs: null },
   { ph: '%Z', acts: [V('出台', 0), V('收紧', -1), V('放松', 1), V('调查', -1), V('叫停', -1), V('推进', 1), V('通过', 1), V('拟议', 0), V('征询', 0), V('批准', 1), V('评估', 0), V('发布', 0), V('延长征询期', 0)], objs: POLICY },
-  /* 矿业四组：产能 / 采购 / 持仓（及物）＋ 算力经营（不及物） */
-  { ph: '%N', acts: [V('扩建', 1), V('投产', 1), V('接入新矿池', 1)], objs: MINE_CAP },
-  { ph: '%N', acts: [V('采购', 1), V('签署', 0)], objs: MINE_BUY },
-  { ph: '%N', acts: [V('增持', 1), V('减持', -1), V('抛售', -1), V('披露增持', 1)], objs: MINE_HOLD },
-  { ph: '%N', acts: [V('关停部分矿场', -1), V('削减算力', -1), V('算力走高', 1), V('算力回落', -1), V('迁移矿场', 0)], objs: null },
+  /* 矿业四组：产能 / 采购 / 持仓（及物）＋ 算力经营（不及物）
+     ⚠️ 四组一律 `need:'mining'` —— PoW 才有挖矿（XRP / SOL 从来没有；ETH 到 2022-09 为止）。 */
+  { ph: '%N', need: 'mining', acts: [V('扩建', 1), V('投产', 1), V('接入新矿池', 1)], objs: MINE_CAP },
+  { ph: '%N', need: 'mining', acts: [V('采购', 1), V('签署', 0)], objs: MINE_BUY },
+  { ph: '%N', need: 'mining', acts: [V('增持', 1), V('减持', -1), V('抛售', -1), V('披露增持', 1)], objs: MINE_HOLD },
+  { ph: '%N', need: 'mining', acts: [V('关停部分矿场', -1), V('削减算力', -1), V('算力走高', 1), V('算力回落', -1), V('迁移矿场', 0)], objs: null },
   /* 稳定币四组（`%B` 稳定币发行方）：发行 / 风控 / 铸造开关（不及物）/ 基建服务（`%K`） */
   { ph: '%B', acts: [V('发行', 0), V('增发', -1), V('销毁', 1)], objs: STABLE_ISSUE },
   { ph: '%B', acts: [V('冻结', -1), V('解冻', 1)], objs: STABLE_RISK },
@@ -220,13 +229,16 @@ const FAMS = [
   { ph: '%T', acts: [V('获批', 1), V('上市', 1), V('启动赎回', 0)], objs: ETF_LIST },
 ];
 
-/** 词条是否「此刻 ＋ 本币」可用（`coins` 限定币种 ⇒ 币种穿帮就在这一行被挡住） */
-const wordOk = (e, time, sym) => time >= e.from && (!e.coins || e.coins.includes(sym));
+/** 词条是否「此刻 ＋ 本币」可用：`coins` 挡币种穿帮、`need` 挡能力穿帮（同一行） */
+const wordOk = (e, time, sym) => time >= e.from
+  && (!e.coins || e.coins.includes(sym))
+  && (!e.need || coinCapAt(sym, e.need, time));
 
-/** 组在 `time`/`sym` 此刻可用：主体池非空 ＋ 至少一个动作/对象对本币已到期 */
+/** 组在 `time`/`sym` 此刻可用：主体池非空 ＋ 组自身能力满足 ＋ 至少一个动作/对象对本币可用 */
 function groupUsable(g, time, sym) {
   if (g.ph && !ficPoolOf(PH_KIND[g.ph], time).length) return false;
-  if (!g.acts.some(a => time >= a.from)) return false;
+  if (g.need && !coinCapAt(sym, g.need, time)) return false;
+  if (!g.acts.some(a => wordOk(a, time, sym))) return false;
   if (g.objs && !g.objs.length) return false;
   if (g.objs && !g.objs.some(o => wordOk(o, time, sym))) return false;
   return true;
@@ -246,7 +258,9 @@ const pickGated = (arr, seed, i, stream, salt, time, sym) => {
 function assemble(seed, i, time, salt, sym) {
   const avail = FAMS.filter(g => groupUsable(g, time, sym));
   const g = pickS(avail.length ? avail : FAMS, seed, i, 11, salt);
-  const head = g.ph ? g.ph : pickS(g.wh, seed, i, 15, salt);
+  /* 匿名称呼也过**能力过滤**（「某早期矿工」不出现在非 PoW 链的快讯里） */
+  const whs = g.wh ? g.wh.filter(x => !x.need || coinCapAt(sym, x.need, time)) : null;
+  const head = g.ph ? g.ph : pickS(whs.length ? whs : g.wh, seed, i, 15, salt).w;
   const act = pickGated(g.acts, seed, i, 12, salt, time, sym);
   const obj = g.objs ? pickGated(g.objs, seed, i, 13, salt, time, sym) : null;
   const tail = pickS(TAIL, seed, i, 14, salt);

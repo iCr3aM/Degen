@@ -271,6 +271,62 @@ export const COINS = [
 export const coinOf = sym => COINS.find(c => c.sym === sym) || null;
 
 /**
+ * **币 → 能力表**（2026-10-11 用户拍板）—— 新闻的「能力类穿帮」唯一真相源。
+ *
+ * 病根：词库里那些**币专属叙事**（挖矿 / 算力 / 质押 / 链上借贷 / 数字藏品 / 减半）此前
+ * 对所有币一视同仁 ⇒ 会拼出「【XRP 快讯】某矿企扩建 XRP 算力」「【BTC 快讯】某所新增
+ * BTC 质押服务」这种**链上不可能**的句子。现在每条这样的词/模板声明它依赖的能力，
+ * 发射层按 `coinCapAt(sym, cap, time)` 过滤 —— 穿帮在**结构上**不再可能（同「kind 即能力」）。
+ *
+ * 形状：`能力 → 生效时间窗数组 [from, to?]`（UTC 毫秒，`to` 缺省 = 直到时间轴终点）。
+ * 空数组 = 该币**从来没有**这个能力。同一条新闻在**两个世界**（史实 / 架空）都按本表过滤 ——
+ * 币种与链上能力是**现实锚**，不随架空的「实体自由」放宽（和产品概念门同一条纪律）。
+ *
+ * 依据（现实口径，逐项可核验）：
+ *   · `mining`  —— PoW 才有挖矿：BTC 2009 起、DOGE 2013-12 起；**ETH 到 2022-09-15 The Merge
+ *                  为止**（之后转 PoS）；XRP（联邦共识）/ SOL（PoH+PoS）从来没有。
+ *   · `halving` —— 区块奖励减半：只有 BTC 的减半被当作新闻事件（2012-11-28 起）。
+ *                  ⚠️ DOGE 历史上减过半（~2015 后奖励固定为 10,000 ⇒ 不再有减半叙事），
+ *                  而词库里的减半模板锚的都是 **BTC 的**第 2/4 次减半 ⇒ 只给 BTC。
+ *   · `staking` —— 权益质押：ETH 2020-12（信标链）起、SOL 2020 起；BTC/DOGE（PoW）与 XRP 没有。
+ *   · `defi`    —— 链上借贷 / 智能合约生态：ETH 2015-07 起、SOL 2020 起；BTC/XRP/DOGE 无。
+ *   · `nft`     —— 数字藏品：ETH 2017-06（CryptoKitties）起、SOL 2021 起、BTC 2023-01（Ordinals）起。
+ */
+export const COIN_CAPS = {
+  BTC: { mining: [[0]], halving: [[Date.UTC(2012, 10, 28)]], staking: [], defi: [], nft: [[Date.UTC(2023, 0, 1)]] },
+  ETH: {
+    mining: [[0, Date.UTC(2022, 8, 15)]],                       // The Merge 前是 PoW
+    halving: [],
+    staking: [[Date.UTC(2020, 11, 1)]],
+    defi: [[Date.UTC(2015, 6, 30)]],
+    nft: [[Date.UTC(2017, 5, 1)]],
+  },
+  XRP: { mining: [], halving: [], staking: [], defi: [], nft: [] },
+  DOGE: { mining: [[0]], halving: [], staking: [], defi: [], nft: [] },
+  SOL: {
+    mining: [], halving: [],
+    staking: [[Date.UTC(2020, 2, 16)]],
+    defi: [[Date.UTC(2020, 2, 16)]],
+    nft: [[Date.UTC(2021, 0, 1)]],
+  },
+};
+
+/**
+ * 某币在 `time` 此刻**有没有**某个能力（窗口内任一命中即真；未知币 / 未知能力一律 false）。
+ * @param {string} sym
+ * @param {string} cap `mining` | `halving` | `staking` | `defi` | `nft`
+ * @param {number} time UTC 毫秒
+ */
+export function coinCapAt(sym, cap, time) {
+  const c = COIN_CAPS[sym];
+  if (!c) return false;
+  const arr = c[cap];
+  if (!arr || !arr.length) return false;
+  for (const w of arr) if (time >= w[0] && (w[1] == null || time < w[1])) return true;
+  return false;
+}
+
+/**
  * 三家交易所（GDD §7.1 / §7.2）—— 全是**史实里的真名**，玩家一眼能对上当年的新闻。
  *
  * ⚠️ **Mt.Gox 已从本作移除**（2026-10-03 用户拍板「全程只做杠杆与合约」）——

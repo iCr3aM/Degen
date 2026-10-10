@@ -48,6 +48,8 @@ import { COINS, GAME, HOUR_MS, ficEndIndex } from './config.js';
  *       改回 Float32 安全上限（1e12）后，2019+ 重新按年代曲线走（2021 约 $13.1B、2024 约 $8.6B），
  *       并保留逐日抖动（CV 35–65%）与熊市回落（2021 → 2022 的非单调凹陷）。
  *    ② **偏度符号**：`jumpDownP` 0.50 → 0.58（对称跳跃会把 BTC 偏度推到 +1.84，而真实是 −1.28）。
+ *    ③ **Student-t 自由度 ν 3 → 5**：见 `P.nu` 的注 —— 峰度 / 年化波动 / 偏度 / `acf|r|(1)`
+ *       四项同时向真实数据包靠拢（ν=3 是纯 t 拟合，叠上 GARCH 与跳跃后尾巴过厚）。
  *    旧架空档（FIC_VER ≤ 4）读档时提示重开。 */
 export const FIC_VER = 5;
 
@@ -62,7 +64,20 @@ const P = {
   baseAnnVol: 0.92,      // BTC 基准年化波动（实测全期）
   alpha: 0.10,           // GARCH(1,1) α（文献标准，α+β=0.98）
   beta: 0.88,            // GARCH(1,1) β
-  nu: 3.0,               // Student-t 自由度（文献 ν≈3–4，实测尾部更厚 ⇒ 取下沿）
+  nu: 5.0,               /* Student-t 自由度 —— **2026-10-11 由 3 提到 5**（用户问「K 线是否合理 /
+                            符合数学模型」时的样化事实实测，3 个 seed × 全部 5 币）：
+                            ν=3 时样本峰度 332–454（真实数据包 110）、年化 79–82%（真实 92%）、
+                            偏度均值 ≈ −2.9（真实 −1.28）；ν=5 后 峰度 187–245、年化 86–88%、
+                            偏度 ≈ −1.5、`acf|r|(1)` 0.11 → 0.16 —— **五项同时更贴近真实**。
+                            机制：ν=3 是**纯 t 拟合**值，而本模型还叠了 GARCH 混合与跳跃，三者一起
+                            就把尾巴推得远超实测；ν=5 才是「整体模型」的等效自由度。 */
+  /* ⚠️ 2026-10-11 实测后**放弃**的两项（记录在此，别重复踩）：
+     · GJR-GARCH 杠杆项 γ（Glosten–Jagannathan–Runkle 1993）：真实 `corr(r_t, |r_{t+1}|) = −0.097`，
+       本模型 γ=0.05 只把它从 +0.000 拉到 −0.008（噪声量级），而 γ=0.12 直接把年化砸到 61%、
+       峰度推到 851 —— 因为 t 尾部 + ω 重标定会与杠杆项耦合。⇒ 不做。
+     · 量价耦合（把 |收益率| 灌进成交量强度）：按**日份额**口径实测相关从 0.000 只到 −0.02，
+       而真实是 +0.063（同为「可忽略」量级）—— 归一化到日份额后这条链路的可观测性本就极低。
+       ⇒ 不做，量价联动改由**绝对量**（份额 × 年代流动性曲线）承担，见 `liqCurveBTC`。 */
   jumpP: 0.0027,         // 每小时跳跃概率（实测 BTC 插针频率 0.274%）
   jumpMean: 0.0585,      // 跳跃幅度均值（实测 5.85%）
   jumpDownP: 0.58,       /* 跳跃向下的比例 —— **偏斜（skew）是加密收益的头号风格化事实**。
@@ -273,7 +288,7 @@ export function generateWorld(seed, tier = P.defaultTier) {
   const fac = new Float64Array(endI);
   for (let i = 0; i < endI; i++) {
     s2f = omega + P.alpha * eps2f + P.beta * s2f;
-    /* 防爆护栏：t(3) 尾部极厚，GARCH 状态偶发被顶到极端值后要能**衰减回来**；夹在合理倍数内。 */
+    /* 防爆护栏：t 尾部很厚，GARCH 状态偶发被顶到极端值后要能**衰减回来**；夹在合理倍数内。 */
     if (s2f > longVar * 40) s2f = longVar * 40;
     if (s2f < longVar * 0.05) s2f = longVar * 0.05;
     const z = tDraw(seed, btcIdx, i, 11, P.nu);
@@ -321,7 +336,7 @@ export function generateWorld(seed, tier = P.defaultTier) {
     /* 成交量：日历日内先攒原始强度，日末归一化成份额（与真实包同口径） */
     const dayRaw = new Float64Array(24);
     let dayId = -1, dayFill = 0, dayStartK = 0;
-    /* 隐藏强度（对数正态 AR(1)，均值≈1）—— 量价同源 */
+    /* 隐藏强度（对数正态 AR(1)，均值≈1）—— 决定**日内量的形状**（量价联动见下方 `logAct` 注） */
     let logAct = 0;
 
     for (let k = 0; k < count; k++) {
@@ -358,7 +373,8 @@ export function generateWorld(seed, tier = P.defaultTier) {
       const rcRaw = dTgt + kappa * (target - lnP) + par.beta * fac[i] + idio + jumpC;
       const rc = rcRaw > 0.7 ? 0.7 : rcRaw < -0.7 ? -0.7 : rcRaw;
 
-      /* 隐藏强度：AR(1)，与「本小时的绝对收益」同向（量价同源） */
+      /* 隐藏强度：AR(1)（量价联动见文件头的「放弃项」注 —— 按日份额口径实测不可观测；
+         真正的量价联动由**绝对量 = 份额 × 年代流动性曲线**承担）。 */
       logAct = 0.82 * logAct + 0.30 * norm(seed, pi, i, 71);
       const act = Math.min(6, Math.exp(logAct));
 

@@ -7418,6 +7418,38 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
       `DOGE ${dogeP.length} 条 · ETH ${ethP.length} 条`);
   }
 
+  /* ⑥c **币 → 能力表**（2026-10-11 用户拍板）—— 挖矿 / 质押 / 链上借贷 / 数字藏品是**链上能力**，
+     两个世界（史实 / 架空）都按 `config.COIN_CAPS` 过滤；穿帮在结构上不再可能。 */
+  {
+    const CFG = await import('../src/core/config.js');
+    const FNX = await import('../src/core/ficnews.js');
+    const t24 = Date.UTC(2024, 6, 1), t19 = Date.UTC(2019, 0, 1);
+    check('12h⑥c coinCapAt：PoW/PoS ＋ 时间窗（BTC 无质押；ETH 2019 有挖矿 / 2024 没有；XRP 全无）',
+      !CFG.coinCapAt('BTC', 'staking', t24) && !CFG.coinCapAt('BTC', 'defi', t24)
+      && CFG.coinCapAt('ETH', 'mining', t19) && !CFG.coinCapAt('ETH', 'mining', t24)
+      && CFG.coinCapAt('ETH', 'staking', t24) && !CFG.coinCapAt('ETH', 'staking', t19)
+      && !CFG.coinCapAt('XRP', 'mining', t24) && !CFG.coinCapAt('XRP', 'staking', t24)
+      && CFG.coinCapAt('DOGE', 'mining', t24) && !CFG.coinCapAt('DOGE', 'halving', t24)
+      && CFG.coinCapAt('SOL', 'staking', t24) && !CFG.coinCapAt('SOL', 'mining', t24)
+      && ['BTC', 'ETH', 'XRP', 'DOGE', 'SOL'].every(s => !!CFG.COIN_CAPS[s]));
+    /* 行为级：80 万根快讯里「不可能的组合」一条都没有 */
+    const MINE = ['算力', '矿场', '矿池', '矿机', '矿工', '挖矿'], STAKE = ['质押'];
+    const canMine = new Set(['BTC', 'DOGE', 'ETH']), canStake = new Set(['ETH', 'SOL']);
+    let n = 0, bad = 0, ex = '';
+    for (let k = 0; k < 800000; k++) {
+      const v = FNX.ficNewsAt(20260101, k); if (!v) continue; n++;
+      if ((MINE.some(w => v.tpl.includes(w)) && !canMine.has(v.sym))
+        || (STAKE.some(w => v.tpl.includes(w)) && !canStake.has(v.sym))) { bad++; if (!ex) ex = `${v.sym} ${v.tpl}`; }
+    }
+    check('12h⑥c 能力门控（架空快讯 80 万根）：XRP/SOL 挖矿、BTC/DOGE/XRP 质押 = 0 条',
+      n >= 300 && bad === 0, `样本 ${n} 条${ex ? ' 例：' + ex : ''}`);
+    const R = /算力|矿场|矿池|矿机|矿工|挖矿|质押/;
+    const pool = sym => G2.manipTplsOf('good', t24, false, sym).concat(G2.manipTplsOf('bad', t24, false, sym));
+    check('12h⑥c 能力门控（假消息）：XRP 池里挖矿 / 质押 / 算力类模板 = 0 条',
+      pool('XRP').length >= 40 && pool('XRP').every(x => !R.test(x)),
+      `${pool('XRP').length} 条 · 命中 ${pool('XRP').filter(x => R.test(x)).length}`);
+  }
+
   /* ⑦ **真实史实新闻也进立场账本** ＋ 假消息不得反向（2026-10-11 用户口径
      「确认上帝面板中的假消息不和上帝模式中出现的真实史实新闻冲突」）—— 非空洞集成。 */
   {
@@ -7458,7 +7490,9 @@ section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场�
        无账本时它会被原样播出（证明「测试对象存在且可达」）；账本记 Coinbase=−1 后，
        同一条「利好」假消息被换掉，输出里不再有 Coinbase。 */
     const tplCoin = '快讯 ｜ Coinbase 登陆公开证券市场，%S 受关注';
-    const poolG = G2.manipTplsOf('good', Date.UTC(2023, 5, 5));
+    /* ⚠️ 下标必须在**与 `godFakeNews` 同一张池**里取（同一个 `sym` + `free`）——
+       否则币种/能力过滤会让两边的序号错位，测的就不是那条模板了。 */
+    const poolG = G2.manipTplsOf('good', Date.UTC(2023, 5, 5), false, 'BTC');
     const iCoin = poolG.indexOf(tplCoin);
     const fireAtCoin = async (ledger) => {
       const sX = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: tgt });
@@ -7528,6 +7562,24 @@ let ficSeedWorld = null;
   const kurt = r.reduce((a, b) => a + Math.pow((b - m) / sd, 4), 0) / r.length;
   check('11a⑥ 收益厚尾：峰度显著 > 3（Student-t / 跳跃的痕迹）', kurt > 8, `kurt=${kurt.toFixed(1)}`);
 
+  /* 样化事实护栏（2026-10-11 用户问「艾略特波段 / 类似体系 → K 线是否合理 / 是否单调」）：
+     ① `acf|r|(1)` 明显 > 0 ⇒ 有**波动聚集**（真实 BTC 0.44，本模型 ~0.16：量级偏弱但非零）；
+     ② `acf(r)` ≈ 0 ⇒ 收益**没有线性可预测性**，不会出现「一条斜线」式的单调段。 */
+  {
+    const acfOf = (x, l) => {
+      const n = x.length; let m = 0; for (const v of x) m += v; m /= n;
+      let a = 0, b = 0;
+      for (let i = 0; i < n; i++) { b += (x[i] - m) * (x[i] - m); if (i + l < n) a += (x[i] - m) * (x[i + l] - m); }
+      return b ? a / b : 0;
+    };
+    const ar = r.map(Math.abs);
+    const a1 = acfOf(ar, 1), r1 = acfOf(r, 1), r24 = acfOf(r, 24);
+    check('11a⑧ 波动聚集：`acf|r|(1)` ∈ [0.08, 0.45]（真实 0.44；低于下沿 = 退化成「均匀噪声」）',
+      a1 >= 0.08 && a1 <= 0.45, `acf|r|(1)=${a1.toFixed(3)}`);
+    check('11a⑨ 不单调：收益自相关 ≈ 0（|acf(r)| ≤ 0.05 @ lag 1 / 24）',
+      Math.abs(r1) <= 0.05 && Math.abs(r24) <= 0.05,
+      `acf(r)1=${r1.toFixed(3)} acf(r)24=${r24.toFixed(3)}`);
+  }
   check('11a⑦ 生成耗时 < 3s（21 年 × 5 币，体感可接受）', genMs < 3000, `${genMs}ms`);
 }
 
