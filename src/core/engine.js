@@ -244,6 +244,13 @@ export const LOB = {
   farP: 1.0,           // 每小时每侧远场价值单**笔数**基准（× 密度旋钮；小数 = 概率尾数）—— 0.30→1.0（2026-10-10：远场是持续存在的价值单流，不是稀客）
   farD0: 15,           // 远场价距下限（格，≈±3%）
   farMu: 0.6,          // 远场账本剖面指数 ρ(δ)∝δ^-µ（BMP 2002 / Lillo 2006；旧 farA=1.8 是单笔口径且过薄，退役）
+  /* 极远整数关口单（2026-10-10 · 用户拍板「6 万 BTC 挂 12 万真实存在」）：幂律截断 ±80%
+     是**显示可达性**边界，不是物理边界 —— 真实极远单是「期权式」赌极端波动：稀疏、长寿、
+     高度集中在整数关口（round number effect：12.0 万整常见、11.37 万几乎总空）。
+     距离 400~farXMax 格均匀 ＋ 吸附 10 格大关口（gateMax ×3 自动放大）；
+     玩家看不见也不会被吃 —— 账本真实感 ＋ 将来清算图/磁吸位功能的原料。 */
+  farX: 0.05,          // 极远关口单每小时每侧笔数基准（× 密度旋钮；小数 = 概率尾数）
+  farXMax: 1200,       // 极远距离上限（格，±240%）—— 寿命筛的 d 退场线与此同源（旧 400）
   sizeSig: 0.6,        // 挂单大小对数正态 σ（1.2→0.6：去掉十万级个例）
   nearQ: 0.00009,      // 近场单中位大小（q 单位）—— 0.0015→0.00042（M4a）→ 0.00009（2026-10-09 铺平后按笔数反比缩）
   farQ: 0.00084,       // 远场单 Pareto 尺度（q 单位）—— 0.015→0.0039（M4a）→ 0.00084（2026-10-09 随 nearQ 同比例缩，保持 9.3× 近场比值）
@@ -401,6 +408,16 @@ function lobOf(s, sym) {
       for (let li = 0; li < lv.length; li++) {
         lobLevelPut(arr, lv[li], li, price, step, side, scale, 1, scale0, h, sy, s.seed, h);
       }
+      /* 极远整数关口单 —— 同 `lobTick` ③d 逐位同分布、同 4000 段通道（冷启动也要有）。 */
+      const farXRate = LOB.farX * lobMul;
+      if (randFast(s.seed, sy, h, 4010 + (side < 0 ? 0 : 1), CH_LOB) < farXRate) {
+        const u1 = randFast(s.seed, sy, h, 4000 + (side < 0 ? 0 : 2), CH_LOB);
+        const u2 = randFast(s.seed, sy, h, 4001 + (side < 0 ? 0 : 2), CH_LOB);
+        const dX = 400 + u1 * (LOB.farXMax - 400);
+        const kkX = Math.round(price * (1 + side * dX * step / price) / step);
+        const nx = Math.min(LOB.maxQ, LOB.farQ * Math.pow(1 - u2 * 0.999, -1 / 1.8) * scale) * scale0;
+        lobPlace(arr, Math.round(kkX / 10) * 10 * step, step, nx, h, side < 0, scale0);
+      }
     }
   }
   /* 冷启动收尾：按寿命筛一次（出生最早的那批可能有该死的）—— 与 lobTick ② 同一公式 */
@@ -414,7 +431,7 @@ function lobOf(s, sym) {
          （① 只吃本根 K 线触及的档），赖到寿命尽会违反 9v③「严格分居中价两侧」契约。
          真实盘口同理：限价单被穿过 = 成交或撤，不会留在簿上。 */
       const stale = isBid ? o.p >= price : o.p <= price;
-      if (stale || s.i - o.t > life || d > 400) arr.splice(j, 1);
+      if (stale || s.i - o.t > life || d > LOB.farXMax) arr.splice(j, 1);
     }
   }
   return b;
@@ -502,7 +519,7 @@ function lobTick(s, sym) {
          （① 只吃本根 K 线触及的档），赖到寿命尽会违反 9v③「严格分居中价两侧」契约。
          真实盘口同理：限价单被穿过 = 成交或撤，不会留在簿上。 */
       const stale = side < 0 ? o.p >= price : o.p <= price;
-      if (stale || s.i - o.t > life || d > 400) arr.splice(j, 1);
+      if (stale || s.i - o.t > life || d > LOB.farXMax) arr.splice(j, 1);
     }
     let mass = 0;
     for (const o of arr) mass += o.n;
@@ -550,6 +567,19 @@ function lobTick(s, sym) {
       const lv = levelsOf(sym, s.i);
       for (let li = 0; li < lv.length; li++) {
         lobLevelPut(arr, lv[li], li, price, step, side, scale, sMul, base, s.i, sy, s.seed, s.i);
+      }
+      /* ③d 极远整数关口单 —— 见 `LOB.farX` 注（用户拍板「6 万 BTC 挂 12 万真实存在」）：
+         距离 400~farXMax 格均匀，落格后**吸附 10 格大关口**（lobPlace 的 `kk%10===0`
+         自动吃 gateMax ×3 —— 关口单大，与 round number 同语义）；大小与远场同分布
+         （帕累托尾自然出大单）。与冷启动逐位同分布、同 4000 段通道。 */
+      const farXRate = LOB.farX * lobMul;
+      if (randFast(s.seed, sy, s.i, 4010 + (side < 0 ? 0 : 1), CH_LOB) < farXRate) {
+        const u1 = randFast(s.seed, sy, s.i, 4000 + (side < 0 ? 0 : 2), CH_LOB);
+        const u2 = randFast(s.seed, sy, s.i, 4001 + (side < 0 ? 0 : 2), CH_LOB);
+        const dX = 400 + u1 * (LOB.farXMax - 400);
+        const kkX = Math.round(price * (1 + side * dX * step / price) / step);
+        const nx = Math.min(LOB.maxQ, LOB.farQ * Math.pow(1 - u2 * 0.999, -1 / 1.8) * scale * sMul) * base;
+        lobPlace(arr, Math.round(kkX / 10) * 10 * step, step, nx, s.i, side < 0, base);
       }
     }
     if (arr.length > LOB.maxSide) arr.splice(LOB.maxSide);   // 裁最远（两端已按远近排序）
