@@ -4708,6 +4708,17 @@ function recordCareer(s, reason) {
 }
 
 function endGame(s, reason) {
+  /* ⚠️ **上帝局的总闸**（2026-10-11 用户拍板「上帝模式完全不进入结算，也就是不进入档案」）。
+     当前四条结束路径（`checkRuin` 的归零 / 挑战归零 · `giveUp` 主动收摊 · `advanceOneHour` 走完全程）
+     都已在各自门口用 `s.god` 挡掉了 —— 但那是「四处分别记得」。结束路径将来只要多一条，
+     漏一处就会把上帝局写进生涯档案（`recordCareer`）＋ 清档（`wipe`）＋ 结算平仓，那是**不可逆**的。
+     所以把「上帝不结算」钉成**这一处的不变量**：任何拿上帝态走到这里都只翻到「上帝终局」遮罩
+     （`s.god.ended` ＋ `s.paused`，与走完全程同一形态），`settleCloseAll` / `recordCareer` / `wipe`
+     一条都不碰、`s.over` 保持 null。 */
+  if (s.god) {
+    if (!s.god.ended) { s.god.ended = true; s.paused = true; }
+    return { ok: false, why: reason };
+  }
   /* **结算平仓**（2026-10-06 用户拍板）：把还没平的仓位按标记价一并平掉 —— 见 `settleCloseAll`。
      ⚠️ 必须排在 `recordCareer` **之前**：档案的 `final` / `win` / `loss` 要吃到这一步的结果。
      ⚠️ 三条结局都走这一步（`SETTLED` 走到终点、`GAVEUP` 主动收摊、`LIQUIDATED` 爆仓后可能残留的

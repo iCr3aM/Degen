@@ -182,8 +182,37 @@ let menuArmUndo = null;
 
 /* 上帝入口解锁（2026-10-10 改造）：连点 5 次只**解锁**（本会话内菜单多出「上帝模式」按钮），
    不再直接进局 —— 与「挑战模式」同形：点按钮 → 弹层选卡 → 开新局（`onGodWorld`）。
-   ⚠️ 会话级（不进 `s`、不进存档）：与旧版「连点即开」同一处境，每次开机重新连点。 */
-let godUnlocked = false;
+   ⚠️ **会话级持久**（2026-10-11 用户拍板「解锁后一直显示在主菜单，除非刷新页面」）：
+      难点是解锁之后，玩家一开上帝局 / 换槽 / 重开本局都会走 `location.reload()`（见 `maskReload`
+      与 SW 接管那次 reload）—— 那是**站内重载**，不是玩家刷新，绝不该把解锁清掉。
+      两条腿：解锁态落 `sessionStorage`（跨站内重载存活）＋ 每次站内重载前投一封「站内」信封；
+      开机时若信封不在（＝玩家按了 F5 / 重开标签页 / 新会话）⇒ 把解锁清掉。
+      ⇒ 精确等于「除非刷新页面，否则一直显示」。取不到 sessionStorage（隐私模式）就退回
+      「本次文档有效」，与 `sound.js` / `careers.js` 的内存兜底同一处置。 */
+const GOD_UNLOCK_KEY = 'degen_god_unlocked';
+const INTERNAL_RELOAD_KEY = 'degen_internal_reload';
+
+/** 站内重载前投一封 —— `maskReload` 与 SW 接管那次 reload 都走它 */
+function markInternalReload() {
+  try { sessionStorage.setItem(INTERNAL_RELOAD_KEY, '1'); } catch { /* 隐私模式：退回本次文档有效 */ }
+}
+
+/** 开机读解锁态：站外来的（刷新 / 新会话）先清，只有站内重载才续读 */
+function readGodUnlocked() {
+  try {
+    const internal = sessionStorage.getItem(INTERNAL_RELOAD_KEY) !== null;
+    sessionStorage.removeItem(INTERNAL_RELOAD_KEY);
+    if (!internal) { sessionStorage.removeItem(GOD_UNLOCK_KEY); return false; }
+    return sessionStorage.getItem(GOD_UNLOCK_KEY) === '1';
+  } catch { return false; }
+}
+
+/** 解锁（连点命中）：写 sessionStorage 供站内重载续读（本会话内常驻） */
+function persistGodUnlocked() {
+  try { sessionStorage.setItem(GOD_UNLOCK_KEY, '1'); } catch { /* 隐私模式：本次文档有效 */ }
+}
+
+let godUnlocked = readGodUnlocked();
 
 /* ── PWA（2026-10-01）────────────────────────────────────────────────
    `installEvt`：浏览器交出来的 `beforeinstallprompt` 事件，抓到后**拦下自带横幅**
@@ -222,6 +251,7 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (!controlled || reloaded) return;   // 首次安装 / 已经刷过：不重复
     reloaded = true;
+    markInternalReload();        // 同上：SW 接管那次 reload 也是站内重载，不当作玩家刷新
     window.location.reload();
   });
   window.addEventListener('load', () => {
@@ -561,7 +591,12 @@ async function boot() {
  * ⚠️ 回到局内不用管：`closePicker` 抹掉 `.menu-box` 后，下一帧 `draw()` 自己会把浮窗接回来。
  */
 function openMenuClean(opts) {
-  openMenu(opts);
+  /* ⚠️ **会话级解锁态在这一处统一注入**（2026-10-11 用户报缺陷「回主菜单后上帝按钮消失，除非刷新页面」）：
+     病根是 `godUnlocked` 原来由**每个调用点各自传** —— 只有开机的 `onMenu` 与 `onGodLogo` 两处带了它，
+     三个回菜单入口（`onHome` / `exitReview` / `exitCareers`）只传 `canLoad` ⇒ 一回到菜单按钮就没了。
+     「解锁后除非刷新页面否则常驻」是一条**菜单级不变量**，就该钉在菜单的唯一出口上：
+     将来的新入口不必记得传，`godUnlocked` 也标准写在最后 ⇒ 覆盖 `opts` 里的同名键，模块变量是唯一真相。 */
+  openMenu({ canLoad: menuSlots().length > 0, ...opts, godUnlocked });
   updateFloat(null, null);
 }
 
@@ -1598,6 +1633,7 @@ function onGodLogo() {
   godTaps = 0;
   if (godUnlocked) { menuNote('上帝模式已在菜单里（点它选史实 / 架空）'); return; }
   godUnlocked = true;
+  persistGodUnlocked();        // 落 sessionStorage：跨站内重载（开新局 / 换槽）常驻，刷新才清
   snd.begin();
   openMenuClean({ canLoad: menuSlots().length > 0, godUnlocked });
   menuNote('上帝模式已解锁 —— 点菜单里的「上帝模式」');
@@ -2120,6 +2156,7 @@ function slotMoney(sv) {
  *    直接 reload 会在这一帧重绘之前就发起导航，遮罩可能一帧都没画出来。
  */
 function maskReload() {
+  markInternalReload();          // 站内重载信封：这一次 reload 不是玩家刷新，上帝解锁不该被清
   try { renderBoot('正在重新载入…'); } catch { /* 遮罩失败不该挡着 reload */ }
   requestAnimationFrame(() => setTimeout(() => location.reload(), 0));
 }

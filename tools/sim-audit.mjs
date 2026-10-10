@@ -5837,13 +5837,14 @@ section('9aj · 上帝沙盒旋钮 SB_KEYS × 面板档位表 SB_STEPS（2026-10
      而 `updateFloat` 只在 `draw()` 里跑、回菜单那几个入口又都停了钟 ⇒ 之后再没有一帧。
      所以每个弹菜单的入口都必须走 `openMenuClean`（它 `openMenu` ＋ `updateFloat(null, null)`）。
      ⚠️ 咬的是「main.js 里没有裸 `openMenu(` 调用」——比逐个入口点断言更耐重构。 */
-  /* ⚠️ 先把 `openMenuClean` 的函数体剥掉再数 —— 它内部那一声 `openMenu(opts)` 是**预期**的。 */
+  /* ⚠️ 先把 `openMenuClean` 的函数体剥掉再数 —— 它内部那一声 `openMenu({…})` 是**预期**的。 */
+  const cleanBodyAj = (mainSrcAj.match(/function openMenuClean\(opts\) \{([\s\S]*?)\n\}/) || ['', ''])[1];
   const noClean = mainSrcAj.replace(/function openMenuClean\(opts\) \{[\s\S]*?\n\}/, '');
   const bare = [...noClean.matchAll(/(^|[^A-Za-z])openMenu\(/g)].length;
   check('9aj⑥ main.js 弹主菜单一律走 `openMenuClean`（无裸 `openMenu(`，否则浮窗残留在菜单上）',
     mainSrcAj.includes('function openMenuClean(opts) {')
-    && mainSrcAj.includes('openMenu(opts);')
-    && mainSrcAj.includes('updateFloat(null, null);')
+    && /\bopenMenu\(\{/.test(cleanBodyAj)
+    && cleanBodyAj.includes('updateFloat(null, null);')
     && bare === 0, bare ? `裸调用 ${bare} 处` : '入口唯一');
   /* 档案 / 回顾两支同样在 `try` 外 return，浮窗得**就地**摘（历史上正是这里漏出「档案页叠浮窗」）。 */
   check('9aj⑥ 档案 / 回顾两支都就地 `updateFloat(null, null)`（`try` 外提前 return，漏了必残留）',
@@ -6715,7 +6716,8 @@ section('10c · 上帝入口：菜单按钮 ＋ 弹层选卡 ＋ 连点只解锁
   const mainSrc = readSrc('src/main.js');
   const rendSrc = readSrc('src/ui/render.js');
   const bindSrc = readSrc('src/ui/bind.js');
-  check('10c① main 有会话级解锁变量 godUnlocked', /let godUnlocked = false/.test(mainSrc));
+  check('10c① main 有会话级解锁变量 godUnlocked（2026-10-11 起从 sessionStorage 续读）',
+    /let godUnlocked = readGodUnlocked\(\);/.test(mainSrc));
   check('10c② onGodLogo 不再直接 enableGod', !/function onGodLogo\(\)[\s\S]{0,400}?enableGod\(s\)/.test(mainSrc));
   check('10c③ onGodLogo 里置 godUnlocked = true 并重开菜单', /godUnlocked = true/.test(mainSrc));
   check('10c④ 新增 onGodWorld 处理器', /function onGodWorld\(/.test(mainSrc));
@@ -6754,6 +6756,88 @@ section('10e · 重开确认：已有存档的槽必须先武装再点');
     /function onGodWorld\([\s\S]*?const slot = world === 'fic' \? 'godFic' : 'godHist';[\s\S]*?hasSave\(slot\)[\s\S]*?armMenu\(node\)/.test(mainSrc));
   check('10e② onMenu(start) 仍走 hasSave(normal) 武装', /kind === 'start'[\s\S]{0,200}?hasSave\('normal'\)/.test(mainSrc));
   check('10e③ onScenario 仍走 hasSave(challenge) 武装', /function onScenario\([\s\S]*?hasSave\('challenge'\)[\s\S]*?armMenu\(node\)/.test(mainSrc));
+}
+
+/* ═══════════════ 10f · 上帝持久 ＋ 上帝局任何路径不结算（2026-10-11 用户报缺陷） ═══════════════
+   需求 1：上帝模式解锁后，除非**刷新页面**，否则主菜单应一直显示「上帝模式」按钮。
+   ── 病根：`godUnlocked` 原由每个 `openMenuClean` 调用点**各自传**，只有开机 `onMenu` 与连点
+      `onGodLogo` 两处带了它，三个回菜单入口（`onHome` / `exitReview` / `exitCareers`）漏传
+      ⇒ 一回到菜单按钮就没了（正是「除非刷新否则常驻」不成立的根因）。
+   需求 2：上帝局**任何路径**都不进入结算、不写生涯档案（含破产归零 / 主动收摊 / 走完全程）。
+   两条都是「散点修复会复发」的不变量型缺陷 ⇒ 静态钉入口唯一性 ＋ 运行时钉真实行为。 */
+section('10f · 上帝持久：菜单按钮常驻 ＋ 任何路径不结算 / 不写档案');
+{
+  const readSrcF = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const mainSrcF = readSrcF('src/main.js');
+  const engSrcF = readSrcF('src/core/engine.js');
+  const CAREERS = await import('../src/core/careers.js');
+
+  /* ── 需求 1：会话级解锁态，唯一出口注入 ── */
+  const cleanBodyF = (mainSrcF.match(/function openMenuClean\(opts\) \{([\s\S]*?)\n\}/) || ['', ''])[1];
+  check('10f① openMenuClean 统一注入 `godUnlocked`（`...opts` 之后再写 ⇒ 模块变量是唯一真相）',
+    /\bopenMenu\(\{[^}]*\.\.\.opts[^}]*godUnlocked\s*\}/.test(cleanBodyF),
+    cleanBodyF.replace(/\s+/g, ' ').slice(0, 140));
+  const menuCallsF = [...mainSrcF.matchAll(/openMenuClean\(/g)].length;
+  check('10f② 全部弹菜单入口走 openMenuClean（≥5：开机 / onGodLogo / onHome / exitReview / exitCareers）',
+    menuCallsF >= 5, `${menuCallsF} 处`);
+  /* 三个「回菜单」入口本身必须落在 openMenuClean 上 —— 这正是原来漏传 godUnlocked 的三处。 */
+  check('10f③ onHome / exitReview / exitCareers 三个回菜单入口都走 openMenuClean（注入对它们生效）',
+    /function onHome\(\)[\s\S]{0,400}?openMenuClean\(/.test(mainSrcF)
+    && /function exitReview\(\)[\s\S]{0,400}?openMenuClean\(/.test(mainSrcF)
+    && /function exitCareers\(\)[\s\S]{0,400}?openMenuClean\(/.test(mainSrcF));
+
+  /* ── 需求 1 · 静态：会话级持久（跨站内 reload 存活、刷新即清） ──
+     站内重载（开新局 / 换槽 / SW 接管）绝不能把解锁清掉，玩家手动刷新才清。 */
+  check('10f④ 解锁态落 sessionStorage（`persistGodUnlocked` 写键）＋ 开机从 `readGodUnlocked()` 续读',
+    /function persistGodUnlocked\(\) \{\s*try \{ sessionStorage\.setItem\(GOD_UNLOCK_KEY, '1'\);/.test(mainSrcF)
+    && /function readGodUnlocked\(\) \{[\s\S]{0,400}?sessionStorage\.getItem\(INTERNAL_RELOAD_KEY\)[\s\S]{0,200}?removeItem\(GOD_UNLOCK_KEY\)[\s\S]{0,120}?return false;/.test(mainSrcF));
+  check('10f⑤ 两处站内 reload（`maskReload` / SW 接管）出发前都投「站内」信封',
+    /function maskReload\(\) \{\s*markInternalReload\(\);/.test(mainSrcF)
+    && /reloaded = true;\s*markInternalReload\(\);[\s\S]{0,160}?window\.location\.reload\(\);/.test(mainSrcF)
+    && [...mainSrcF.matchAll(/markInternalReload\(\);/g)].length === 2);
+  check('10f⑥ onGodLogo 解锁时同时落盘（godUnlocked = true ＋ persistGodUnlocked()）',
+    /godUnlocked = true;\s*persistGodUnlocked\(\);/.test(mainSrcF));
+
+  /* ── 需求 2 · 静态：两条闸都在 ── */
+  check('10f⑦ endGame 顶部钉「上帝不结算」总闸（s.god ⇒ 连同结算平仓 / 档案 / 清档一起早退）',
+    /function endGame\(s, reason\) \{[\s\S]{0,900}?if \(s\.god\) \{[\s\S]{0,200}?s\.god\.ended = true[\s\S]{0,120}?return \{ ok: false, why: reason \};/.test(engSrcF));
+  check('10f⑧ checkRuin 上帝分支：归零不结束本局（早退 return false，不落 pending / 不 endGame）',
+    /if \(s\.god\) \{[\s\S]{0,700}?\n\s*return false;\n\s*\}/.test(engSrcF));
+
+  /* ── 需求 2 · 运行时 ①：破产归零 —— 上帝局账户被打穿，不结算 / 不档案。
+     人为把均价抬高 1000× 再平仓 ⇒ 平仓瞬间权益为负 ⇒ 触发破产判定（白盒造条件，等价于「被市场打穿」）。 */
+  {
+    const g = await mk({ sym: 'BTC', i: idx(at(2021, 5, 10)), cash: 1e5 });
+    god.enableGod(g);
+    const before = CAREERS.loadCareers().length;
+    engine.openTrade(g, 'long', 1);
+    const held = !!g.positions[g.sym];
+    g.positions[g.sym].entry *= 1000;          // 造一个「平仓即归零」的极端亏损
+    engine.closeTrade(g, '测试');
+    const ruinedLogged = g.log.some(e => String(e.text).includes('账户归零，不结束本局'));
+    check('10f⑨ 上帝局破产归零：不 endGame（s.over 仍 null）· 不进待决 · 不写生涯档案',
+      held && g.over === null && g.pending === null
+      && CAREERS.loadCareers().length === before && ruinedLogged,
+      `held=${held} over=${g.over} pending=${g.pending} careers ${before}→${CAREERS.loadCareers().length} 播报=${ruinedLogged}`);
+    /* 破产后再推一小时仍是上帝局（时钟照走，绝不落进结算）。 */
+    engine.advanceOneHour(g);
+    check('10f⑨ 上帝局破产后继续推进：仍是上帝局（不结算 / 档案不再增长）',
+      g.over === null && CAREERS.loadCareers().length === before, `over=${g.over}`);
+  }
+
+  /* ── 需求 2 · 运行时 ②：直接验证 endGame 总闸 —— 把上帝局强行摆成「待领救济金」再收摊
+     （`giveUp` 是唯一会主动进 endGame 的玩家动作）。总闸必须拦下：不写档案 · `s.over` 仍 null ·
+     翻到上帝终局。正常局里上帝永不进 `pending='loan'`（checkRuin 早退），故这两行是**白盒造条件**。 */
+  {
+    const g2 = await mk({ sym: 'BTC', i: idx(at(2021, 5, 10)), cash: 1000 });
+    god.enableGod(g2);
+    const before2 = CAREERS.loadCareers().length;
+    g2.pending = 'loan';
+    engine.giveUp(g2);
+    check('10f⑩ endGame 总闸运行时验证：上帝态收摊 ⇒ 不写档案 · s.over 仍 null · 翻上帝终局',
+      g2.over === null && CAREERS.loadCareers().length === before2 && g2.god.ended === true,
+      `over=${g2.over} ended=${g2.god.ended} careers ${before2}→${CAREERS.loadCareers().length}`);
+  }
 }
 
 /* ═══════════════ 12 · 架空新闻 ＋ 消费端退场（2026-10-10 · P3）═══════════════ */
