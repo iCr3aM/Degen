@@ -339,6 +339,51 @@ const lobLevelPut = (arr, L, li, price, step, side, scale, sMul, base, t, sy, se
 };
 
 /**
+ * **做市商情绪**（缺口 B · 2026-10-10 联网审计拍板）—— 大崩盘把挂单簿打薄，按天~周尺度慢恢复。
+ *
+ * 实测锚（2025-10-10 级联，多源一致）：±1% 深度崩盘 48h 内 −46%、3 个月后仍 −40% ——
+ * **深度先于价格崩、后于价格复**：真实成交量崩后数天就回（`liqOf` 随真实数据走），而做市商
+ * 撤掉的挂单要数周~数月才回。项目的簿锚 `liqOf` ⇒ 没有这条滞后 ⇒ FTX / 3-12 之后第二天簿就
+ * 满血，与现实不符。本层把这条补上：**只缩挂单簿、不缩成交量**（现实里崩盘日是天量成交＋枯竭深度并存）。
+ *
+ * 形态（「伤害—衰减」复合标量，O(1)、不逐根 tick）：
+ *     有效情绪 mm(i) = v × 2^(−(i − at)/halfLife)        at = 最后一次爆仓潮的小时
+ *     爆仓潮成立时   v ← min(1, mm(i) + hit)、at ← i     （同一闸门 = `NPC.liqEventFrac`，与 ADL 同源）
+ *     深度尺子      × (1 − cut × mm)
+ * 挂在 `lobScaleOf` 的出口 ⇒ 生成 size、治理器设定点、位聚集、极远关口**整把尺子**一起缩，
+ * 治理器自动把现存簿往新目标拉、恢复时自动回补 —— 不需要第二条簿侧逻辑。
+ *
+ * ⚠️ 量级全部是**设计取值**（实测锚只给方向）：
+ *   - `cut 0.40`：mm = 1（连续爆仓潮叠加到顶）时深度 −40%，对齐实测「3 个月仍 −40%」的量级；
+ *   - `hit 0.55`：一次 FTX 级级联（连续 1~3 根爆仓潮）把 mm 推到 ~0.8 ⇒ 立竿见影 −30% 上下；
+ *   - `halfLife 480`（20 天）：现实恢复半衰期数周到数月，游戏节奏取下沿 —— 6 周后残留 ~10%，
+ *     不至于让玩家在整个下半年都在吃 −40% 的滑点（12 年轴上那会毁掉危机后的交易体验）。
+ * ⚠️ `m.mmo = {v, at}` 存进 `s.mkt[sym]`：旧档无此字段 ⇒ `mmMoodOf` 容错为 0，行为逐位不变，
+ *    **不升 `STATE_VERSION`**（同 `god.INV` 的判例：缺字段 = 无事件 = 与旧口径一致）。
+ *    ⚠️ **不能叫 `m.mm`** —— 那是缺口 6-A 的**做市盘队列**持仓格（`{long, short}`，
+ *    见 `npcNet` / `oiOf`），撞名会把 NPC 净持仓与 OI 全冲成 NaN（取证时踩过）。
+ */
+const MMMOOD = {
+  hit: 0.55,       // 每次爆仓潮（ADL 同闸门）推高的情绪增量，夹 1
+  cut: 0.40,       // mm = 1 时深度尺子最多压掉的份额（实测 −46% / 3 个月 −40% 的量级锚）
+  halfLife: 480,   // 恢复半衰期（游戏小时）= 20 天 —— 现实数周~数月，游戏节奏取下沿
+};
+
+/** 爆仓潮命中：把旧情绪按半衰期折到此刻、再叠一笔新伤（`v` 夹 1，`at` 重置）。 */
+function mmMoodHit(prev, i) {
+  const v = prev && Number.isFinite(prev.v) && prev.at <= i
+    ? prev.v * Math.pow(2, -(i - prev.at) / MMMOOD.halfLife)
+    : 0;
+  return { v: Math.min(1, v + MMMOOD.hit), at: i };
+}
+
+/** 此刻的有效情绪（0~1）：旧档 / 未命中过 ⇒ 恰好 0（乘法恒等，与旧口径逐位一致）。 */
+function mmMoodOf(m, i) {
+  if (!m || !m.mmo || !Number.isFinite(m.mmo.v) || !(m.mmo.at <= i)) return 0;
+  return Math.min(1, m.mmo.v * Math.pow(2, -(i - m.mmo.at) / MMMOOD.halfLife));
+}
+
+/**
  * 限价簿的**深度尺子**（2026-10-08 M4a）—— 锚在**日流动性**、不是逐小时深度。
  *
  * 病根：原实现锚 `hourLiqBase`（含 `hourShareK` 的日内形态，0.3~3 倍摆动）⇒ 目标质量逐小时
@@ -356,7 +401,9 @@ export function lobScaleOf(s, sym, i) {
   const adv = advDepthMul(s, sym, i, raw);
   const gm = godLiqMulOf(s, sym);
   const a = adv === 1 ? dayLiq : dayLiq * adv;
-  return gm === 1 ? a : a * gm;
+  /* 缺口 B：做市商情绪只在出口缩**簿**这一把尺子 —— `liqOf`（成交量）不受影响，两者独立。 */
+  const mood = mmMoodOf(s.mkt && s.mkt[sym], i);
+  return (gm === 1 ? a : a * gm) * (1 - MMMOOD.cut * mood);
 }
 
 /**
@@ -3030,6 +3077,12 @@ function stampede(s, sym, m, price) {
        「爆仓潮」的门槛就抬多少倍 ⇒ 频率不随玩家的规模设置漂移。默认 ⇒ ×1 逐位不变。 */
     const thr = liqDay > 0 ? liqDay * NPC.liqEventFrac * liqEventScaleOf(s, sym) : 0;
     if (thr > 0 && liqNotional >= thr) {
+      /* 缺口 B（2026-10-10）：爆仓潮同时打掉「做市商情绪」—— 大级联之后做市商撤单离场，
+         簇拥在盘口的挂单深度按周尺度慢恢复（实测 2025-10：48h −46%、3 个月仍 −40%）。
+         触发与 ADL **同一闸门**（爆仓潮成立的那一刻，日志冷却只压日志不压这里）；命中后
+         `lobScaleOf` 的整把尺子被压低（见 `MMMOOD`），滑点分母 `liqOf` 不受影响 ——
+         现实口径：崩盘日是天量成交 + 枯竭深度并存。 */
+      m.mmo = mmMoodHit(m.mmo, s.i);
       /* M4c · 日志冷却：同一币 `NPC.liqEventCd` 小时内只播一条。**只压日志**（`adl` 照旧），
          免得日志策略反过来改写「十余年 8 次」的 ADL 标定。旧档没有 `m.liqEventAt` ⇒ 视作
          「从没播过」（`-Infinity`），首条必出。 */
