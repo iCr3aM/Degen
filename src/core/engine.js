@@ -2481,10 +2481,11 @@ export function feedTier(notional, liqDay) {
   return -1;
 }
 /**
- * **tape 大单事件流**（喂入口）：k = 六型（0 开多…5 爆空）、`minTier` 强制档位（玩家强平传 0）。
+ * **tape 大单事件流**（喂入口）：k = 六型（0 开多…5 爆空）、`minTier` 强制档位（玩家强平传 0）、
+ * `lev` = 该笔的**倍数**（供日志页「倍数」列；不知道的填 0 ⇒ 显示 `—`）。
  * ⚠️ 导出给审计 9aq 直调（与 `exRevSweep` 同一先例）—— 保留策略的行为断言需要喂任意时龄的条目。
  */
-export function feedPush(s, sym, k, price, notional, minTier = -1) {
+export function feedPush(s, sym, k, price, notional, minTier = -1, lev = 0) {
   if (!(price > 0) || !(notional > 0)) return;
   /* M4b：档位阈值同样过 `gm` —— 市场放大 ⇒ 同一笔名义的「分量」按比例缩水（与 `lobTick` 里
      那条取值同源）。`gm === 1` ⇒ 逐位不变。
@@ -2496,7 +2497,7 @@ export function feedPush(s, sym, k, price, notional, minTier = -1) {
   if (tier < minTier) tier = minTier;
   if (tier < 0) return;
   if (!s.feed) s.feed = [];                        // 旧档 / 回退后惰性补建（不升存档版）
-  s.feed.push({ i: s.i, sym, k, p: price, n: notional, t: tier });
+  s.feed.push({ i: s.i, sym, k, p: price, n: notional, t: tier, lev });
   /* 只按**条数**硬顶（2026-10-11 用户拍板「持续保留，直到新的顶掉旧的」）—— 纯环形：
      超过 `FEED_CAP` 才从最老那端挤掉（常态零开销）。不再按游戏时龄裁剪。 */
   if (s.feed.length > FEED_CAP) s.feed.splice(0, s.feed.length - FEED_CAP);
@@ -4239,6 +4240,10 @@ export function openTrade(s, side, frac = 1) {
   /* 持仓抛压折价（v18 · 2026-10-01）：这一单若**加厚了杠杆实物多头**，市场对你的忌惮随之变重。
      合约 / OTC 不改变 `capturedOf` ⇒ 值没变时函数内部自己会跳过（不写、不冲 σ 缓存）。 */
   refreshOverhang(s, s.sym);
+  /* 玩家自己的**开仓 / 加仓**也上 tape（2026-10-11 用户拍板「玩家的开平爆也要写入日志内」，
+     推翻 2026-10-08 的「玩家主动开/平不进 tape」）—— `minTier = 0` 保证无论名义多小都上屏；
+     `lev` 走**实际杠杆**（`effLevOf`，与交易日志 `lvTagOf` 同源）。 */
+  feedPush(s, s.sym, side === 'long' ? 0 : 1, fill, notional, 0, effLevOf(pos));
   /* 交易统计（v21）—— 只喂 M2 的「交易档案」与 M3 的「称号」，不参与任何判定。
      ⚠️ 记在**成功落账之后**：被闸门拦下 / 资金不足 / 低于最小名义的那些单不算一笔。 */
   s.stat.open += 1;
@@ -4480,6 +4485,7 @@ export function closeTrade(s, why = '手动', frac = 1) {
   if (!c.ok) return { ok: false, why: c.why };
   const { pos, otc, f, pk, feeRate, closeSize, notional, cost, fill, walk } = c;
   const sym = pos.sym;
+  const tapeLev = effLevOf(pos);   // tape「倍数」列：实际杠杆（与 `pushLog` 的 `lvTagOf` 同源）
 
   /* 这一笔自己的结算（比例口径）：
        毛盈亏 = (成交价 − 均价) × 本笔数量 × 方向
@@ -4566,6 +4572,9 @@ export function closeTrade(s, why = '手动', frac = 1) {
         否则折价一次性归零会让「卖出之后比持仓时更贵」（见 `refreshOverhang` 的疤痕注释）。
      走上一步的**只有杠杆实物多头** —— 平掉一张合约仓时 `capturedOf` 本来就没变，函数内部会跳过。 */
   refreshOverhang(s, sym, SHOCK.closeGive);
+  /* 玩家自己的**平仓 / 减仓**也上 tape（2026-10-11 用户拍板；与 `openTrade` 同一注）——
+     `minTier = 0` ⇒ 任何名义都上屏；`frac < 1` 是减仓，同样是一条真实成交。 */
+  feedPush(s, sym, pos.side === 'long' ? 2 : 3, fill, notional, 0, tapeLev);
 
   /* ⚠️ R1（2026-10-04 审计）：**平仓本身已经落账**（上面 `credit` / `pushLog` 全做完了），
      此处只行使「归零判定」的副作用（`checkRuin` 会写 `s.pending` 或 `s.over`）——
@@ -4653,9 +4662,9 @@ function forceLiquidate(s, pos, atPrice) {
      NPC 侧（`stampede` 里那个局部量），因为「爆仓潮」是市场级事件、不该被玩家单人引爆。 */
   s.stat.liqNotional += notional;
   /* tape（2026-10-08）：玩家自己被强平也是全市场可见的事实流（现实里 forceOrder 对所有人推送）
-     ⇒ 照发爆多/爆空；玩家**主动**开/平则不进 tape（主日志已有）。
+     ⇒ 照发爆多/爆空；玩家**主动**开/平同样上 tape（2026-10-11 用户拍板，见 `openTrade`）。
      2026-10-09：传 `minTier = 0` ⇒ 无论名义多小都上 tape（小仓在深市年代够不着 0.1% 阈值）。 */
-  feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0);
+  feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0, effLevOf(pos));
   delete s.positions[pos.sym];
   refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：爆掉的杠杆实物多头同 `closeGive` 比例释放折价
 }
@@ -6514,7 +6523,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
   if (!pos.liqCounted) s.stat.liq += 1;
   r.pos.liqCounted = true;                 // 落在这笔仓位身上 ⇒ `{...pos}` 会一路带着它
   s.stat.liqNotional += notional;          // §17.3（2026-10-04）：部分强平的成交名义同口径计入（与 `forceLiquidate` 一致）
-  feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0);   // tape：部分强平同发爆多/爆空（minTier 0：玩家自己的仓，小名义也上）
+  feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0, effLevOf(pos));   // tape：部分强平同发爆多/爆空（minTier 0：玩家自己的仓，小名义也上）
   /* 清算费（2026-10-07 用户拍板 · 补漏）：**部分强平同样按「已平名义」收费**。
      现实里交易所对部分强平也照收 liquidation fee（与整条强平同一张费率表）；旧实现只有
      `forceLiquidate` 扣费 ⇒ 「被削十几档」这条最惨的路反而一分不罚（实测累计 0.2%~0.5% 原始名义）。

@@ -5188,7 +5188,7 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
   const styleSrc9y = readSrc9y('src/ui/style.css');
 
   check('9ae① 引擎：feedPush / feedTier / FEED_STEPS / FEED_CAP（1200 纯环形硬顶）＋ 时龄窗口已废 ＋ rewindTo 清空',
-    engSrc9y.includes('function feedPush(s, sym, k, price, notional, minTier = -1)')
+    engSrc9y.includes('function feedPush(s, sym, k, price, notional, minTier = -1, lev = 0)')
     && engSrc9y.includes('export function feedTier(notional, liqDay)')
     && engSrc9y.includes('export const FEED_STEPS = [0.001, 0.005, 0.01, 0.02, 0.05]')
     && engSrc9y.includes('export const FEED_CAP = 1200')
@@ -5202,14 +5202,17 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     && engSrc9y.includes("stepNpc(m.mm, 'long', targetMM, price, floorMM, NPC.mm.speed)")
     && engSrc9y.includes('flushSlot(s, sym, m, m.mm, NPC.mm.lev, lastPrice(s, sym), true)'));
 
-  check('9ae③ 挂点：flushSlot 止损/止盈/强平六处（quiet 闸门）＋ 护盘/巨鲸急购 ＋ 玩家强平（事实流）',
+  check('9ae③ 挂点：flushSlot 止损/止盈/强平六处（quiet）＋ 护盘/巨鲸急购 ＋ 玩家开/平/强平（含 `lev`）',
     engSrc9y.includes('if (!quiet) feedPush(s, sym, 4, price, g.long)')
     && engSrc9y.includes('if (!quiet) feedPush(s, sym, 5, price, g.short)')
     && engSrc9y.split('if (!quiet) feedPush(s, sym, 2, price, cut)').length >= 3
     && engSrc9y.split('if (!quiet) feedPush(s, sym, 3, price, cut)').length >= 3
     && engSrc9y.includes('feedPush(s, sym, 0, price, buy)')
     && engSrc9y.includes('feedPush(s, sym, 1, price, sell)')
-    && engSrc9y.split("feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0)").length >= 3);
+    /* 玩家自己的开/平（2026-10-11 用户拍板「玩家的开平爆也要写入日志内」）＋ 强平（事实流） */
+    && engSrc9y.includes("feedPush(s, s.sym, side === 'long' ? 0 : 1, fill, notional, 0, effLevOf(pos))")
+    && engSrc9y.includes("feedPush(s, sym, pos.side === 'long' ? 2 : 3, fill, notional, 0, tapeLev)")
+    && engSrc9y.split("feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0, effLevOf(pos))").length >= 3);
 
   check('9ae④ 分档行为锚：5%→4 · 2%→3 · 1%→2 · 0.5%→1 · 0.1%→0 · 0.09%→−1（跨年代自适应的同一把尺）',
     engine.feedTier(5, 100) === 4 && engine.feedTier(2, 100) === 3 && engine.feedTier(1, 100) === 2
@@ -6196,13 +6199,15 @@ section('9ao · 现实地板 godFloor ＋ 潜在基线 latentOf ＋ 步进行固
       && godSrcAo.includes('const npcC = Math.min(SHOCK.riseMax, Math.max(SHOCK.fallMax, npcPart));')
       && godSrcAo.includes('if (!s.god) return shockFactorOf(playerPart + npcPart, false);')
       && godSrcAo.includes('return Math.max(f, SHOCK.godFloor);'));
-    check('9ao⑦ 结构：render 空桶填 latentOf ＋ 买卖比含基线 ＋ 日志列表固定高（70/30 分段·方向列·年月日时分）',
+    check('9ao⑦ 结构：render 空桶填 latentOf ＋ 买卖比含基线 ＋ 日志列表固定高（70/30 分段·方向措辞·倍数列·月日时分）',
       rendSrcAo.includes('const base = o ? o.notional : latent(k, dir);')   // 2026-10-09 强平注入改形：base ＋ isYou 加量
       && rendSrcAo.includes('aUsd += oa ? oa.notional : latent(ka, 1);')
       && rendSrcAo.includes("list.style.height = `${nRows * rowH}px`;")
       && rendSrcAo.includes("sec('开平仓'") && rendSrcAo.includes("sec('爆仓'")   // 2026-10-11：70/30 分区
       && rendSrcAo.includes('Math.round(totalRows * 0.7)')                    // 上段 70%
       && rendSrcAo.includes("el('s', null, '方向')")                          // 新增方向列
+      && rendSrcAo.includes("el('n', null, '倍数')")                          // 新增倍数列（2026-10-11）
+      && rendSrcAo.includes("'开多'") && rendSrcAo.includes("'平空'")          // 方向措辞写清（开/平 ＋ 多/空）
       && rendSrcAo.includes('fmtDate(GAME.start + r.i * HOUR_MS).slice(5)')    // 时间「月日 时:分」（去年份）
       && rendSrcAo.includes("box.append(el('div', 'gfd-sec', name))")         // 段标题必须挂载
       && rendSrcAo.includes('box.append(list);')                              // ⚠️ 段列表必须挂载（2026-10-11 回归：漏挂 ⇒ 整页空白）

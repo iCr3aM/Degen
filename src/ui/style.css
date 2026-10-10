@@ -2270,9 +2270,9 @@ button { user-select: none; -webkit-user-select: none; }
 .gb-step.on { color: var(--accent); background: var(--accent-soft); }
 
 /* 日志页（2026-10-08 · 用户拍板⑤）：aggr 式大单 tape —— 六型分色 ＋ 流动性比例五档背景。
-   列全部固定宽不换行（用户红线）：类型 14px / 方向 20px / 价格弹性 / 名义 56px / 数量 52px /
-   时间 60px（2026-10-11 报「月日 时:分」`03-15 14:00`，年份在左上角已有 ⇒ 不加年份），
-   与 .gb-row 同一套 9px/13px 字号纪律。
+   列全部固定宽不换行（用户红线）：类型 14px / 方向 24px / 价格弹性 / 名义 52px / 数量 48px /
+   倍数 30px（`12.5x`，2026-10-11 新增）/ 时间 60px（报「月日 时:分」`03-15 14:00`，年份在左上角
+   已有 ⇒ 不加年份），与 .gb-row 同一套 9px/13px 字号纪律。
    2026-10-11 用户拍板：日志页按「开平仓 70% ／ 爆仓 30%」**分区**，故多一条 `.gfd-sec` 段标题。
    分色：开平多空走 --up/--down（红涨绿跌主题跟随），爆多 #EC407A / 爆空 #FF9800 按拍板写死；
    行背景 t0 透明 → t4 最深（档位 = feedTier，五档 0.1% / 0.5% / 1% / 2% / 5%）。 */
@@ -2291,10 +2291,13 @@ button { user-select: none; -webkit-user-select: none; }
 .gfd-list { overflow-y: auto; min-height: 0; }
 .gfd-head i { flex: 0 0 14px; }
 .gfd-head span { flex: 1 1 auto; }
-/* 方向列（2026-10-11 用户拍板）：多 / 空 —— 字形只表开/平，方向文字让玩家一眼看懂。 */
-.gfd-head s, .gfd-row s { flex: 0 0 20px; text-decoration: none; text-align: center; color: var(--mut); }
-.gfd-head b, .gfd-row b { flex: 0 0 56px; font-weight: 600; text-align: right; overflow: hidden; white-space: nowrap; }
-.gfd-head em, .gfd-row em { flex: 0 0 52px; font-style: normal; text-align: right; overflow: hidden; white-space: nowrap; }
+/* 方向列（2026-10-11 用户拍板）：开多 / 开空 / 平多 / 平空（爆仓段同列写 爆多 / 爆空）——
+   字形只表开/平，方向文字让玩家一眼看懂。 */
+.gfd-head s, .gfd-row s { flex: 0 0 24px; text-decoration: none; text-align: center; color: var(--mut); }
+/* 倍数列（2026-10-11 用户拍板「再加一列倍数」）：`12.5x` / `100x`；不知道的印 `—`。 */
+.gfd-head n, .gfd-row n { flex: 0 0 30px; text-align: right; color: var(--mut); overflow: hidden; white-space: nowrap; }
+.gfd-head b, .gfd-row b { flex: 0 0 52px; font-weight: 600; text-align: right; overflow: hidden; white-space: nowrap; }
+.gfd-head em, .gfd-row em { flex: 0 0 48px; font-style: normal; text-align: right; overflow: hidden; white-space: nowrap; }
 .gfd-head u, .gfd-row u { flex: 0 0 60px; text-decoration: none; text-align: right; color: var(--mut); overflow: hidden; white-space: nowrap; }
 .gfd-row { display: flex; align-items: center; gap: 4px; font-size: 9px; line-height: 13px; overflow: hidden; }
 .gfd-row i { flex: 0 0 14px; font-style: normal; }
@@ -2344,9 +2347,12 @@ button { user-select: none; -webkit-user-select: none; }
      `.gb-*`（已 11/15）**不一致**。11px 下最长列 `$123.4M`(7 字) ≈ 46px ≤ 56px、
      数量 `0.0167`(6 字) ≈ 40px ≤ 52px、时间 `03-15 14:00`(11 字) ≈ 61px ≤ 72px，均不截断。 */
   .gfd-head, .gfd-row { font-size: 11px; line-height: 15px; }
-  /* 2026-10-11：方向列 22px、时间列 72px（11px 下「03-15 14:00」11 字 ≈ 61px）；
+  /* 2026-10-11：方向列 26px（「开多」两字）、倍数列 34px、时间列 72px（「03-15 14:00」11 字 ≈ 61px）；
      段标题同步 11/15（与手机端同为一行高，render 的行高预算不乱）。 */
-  .gfd-head s, .gfd-row s { flex: 0 0 22px; }
+  .gfd-head s, .gfd-row s { flex: 0 0 26px; }
+  .gfd-head n, .gfd-row n { flex: 0 0 34px; }
+  .gfd-head b, .gfd-row b { flex: 0 0 56px; }
+  .gfd-head em, .gfd-row em { flex: 0 0 52px; }
   .gfd-head u, .gfd-row u { flex: 0 0 72px; }
   .gfd-sec { font-size: 11px; line-height: 15px; }
   /* ── 桌面日志条加高（2026-10-08 拍板加高；2026-10-09 用户要求「还能加更多行」）──

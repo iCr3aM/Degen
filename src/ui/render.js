@@ -3877,12 +3877,14 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const topRows = Math.max(2, Math.round(totalRows * 0.7));
     const botRows = Math.max(2, totalRows - topRows);
     const all = (s.feed || []).filter(r => r.sym === s.sym && r.t >= lf);
-    /* 六型 → [字形, 类型类, 方向]：k 0/1 = 开多/开空、2/3 = 平多/平空、4/5 = 爆多/爆空。
-       颜色走 --up/--down（红涨绿跌主题自动跟随），爆仓两色按拍板写死。 */
-    const K = [['▲', 'gfd-ol', '多'], ['▼', 'gfd-os', '空'], ['△', 'gfd-cl', '多'], ['▽', 'gfd-cs', '空'], ['💥', 'gfd-lq', '多'], ['💥', 'gfd-ls', '空']];
-    /* 列头（**单一**，两段共用 —— 段标题只写段名，不重复列名）：类型 方向 价格 名义 数量 时间 */
+    /* 六型 → [字形, 类型类, 方向文字]：k 0/1 = 开多/开空、2/3 = 平多/平空、4/5 = 爆多/爆空。
+       颜色走 --up/--down（红涨绿跌主题自动跟随），爆仓两色按拍板写死。
+       ⚠️ 2026-10-11 用户拍板「方向要写清楚」⇒ 方向列由「多/空」改成**开多 / 开空 / 平多 / 平空**；
+       「强多 / 强空」（被迫**部分**强平）待 NPC 强平动力学重做后追加 k=6/7（见 NEXT 计划）。 */
+    const K = [['▲', 'gfd-ol', '开多'], ['▼', 'gfd-os', '开空'], ['△', 'gfd-cl', '平多'], ['▽', 'gfd-cs', '平空'], ['💥', 'gfd-lq', '爆多'], ['💥', 'gfd-ls', '爆空']];
+    /* 列头（**单一**，两段共用）：类型 方向 价格 名义 数量 倍数 时间 */
     const head = el('div', 'gfd-head');
-    head.append(el('i'), el('s', null, '方向'), el('span', null, '价格'), el('b', null, '名义'), el('em', null, '数量'), el('u', null, '时间'));
+    head.append(el('i'), el('s', null, '方向'), el('span', null, '价格'), el('b', null, '名义'), el('em', null, '数量'), el('n', null, '倍数'), el('u', null, '时间'));
     box.append(head);
     /* 一段 = 段标题 ＋ **固定高度**列表（2026-10-09 用户拍板「过滤按钮要固定，不能随内容跳动」：
        高度恒 = nRows × rowH，行少留白、行多滚动 —— 底部过滤行因此不随 tape 行数上下跳）。 */
@@ -3901,6 +3903,7 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
           el('span', null, fmtFloatPrice(r.p)),
           el('b', null, fmtMoneyShort(r.n)),
           el('em', null, fmtQty(r.n / r.p)),
+          el('n', null, r.lev > 0 ? `${Math.round(r.lev * 10) / 10}x` : '—'),
           el('u', null, fmtDate(GAME.start + r.i * HOUR_MS).slice(5)));
         list.append(row);
       }
