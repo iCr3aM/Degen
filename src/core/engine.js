@@ -5023,6 +5023,13 @@ export function autoNewsSym(s) {
   return syms[n - 1];
 }
 
+/** 自动新闻的**间隔区间**（游戏小时，2026-10-11 用户拍板「按 50x 基准收敛」）——
+ *  ⚠️ 旧口径 12~36h（均值 24h）在 50x 下 ≈ **每 0.5 秒一条**：既与「自动新闻是玩家布下的
+ *     假消息流」的量级不符，又会和架空快讯抢同一根 K 线。
+ *  新口径 = 5~14 游戏日（120~336h，均值 228h ≈ 9.5 日）：50x 下 ≈ 2.4~6.7 秒一条、
+ *  10x 下 12~34 秒、1x 下 5~14 天。 */
+const AUTO_NEWS_GAP = [120, 336];
+
 /**
  * **自动化伺服**（2026-10-09 用户拍板「自动新闻三开关 ＋ 自动造量 ＋ 自动拉盘」）——
  * `advanceOneHour` 每根调一次（排在扫单伺服之后、NPC 刻度之前），三个子开关独立：
@@ -5030,8 +5037,12 @@ export function autoNewsSym(s) {
  *   · **自动新闻**（`s.god.autoNews`）：0 = 好坏混合 / 1 = 纯利好 / −1 = 纯利空。
  *     到点（`s.god.autoNewsAt`）**按币种权重随机抽一个币**（`autoNewsSym`，见其头注）、
  *     随机取一条**当年代过门控**的模板播报（走 `godFakeNews` 全套：热度脚 ＋ 小额跟风 ＋ 播报），
- *     下次时刻 = 本根 ＋ **12~36h 随机**（`randFast` 确定性 —— 断点续跑可复现），
+ *     下次时刻 = 本根 ＋ **`AUTO_NEWS_GAP` 随机**（`randFast` 确定性 —— 断点续跑可复现），
  *     天然大于 `MANIP_NEWS_CD`(8h) 冷却。
+ *     ⚠️ **时隙互斥**（2026-10-11 用户拍板「假消息不要和世界新闻打架」）：本根若已经有**世界新闻**
+ *        （架空快讯 / 史实的锚点 ＋ 结果条 ＋ 巨鲸披露 ＋ ETF 月度），假消息**让路顺延 1 小时**
+ *        （`worldNewsHit` 由 `advanceOneHour` 算出并传入，不消耗那一次随机间隔）—— 同一根 K 线的
+ *        日志条只留给一条新闻，玩家不会看到两条叠在同一行。
  *   · **自动拉盘**（`s.god.autoPump` = ±1）：每根一次组合拳（幌骗→洗售→吃单），
  *     名义 = `min(lastPush ?? 下限×10, 本时深度)`（与手动行同源，但**每根封顶在深度** ——
  *     真实 P&D 的 pump 阶段是连续数小时推，不是一小时跳完；见函数内注）。
@@ -5043,7 +5054,7 @@ export function autoNewsSym(s) {
  *   双开等于同根双倍洗售费）；扫单（`s.god.eat`）与拉盘可并存（扫的是簿、推的是价，物理不重复）。
  * @returns {void}
  */
-export function godAutoTick(s) {
+export function godAutoTick(s, worldNewsHit = false) {
   const g = s.god;
   if (!g) return;
   if (!g.pin && g.autoPump) {
@@ -5067,11 +5078,16 @@ export function godAutoTick(s) {
      是**合法的「好坏混合」档**，用 `if (g.autoNews && …)` 会把 0 当「关」⇒ 混合档永不触发；
      用类型判断顺带挡住 UI 误传的 `false` / `undefined`（关闭态一律写 `null` 或 `delete`）。 */
   if (typeof g.autoNews === 'number' && (g.autoNewsAt ?? 0) <= s.i) {
+    /* ⚠️ **时隙互斥**（2026-10-11 用户拍板「假消息不要和世界新闻打架」）——
+       本根已经有世界新闻（架空快讯 / 史实的锚点 ＋ 结果条 ＋ 巨鲸 ＋ ETF 披露）时，
+       假消息**让路**：只把时刻顺延 1 小时、下一根再判，**不消耗那一次随机间隔**。 */
+    if (worldNewsHit) { g.autoNewsAt = s.i + 1; return; }
     /* 币种按权重随机抽（2026-10-10）—— 抽到哪个币，新闻就播哪个币（%S 与读数都跟着它）。 */
     const sym = autoNewsSym(s);
     const dir = g.autoNews === 0 ? (randFast(s.seed, hashStr(sym), s.i, 0, 7) > 0.5 ? 1 : -1) : g.autoNews;
     godFakeNews(s, sym, dir);
-    g.autoNewsAt = s.i + 12 + Math.floor(randFast(s.seed, hashStr('autoN'), s.i, 0, 11) * 25);   // 12~36h
+    g.autoNewsAt = s.i + AUTO_NEWS_GAP[0]
+      + Math.floor(randFast(s.seed, hashStr('autoN'), s.i, 0, 11) * (AUTO_NEWS_GAP[1] - AUTO_NEWS_GAP[0] + 1));
   }
 }
 
@@ -5715,24 +5731,28 @@ export function advanceOneHour(s) {
   /* ⚠️ 事件注入总闸（2026-10-08 起；**2026-10-10 改判世界属性**，`eventsOff`）
      ⇒ 下面 4 条真实新闻的日志**一律不播**，配合 `extFlow` 归零一起让价格与播报都只随玩家操作走。
      史实局（含上帝·史实）恒开、架空局恒关。 */
+  /* ⚠️ **世界新闻命中标记**（2026-10-11）：本根是否已播过一条「世界新闻」——
+     架空快讯 / 史实的锚点 ＋ 结果条 ＋ 巨鲸披露 ＋ ETF 月度。传给 `godAutoTick` 做**时隙互斥**
+     （假消息不与世界新闻抢同一根 K 线的日志条）。 */
+  let worldNewsHit = false;
   if (!eventsOff(s)) {
     const news = newsStartAt(s.i);
-    if (news) pushLog(s, news.title, 'news');
+    if (news) { pushLog(s, news.title, 'news'); worldNewsHit = true; }
     /* **第二条 · 结果**（2026-10-01 拍板）：第一条只讲事件、不带数字；数字全部由这里给，
        且**必然在它真的发生之后 1 小时**才播（判定与窗口口径见 `anchors.resultNewsStartAt`）。
        ⚠️ 同一个小时里两条都命中时，后 push 的结果条压在事件条上面 —— 那是对的：
           「结果」永远比「起因」更值得占着日志条那一行。 */
     const rnews = resultNewsStartAt(s);
-    if (rnews) pushLog(s, fillNews(rnews.rt, newsVars(s, rnews.r.sym || s.sym, { r: rnews.r, at: rnews.at })), 'news');
+    if (rnews) { pushLog(s, fillNews(rnews.rt, newsVars(s, rnews.r.sym || s.sym, { r: rnews.r, at: rnews.at })), 'news'); worldNewsHit = true; }
 
     /* **外部买盘的两条披露播报**（缺口 4 / 缺口 5 · 2026-10-08）：
        · 巨鲸/机构：命中披露日那根小时播一条（买卖都含），摊平窗口与靶心注入同一个表（`whaleFlowAt`）；
        · 现货 ETF：每月 1 日播上月 BTC/ETH 净额（月初才拿得到月报）。
        两者都用 `===` / 日号判等，一局内天然只说一次，不需要状态位。 */
     const wnews = whaleNewsAt(s.i);
-    if (wnews) pushLog(s, wnews, 'news', 'mkt');
+    if (wnews) { pushLog(s, wnews, 'news', 'mkt'); worldNewsHit = true; }
     const enews = etfNewsAt(s.i);
-    if (enews) pushLog(s, enews, 'news', 'mkt');
+    if (enews) { pushLog(s, enews, 'news', 'mkt'); worldNewsHit = true; }
   } else {
     /* ⚠️ **架空世界**（2026-10-10 · P3）：与上面 4 条史实新闻**互斥**（`eventsOff` 判世界属性）。
        快讯由 `(ficSeed, i)` 现算（纯函数，读档重算一致），词库是组合式的（越丰富越好）；
@@ -5740,7 +5760,7 @@ export function advanceOneHour(s) {
        芯片用 `fic`（紫底「世界」，与史实 `news` 金底分开），两者同屏一眼可辨。
        与史实新闻一样，它只是个「填充态」，同一小时里更具体的事件（停机 / 归零）会压在上面。 */
     const fn = ficNewsAt(s.ficSeed, s.i);
-    if (fn) pushLog(s, fillNews(fn.tpl, newsVars(s, fn.sym)), 'news', 'fic');
+    if (fn) { pushLog(s, fillNews(fn.tpl, newsVars(s, fn.sym)), 'news', 'fic'); worldNewsHit = true; }
   }
 
   for (const ex of EXCHANGES) {
@@ -5829,8 +5849,8 @@ export function advanceOneHour(s) {
   godEatTick(s);
 
   /* 自动化伺服（2026-10-09 拍板：自动新闻三开关 ＋ 自动造量 ＋ 自动拉盘）—— 同一时序纪律，
-     互斥裁决在引擎单点（见 `godAutoTick` 头注）。 */
-  godAutoTick(s);
+     互斥裁决在引擎单点（见 `godAutoTick` 头注）；`worldNewsHit` 让假消息避开本根的世界新闻。 */
+  godAutoTick(s, worldNewsHit);
 
   /* NPC 情绪 / 踩踏级联（§73.5）：基础行情（这一根的 K 线）算完之后跑一次 ——
      它自己会往 `s.flow` 写 NPC 的成交，所以必须排在资金费 / 强平之前、玩家的流之后。 */

@@ -3916,7 +3916,7 @@ section('9ac · 巨鲸/机构队列 WHALES：逐位摊平 ＋ 买卖都含 ＋ �
     god.whaleNewsAt(iw + 24) === null && god.whaleNewsAt(idx(at(2013, 5, 1))) === null);
   check('9ac⑤ 接线：advanceOneHour 播报 whaleNewsAt（推入日志）',
     engSrc9ac.includes('const wnews = whaleNewsAt(s.i);')
-    && engSrc9ac.includes("if (wnews) pushLog(s, wnews, 'news', 'mkt');"));
+    && engSrc9ac.includes("if (wnews) { pushLog(s, wnews, 'news', 'mkt'); worldNewsHit = true; }"));
 }
 
 /* ═══════════════════ 9ad · 现货 ETF 日频净流入（缺口 5 · 2026-10-08） ═══════════════════
@@ -3989,7 +3989,7 @@ section('9ad · 现货 ETF 月度净流入：起用日 ＋ 交易日摊平 ＋ �
   const engSrc9ad = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   check('9ad⑦ 接线：advanceOneHour 播报 etfNewsAt（推入日志）',
     engSrc9ad.includes('const enews = etfNewsAt(s.i);')
-    && engSrc9ad.includes("if (enews) pushLog(s, enews, 'news', 'mkt');"));
+    && engSrc9ad.includes("if (enews) { pushLog(s, enews, 'news', 'mkt'); worldNewsHit = true; }"));
   check('9ad⑦ 不升 STATE_VERSION（纯表 ＋ 纯函数，零新状态）', STATE_VERSION === 32, `v=${STATE_VERSION}`);
 }
 
@@ -5418,7 +5418,7 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     && engSrc9ag.includes('exRevSweep(s);\n\n  /* 插针剧本伺服')   // 2026-10-09 回流管道：排在伺服 / NPC 刻度之前
     && engSrc9ag.includes('godPinTick(s);\n\n  /* 自动扫单伺服')   // 2026-10-09：扫单伺服紧随插针（同一时序纪律）
     && engSrc9ag.includes('godEatTick(s);\n\n  /* 自动化伺服')     // 2026-10-10：自动化伺服紧随扫单
-    && engSrc9ag.includes('godAutoTick(s);\n\n  /* NPC 情绪 / 踩踏级联')
+    && engSrc9ag.includes('godAutoTick(s, worldNewsHit);\n\n  /* NPC 情绪 / 踩踏级联')
     /* 2026-10-08 M4k：作废行扩成对象体（插针 ＋ 沙盒世界偏向台阶 `sbBias` 一起清）；
        M4d：再并进假消息的冷却 / 轮换计数（`newsAt` / `newsN`）。 */
     && engSrc9ag.includes('if (s.god) {')
@@ -6408,7 +6408,7 @@ section('9as · 自动新闻（币种权重）＋ 自动造量 ＋ 自动拉盘 
     check('9as⑧ 互斥：拉盘开着时造量分支短路（`!g.autoPump && g.autoWash`）',
       src.includes('if (!g.pin && !g.autoPump && g.autoWash) {'));
   }
-  /* ⑤ 自动新闻：autoNews 开 ⇒ 到点播报一条 + 重排 12~36h；方向开关生效。 */
+  /* ⑤ 自动新闻：autoNews 开 ⇒ 到点播报一条 + 重排 120~336h（5~14 日）；方向开关生效。 */
   {
     const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 5, 10)) });
     god.enableGod(s);
@@ -6420,9 +6420,9 @@ section('9as · 自动新闻（币种权重）＋ 自动造量 ＋ 自动拉盘 
     engine.advanceOneHour(s);
     /* ⚠️ `advanceOneHour` 先推进 `s.i` 再跑伺服 ⇒ `newsAt` 落在 `i0 + 1`（不是在 i0）——
        断言按真实时序写（2026-10-10 测试口径修）。 */
-    check('9as⑨ 自动新闻：到点播报一条（newsAt 落位）＋ 下次时刻重排在 12~36h',
+    check('9as⑨ 自动新闻：到点播报一条（newsAt 落位）＋ 下次时刻重排在 120~336h（5~14 日，2026-10-11 收敛）',
       Number.isFinite(s.god.newsAt) && s.god.newsAt >= i0 && s.god.newsAt <= i0 + 1
-      && Number.isFinite(s.god.autoNewsAt) && s.god.autoNewsAt >= i0 + 12 && s.god.autoNewsAt <= i0 + 37,
+      && Number.isFinite(s.god.autoNewsAt) && s.god.autoNewsAt >= i0 + 121 && s.god.autoNewsAt <= i0 + 337,
       `newsAt=${s.god.newsAt}（i0=${i0}） next=${s.god.autoNewsAt} (Δ=${s.god.autoNewsAt - i0}h)`);
     /* 混合方向：用 `newsN.good/bad` 的增量判方向（文案本身不含「利好/利空」字样）；
        ⚠️ 每次清 `newsAt` 绕开 8h 冷却（这里测的是「方向随机」而非「冷却」）。 */
@@ -6445,11 +6445,11 @@ section('9as · 自动新闻（币种权重）＋ 自动造量 ＋ 自动拉盘 
   /* ⑥ 源断言：挂点 + rewindTo 清 autoNewsAt + 三个开关读法。 */
   {
     const src = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
-    check('9as⑪ 结构：godAutoTick 进 advanceOneHour（扫单之后）＋ rewindTo 清 autoNewsAt ＋ 导出 autoNewsSym',
-      src.includes('godAutoTick(s);\n\n  /* NPC 情绪 / 踩踏级联')
+    check('9as⑪ 结构：godAutoTick 进 advanceOneHour（扫单之后，带 worldNewsHit）＋ rewindTo 清 autoNewsAt ＋ 导出 autoNewsSym',
+      src.includes('godAutoTick(s, worldNewsHit);\n\n  /* NPC 情绪 / 踩踏级联')
       && src.includes('s.god.autoNewsAt = null;')
       && src.includes('export function autoNewsSym(s) {')
-      && src.includes('export function godAutoTick(s) {'));
+      && src.includes('export function godAutoTick(s, worldNewsHit = false) {'));
     const rendSrcAs = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
     check('9as⑫ 结构：god 浮窗盘中轻刷新（syncGodLive 定点改文本/disabled，不重建整块）',
       rendSrcAs.includes('function syncGodLive(panel, s) {')
@@ -6845,17 +6845,20 @@ section('12a · ficnews：确定性 · 节奏 · 丰富度 · 不注入涨跌幅
 {
   const FN = await import('../src/core/ficnews.js');
 
-  /* 确定性：同 seed 逐条一致；不同 seed 序列不同 */
-  const a = FN.ficNewsSample(12345, 0, 4000).map(x => x.tpl);
-  const b = FN.ficNewsSample(12345, 0, 4000).map(x => x.tpl);
-  const c = FN.ficNewsSample(99999, 0, 4000).map(x => x.tpl);
+  /* 确定性：同 seed 逐条一致；不同 seed 序列不同。
+     ⚠️ 样本取 40000 根（≈ 4.5 年）：2026-10-11 节奏收敛到 `1/200` 后，4000 根只剩 ~20 条
+        （旧断言的 `a.length > 50` 会误红）—— 样本拉长才够做重叠率 / 丰富度统计。 */
+  const H = 40000;
+  const a = FN.ficNewsSample(12345, 0, H).map(x => x.tpl);
+  const b = FN.ficNewsSample(12345, 0, H).map(x => x.tpl);
+  const c = FN.ficNewsSample(99999, 0, H).map(x => x.tpl);
   check('12a① 同 seed 快讯序列逐条一致', a.length === b.length && a.every((v, i) => v === b[i]));
   const overlap = a.filter(t => c.includes(t)).length;
-  check('12a② 不同 seed 序列重叠率 < 35%（每局都不一样）', a.length > 50 && overlap / a.length < 0.35,
+  check('12a② 不同 seed 序列重叠率 < 35%（每局都不一样）', a.length > 100 && overlap / a.length < 0.35,
     `overlap=${overlap}/${a.length}`);
 
-  /* 节奏：4000 根里应出现数十条（1/20 ≈ 200），且不致刷屏 */
-  check('12a③ 节奏合理（4000 根 → 80–360 条）', a.length >= 80 && a.length <= 360, `${a.length} 条`);
+  /* 节奏（2026-10-11 收敛后）：`CADENCE_HOURS = 200` ⇒ 40000 根均值 200 条、σ≈14（±3σ ≈ 158~242）。 */
+  check('12a③ 节奏合理（40000 根 → 150–260 条；1/200 收敛后）', a.length >= 150 && a.length <= 260, `${a.length} 条`);
 
   /* 丰富度：样本内去重率高（组合词库的功劳） */
   const uniq = new Set(a).size;
@@ -6869,11 +6872,26 @@ section('12a · ficnews：确定性 · 节奏 · 丰富度 · 不注入涨跌幅
   /* 词库规模 */
   check('12a⑥ 组合空间 ≥ 20000（越丰富越好）', FN.FICNEWS_COMBOS >= 20000, String(FN.FICNEWS_COMBOS));
 
-  /* 只抽已上市的币 */
-  const early = FN.ficNewsSample(12345, 100, 2000);
+  /* 只抽已上市的币 —— **逐条按它自己那一刻的小时号校验**（样本跨多年，不能用单一阈值）。
+     ⚠️ 2026-10-11：样本扩到 20000 根后 DOGE/XRP 会（**正确地**）出现在它们上市之后 ——
+        必须按每条命中所在的小时判，否则会误红。 */
   const C13 = await import('../src/core/config.js');
-  const notListed = early.filter(x => C13.coinOf(x.sym).unlock > C13.GAME.start + 100 * C13.HOUR_MS);
-  check('12a⑦ 只抽此刻已上线的币（2013 初不会出现未来币）', notListed.length === 0, notListed.map(x => x.sym).join(','));
+  const notListed = [];
+  for (let k = 0; k < 20000; k++) {
+    const v = FN.ficNewsAt(12345, 100 + k);
+    if (!v) continue;
+    if (C13.coinOf(v.sym).unlock > C13.GAME.start + (100 + k) * C13.HOUR_MS) notListed.push(v.sym);
+  }
+  check('12a⑦ 只抽此刻已上线的币（每条命中按它自己那一小时校验）', notListed.length === 0,
+    notListed.slice(0, 10).join(','));
+
+  /* ⚠️ **50x 收敛锚**（2026-10-11 用户拍板「以 50x 倍速为基准」）——
+     时钟口径：`acc += dt × speed`，50x 下 1 真实秒 = 50 游戏小时 ⇒
+     快讯的「真实秒/条」= 1 ÷ (每小时出现率 × 50)。用**实测出现率**反推，不读常数（不假绿）。 */
+  const perHour = a.length / H;
+  const secPerNews50x = 1 / (perHour * 50);
+  check('12a⑧ 50x 基准：架空快讯 ≈ 每 3–5 真实秒一条（收敛目标区间）',
+    secPerNews50x >= 3 && secPerNews50x <= 5, `${secPerNews50x.toFixed(2)} 秒/条`);
 }
 
 section('12b · 消费端退场：拥堵锚点 / USDT 锚点（架空局）');
@@ -6914,7 +6932,8 @@ section('12c · 架空局内推进 → 快讯入日志（运行时）');
   s.ficSeed = 24680;
   let hits = 0, sample = '';
   const seen = new Set();
-  for (let k = 0; k < 800; k++) {
+  /* ⚠️ 样本 6000 根（2026-10-11 节奏收敛到 1/200 后，800 根只剩 ~4 条，`hits >= 5` 会误红）。 */
+  for (let k = 0; k < 6000; k++) {
     engine.advanceOneHour(s);
     for (const e of s.log) {
       const txt = String(e.text);
@@ -6923,7 +6942,7 @@ section('12c · 架空局内推进 → 快讯入日志（运行时）');
       }
     }
   }
-  check('12c① 架空局推进出现架空快讯（tag=fic · 紫底世界芯片）', hits >= 5, `${hits} 条`);
+  check('12c① 架空局推进出现架空快讯（tag=fic · 紫底世界芯片）', hits >= 10, `${hits} 条`);
   check('12c② 快讯文案已填充真值、无残留占位符 / 无换行',
     !!sample && sample.includes('快讯') && !/%[A-Za-z]/.test(sample) && !sample.includes('\n'), sample);
   check('12c③ 史实新闻与架空快讯互斥（架空局 eventsOff 为真）', engine.eventsOff(s) === true);
@@ -6942,9 +6961,10 @@ section('12d · 新闻分工：架空带数值 · 假消息只做叙事 · 芯�
     tpls.every(t => t.startsWith('快讯 ｜ ') && t.includes('%S')));
 
   const FN = await import('../src/core/ficnews.js');
-  const sample = FN.ficNewsSample(4242, 0, 4000);
+  /* ⚠️ 样本 40000 根（1/200 收敛后 4000 根只剩 ~20 条，旧阈值 `> 50` 会误红）。 */
+  const sample = FN.ficNewsSample(4242, 0, 40000);
   const withNum = sample.filter(x => /%[LARH]/.test(x.tpl)).length;
-  check('12d④ 架空新闻有数值展示（≥40% 带 %L/%A/%R/%H）', sample.length > 50 && withNum / sample.length >= 0.4,
+  check('12d④ 架空新闻有数值展示（≥40% 带 %L/%A/%R/%H）', sample.length > 100 && withNum / sample.length >= 0.4,
     `${(withNum / Math.max(1, sample.length) * 100).toFixed(0)}%`);
   check('12d⑤ 架空新闻仍不含涨跌幅（%C / %c —— 项目红线）', !sample.some(x => /%[Cc]/.test(x.tpl)));
 
@@ -6990,6 +7010,90 @@ section('12e · 世界价格档（低/中/高）· 面板只选择不输入（20
   check('12e⑧ 存档带 `ficTier` 且回落到 mid ＋ 开机按档生成',
     /ficTier: 'mid'/.test(stateSrc) && /s\.ficTier = pendingTier \|\| 'mid';/.test(mainSrc2)
     && /installWorld\(generateWorld\(s\.ficSeed, s\.ficTier\)\)/.test(mainSrc2));
+}
+
+/* ═══════════════ 12f · 新闻时隙互斥 ＋ 自动新闻 50x 收敛（2026-10-11 用户拍板） ═══════════════
+   ① 架空快讯在 50x 下太密 ⇒ 按 50x 基准收敛（1/200 ⇒ ≈ 每 4 真实秒一条，见 §12a⑧）；
+   ② 自动新闻（假消息）的出现时间同样收敛（120~336h ⇒ 50x 下 ≈ 2.4~6.7 秒一条）；
+   ③ 假消息**不与世界新闻抢同一根 K 线**（架空 / 史实同理）—— 到点遇世界新闻则顺延 1h。
+   ⚠️ 本节只碰**单个 state**，不 `installWorld`（那条纪律留给最后的 §11）。 */
+section('12f · 新闻时隙互斥 ＋ 自动新闻 50x 收敛');
+{
+  const FN = await import('../src/core/ficnews.js');
+  const engSrcF = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  const rendSrcF = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+
+  /* ① 静态：世界新闻命中标记 ＋ 传入 godAutoTick ＋ 让路闸 ＋ 新间隔常量 */
+  check('12f① 引擎：worldNewsHit 标记 ＋ godAutoTick(s, worldNewsHit) ＋ 让路顺延 1h',
+    /let worldNewsHit = false;/.test(engSrcF)
+    && /godAutoTick\(s, worldNewsHit\);/.test(engSrcF)
+    && /if \(worldNewsHit\) \{ g\.autoNewsAt = s\.i \+ 1; return; \}/.test(engSrcF));
+  check('12f② 自动新闻间隔常量收敛为 5~14 日（120~336h）',
+    /const AUTO_NEWS_GAP = \[120, 336\];/.test(engSrcF)
+    && /AUTO_NEWS_GAP\[1\] - AUTO_NEWS_GAP\[0\] \+ 1/.test(engSrcF));
+  /* ② 静态：面板 ETA ≥48h 折成「N 天后」（面板宽度固定、不许换行） */
+  check('12f③ 面板 ETA：≥48 小时折成「N 天后」（两处读数共用 autoNewsEta）',
+    /function autoNewsEta\(at, now\)/.test(rendSrcF)
+    && /return h >= 48 \?/.test(rendSrcF)
+    && (rendSrcF.match(/autoNewsEta\(/g) || []).length >= 3);
+
+  /* ③ 运行时 · 单元：到点遇世界新闻 ⇒ 让路（不播假消息、时刻顺延 1h） */
+  {
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 5, 10)) });
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e11;
+    engine.tickMarket(s, 'BTC');
+    s.god.autoNews = 1; s.god.autoNewsAt = s.i; s.god.newsAt = null;
+    const n0 = s.log.length;
+    engine.godAutoTick(s, true);                      // 世界新闻命中
+    check('12f④ 假消息让路：世界新闻命中 ⇒ 不播假消息、autoNewsAt 顺延 1h',
+      s.god.autoNewsAt === s.i + 1 && s.log.length === n0 && !Number.isFinite(s.god.newsAt),
+      `next=+${s.god.autoNewsAt - s.i}h logΔ=${s.log.length - n0} newsAt=${s.god.newsAt}`);
+
+    /* ④ 运行时 · 单元：世界新闻未命中 ⇒ 正常播报 ＋ 重排在 120~336h */
+    const i0 = s.i;
+    s.god.autoNewsAt = s.i; s.god.newsAt = null;
+    engine.godAutoTick(s, false);
+    check('12f⑤ 假消息正常播报：重排落在 120~336h（5~14 日）',
+      s.god.newsAt === i0 && s.god.autoNewsAt >= i0 + 120 && s.god.autoNewsAt <= i0 + 336,
+      `newsAt=${s.god.newsAt} next=+${s.god.autoNewsAt - i0}h`);
+  }
+
+  /* ⑤ 运行时 · 集成：在**真有架空快讯**的那一根推进 ⇒ 快讯在、假消息让路（同一根不叠两条） */
+  {
+    const SEED = 4242;
+    let ix = -1;
+    for (let k = 5000; k < 9000; k++) { if (FN.ficNewsAt(SEED, k)) { ix = k; break; } }
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: ix - 1 });
+    s.world = 'fic'; s.ficSeed = SEED;
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e11;
+    engine.tickMarket(s, 'BTC');
+    s.god.autoNews = 1; s.god.autoNewsAt = s.i; s.god.newsAt = null;   // 恰好与快讯同根到点
+    engine.advanceOneHour(s);
+    const ficHit = s.log.some(e => e.tag === 'fic' && String(e.text).includes('快讯'));
+    check('12f⑥ 集成：架空快讯那一根 ⇒ 快讯在、假消息让路（autoNewsAt 顺延、无假消息）',
+      ix > 0 && ficHit && s.god.autoNewsAt === ix + 1 && !Number.isFinite(s.god.newsAt),
+      `ix=${ix} fic=${ficHit} next=+${s.god.autoNewsAt - ix}h newsAt=${s.god.newsAt}`);
+  }
+
+  /* ⑥ 运行时 · 集成（**史实世界同理**：用户原话「上帝模式史实模式中同理」）——
+     找一根真有史实锚点新闻的 K 线，把假消息 armed 到同一根 ⇒ 锚点新闻在、假消息让路。 */
+  {
+    const A = await import('../src/core/anchors.js');
+    let ah = -1;
+    for (let k = 30000; k < 80000; k++) { if (A.newsStartAt(k)) { ah = k; break; } }
+    const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: ah - 1 });   // world 缺省 hist
+    god.enableGod(s);
+    s.god.inf = true; s.god.lastFill = 1e11;
+    engine.tickMarket(s, 'BTC');
+    s.god.autoNews = 1; s.god.autoNewsAt = s.i; s.god.newsAt = null;          // 恰与史实锚点同根
+    engine.advanceOneHour(s);
+    const histHit = s.log.some(e => e.tag === 'news' && A.newsStartAt(ah) && String(e.text) === A.newsStartAt(ah).title);
+    check('12f⑦ 集成（史实局）：史实锚点新闻那一根 ⇒ 锚点在、假消息让路',
+      ah > 0 && histHit && s.god.autoNewsAt === ah + 1 && !Number.isFinite(s.god.newsAt),
+      `ah=${ah} news=${histHit} next=+${s.god.autoNewsAt - ah}h newsAt=${s.god.newsAt}`);
+  }
 }
 
 /* ═══════════════ 11 · 架空世界线：生成器 · 数据层物化 · 2033 终点（2026-10-10 · P2）═══════════════

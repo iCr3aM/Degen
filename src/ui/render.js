@@ -3355,7 +3355,7 @@ function godManipPage(s, gx) {
   const etaP = el('p', 'god-prev', '');
   etaP.dataset.lveta = '';
   if (s.god.autoNews == null) etaP.style.display = 'none';
-  else etaP.textContent = `自动新闻 ｜ 下次约 ${Number.isFinite(s.god.autoNewsAt) ? Math.max(0, s.god.autoNewsAt - s.i) : 0} 小时后`;
+  else etaP.textContent = `自动新闻 ｜ 下次约 ${autoNewsEta(s.god.autoNewsAt, s.i)}`;
   rows.append(etaP);
 
   /* 自动造量 ＋ 自动操盘合一行（2026-10-10）：[造量 开/关] ＋ [砸盘][拉盘][停] ——
@@ -3990,6 +3990,19 @@ export function syncOverlays(s) {
 }
 
 /**
+ * 自动新闻的 **ETA 文本**（2026-10-11）—— `autoNewsAt − s.i` 小时后到点。
+ * ⚠️ 间隔自 2026-10-11 起调到 5~14 游戏日 ⇒ 直接报「228 小时后」又长又不直观，还会挤那一行
+ *    （面板宽度固定、不许换行）⇒ **≥ 48 小时折成「N 天后」**；48h 以下仍报小时，
+ *    与手动假消息冷却（8h）同一量纲、同一读法。
+ * @param {number} at  `s.god.autoNewsAt`（未写过时非有限 ⇒ 按 0 处理）
+ * @param {number} now 当前小时 `s.i`
+ */
+function autoNewsEta(at, now) {
+  const h = Number.isFinite(at) ? Math.max(0, at - now) : 0;
+  return h >= 48 ? `${Math.round(h / 24)} 天后` : `${h} 小时后`;
+}
+
+/**
  * **god 浮窗的盘中轻量刷新**（2026-10-10 code review Important 修）——
  * god 主体只在页码/版本号变时重建（保住三个输入框），但下列元素是**时间/引擎驱动**的，
  * 不刷新就会停在「打开那一刻」：
@@ -4014,7 +4027,7 @@ function syncGodLive(panel, s) {
   if (etaEl) {
     const on = g.autoNews != null;
     etaEl.style.display = on ? '' : 'none';
-    if (on) etaEl.textContent = `自动新闻 ｜ 下次约 ${Number.isFinite(g.autoNewsAt) ? Math.max(0, g.autoNewsAt - s.i) : 0} 小时后`;
+    if (on) etaEl.textContent = `自动新闻 ｜ 下次约 ${autoNewsEta(g.autoNewsAt, s.i)}`;
   }
   const pinOn = !!g.pin;
   for (const b of panel.querySelectorAll('[data-lvpin]')) b.disabled = pinOn;
