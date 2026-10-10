@@ -5430,7 +5430,7 @@ section('9ag · 插针剧本 ＋ 假消息 ＋ 强平叠加（伺服走真实吃
     godSrc9ag.includes('export const MANIP_PIN = { qStep: 0.35, overshoot: 0.005, backTol: 0.004, maxN: 8, maxH: 36 };')
     && godSrc9ag.includes('export const MANIP_NEWS = {')
     && godSrc9ag.includes('good:') && godSrc9ag.includes('bad:')
-    && engSrc9ag.includes('fillNews(tpls[n % tpls.length], newsVars(s, sym))'));
+    && engSrc9ag.includes('fillNewsEnts(s, sym, chosen, { salt: chosenSalt })'));
   check('9ag① 接线：main 分派两键 ＋ 处理器 ＋ bind ACTION_KEYS ＋ render 按钮 ＋ 置灰样式',
     mainSrc9ag.includes('if (d.godpin !== undefined)') && mainSrc9ag.includes('if (d.godnews !== undefined)')
     && mainSrc9ag.includes('function onGodPin')
@@ -5695,8 +5695,8 @@ section('9ah · M4 深度倍数全套放大 ＋ 爆仓潮自适应 ＋ 上帝新
     check('9ah④ M4d 行为：连按 16 次 ⇒ 16 条播报两两不同（轮换计数去重）＋ 全部含币符号',
       seen.size === 16 && [...seen].every(t => t.includes('BTC')),
       `去重后 ${seen.size} 条`);
-    check('9ah④ M4d 常数：利好 / 利空各 86 条（6 类风格 ＋ 早期年代风味 ＋ 年代扩容 40）＋ 冷却 8h',
-    god.MANIP_NEWS.good.length === 86 && god.MANIP_NEWS.bad.length === 86 && god.MANIP_NEWS_CD === 8,
+    check('9ah④ M4d 常数：利好 / 利空各 100 条（6 类风格 ＋ 早期年代风味 ＋ 年代扩容 40 ＋ 真实机构 14）＋ 冷却 8h',
+    god.MANIP_NEWS.good.length === 100 && god.MANIP_NEWS.bad.length === 100 && god.MANIP_NEWS_CD === 8,
     `good=${god.MANIP_NEWS.good.length} bad=${god.MANIP_NEWS.bad.length}`);
   }
 }
@@ -5728,13 +5728,15 @@ section('9ai · 新闻占位符 newsVars / fillNews ＋ 上帝终局 s.god.ended
   check('9ai② 结果条 rt 填充后无残留占位符 / 无换行 / 非空',
     filled.length >= 20 && badFill.length === 0, badFill.join(' | '));
 
-  /* 假新闻模板（46＋46，混合类型：裸字符串全期可用 / `{t, from}` 年代门控）经 `fillNews` 填充后：
-     无残留 `%`、无换行、全部含币符号。⚠️ 2026-10-09 年代门控：先抹平成字符串再填充。 */
+  /* 假新闻模板（100＋100，混合类型：裸字符串全期可用 / `{t, from}` 年代门控）经 **`fillNewsEnts`**
+     填充后：无残留 `%`、无换行、全部含币符号。⚠️ 2026-10-09 年代门控：先抹平成字符串再填充；
+     ⚠️ 2026-10-11 真实化：模板含**实体占位符**（`%X/%Z/%O…`）⇒ 必须走 `fillNewsEnts`（它会
+        先按 `timeOf(s)` 解析出真实机构名再填），用旧 `fillNews` 会残留 `%X`。 */
   const nv = engine.newsVars(s, 'BTC');
   const flat = tpl => (typeof tpl === 'string' ? tpl : tpl.t);
-  const fake = god.MANIP_NEWS.good.concat(god.MANIP_NEWS.bad).map(tpl => engine.fillNews(flat(tpl), nv));
+  const fake = god.MANIP_NEWS.good.concat(god.MANIP_NEWS.bad).map(tpl => engine.fillNewsEnts(s, 'BTC', flat(tpl)));
   const badFake = fake.filter(t => /%[A-Za-z]/.test(t) || t.includes('\n') || !t.includes('BTC'));
-  check('9ai② 假新闻模板 172 条填充后无残留占位符 / 无换行 / 全部含币符号',
+  check('9ai② 假新闻模板 200 条填充后无残留占位符 / 无换行 / 全部含币符号',
     badFake.length === 0, badFake.join(' | '));
 
   /* ③ `newsVars` 幂等（同状态两次调用逐键相等 ⇒ 重放确定性）；表外币不抛、价格走 `--`。 */
@@ -5782,9 +5784,9 @@ section('9ai · 新闻占位符 newsVars / fillNews ＋ 上帝终局 s.god.ended
   const engSrc = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   const rendSrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
   const mainSrc = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
-  check('9ai⑧ 引擎：真实结果条与假新闻播报都走 `fillNews(…, newsVars(…))`（数值同源）',
+  check('9ai⑧ 引擎：真实结果条与假新闻播报都走「填真值」的口径（数值同源）',
     engSrc.includes('fillNews(rnews.rt, newsVars(')
-    && engSrc.includes('fillNews(tpls[n % tpls.length], newsVars(s, sym))'));
+    && engSrc.includes('fillNewsEnts(s, sym, chosen, { salt: chosenSalt })'));
   check('9ai⑧ 上帝终局接线：engine 立 ended / main 见 ended 弹遮罩 / render 有独立 renderGodEnd',
     engSrc.includes('if (s.over || s.pending || (s.god && s.god.ended)) return;')
     && mainSrc.includes('s.god && s.god.ended')
@@ -5998,6 +6000,7 @@ section('9al · 玩家仓位可见性（热力图/巨鲸/订单/tape）＋ 插�
    ③ 条目唯一；④ 引擎行为：2013 年播报不含越期词；⑤ 门控边界逐位判定。 */
 section('9am · 假新闻年代门控：四采样点禁词 ＋ 池下限 ＋ 唯一性 ＋ 引擎行为');
 {
+  const ENT = await import('../src/core/entities.js');
   /* 禁词按采样点分级：越期词 = 该时刻「按史实还不可能出现」的叙事关键词。
      ⚠️ 「链上」不作禁词 —— 2013-03 双花分叉事故即史实，链上检测叙事不算穿帮（god.js ⑤组注）。 */
   const SAMPLES = [
@@ -6010,9 +6013,12 @@ section('9am · 假新闻年代门控：四采样点禁词 ＋ 池下限 ＋ 唯
     for (const key of ['good', 'bad']) {
       const pool = god.manipTplsOf(key, at);
       const hit = ban.filter(w => pool.some(t => t.includes(w)));
-      check(`9am① ${key} @ ${new Date(at).toISOString().slice(0, 10)}：过滤池无越期禁词 ＋ 池 ≥20 ＋ 条目唯一`,
-        hit.length === 0 && pool.length >= 20 && new Set(pool).size === pool.length,
-        hit.length ? `越期词 ${hit.join('/')}` : `池 ${pool.length} 条`);
+      /* ⚠️ 2026-10-11 新增：池内每条都必须 **`tplUsable`**（占用的实体 kind 此刻池非空）——
+         否则模板会渲染出解析不出机构名的半截句（如 2013-06 的 `%T`/`%O`/`%P` 槽）。 */
+      const notUsable = pool.filter(t => !ENT.tplUsable(t, at));
+      check(`9am① ${key} @ ${new Date(at).toISOString().slice(0, 10)}：过滤池无越期禁词 ＋ 池 ≥20 ＋ 条目唯一 ＋ 每条实体可用`,
+        hit.length === 0 && pool.length >= 20 && new Set(pool).size === pool.length && notUsable.length === 0,
+        hit.length ? `越期词 ${hit.join('/')}` : `池 ${pool.length} 条${notUsable.length ? ` · 实体不可用 ${notUsable.length}` : ''}`);
     }
   }
   /* ② 引擎行为：2013-06 开上帝连发 6 条假新闻（利好利空交替），播报全过门控。 */
@@ -6485,11 +6491,10 @@ section('9at · 假新闻禁「可证伪数据断言」（禁词 ＋ 硬编码 �
   /* 行为复核（另一块板、另一日期）：填充后每条含币符号、无残留占位符、无换行。 */
   const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2023, 6, 1)) });
   god.enableGod(s);
-  const nv = engine.newsVars(s, 'BTC');
-  const filled = tpls.map(t => engine.fillNews(t, nv));
+  const filled = tpls.map(t => engine.fillNewsEnts(s, 'BTC', t));
   const badFill = filled.filter(t => /%[A-Za-z]/.test(t) || t.includes('\n') || !t.includes('BTC'));
   check('9at③ 全表模板填充后无残留占位符 / 无换行 / 全部含币符号',
-    filled.length >= 172 && badFill.length === 0, badFill.join(' | '));
+    filled.length >= 200 && badFill.length === 0, badFill.join(' | '));
 
   /* ④ **上线闸**（2026-10-10 用户报「XRP 还没上线却出现 XRP 的新闻」）：
      建 2013 局、把 8 币全加载（复刻 `prefetchAllCoins` 全量预热），并**手动注入** XRP 格子
@@ -6870,7 +6875,7 @@ section('12a · ficnews：确定性 · 节奏 · 丰富度 · 不注入涨跌幅
   check('12a⑤ 红线：无涨跌幅占位符（%C/%c）/ 无水位禁词 / 全部含 %S', bad.length === 0, bad.slice(0, 3).join(' | '));
 
   /* 词库规模 */
-  check('12a⑥ 组合空间 ≥ 20000（越丰富越好）', FN.FICNEWS_COMBOS >= 20000, String(FN.FICNEWS_COMBOS));
+  check('12a⑥ 组合空间 ≥ 100000（6 族 ＋ 真实机构池，2026-10-11 扩容）', FN.FICNEWS_COMBOS >= 100000, String(FN.FICNEWS_COMBOS));
 
   /* 只抽已上市的币 —— **逐条按它自己那一刻的小时号校验**（样本跨多年，不能用单一阈值）。
      ⚠️ 2026-10-11：样本扩到 20000 根后 DOGE/XRP 会（**正确地**）出现在它们上市之后 ——
@@ -6922,8 +6927,9 @@ section('12b · 消费端退场：拥堵锚点 / USDT 锚点（架空局）');
     && /export function ficUsdtPriceAt\(/.test(cfgSrc));
   check('12b⑥ 引擎消费端全部传 s.world', (engSrc.match(/usdtPriceAt\(.*?s\.world\)/g) || []).length >= 4,
     String((engSrc.match(/usdtPriceAt\(.*?s\.world\)/g) || []).length));
-  check('12b⑦ 引擎架空新闻分支（ficNewsAt + fillNews）',
-    /const fn = ficNewsAt\(s\.ficSeed, s\.i\);/.test(engSrc) && /fillNews\(fn\.tpl, newsVars\(s, fn\.sym\)\)/.test(engSrc));
+  check('12b⑦ 引擎架空新闻分支（ficNewsAt(seed,i,salt) + fillNewsEnts）',
+    /ficNewsAt\(s\.ficSeed, s\.i, k\)/.test(engSrc)
+    && /fillNewsEnts\(s, fn\.sym, fn\.tpl, \{ salt: fnSalt, seed: s\.ficSeed \}\)/.test(engSrc));
 }
 
 section('12c · 架空局内推进 → 快讯入日志（运行时）');
@@ -6957,7 +6963,8 @@ section('12d · 新闻分工：架空带数值 · 假消息只做叙事 · 芯�
   const tpls = all.map(e => (typeof e === 'string' ? e : e.t));
   const num = tpls.filter(t => /%[LCcARH]/.test(t));
   check('12d① 假消息只做叙事：全部模板零数值占位符', num.length === 0, num.slice(0, 3).join(' | '));
-  check('12d② 假消息模板数仍为 86 ＋ 86', G.MANIP_NEWS.good.length === 86 && G.MANIP_NEWS.bad.length === 86,
+  check('12d② 假消息模板数 100 ＋ 100（含 ⑨ 真实机构扩容）',
+    G.MANIP_NEWS.good.length === 100 && G.MANIP_NEWS.bad.length === 100,
     `${G.MANIP_NEWS.good.length}/${G.MANIP_NEWS.bad.length}`);
   check('12d③ 假消息每条仍以「快讯 ｜ 」开头且含 %S',
     tpls.every(t => t.startsWith('快讯 ｜ ') && t.includes('%S')));
@@ -6975,7 +6982,7 @@ section('12d · 新闻分工：架空带数值 · 假消息只做叙事 · 芯�
   const engFic = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
   check('12d⑥ 架空新闻芯片色：LOG_TAGS.fic ＋ CSS `.log-tag.fic` ＋ 引擎播报传 fic',
     S.LOG_TAGS.fic === '世界' && /\.log-tag\.fic\s*\{/.test(css) && css.includes('--world:')
-    && /pushLog\(s, fillNews\(fn\.tpl, newsVars\(s, fn\.sym\)\), 'news', 'fic'\)/.test(engFic));
+    && /pushLog\(s, fillNewsEnts\(s, fn\.sym, fn\.tpl, \{ salt: fnSalt, seed: s\.ficSeed \}\), 'news', 'fic'\)/.test(engFic));
 }
 
 section('12e · 世界价格档（低/中/高）· 面板只选择不输入（2026-10-11）');
@@ -7168,6 +7175,155 @@ section('12g · 新闻频率对照：普通模式基准 → 上帝模式（架�
     autoMeanGap >= 960 && autoMeanGap <= 1920,
     `实测均值 ${autoMeanGap.toFixed(0)}h = ${(autoMeanGap / 24).toFixed(1)} 日 · 50x 每 ${autoSec50x.toFixed(1)} 秒`);
   console.log(`     频度总览：普通模式 ${basePerYear.toFixed(1)} 条/年 | 架空快讯 ${ficPerYear.toFixed(1)} | 快讯+假消息 ${combPerYear.toFixed(1)} 条/年`);
+}
+
+/* ═══════════════ 12h · 真实实体注册表 ＋ 搭配正确性 ＋ 立场账本（2026-10-11 用户需求） ═══════════════
+   用户要求：词库机构名换**现实名称**（带时间门控、搭配正确、不能出现「苹果上线永续合约」）、
+   且**新闻不打架**（架空快讯说某实体利好 ⇒ 随后的假消息不得说它利空）。
+   ⚠️ 不 installWorld（那条纪律留给最后的 §11）。 */
+section('12h · 真实实体：结构 · 时间门 · 搭配正确性 · 立场账本');
+{
+  const ENT = await import('../src/core/entities.js');
+  const G2 = await import('../src/core/god.js');
+  const C2 = await import('../src/core/config.js');
+
+  /* ① 注册表结构合法：kind 在册、name 非空且同 kind 内唯一、from 有效、to > from */
+  const KINDS = new Set(Object.keys(ENT.KIND_PH));
+  const badEnt = ENT.ENTITIES.filter(e =>
+    !KINDS.has(e.kind) || !e.name || !(e.from > 0) || (e.to != null && !(e.to > e.from)));
+  const dupName = (() => {
+    const seen = new Set(), dup = [];
+    for (const e of ENT.ENTITIES) { const k = `${e.kind}|${e.name}`; if (seen.has(k)) dup.push(k); seen.add(k); }
+    return dup;
+  })();
+  check('12h① 实体注册表：kind 合法 ＋ name 非空同 kind 唯一 ＋ from/to 有效',
+    ENT.ENTITIES.length >= 80 && badEnt.length === 0 && dupName.length === 0,
+    `n=${ENT.ENTITIES.length}${badEnt.length ? ` 非法 ${badEnt.length}` : ''}${dupName.length ? ` 重名 ${dupName.join(',')}` : ''}`);
+
+  /* ② 时间门：2013-06 的可用池不含「当时还不存在」的机构；未来类别整池为空 */
+  {
+    const t13 = Date.UTC(2013, 5, 15);
+    const exch13 = ENT.entitiesOf('exch', t13);
+    const early = ['Binance', 'FTX', 'Bybit', 'Bitget', 'KuCoin', 'OKX', 'Deribit'];
+    check('12h② 时间门：2013-06 交易所池不含 2017+ 成立的所（Binance/FTX/Bybit…）',
+      early.every(n => !exch13.includes(n)) && exch13.includes('Mt.Gox') && exch13.includes('Bitstamp'),
+      exch13.join('/'));
+    check('12h② 时间门：2013-06 的 etf/corp/pay/inst/stable 池为空（那类机构还没进场）',
+      ENT.entitiesOf('etf', t13).length === 0 && ENT.entitiesOf('corp', t13).length === 0
+      && ENT.entitiesOf('pay', t13).length === 0 && ENT.entitiesOf('inst', t13).length === 0
+      && ENT.entitiesOf('stable', t13).length === 0);
+    /* 能力域分家：`%B`（稳定币发行方）与 `%K`（基建服务）**不重叠** ——
+       避免「Chainalysis 发行稳定币」这类错配（kind 即能力）。 */
+    const st = new Set(ENT.entitiesOf('stable', Date.UTC(2024, 0, 1)));
+    const inf = new Set(ENT.entitiesOf('infra', Date.UTC(2024, 0, 1)));
+    check('12h② 能力域：稳定币发行方池（%B）与基建服务池（%K）严格不重叠',
+      st.size >= 3 && inf.size >= 5 && [...st].every(n => !inf.has(n)),
+      `stable=${[...st].join('/')} · infra=${inf.size} 家`);
+    /* 退场闸：FTX 在 2022-11 破产后不再出现（`to` = 2022-12-01 排他） */
+    check('12h② 退场闸：FTX 2022-11 仍可用、2023-01 起不再出现',
+      ENT.entitiesOf('exch', Date.UTC(2022, 10, 15)).includes('FTX')
+      && !ENT.entitiesOf('exch', Date.UTC(2023, 0, 1)).includes('FTX'));
+  }
+
+  /* ③ 搭配正确性（结构性）：任何含「永续」的模板必须 from ≥ 2016-05-13（BitMEX 首推日）。
+     科技公司/非交易所只存在于 %O/%P/%I/%T 槽 ⇒「苹果上线永续合约」结构上不可能（kind 即能力）。 */
+  {
+    const may13 = Date.UTC(2016, 4, 13);
+    const allNews = [...G2.MANIP_NEWS.good, ...G2.MANIP_NEWS.bad];
+    const perpBad = allNews.filter(e => {
+      const t = typeof e === 'string' ? e : e.t;
+      if (!t.includes('永续')) return false;
+      return typeof e === 'string' || !(e.from >= may13);
+    });
+    check('12h③ 搭配：含「永续」的模板一律 from ≥ 2016-05-13（BitMEX XBTUSD 首推日）',
+      perpBad.length === 0, perpBad.map(e => (typeof e === 'string' ? e : e.t)).join(' | '));
+    /* 「现货 ETF 获批 / 挂牌」类必须 ≥ 2024-01-11（SEC 一次性批准 11 只） */
+    const appr = allNews.filter(e => {
+      const t = typeof e === 'string' ? e : e.t;
+      if (!(t.includes('现货 ETF') && (t.includes('获批') || t.includes('挂牌')))) return false;
+      return typeof e === 'string' || !(e.from >= Date.UTC(2024, 0, 11));
+    });
+    check('12h③ 搭配：含「现货 ETF 获批/挂牌」的模板一律 from ≥ 2024-01-11',
+      appr.length === 0, appr.map(e => (typeof e === 'string' ? e : e.t)).join(' | '));
+    /* 交易所产品槽只写 `%X`（交易所池）—— 抽查：含「上线 …永续合约」的模板主体必须是 %X */
+    const perpTpl = allNews.map(e => (typeof e === 'string' ? e : e.t)).filter(t => t.includes('上线') && t.includes('永续'));
+    check('12h③ 搭配：出现「上线…永续合约」的模板主体都是交易所占位符 `%X`',
+      perpTpl.length >= 1 && perpTpl.every(t => t.includes('%X')),
+      perpTpl.join(' | '));
+    /* **架空快讯**的 ETF 事实门（行为级）：2019 年绝不能说「上市/获批 …ETF」——
+       美国现货 ETF 2024-01-11 才上市、期货 ETF 2021-10-19。 */
+    const FN2 = await import('../src/core/ficnews.js');
+    const badEtf = [];
+    for (let k = 0; k < 400000; k++) {
+      const v = FN2.ficNewsAt(24680, k, 0);
+      if (!v) continue;
+      const t = C2.GAME.start + k * C2.HOUR_MS;
+      const spotList = /上市|获批/.test(v.tpl) && /现货.*ETF|ETF.*现货/.test(v.tpl);
+      const anyList = /上市|获批/.test(v.tpl) && v.tpl.includes('ETF');
+      if (spotList && t < Date.UTC(2024, 0, 11)) badEtf.push(`${new Date(t).toISOString().slice(0, 10)} ${v.tpl}`);
+      else if (anyList && t < Date.UTC(2021, 9, 19)) badEtf.push(`${new Date(t).toISOString().slice(0, 10)} ${v.tpl}`);
+    }
+    check('12h③ 搭配：架空快讯「ETF 上市/获批」一律晚于真实上市日（现货 2024-01-11 / 期货 2021-10-19）',
+      badEtf.length === 0, badEtf.slice(0, 3).join(' | '));
+  }
+
+  /* ④ 解析确定性 ＋ salt 语义：同 (seed,time,i,salt) 逐位一致；换 salt 换名字；只解析出现的占位符 */
+  {
+    const tpl = '快讯 ｜ %X 与 %Z 就 %S 达成合作';
+    const t = Date.UTC(2021, 4, 10), seed = 987654, i = 1000;
+    const a1 = ENT.resolveEnts(tpl, t, seed, i, 0), a2 = ENT.resolveEnts(tpl, t, seed, i, 0);
+    const salts = new Set([0, 1, 2, 3, 4].map(k => (ENT.resolveEnts(tpl, t, seed, i, k)['%X'])));
+    const only = ENT.resolveEnts('快讯 ｜ %S 交投活跃', t, seed, i, 0);
+    check('12h④ resolveEnts 确定性：同 (seed,time,i,salt) 逐位一致 ＋ 只解析出现的占位符 ＋ salt 可换名字',
+      JSON.stringify(a1) === JSON.stringify(a2)
+      && a1['%X'] && a1['%Z'] && a1['%S'] === undefined
+      && Object.keys(only).length === 0 && salts.size >= 2,
+      `${a1['%X']} / ${a1['%Z']} · salt 变化 ${salts.size} 种`);
+  }
+
+  /* ⑤ 立场账本：语义 ＋ 引擎集成（**非空洞**测试：先证该实体本来抽得到，再证冲突时被避开） */
+  {
+    const st = { i: 5000, newsStance: {} };
+    ENT.putStance(st, 'Binance', 1, 'BTC');
+    check('12h⑤ 账本语义：同向不冲突 / 反向冲突 / 窗口外不冲突 / 中性恒不冲突',
+      ENT.stanceConflict(st, 'Binance', 1) === false
+      && ENT.stanceConflict(st, 'Binance', -1) === true
+      && ENT.stanceConflict(st, 'Binance', 0) === false
+      && ENT.stanceConflict(st, 'Coinbase', -1) === false
+      && (() => { const s2 = { i: 5000 + ENT.STANCE_WINDOW_H + 1, newsStance: { Binance: { dir: 1, at: 5000 } } };
+        return ENT.stanceConflict(s2, 'Binance', -1) === false; })());
+
+    /* 引擎集成：把 Binance 标成「利好」，之后连发利空假消息 ⇒ 输出里绝不出现 Binance */
+    const mkState = async () => {
+      const s = await mk({ sym: 'BTC', mode: 'fut', cash: 1e9, i: idx(at(2021, 0, 1)) });
+      god.enableGod(s);
+      s.god.inf = true; s.god.lastFill = 1e12;
+      engine.tickMarket(s, 'BTC');
+      return s;
+    };
+    const exchPool = ENT.entitiesOf('exch', Date.UTC(2021, 0, 1));
+    const run = async (marked) => {
+      const s = await mkState();
+      if (marked) s.newsStance = { Binance: { dir: 1, at: s.i, sym: 'BTC' } };
+      const texts = [];
+      for (let k = 0; k < 40; k++) {
+        s.i += 24; s.god.newsAt = null;                    // 绕开冷却
+        const r = engine.godFakeNews(s, 'BTC', -1);
+        if (r.ok) texts.push(String(s.log[0].text));
+      }
+      return texts;
+    };
+    const free = await run(false);
+    const blocked = await run(true);
+    /* ⚠️ **非空洞前置**：不设账本时，输出里必须真的出现过**某个真实交易所名**（证明 `%X`
+       确实解析成了现实机构，测试对象存在）；再用同一个「Binance 被标利好」的场景验避让。 */
+    const anyExch = free.filter(t => exchPool.some(n => t.includes(n))).length;
+    check('12h⑤ 非空洞前置：不设账本时，`%X` 确实解析成真实交易所名（≥1 条）',
+      anyExch >= 1, `含交易所名的播报 ${anyExch}/${free.length} 条`);
+    check('12h⑤ 引擎集成：Binance 标成利好后再发利空假消息 ⇒ 输出里绝不出现 Binance',
+      blocked.length >= 30 && blocked.every(t => !t.includes('Binance')),
+      `播报 ${blocked.length} 条 · 含 Binance ${blocked.filter(t => t.includes('Binance')).length} 条`);
+  }
 }
 
 /* ═══════════════ 11 · 架空世界线：生成器 · 数据层物化 · 2033 终点（2026-10-10 · P2）═══════════════

@@ -16,6 +16,9 @@ import { GAME, HOUR_MS, COINS, EXCHANGES, EXREV, LIQ, MARGIN, MIN_NOTIONAL, minN
 import { candleAt, closeAt, dayIndexOf, hasCandle, isLoaded, liqOf, loadCoin, rangeOf, rawCandleAt, rawCloseAt, supplyAt, volumeAt, HOURS_PER_DAY } from './market.js';
 import { newsStartAt, resultNewsStartAt, warnAnchorAt } from './anchors.js';
 import { ficNewsAt } from './ficnews.js';
+/* 真实实体注册表（2026-10-11 新闻真实化）：两条新闻管道共用 —— 模板写 kind 占位符，
+   发射层在这里解析成真实机构名（按 `timeOf(s)` 门控 ＋ 立场账本防「打架」）。 */
+import { entsOfTpl, resolveEnts, putStance, stanceConflict, tplUsable } from './entities.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, LADDER, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
 import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, MANIP_NEWS_CD, MANIP_NEWS_Q, MANIP_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfFlowAt, etfNewsAt, exDevOf, instSeedOf, manipTplsOf, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleFlowAt, whaleNewsAt } from './god.js';
@@ -5279,7 +5282,28 @@ export function newsVars(s, sym, ctx = {}) {
  */
 export function fillNews(tpl, vars) {
   if (typeof tpl !== 'string' || !vars) return tpl;
-  return tpl.replace(/%[SLCMHARVDcmd]/g, mm => (vars[mm] == null ? mm : vars[mm]));
+  /* 白名单含**实体占位符**（`X F T I O P G Z N K B`，见 `entities.KIND_PH`）——
+     它们由 `fillNewsEnts` 解析成真实机构名；这里一并替换，字典缺键则原样保留。 */
+  return tpl.replace(/%[SLCMHARVDcmdXFTIOPGZNBK]/g, mm => (vars[mm] == null ? mm : vars[mm]));
+}
+
+/**
+ * **新闻发射的统一入口**（2026-10-11 新闻真实化）—— `newsVars`（币价/涨幅/热度…）＋
+ * `entities.resolveEnts`（真实机构名，按 `timeOf(s)` 门控）合成一份字典后跑 `fillNews`。
+ *
+ * ⚠️ 两条叙事型管道（架空快讯 / 上帝假消息）都走它，实体口径才唯一。
+ * ⚠️ `seed` 默认 `s.seed`（上帝局）；架空快讯要传 `s.ficSeed` —— 与 `ficNewsAt` 同一条世界线，
+ *    否则「同一条快讯」在两处会抽出不同的机构名。
+ * ⚠️ `salt` 供「立场账本」冲突时重抽实体（见 `godFakeNews` / 架空播报分支）。
+ * @param {object} s
+ * @param {string} sym
+ * @param {string} tpl 模板（可含 `%S/%L…` 与实体占位符 `%X/%Z…`）
+ * @param {{salt?:number, seed?:number, ctx?:object}} [o]
+ * @returns {string}
+ */
+export function fillNewsEnts(s, sym, tpl, { salt = 0, seed = s.seed, ctx } = {}) {
+  const vars = { ...newsVars(s, sym, ctx), ...resolveEnts(tpl, timeOf(s), seed, s.i, salt) };
+  return fillNews(tpl, vars);
 }
 
 /**
@@ -5311,9 +5335,12 @@ export function godFakeNews(s, sym, dir) {
   if (cd < MANIP_NEWS_CD) return { ok: false, why: `冷却中（还需 ${MANIP_NEWS_CD - cd} 小时）` };
   const r1 = randFast(s.seed, hashStr(sym), s.i, 0, hashStr('news'));
   const key = dir > 0 ? 'good' : 'bad';
-  /* 年代门控（2026-10-09 审计「假新闻年代口径」）：选条前按此刻过滤 —— 2013 年不会出现
-     「现货 ETF 净流入」这类穿帮快讯；轮换计数在过滤后子序列上取模（跨年代边界跳条可接受）。 */
-  const tpls = manipTplsOf(key, timeOf(s));
+  const time = timeOf(s);
+  /* 年代门控 ＋ 实体门控**都在 `manipTplsOf` 里**（2026-10-11 起）—— 选条前按此刻过滤：
+     2013 年不会出现「现货 ETF 净流入」这类穿帮快讯，也不会出现「实体池还空着」（如 2013-06 的
+     `%T`/`%O`/`%P`）的半截句。轮换计数在过滤后子序列上取模（跨年代边界跳条可接受）。
+     实体解析一律在**选条之后**（`fillNewsEnts`），`manipTplsOf` 仍只返回 `string[]`。 */
+  const tpls = manipTplsOf(key, time);
   const nudge = (MANIP_NEWS_RANGE.min + r1 * (MANIP_NEWS_RANGE.max - MANIP_NEWS_RANGE.min)) * dir;
   const notional = Math.max(MANIP_MIN, MANIP_NEWS_Q * hourLiqBase(s, sym, s.i));
   const p = manipPreview(s, sym, dir, notional);
@@ -5328,9 +5355,24 @@ export function godFakeNews(s, sym, dir) {
   /* 轮换选条：取第 n 条、n+1 存档（坏值 / 缺键回 0）。 */
   if (!s.god.newsN) s.god.newsN = { good: 0, bad: 0 };
   const n = Number.isFinite(s.god.newsN[key]) ? s.god.newsN[key] : 0;
+  /* **立场账本避让**（2026-10-11 用户拍板「新闻不打架」）—— 选定模板后解析机构名，
+     若与账本里「同实体反向、且仍在窗口内」冲突 ⇒ 换 salt 重抽实体（≤4 次）；整条模板都冲突
+     就往后挪一条（`off+1`）。挪条**不动** `newsN`：它是「玩家按了几次」的计数，不能被避让改写。
+     全池都冲突（极罕见：窗口 90 日、池 ≥20）⇒ 退回本轮第一条，保证玩家操作永不被卡住。 */
+  let chosen = null, chosenSalt = 0, chosenEnts = null;
+  for (let off = 0; off < tpls.length && chosen == null; off++) {
+    const cand = tpls[(n + off) % tpls.length];
+    if (!entsOfTpl(cand, time, s.seed, s.i, 0).length) { chosen = cand; break; }   // 无实体槽：天然不冲突
+    for (let salt = 0; salt <= 4; salt++) {
+      const es = entsOfTpl(cand, time, s.seed, s.i, salt);
+      if (!es.some(e => stanceConflict(s, e.name, dir))) { chosen = cand; chosenSalt = salt; chosenEnts = es; break; }
+    }
+  }
+  if (chosen == null) { chosen = tpls[n % tpls.length]; chosenEnts = entsOfTpl(chosen, time, s.seed, s.i, 0); }
   s.god.newsN[key] = n + 1;
   s.god.newsAt = s.i;
-  pushLog(s, fillNews(tpls[n % tpls.length], newsVars(s, sym)), dir > 0 ? 'ok' : 'bad', 'news');
+  for (const e of (chosenEnts || [])) putStance(s, e.name, dir, sym);
+  pushLog(s, fillNewsEnts(s, sym, chosen, { salt: chosenSalt }), dir > 0 ? 'ok' : 'bad', 'news');
   return { ok: true, cost: p.cost };
 }
 
@@ -5761,8 +5803,22 @@ export function advanceOneHour(s) {
        模板只含事实性占位符（%S 币 / %L 现价 / %A 成交额 / %R 资金费率 / %H 热度）—— **不注入涨跌幅**。
        芯片用 `fic`（紫底「世界」，与史实 `news` 金底分开），两者同屏一眼可辨。
        与史实新闻一样，它只是个「填充态」，同一小时里更具体的事件（停机 / 归零）会压在上面。 */
-    const fn = ficNewsAt(s.ficSeed, s.i);
-    if (fn) { pushLog(s, fillNews(fn.tpl, newsVars(s, fn.sym)), 'news', 'fic'); worldNewsHit = true; }
+    /* ⚠️ **立场账本避让**（2026-10-11 用户拍板「新闻不打架」）：架空快讯若与账本里
+       「同实体反向、仍在窗口内」冲突 ⇒ 换 `salt` 重抽实体（≤3 次）；全冲突才**跳过本条**
+       （快讯是装饰流，跳过一条不可见，比发一条自相矛盾的强）。`dir` 为 0（中性）恒不冲突。
+       ⚠️ `seed` 必须传 `s.ficSeed` —— 与世界线同源，否则同一条快讯会抽出另一个机构名。 */
+    let fn = null, fnSalt = 0;
+    for (let k = 0; k <= 3; k++) {
+      const cand = ficNewsAt(s.ficSeed, s.i, k);
+      if (!cand) break;
+      const es = entsOfTpl(cand.tpl, timeOf(s), s.ficSeed, s.i, k);
+      if (!es.some(e => stanceConflict(s, e.name, cand.dir))) { fn = cand; fnSalt = k; break; }
+    }
+    if (fn) {
+      pushLog(s, fillNewsEnts(s, fn.sym, fn.tpl, { salt: fnSalt, seed: s.ficSeed }), 'news', 'fic');
+      for (const e of entsOfTpl(fn.tpl, timeOf(s), s.ficSeed, s.i, fnSalt)) putStance(s, e.name, fn.dir, fn.sym);
+      worldNewsHit = true;
+    }
   }
 
   for (const ex of EXCHANGES) {
@@ -6003,6 +6059,7 @@ export function rewindTo(s, to) {
   s.lockI = -1;
   s.log = [];
   s.feed = [];          // 大单日志（2026-10-08 tape）：会话级、「最近发生的事」⇒ 跳时间/回退一律清空重攒
+  s.newsStance = {};    // 新闻立场账本（2026-10-11）：记录的是「回退点之后」看到的方向，回退一律清空重记
   s.lob = {};           // NPC 限价簿（2026-10-08 三批⑦）：可由种子逐位复现 ⇒ 清空后在落点冷启动重长
 
   /* ③ 时钟落到那一刻 —— **不重放**，见函数头 */
