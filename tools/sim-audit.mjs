@@ -6750,9 +6750,100 @@ section('10e · 重开确认：已有存档的槽必须先武装再点');
 {
   const readSrc = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
   const mainSrc = readSrc('src/main.js');
-  check('10e① onGodWorld 走 hasSave → armMenu 武装', /function onGodWorld\([\s\S]*?hasSave\('godHist'\)[\s\S]*?armMenu\(node\)/.test(mainSrc));
+  check('10e① onGodWorld 按目标槽 hasSave → armMenu 武装（史实/架空各一槽）',
+    /function onGodWorld\([\s\S]*?const slot = world === 'fic' \? 'godFic' : 'godHist';[\s\S]*?hasSave\(slot\)[\s\S]*?armMenu\(node\)/.test(mainSrc));
   check('10e② onMenu(start) 仍走 hasSave(normal) 武装', /kind === 'start'[\s\S]{0,200}?hasSave\('normal'\)/.test(mainSrc));
   check('10e③ onScenario 仍走 hasSave(challenge) 武装', /function onScenario\([\s\S]*?hasSave\('challenge'\)[\s\S]*?armMenu\(node\)/.test(mainSrc));
+}
+
+/* ═══════════════ 11 · 架空世界线：生成器 · 数据层物化 · 2033 终点（2026-10-10 · P2）═══════════════
+   ⚠️ 放在**全文件最末尾**：11c 会把合成世界线灌进 `market` 的全局缓存（`installWorld`），
+      之后任何读行情的小节都会读到合成数据 —— 所以必须最后跑。 */
+section('11a · ficgen 生成器：确定性 · 边界 · 统计特征');
+let ficSeedWorld = null;
+{
+  const FG = await import('../src/core/ficgen.js');
+
+  check('11a① 架空终点 = 2034-01-01 排他（184080 根）', FG.ficEndIndex() === 184080, String(FG.ficEndIndex()));
+  check('11a① 末根 = 2033-12-31 23:00',
+    new Date(C.GAME.start + (FG.ficEndIndex() - 1) * C.HOUR_MS).toISOString() === '2033-12-31T23:00:00.000Z');
+
+  const t0 = Date.now();
+  const w1 = FG.generateWorld(12345);
+  const genMs = Date.now() - t0;
+  const w2 = FG.generateWorld(12345);
+  const w3 = FG.generateWorld(99999);
+  ficSeedWorld = w1;
+
+  const c1 = FG.closesOf(w1, 'BTC'), c2 = FG.closesOf(w2, 'BTC'), c3 = FG.closesOf(w3, 'BTC');
+  check('11a② 同 seed 两次生成逐位一致', c1.length === c2.length && c1.every((v, i) => v === c2[i]));
+  check('11a③ 不同 seed 必不同', c1.length === c3.length && c1.some((v, i) => v !== c3[i]));
+
+  let allOk = true, allPos = true, lenOk = true;
+  for (const sym of ['BTC', 'ETH', 'XRP', 'DOGE', 'SOL']) {
+    const c = FG.closesOf(w1, sym);
+    if (!c.length) { allOk = false; continue; }
+    if (c.length !== w1.coins[sym].count) lenOk = false;
+    for (const v of c) { if (!Number.isFinite(v) || v <= 0) { allPos = false; break; } }
+  }
+  check('11a④ 五币齐备 · 价格恒正且有限（无 NaN / 0 / 负）', allOk && allPos && lenOk);
+
+  const annVol = c => {
+    const r = []; for (let i = 1; i < c.length; i++) r.push(Math.log(c[i] / c[i - 1]));
+    const m = r.reduce((a, b) => a + b, 0) / r.length;
+    return Math.sqrt(r.reduce((a, b) => a + (b - m) * (b - m), 0) / r.length) * Math.sqrt(24 * 365.25) * 100;
+  };
+  const bv = annVol(c1);
+  /* 实测 BTC 全期 92%；合成世界线（单条样本）允许 ±40% 抖动 —— 带宽按「量级对得上」定，不做假绿。 */
+  check('11a⑤ BTC 年化波动落在实测量级（50–140%）', bv >= 50 && bv <= 140, `${bv.toFixed(0)}%`);
+
+  /* 厚尾：小时收益的峰度应显著 > 正态的 3（Student-t 的痕迹）。 */
+  const r = []; for (let i = 1; i < c1.length; i++) r.push(Math.log(c1[i] / c1[i - 1]));
+  const m = r.reduce((a, b) => a + b, 0) / r.length;
+  const sd = Math.sqrt(r.reduce((a, b) => a + (b - m) * (b - m), 0) / r.length);
+  const kurt = r.reduce((a, b) => a + Math.pow((b - m) / sd, 4), 0) / r.length;
+  check('11a⑥ 收益厚尾：峰度显著 > 3（Student-t / 跳跃的痕迹）', kurt > 8, `kurt=${kurt.toFixed(1)}`);
+
+  check('11a⑦ 生成耗时 < 3s（21 年 × 5 币，体感可接受）', genMs < 3000, `${genMs}ms`);
+}
+
+section('11b · endIndexOf：世界感知终点');
+{
+  check('11b① hist → 2024-12-31（105192）', C.endIndexOf('classic', 'hist') === 105192, String(C.endIndexOf('classic', 'hist')));
+  check('11b② fic → 2033-12-31（184080）', C.endIndexOf('classic', 'fic') === 184080, String(C.endIndexOf('classic', 'fic')));
+  check('11b③ 缺省 world 一律 hist（与 scenarioEndIndex 同值）',
+    C.endIndexOf('classic') === C.scenarioEndIndex('classic') && C.endIndexOf('degen') === C.scenarioEndIndex('degen'));
+}
+
+section('11c · 数据层物化 · 架空卡开放（运行时 ＋ 静态）');
+{
+  await market.loadManifest();
+  market.installWorld(ficSeedWorld);
+  const rBTC = market.rangeOf('BTC');
+  check('11c① 物化后 rangeOf(BTC) 起点 = 2013（0）', !!rBTC && rBTC[0] === 0, JSON.stringify(rBTC));
+  check('11c② 物化后 rangeOf(BTC) 终点 = ficEndIndex', !!rBTC && rBTC[1] === 184080, JSON.stringify(rBTC));
+  const c0 = market.candleAt('BTC', 0);
+  check('11c③ 物化后 candleAt 读到合成 K 线（非 null、价 > 0）', !!c0 && c0.c > 0, JSON.stringify(c0));
+  check('11c④ 物化后 hasCandle / isLoaded 走合成序列',
+    market.hasCandle('BTC', 100000) && market.isLoaded('SOL'));
+  const q = market.liqOf('BTC', 0);
+  check('11c⑤ 物化后 liqOf 读到合成流动性（> 0）', q != null && q > 0, `${q}`);
+  const rX = market.rangeOf('XRP');
+  check('11c⑥ 山寨物化起点 = 其真实上线时刻（> 0）', !!rX && rX[0] > 0, JSON.stringify(rX));
+
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+  const rendSrc = fs.readFileSync(path.join(ROOT, 'src/ui/render.js'), 'utf8');
+  check('11c⑦ 开机：世界属性 fic ⇒ 物化生成器产出', /installWorld\(generateWorld\(s\.ficSeed\)\)/.test(mainSrc));
+  check('11c⑧ 开机：newStash `ficSeed` / `ficVer` ＋ 终点按世界推',
+    /s\.ficSeed = \(Math\.random\(\) \* 0xffffffff\) >>> 0;/.test(mainSrc) && /s\.ficVer = FIC_VER;/.test(mainSrc)
+    && /s\.endI = endIndexOf\(s\.scen, 'fic'\);/.test(mainSrc));
+  check('11c⑨ 版本不符 ⇒ 丢档重开（ficVerMismatch ＋ wipe godFic）',
+    /const ficVerMismatch = s\.world === 'fic' && s\.ficVer !== FIC_VER;/.test(mainSrc)
+    && /wipe\('godFic'\);/.test(mainSrc));
+  check('11c⑩ 架空卡不再置灰 / onGodWorld 不再早退',
+    !/每一局都不一样。（P2 开放）/.test(rendSrc) && !/if \(world === 'fic'\) return;/.test(mainSrc));
+  check('11c⑪ installWorld 只在 market.js 一处定义',
+    /export function installWorld\(/.test(fs.readFileSync(path.join(ROOT, 'src/core/market.js'), 'utf8')));
 }
 
 /* ═══════════════════ 总账 ═══════════════════ */

@@ -2530,7 +2530,7 @@ export function openScenPick() {
  *
  * ⚠️ 行为与「挑战模式」同形：卡片是 `<button>`、动作键 `data-godworld`（值 `'hist'|'fic'`）、
  *    有档时先武装再点一次（武装状态机在 `main.js` 的 `onGodWorld`，与年代卡共用 `armMenu`）。
- * ⚠️ 架空卡本阶段**置灰**（`disabled`）—— K 线生成器在 P2；置灰而非隐藏，是为了让玩家看见这条路。
+ * ⚠️ 架空卡自 **P2 起已开放**（生成器 `ficgen.js` 落地）：2013→2033，世界线由种子决定，每局不同。
  */
 export function openGodPick() {
   openMenuDlg('上帝模式', box => {
@@ -2545,7 +2545,7 @@ export function openGodPick() {
       list.append(row);
     };
     card('hist', '上帝·史实', '2013 → 2024', '真历史 K 线 ＋ 真新闻，但你有上帝面板：填资金、跳日期、拉盘砸盘。', false);
-    card('fic', '上帝·架空', '2013 → 2033', '合成世界线 ＋ 架空新闻，每一局都不一样。（P2 开放）', true);
+    card('fic', '上帝·架空', '2013 → 2033', '合成世界线 ＋ 架空新闻，每一局都不一样。', false);
     box.append(list);
   });
 }

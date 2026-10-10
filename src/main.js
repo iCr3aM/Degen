@@ -7,10 +7,11 @@
  *   main.js 是唯一把两边连起来的地方（也是唯一允许读时钟的地方）
  */
 
-import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, exchangeOf, hasFinancingAt, isChallenge, maxLeverageAt, scenarioOf, scenarioStartIndex } from './core/config.js';
+import { GAME, COINS, DEFAULT_SCENARIO, HOUR_MS, OTC, endIndexOf, exchangeOf, hasFinancingAt, isChallenge, maxLeverageAt, scenarioOf, scenarioStartIndex } from './core/config.js';
 import { anyHeld, createState, heldSyms, posOf, pushLog } from './core/state.js';
 import { SAVE_SLOTS, disableSave, hasSave, load, loadSlot, save, saveSlotOf, slotName, wipe } from './core/save.js';
-import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, closeAt, candleAt, volumeAt } from './core/market.js';
+import { loadManifest, loadCoin, loadLiq, isLoaded, bindFactorSource, bindPlayerVolSource, installWorld, closeAt, candleAt, volumeAt } from './core/market.js';
+import { FIC_VER, generateWorld } from './core/ficgen.js';
 import { createClock, chanOf, setChanChoice, equity, exMarkPrice, futuresAvailable, levKind, openTrade, closeTrade, otcUnlocked, otcOpenFor, switchExchange, timeOf, normalizeLeverage, markPrice, takeLoan, giveUp, advanceOneHour, buyUsdt, sampleEquity, rewindTo, dailySigma, pauseLocked, adjustMargin, marginCapsOf, marginStepOf, godFillCash, godPinStart, godPinStop, godFakeNews, godEatBook, godTargetPush } from './core/engine.js';
 import { anchorAt } from './core/anchors.js';
 import { RV_NODES, nodeAt, nextNodeAt, speedAt } from './core/review.js';
@@ -108,12 +109,28 @@ let s = saved || createState(pendingScen || DEFAULT_SCENARIO);
 /* 上帝开局（2026-10-07；2026-10-10 携带世界属性）：信箱有货 ⇒ 这一局**从第一根 K 线起就是上帝局** ——
    开局第一件事 `enableGod`（顺带把新手提示压掉，见 `god.js`）＋ 落世界属性。
    ⚠️ 挑战没有上帝（与 `onGodLogo` 第一行同一条封锁）：信箱与挑战局凑上（不该发生）直接吞。
-   ⚠️ 架空（`'fic'`）的行情生成器在 P2 落地 —— 本阶段信箱只会收到 `'hist'`。 */
+   ⚠️ 架空（`'fic'`）：本局要一条**独立的合成世界线** —— 抽一个 uint32 种子写进 `s.ficSeed`，
+      记下生成器版本 `s.ficVer`（改参数必须升版 ⇒ 旧档提示重开，见 ficgen.js 头注），
+      并把终点从 2024-12-31 延到 2033-12-31（`endIndexOf`）。世界线本身在 `boot()` 里、`loadManifest()`
+      之后由 `generateWorld()` 合成并物化（那一步要读 manifest，不能在这里做）。 */
 const bootGod = !!pendingGod && !isChallenge(s.scen);
 if (bootGod) {
   enableGod(s);
   s.world = pendingGod === 'fic' ? 'fic' : 'hist';
+  if (s.world === 'fic') {
+    s.ficSeed = (Math.random() * 0xffffffff) >>> 0;
+    s.ficVer = FIC_VER;
+    s.endI = endIndexOf(s.scen, 'fic');
+  }
 }
+/* 读回一条**架空存档**时同一件事：终点要按架空世界推（存档里那份可能是旧口径，此处以世界属性为准）。
+   ⚠️ `ficSeed` 缺失（理论上不该发生）⇒ 补一个，保证 `generateWorld` 拿得到种子。 */
+if (s.world === 'fic' && !bootGod) {
+  if (!Number.isFinite(s.ficSeed)) s.ficSeed = (Math.random() * 0xffffffff) >>> 0;
+  s.endI = endIndexOf(s.scen, 'fic');
+}
+/* 架空世界线**版本不符** ⇒ 与 `STATE_VERSION` 同一条纪律：提示重开（这里先只标记，`boot()` 里执行）。 */
+const ficVerMismatch = s.world === 'fic' && s.ficVer !== FIC_VER;
 const isNewGame = !saved;
 /* 刚在主菜单挑完年代（或点「开始游戏」）⇒ 这一趟开机**跳过主菜单**，直接进开场白
    （否则会弹回菜单，等于白点）。 */
@@ -373,6 +390,23 @@ async function boot() {
   } catch (err) {
     renderBoot('行情数据加载失败。\n请检查网络连接后刷新页面重试。', err);
     return;
+  }
+
+  /* 架空世界线（2026-10-10 · 架空模式 P2）：把生成器产出**物化**进行情层。
+     ⚠️ 必须排在 `ensureCoin` / `ensureLiq` 之前 —— 那两者靠 `isLoaded` / `liqBuf` 判断
+        「要不要下载数据包」，架空局根本没有对应文件，先物化才能让它们变成空操作。
+     ⚠️ 版本不符（`ficVerMismatch`）⇒ 与 `STATE_VERSION` 同一条纪律：**丢档重开**。 */
+  if (s.world === 'fic') {
+    if (ficVerMismatch) {
+      renderBoot('架空世界线版本已更新，旧存档需重开…');
+      disableSave();            // 关写盘闸：reload 前 `beforeunload` 不许把这份旧档写回去
+      wipe('godFic');
+      stashSlot('godFic');      // 这一趟去读已空的 godFic 槽 ⇒ `saved` 为 null ⇒ 落回主菜单
+      location.reload();
+      return;
+    }
+    renderBoot('正在生成架空世界线…');
+    installWorld(generateWorld(s.ficSeed));
   }
 
   await ensureCoin(s.sym);
@@ -2152,14 +2186,14 @@ function onScenario(id, node) {
 /**
  * 上帝模式弹层的两张卡（`data-godworld="hist|fic"`）—— 开一局**全新的 2013 年上帝对局**。
  *
- * ⚠️ 与「开始游戏」同一套双重确认：目标槽（`godHist`）已有存档时**先武装、再点一次**才真重开
- *    （用户 2026-10-10 明确要求「四槽已有存档一定要提示是否重开」）。
- * ⚠️ 架空（`'fic'`）卡在本阶段**置灰**（K 线生成器 P2 落地），点不到这里；P2 打开并写 `ficSeed`/`ficVer`。
+ * ⚠️ 与「开始游戏」同一套双重确认：目标槽（史实 → `godHist`、架空 → `godFic`）已有存档时
+ *    **先武装、再点一次**才真重开（用户 2026-10-10 明确要求「四槽已有存档一定要提示是否重开」）。
+ * ⚠️ 架空（`'fic'`）自 P2 起**已开放** —— `startNewGame` 带 `world` 投信箱，开机由 `boot()` 生成世界线。
  */
 function onGodWorld(node) {
   const world = node.dataset.godworld === 'fic' ? 'fic' : 'hist';
-  if (world === 'fic') return;
-  if (hasSave('godHist')) {
+  const slot = world === 'fic' ? 'godFic' : 'godHist';
+  if (hasSave(slot)) {
     if (!armedOn(node)) { armMenu(node); return; }
     cancelMenuArm();
   }

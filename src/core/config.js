@@ -146,6 +146,23 @@ export const scenarioStartIndex = id => Math.round((scenarioOf(id).at - GAME.sta
  */
 export const scenarioEndIndex = id => Math.round((scenarioOf(id).end - GAME.start) / HOUR_MS);
 
+/* ══════════════ 架空世界的终点（2026-10-10 · 架空模式 P2） ══════════════
+ * 上帝·架空是**另一条世界线**：K 线不来自数据包，由 `ficgen.js` 合成，可一路铺到 **2033-12-31**。
+ * `hist`（含上帝·史实）仍封盘 2024-12-31，只有 `fic` 能玩到 2034-01-01 的排他上界。
+ * ⚠️ `FIC_END` 只在这里定义一处（`ficgen.js` 从这里 import），避免两处魔数走岔。 */
+export const FIC_END = Date.UTC(2034, 0, 1);
+
+/** 架空世界的终点小时序号（`GAME.start` 起算；最后一根 = 2033-12-31 23:00） */
+export const ficEndIndex = () => Math.round((FIC_END - GAME.start) / HOUR_MS);
+
+/**
+ * 某局在**某世界**下的终点小时序号（`s.endI` 的唯一真源）。
+ * @param {string} scenId 年代（`SCENARIOS[].id`）
+ * @param {'hist'|'fic'} [world] 世界属性（缺省 `'hist'`）
+ */
+export const endIndexOf = (scenId, world = 'hist') =>
+  (world === 'fic' ? ficEndIndex() : scenarioEndIndex(scenId));
+
 /**
  * 速度档（GDD §11）—— 2026-09-29 由 `1/2/5/10/20/50` 收窄为 **`1/5/10/50`**：
  *   - `2x` 与 `1x` 只差一倍，「稍快一点」1x→5x 已覆盖 ⇒ 删

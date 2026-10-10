@@ -32,6 +32,28 @@ let factorSource = null;
 /** 注入价格位移源；不传 = 解除（回到原始数据） */
 export function bindFactorSource(fn) { factorSource = fn || null; }
 
+/**
+ * 安装一条**合成世界线**（2026-10-10 · 架空模式 P2）。
+ *
+ * 把 `ficgen.generateWorld()` 的产出灌进本模块的数据缓存，并覆写 `manifest.coins`
+ * 与 `manifest.liq` —— 于是 `rangeOf` / `hasCandle` / `decodeAt` / `liqOf` / `view` / `engine`
+ * 全部**走同一条既有的管线，零分支**（这是「物化」相对「随机访问」的关键取舍，见 P2 计划头）。
+ *
+ * ⚠️ 只在 `world === 'fic'` 的开机那一刻调用**一次**；史实局永不走这里 ⇒ 逐位不变。
+ * ⚠️ 必须在 `loadManifest()` 之后调用（`rangeOf` 依赖 `manifest.start`）。
+ * @param {{series: Map, coins: Object, liq: {buf: Float32Array, meta: Object}}} world
+ */
+export function installWorld({ series: gen, coins, liq }) {
+  if (!manifest) throw new Error('installWorld 前必须先 await loadManifest()');
+  for (const [sym, rec] of gen) series.set(sym, rec);
+  for (const sym of Object.keys(coins)) manifest.coins[sym] = coins[sym];
+  if (liq) {
+    liqBuf = liq.buf;
+    manifest.liq = liq.meta;
+    liqInflight = null;
+  }
+}
+
 /** 一天 = 24 根 K 线（GDD §11：1 根 K 线 = 1 游戏小时） */
 export const HOURS_PER_DAY = 24;
 
