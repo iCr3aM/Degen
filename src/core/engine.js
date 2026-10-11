@@ -3272,6 +3272,7 @@ function flushSlot(s, sym, m, g, lev, price, quiet = false) {
       m.heat = clamp01(m.heat - HEAT.panicDrop);
       liqNotional += g.long;                        // 缺口 16：只认**强平**这一笔（强平潮）
       liq24Push(s, sym, 'long', price, g.long);     // 24h 强平台账：不过阈值、含做市盘（见 liq24Push 节头注）
+      g.longCoolUntil = s.i + NPC.liqCool;          // 方案 A：强平后重建冷却（见 NPC.liqCool 注）
       /* minTier = 0（2026-10-11 用户拍板）：NPC 的强/爆四型与玩家强平**同权** —— 爆仓是全市场
          事实流，无论名义多小都上 tape（做市盘仍由 `quiet` 拦在 tape 外，但入 24h 账）。 */
       if (!quiet) feedPush(s, sym, 4, price, g.long, 0, lev);   // tape：爆多 💥
@@ -3289,6 +3290,7 @@ function flushSlot(s, sym, m, g, lev, price, quiet = false) {
         m.heat = clamp01(m.heat - HEAT.panicDrop * NPC.partialFrac);
         liqNotional += cut;
         liq24Push(s, sym, 'long', price, cut);
+        g.longCoolUntil = s.i + NPC.liqCool;        // 方案 A：部分强平同样进入冷却（同侧不补仓）
         if (!quiet) feedPush(s, sym, 6, price, cut, 0, lev);   // tape：强多 ⚡（minTier=0，见爆多支注）
         fundSettle(s, cut, g.longAvg, lev, 1, price);   // 强平线附近成交 ⇒ 正盈余入池
         g.long -= cut;
@@ -3332,6 +3334,7 @@ function flushSlot(s, sym, m, g, lev, price, quiet = false) {
       m.heat = clamp01(m.heat + HEAT.panicDrop);
       liqNotional += g.short;
       liq24Push(s, sym, 'short', price, g.short);
+      g.shortCoolUntil = s.i + NPC.liqCool;         // 方案 A：强平后重建冷却（见 NPC.liqCool 注）
       if (!quiet) feedPush(s, sym, 5, price, g.short, 0, lev);   // tape：爆空 💥（minTier=0，见爆多支注）
       fundSettle(s, g.short, g.shortAvg, lev, -1, price);
       g.short = 0; g.shortAvg = 0; g.shortStopped = false; g.shortTp = false; g.shortLiq = false;
@@ -3343,6 +3346,7 @@ function flushSlot(s, sym, m, g, lev, price, quiet = false) {
         m.heat = clamp01(m.heat + HEAT.panicDrop * NPC.partialFrac);
         liqNotional += cut;
         liq24Push(s, sym, 'short', price, cut);
+        g.shortCoolUntil = s.i + NPC.liqCool;       // 方案 A：部分强平同样进入冷却（同侧不补仓）
         if (!quiet) feedPush(s, sym, 7, price, cut, 0, lev);   // tape：强空 ⚡（minTier=0，见爆多支注）
         fundSettle(s, cut, g.shortAvg, lev, -1, price);
         g.short -= cut;
@@ -3570,8 +3574,15 @@ function npcBuild(s, sym, m, i) {
     const b = liqDay * (low ? NPC.base : NPC.baseHi) * w;   // 低杠杆档厚基底 / 高杠杆档薄churn地板（见 `NPC.baseHi`）
     /* 动量＋基底走**档位速度**（`sp`，2026-10-08 热力图改版 · 用户拍板 B）：高杠杆人群换手快
        ⇒ 均价贴现价，低杠杆慢 ⇒ 均价留在历史价位 —— 真实清算热力图「堆积带」的成因。 */
-    npcRealisedSum += stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym, eff);
-    npcRealisedSum += stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp, s, sym, eff);
+    /* 强平后重建冷却（方案 A · `NPC.liqCool`）：冷却中的档侧**只许减不许加** —— 靶心夹到
+       当前持仓 ⇒ 重建需求（补仓）被掐断，「爆完 → 重建 → 再爆」的翻烧环断路；
+       减仓（去杠杆抛压）/ 残尾清零 / `flushSlot` 的继续强平都不受影响。
+       `longCoolUntil` 是**绝对小时序号**（格子可选字段，同 `longLiq` 先例惰性读写 ⇒ 不升版）。 */
+    let tLong = b + Math.max(0, target * w), tShort = b + Math.max(0, -target * w);
+    if ((m.npc[k].longCoolUntil || 0) > i) tLong = Math.min(tLong, m.npc[k].long || 0);
+    if ((m.npc[k].shortCoolUntil || 0) > i) tShort = Math.min(tShort, m.npc[k].short || 0);
+    npcRealisedSum += stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff);
+    npcRealisedSum += stepNpc(m.npc[k], 'short', tShort, price, floor, NPC.ladder[k].sp, s, sym, eff);
     /* 护盘 / 外部买盘：**当根全量入仓**（不走趋近，2026-10-08 拆分时定的口径）——急购就是
        砸市价单（对照 2025-10-10 实测锚：深度真空 35 分钟恢复九成，分钟级），原「并入靶心
        按 speed 渐近」要 19h 才到位九成，反而失真；且拆两次趋近会引入 `0.15/sp` 的稳态
@@ -3602,8 +3613,11 @@ function npcBuild(s, sym, m, i) {
   if (m.mm) {
     const targetMM = -NPC.mm.absorb * mmMul * trendNet(m);
     const floorMM = liqDay * NPC.floor;
-    npcRealisedSum += stepNpc(m.mm, 'long', targetMM, price, floorMM, NPC.mm.speed);
-    npcRealisedSum += stepNpc(m.mm, 'short', -targetMM, price, floorMM, NPC.mm.speed);
+    /* 做市盘同样吃冷却（`flushSlot` 四支是共享代码 ⇒ mm 格子也会有 coolUntil）：只许减不许加。 */
+    const tLmm = (m.mm.longCoolUntil || 0) > i ? Math.min(targetMM, m.mm.long || 0) : targetMM;
+    const tSmm = (m.mm.shortCoolUntil || 0) > i ? Math.min(-targetMM, m.mm.short || 0) : -targetMM;
+    npcRealisedSum += stepNpc(m.mm, 'long', tLmm, price, floorMM, NPC.mm.speed);
+    npcRealisedSum += stepNpc(m.mm, 'short', tSmm, price, floorMM, NPC.mm.speed);
   }
   settlePool(s, sym, npcRealisedSum, false);
 }

@@ -3259,9 +3259,12 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
       worst < 1e-6, `最大差 ${f(worst, 12)}`);
   }
   const engSrc9w = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
-  check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 动量/基底走档位速度 sp ＋ 护盘/外部流当根入仓（恒等式前提）',
-    engSrc9w.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym, eff)")
-    && engSrc9w.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp, s, sym, eff)")
+  check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 动量/基底走档位速度 sp ＋ 冷却侧靶心夹持 ＋ 护盘/外部流当根入仓（恒等式前提）',
+    engSrc9w.includes("let tLong = b + Math.max(0, target * w), tShort = b + Math.max(0, -target * w);")
+    && engSrc9w.includes('if ((m.npc[k].longCoolUntil || 0) > i) tLong = Math.min(tLong, m.npc[k].long || 0);')
+    && engSrc9w.includes('if ((m.npc[k].shortCoolUntil || 0) > i) tShort = Math.min(tShort, m.npc[k].short || 0);')
+    && engSrc9w.includes("stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff)")
+    && engSrc9w.includes("stepNpc(m.npc[k], 'short', tShort, price, floor, NPC.ladder[k].sp, s, sym, eff)")
     && engSrc9w.includes('const b = liqDay * (low ? NPC.base : NPC.baseHi) * w;')
     && engSrc9w.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;'));
 
@@ -3559,7 +3562,7 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
   check('9y② 接线：dipOf 导出 ＋ npcBuild 长侧 dipBuy（买加长侧）＋ npcOtherTick 复用（护盘覆盖全币）',
     engSrc9y.includes('export function dipOf')
     && engSrc9y.includes('const dipBuy = d3.dipBuy;')
-    && engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym, eff)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff)")
     && engSrc9y.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;')
     && engSrc9y.includes('npcBuild(s, sym, m, s.i);')
     && engSrc9y.includes('import { candleAt, closeAt, dayIndexOf'));
@@ -5202,10 +5205,10 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     && !engSrc9y.includes('FEED_DAYS')            // 2026-10-11：按天窗口已废除（改纯环形）
     && engSrc9y.includes('s.feed = [];'));
 
-  check('9ae② 挂点：六档建减仓发事件（s, sym, lev）＋ 做市盘两处**不带**（对手盘不上 tape）',
-    engSrc9y.includes("stepNpc(m.npc[k], 'long', b + Math.max(0, target * w), price, floor, NPC.ladder[k].sp, s, sym, eff)")
-    && engSrc9y.includes("stepNpc(m.npc[k], 'short', b + Math.max(0, -target * w), price, floor, NPC.ladder[k].sp, s, sym, eff)")
-    && engSrc9y.includes("stepNpc(m.mm, 'long', targetMM, price, floorMM, NPC.mm.speed)")
+  check('9ae② 挂点：六档建减仓发事件（s, sym, lev）＋ 冷却侧靶心夹持（liqCool · 2026-10-11）＋ 做市盘**不带**（对手盘不上 tape）',
+    engSrc9y.includes("stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'short', tShort, price, floor, NPC.ladder[k].sp, s, sym, eff)")
+    && engSrc9y.includes("stepNpc(m.mm, 'long', tLmm, price, floorMM, NPC.mm.speed)")
     && engSrc9y.includes('flushSlot(s, sym, m, m.mm, NPC.mm.lev, lastPrice(s, sym), true)'));
 
   check('9ae③ 挂点：flushSlot 止损/止盈/强/爆（quiet；强/爆四型 minTier=0 与玩家同权 · 2026-10-11 拍板）＋ 护盘/巨鲸急购 ＋ 玩家开/平/强平（含 `lev`）',
@@ -6373,6 +6376,60 @@ section('9aq · tape 分段环形保留（900/300）＋ 订单簿强平价注入
     check('9aq③ 保证金率口径：权益/名义（资金方向）—— >100% = 超额抵押合法态，不封顶',
       posSrcAq.includes('保证金率 = 仓位权益 / 名义价值')
       && posSrcAq.includes('export function marginRateOf(pos, price) {'));
+  }
+}
+
+/* ═══════════════════ 9aw · 强平后重建冷却（2026-10-11 · 方案 A「崩盘日强平尾巴过热」） ═══════════════════
+   档侧被强/爆（flushSlot 四支）后 `NPC.liqCool`（48h）内不补仓：npcBuild 把冷却侧靶心夹到
+   当前持仓 ⇒ 只许减不许加 —— 「爆完 → stepNpc 重建 → 再爆」的翻烧环断路。
+   取值标定（BTC 全期 · 19+ 口径）：N=0 p99=8.39%/max=14.87%/>2%日63.0 → N=48 p99=5.25%/max=11.24%/>2%日39.7，
+   常态 p50=0.178%（锚 0.15–0.2%）＋ 多:空 1:0.84 不漂。可选格子字段，不升 STATE_VERSION。 */
+section('9aw · 强平后重建冷却 liqCool（挂点四支 ＋ 靶心夹持 ＋ 冷却窗口行为锚）');
+{
+  const engSrcAw = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  const godSrcAw = fs.readFileSync(path.join(ROOT, 'src/core/god.js'), 'utf8');
+  check('9aw① 源：NPC.liqCool=48 ＋ flushSlot 四支落 coolUntil ＋ npcBuild 靶心夹持（六档＋做市）',
+    godSrcAw.includes('liqCool: 48,')
+    && engSrcAw.split('g.longCoolUntil = s.i + NPC.liqCool;').length >= 3      // 爆多 ＋ 强多
+    && engSrcAw.split('g.shortCoolUntil = s.i + NPC.liqCool;').length >= 3     // 爆空 ＋ 强空
+    && engSrcAw.includes('if ((m.npc[k].longCoolUntil || 0) > i) tLong = Math.min(tLong, m.npc[k].long || 0);')
+    && engSrcAw.includes('if ((m.npc[k].shortCoolUntil || 0) > i) tShort = Math.min(tShort, m.npc[k].short || 0);')
+    && engSrcAw.includes("(m.mm.longCoolUntil || 0) > i ? Math.min(targetMM, m.mm.long || 0) : targetMM")
+    && engSrcAw.includes("(m.mm.shortCoolUntil || 0) > i ? Math.min(-targetMM, m.mm.short || 0) : -targetMM"));
+
+  /* 行为锚（确定性设计）：2020-10-01 低波动段。
+     ① 20x 档 longAvg 抬到「破产线 = 时价 × 1.05」⇒ 即便时价当根涨 ≤5% 也落在破产带之下 ⇒
+        必整档清零（爆多）＋ 落冷却（longCoolUntil = 触发时点 + 48）。
+     ② 冷却窗口内**手工放一笔探针仓**（平价 ⇒ 远离强平线；20x 无止损带）：下一小时必须
+        **分毫不动** —— 靶心被夹到当前持仓，delta = 0（无冷却时会朝 b≈2% 日流动性 增长）。
+        （不走「清零后等自然重建」：静市里 trend≈0 时 target=b，单步 sp×b=14%b < 残尾地板
+         16.7%b ⇒ 既有物理本来就无法从零自举 —— 那是残尾地板的设计行为，不是冷却的断言面。）
+     ③ 同一探针仓、冷却手动过期 ⇒ 下一小时恢复增长（target ≈ b ≫ 探针仓）。 */
+  {
+    const s = await mk({ sym: 'BTC', i: idx(at(2020, 10, 1)) });
+    const g = s.mkt.BTC.npc[3];                                // 20x 档（bank = 1/20 = 5%）
+    const cur = engine.lastPrice(s, 'BTC');
+    const lev = god.npcLevOf(engine.timeOf(s), 20);
+    g.long = 2e7; g.longAvg = cur * 1.05 / (1 - 1 / lev);      // 破产线 avg×0.95 = cur×1.05 ⇒ 5% 头寸余量
+    g.longStopped = false; g.longTp = false; g.longLiq = false;
+    delete g.longCoolUntil;
+    engine.advanceOneHour(s);
+    const cooledAt = g.longCoolUntil;
+    check('9aw② 行为：击穿破产价 ⇒ 整档清零 ＋ 落冷却（longCoolUntil = 触发时点 + 48）',
+      g.long === 0 && cooledAt === s.i + god.NPC.liqCool,
+      `long=${g.long} cool=${cooledAt} i=${s.i} N=${god.NPC.liqCool}`);
+    for (let h = 0; h < 12; h++) { engine.advanceOneHour(s); if (s.pending) s.pending = null; }
+    const probe = 5e6;
+    g.long = probe; g.longAvg = engine.lastPrice(s, 'BTC');    // 探针仓：平价 ⇒ 距强平线 4.5%，单小时不会触带
+    g.longStopped = false; g.longTp = false; g.longLiq = false;
+    engine.advanceOneHour(s);
+    check('9aw② 行为：冷却窗口内不补仓（探针仓分毫不动 —— 靶心被夹到当前持仓）',
+      g.long === probe && s.i < cooledAt, `long=${g.long} probe=${probe} i=${s.i} coolUntil=${cooledAt}`);
+    g.longCoolUntil = 0;                                       // 手动过期（等价于等待，不引入价格漂移）
+    g.long = probe; g.longAvg = engine.lastPrice(s, 'BTC');
+    engine.advanceOneHour(s);
+    check('9aw② 行为：冷却结束后重建恢复（探针仓朝基底 b 增长）',
+      g.long > probe, `long=${g.long.toPrecision(3)} probe=${probe}`);
   }
 }
 
