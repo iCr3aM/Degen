@@ -21,7 +21,7 @@ import { ficNewsAt } from './ficnews.js';
 import { entsOfTpl, literalEnts, resolveEnts, putStance, stanceConflict, tplUsable } from './entities.js';
 import { arrivalCandles, bumpPulse, congestionOf, decayPulse, extraConfirmations } from './congestion.js';
 import { SLIP, baseLadder, fillPrice, hourShareK, impactOf, LADDER, permImpactOf, POOL, poolRefill, sigmaOf, walkBook } from './impact.js';
-import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, GOD_NEWS_CD, GOD_NEWS_HEAT, GOD_NEWS_Q, GOD_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, etfDepthMul, etfFlowAt, etfNewsAt, etfNewsMeta, exDevOf, instSeedOf, godNewsTplsOf, newsFxClass, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleDepthMul, whaleFlowAt, whaleNewsAt, whaleNewsMeta } from './god.js';
+import { CDRI, CONTAGION, FNG, HEAT, INV, NPC, OI, SHOCK, MANIP_GOD_CAP, MANIP_MIN, GOD_NEWS_CD, GOD_NEWS_HEAT, GOD_NEWS_Q, GOD_NEWS_RANGE, MANIP_PIN, MANIP_SPOOF_NUDGE, addFlow, amtOf, eraOIFactorOf, etfDepthMul, etfFlowAt, etfNewsAt, etfNewsMeta, exDevOf, instSeedOf, godNewsTplsOf, newsFxClass, npcLevOf, playerFactor, sbBiasTargetOf, sbOf, shockAccForgetFile, shockParamsOf, whaleDepthMul, whaleFlowAt, whaleNewsAt, whaleNewsMeta } from './god.js';
 import { absorbOf, levelsOf, WALL_K } from './levels.js';
 import { fmtDate, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate } from './format.js';
 import {
@@ -3535,9 +3535,13 @@ function npcBuild(s, sym, m, i) {
   /* ⚠️ **不是**整本簿都严格 ×`gm`：`extFlow`（巨鲸 / ETF 的**真实美元额**）不过闸 —— 它是外部
      披露的历史事实，与「市场规模旋钮」无关（诚实读数：2020 年无 ETF / 巨鲸流 ⇒ 簿严格 ×8.00；
      2021 年有巨鲸流 ⇒ ×7.36）。这是**有意**的口径差，不是漏改。 */
-  const target = sbOf(s).npc * NPC.mom * (m.heat - HEAT.base) * liqDay;
   const price = lastPrice(s, sym);
   const t = timeOf(s);                 // 机构护盘的年代系数要读它（`instSeedOf`）
+  /* 方案 C1 · 分年代 OI/量比系数（`NPC.eraOI`）：仓位侧统一 ×`oiF`，分母侧（深度/滑点/tape
+     阈值/÷当日量口径）不乘；`dipBuyOf` 不乘（它本就 ∝ 当年代自己的日流动性）、`extFlow` 不乘
+     （真实美元披露额，同 `gm` 闸先例）。见 `NPC.eraOI` 头注的现实锚与修什么。 */
+  const oiF = eraOIFactorOf(t);
+  const target = sbOf(s).npc * NPC.mom * (m.heat - HEAT.base) * liqDay * oiF;
   /* 深跌护盘三层（2026-10-08）：本根回撤 `dip` 与上一根 `dipPrev` 的差给**做市相位**——
      回撤加深 ⇒ 撤单（×mmCut，承接缩）、收窄 ⇒ 回补（×mmBoost）、平时 ×1 与旧档同轨。
      倍率按回撤深度线性插值（缺口 8）：`cutT` = 0（刚进跌区）→ 1（最深），最深那一根才取满
@@ -3572,10 +3576,10 @@ function npcBuild(s, sym, m, i) {
   let npcRealisedSum = 0;
   for (let k = 0; k < NPC.ladder.length; k++) {
     const w = NPC.ladder[k].w;
-    const floor = liqDay * NPC.floor * w;
+    const floor = liqDay * oiF * NPC.floor * w;   // C1：残尾阈随仓位侧同缩
     const eff = npcLevOf(t, NPC.ladder[k].lev);     // 生效杠杆（年代封顶后）—— 基底判据 ＋ tape 倍数列
     const low = eff <= 10;
-    const b = liqDay * (low ? NPC.base : NPC.baseHi) * w;   // 低杠杆档厚基底 / 高杠杆档薄churn地板（见 `NPC.baseHi`）
+    const b = liqDay * oiF * (low ? NPC.base : NPC.baseHi) * w;   // 低杠杆档厚基底 / 高杠杆档薄churn地板（见 `NPC.baseHi`）
     /* 动量＋基底走**档位速度**（`sp`，2026-10-08 热力图改版 · 用户拍板 B）：高杠杆人群换手快
        ⇒ 均价贴现价，低杠杆慢 ⇒ 均价留在历史价位 —— 真实清算热力图「堆积带」的成因。 */
     /* 强平后重建冷却（方案 A · `NPC.liqCool`）：冷却中的档侧**只许减不许加** —— 靶心夹到
@@ -3585,12 +3589,13 @@ function npcBuild(s, sym, m, i) {
     let tLong = b + Math.max(0, target * w), tShort = b + Math.max(0, -target * w);
     if ((m.npc[k].longCoolUntil || 0) > i) tLong = Math.min(tLong, m.npc[k].long || 0);
     if ((m.npc[k].shortCoolUntil || 0) > i) tShort = Math.min(tShort, m.npc[k].short || 0);
-    /* 方案 B2 · 建仓价离散：加仓摊均价用 **k 根前的收盘**（k = ⌈0.5/sp⌉，随持仓周期缩放 ——
-       3x 持仓数月 ⇒ k≈9h，100x 秒进秒出 ⇒ k=1h）。现实里不同时刻入场的人各有各的均价 ⇒
+    /* 方案 B2 · 建仓价离散（C2 加深：k = ⌈1/sp⌉）：加仓摊均价用 **k 根前的收盘**，随持仓周期
+       缩放 —— 3x 持仓数月 ⇒ k≈18h，100x 秒进秒出 ⇒ k=2h。现实里不同时刻入场的人各有各的均价 ⇒
        强平线天然分布；原「均价贴现价」结构让价格线穿越 = 整档全灭（单次级联烧 ~55% OI）。
-       上涨段的加仓记在更低的滞后价上 ⇒ 强平线更深 ⇒ 回撤烧不到 —— 这正是「低位建仓者活得久」。
-       零新状态（`closeAt` 逐位可复现）；缺 K 线（币龄不足 / 回溯段外）⇒ 回落现价。 */
-    const lagK = Math.max(1, Math.round(0.5 / NPC.ladder[k].sp));
+       上涨段的加仓记在更低的滞后价上 ⇒ 强平线更深 ⇒ 5% 级回撤烧不到 10x/20x 档（现代中尾频次
+       残差的修法）。零新状态（`closeAt` 逐位可复现）；缺 K 线（币龄不足 / 回溯段外）⇒ 回落现价。
+       ⚠️ `sp > 0` 守卫：审计冻结（`npcFreeze` 置 sp=0）时 1/sp = ∞ ⇒ 回落现价。 */
+    const lagK = NPC.ladder[k].sp > 0 ? Math.max(1, Math.round(1 / NPC.ladder[k].sp)) : 1;
     const pLag = closeAt(sym, i - lagK);
     const pAdd = pLag > 0 ? pLag : price;
     npcRealisedSum += stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff, pAdd);
@@ -3624,12 +3629,12 @@ function npcBuild(s, sym, m, i) {
         把镜像仓推离/推回，涌现出「深度真空 → V 型回补」的节奏，不加新状态。 */
   if (m.mm) {
     const targetMM = -NPC.mm.absorb * mmMul * trendNet(m);
-    const floorMM = liqDay * NPC.floor;
+    const floorMM = liqDay * oiF * NPC.floor;
     /* 做市盘同样吃冷却（`flushSlot` 四支是共享代码 ⇒ mm 格子也会有 coolUntil）：只许减不许加。
-       B2 同款滞后价（mm.speed = 0.5 ⇒ k = 1 根）。 */
+       B2 同款滞后价（mm.speed = 0.5 ⇒ C2 后 k = 2 根）。 */
     const tLmm = (m.mm.longCoolUntil || 0) > i ? Math.min(targetMM, m.mm.long || 0) : targetMM;
     const tSmm = (m.mm.shortCoolUntil || 0) > i ? Math.min(-targetMM, m.mm.short || 0) : -targetMM;
-    const pAddMM = (() => { const p = closeAt(sym, i - 1); return p > 0 ? p : price; })();
+    const pAddMM = (() => { const p = closeAt(sym, i - 2); return p > 0 ? p : price; })();
     npcRealisedSum += stepNpc(m.mm, 'long', tLmm, price, floorMM, NPC.mm.speed, null, '', 0, pAddMM);
     npcRealisedSum += stepNpc(m.mm, 'short', tSmm, price, floorMM, NPC.mm.speed, null, '', 0, pAddMM);
   }

@@ -3259,13 +3259,13 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
       worst < 1e-6, `最大差 ${f(worst, 12)}`);
   }
   const engSrc9w = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
-  check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 动量/基底走档位速度 sp ＋ 冷却侧靶心夹持 ＋ 建仓价滞后（B2）＋ 护盘/外部流当根入仓（恒等式前提）',
+  check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 动量/基底走档位速度 sp ＋ 冷却侧靶心夹持 ＋ 建仓价滞后（B2）＋ 年代 OI 系数（C1）＋ 护盘/外部流当根入仓（恒等式前提）',
     engSrc9w.includes("let tLong = b + Math.max(0, target * w), tShort = b + Math.max(0, -target * w);")
     && engSrc9w.includes('if ((m.npc[k].longCoolUntil || 0) > i) tLong = Math.min(tLong, m.npc[k].long || 0);')
     && engSrc9w.includes('if ((m.npc[k].shortCoolUntil || 0) > i) tShort = Math.min(tShort, m.npc[k].short || 0);')
     && engSrc9w.includes("stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff, pAdd)")
     && engSrc9w.includes("stepNpc(m.npc[k], 'short', tShort, price, floor, NPC.ladder[k].sp, s, sym, eff, pAdd)")
-    && engSrc9w.includes('const b = liqDay * (low ? NPC.base : NPC.baseHi) * w;')
+    && engSrc9w.includes('const b = liqDay * oiF * (low ? NPC.base : NPC.baseHi) * w;')
     && engSrc9w.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;'));
 
   /* ②′ 全币两侧常在（「怎么会无 NPC 持仓」的行为面）：72 小时烧入后逐币断言。
@@ -3278,6 +3278,7 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
   for (let n = 0; n < 72; n++) engine.advanceOneHour(sB);
   const wLow = god.NPC.ladder.reduce((a, r) =>
     a + (god.npcLevOf(engine.timeOf(sB), r.lev) <= 10 ? r.w : 0), 0);
+  const oiF9w = god.eraOIFactorOf(engine.timeOf(sB));   // C1：NPC 仓位侧 ×年代系数（2019 = 0.25）
   let sideFail = '', oiFail = '', floorN = 0;
   for (const sy of SYMS9w) {
     const liqDay = market.liqOf(sy, market.dayIndexOf(sB.i)) || 0;
@@ -3288,12 +3289,12 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
     if (!(lo > 0) || !(sh > 0)) sideFail += `${sy}:两侧 `;
     if (m.mm && ((m.mm.long || 0) < 0 || (m.mm.short || 0) < 0)) sideFail += `${sy}:做市负仓 `;
     floorN++;
-    const floor = 2 * god.NPC.base * wLow * liqDay * 0.5;
+    const floor = 2 * god.NPC.base * wLow * liqDay * oiF9w * 0.5;
     if (tot < floor) oiFail += `${sy}(${f(tot, 0)}<${f(floor, 0)}) `;
   }
   check('9w②′ 全币低杠杆档两侧常在（72h 烧入 · 无玩家）',
     floorN > 0 && sideFail === '', sideFail || `${floorN} 币全过`);
-  check('9w②′ 全币 NPC OI ≥ 基底地板（2 × 0.12 × Σw低 × 日流动性 × 0.5）',
+  check('9w②′ 全币 NPC OI ≥ 基底地板（2 × 0.12 × Σw低 × 日流动性 × oiF × 0.5）',
     floorN > 0 && oiFail === '', oiFail || `${floorN} 币达标`);
 
   /* ── ③ 档名带生效杠杆（「3 倍和 100 倍强平价一样」的口径修复） ── */
@@ -6401,11 +6402,11 @@ section('9aw · 强平后重建冷却 liqCool（挂点四支 ＋ 靶心夹持 �
   /* 行为锚（确定性设计）：2020-10-01 低波动段。
      ① 20x 档 longAvg 抬到「破产线 = 时价 × 1.05」⇒ 即便时价当根涨 ≤5% 也落在破产带之下 ⇒
         必整档清零（爆多）＋ 落冷却（longCoolUntil = 触发时点 + 48）。
-     ② 冷却窗口内**手工放一笔探针仓**（平价 ⇒ 远离强平线；20x 无止损带）：下一小时必须
-        **分毫不动** —— 靶心被夹到当前持仓，delta = 0（无冷却时会朝 b≈2% 日流动性 增长）。
-        （不走「清零后等自然重建」：静市里 trend≈0 时 target=b，单步 sp×b=14%b < 残尾地板
-         16.7%b ⇒ 既有物理本来就无法从零自举 —— 那是残尾地板的设计行为，不是冷却的断言面。）
-     ③ 同一探针仓、冷却手动过期 ⇒ 下一小时恢复增长（target ≈ b ≫ 探针仓）。 */
+     ② 冷却窗口内 **从 0 断言不补仓**：24h 后仍 === 0。无冷却对照会重建到 ≈99% 基底
+        （b×sp > 残尾地板 ⇒ 从 0 可自举；C1 后 b = liqDay×oiF×0.00165，floor = liqDay×oiF×0.00015，
+         恒 b×sp(0.2) > floor ×2.2 ⇒ 该判据 era 无关）。
+        （不走「探针仓」设计：C1 后 tLong 可能 < 探针仓 ⇒ 冷却中「允许的减仓」会污染断言。）
+     ③ 手动过期冷却 ⇒ 下一小时重建恢复（从 0 长出 b×sp > 0）。 */
   {
     const s = await mk({ sym: 'BTC', i: idx(at(2020, 10, 1)) });
     const g = s.mkt.BTC.npc[3];                                // 20x 档（bank = 1/20 = 5%）
@@ -6419,18 +6420,13 @@ section('9aw · 强平后重建冷却 liqCool（挂点四支 ＋ 靶心夹持 �
     check('9aw② 行为：击穿破产价 ⇒ 整档清零 ＋ 落冷却（longCoolUntil = 触发时点 + 48）',
       g.long === 0 && cooledAt === s.i + god.NPC.liqCool,
       `long=${g.long} cool=${cooledAt} i=${s.i} N=${god.NPC.liqCool}`);
-    for (let h = 0; h < 12; h++) { engine.advanceOneHour(s); if (s.pending) s.pending = null; }
-    const probe = 5e6;
-    g.long = probe; g.longAvg = engine.lastPrice(s, 'BTC');    // 探针仓：平价 ⇒ 距强平线 4.5%，单小时不会触带
-    g.longStopped = false; g.longTp = false; g.longLiq = false;
-    engine.advanceOneHour(s);
-    check('9aw② 行为：冷却窗口内不补仓（探针仓分毫不动 —— 靶心被夹到当前持仓）',
-      g.long === probe && s.i < cooledAt, `long=${g.long} probe=${probe} i=${s.i} coolUntil=${cooledAt}`);
+    for (let h = 0; h < 24; h++) { engine.advanceOneHour(s); if (s.pending) s.pending = null; }
+    check('9aw② 行为：冷却窗口内从 0 不补仓（24h 后仍 === 0；无冷却会重建到 ≈99% 基底）',
+      g.long === 0 && s.i < cooledAt, `long=${g.long} i=${s.i} coolUntil=${cooledAt}`);
     g.longCoolUntil = 0;                                       // 手动过期（等价于等待，不引入价格漂移）
-    g.long = probe; g.longAvg = engine.lastPrice(s, 'BTC');
     engine.advanceOneHour(s);
-    check('9aw② 行为：冷却结束后重建恢复（探针仓朝基底 b 增长）',
-      g.long > probe, `long=${g.long.toPrecision(3)} probe=${probe}`);
+    check('9aw② 行为：冷却结束后重建恢复（从 0 长出 b×sp > 0）',
+      g.long > 0, `long=${g.long.toPrecision(3)}`);
   }
 }
 
@@ -6444,8 +6440,8 @@ section('9aw · 强平后重建冷却 liqCool（挂点四支 ＋ 靶心夹持 �
 section('9ax · B1 ladder 构造锚 ＋ B2 建仓价滞后接线 ＋ OI/量比行为锚');
 {
   const engSrcAx = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
-  check('9ax① 源：B2 滞后价接线（k=⌈0.5/sp⌉ ＋ closeAt 缺 K 线回落现价 ＋ stepNpc pAdd 缺省=现价）',
-    engSrcAx.includes('const lagK = Math.max(1, Math.round(0.5 / NPC.ladder[k].sp));')
+  check('9ax① 源：B2 滞后价接线（k=⌈1/sp⌉·C2 加深 ＋ closeAt 缺 K 线回落现价 ＋ stepNpc pAdd 缺省=现价）',
+    engSrcAx.includes('const lagK = NPC.ladder[k].sp > 0 ? Math.max(1, Math.round(1 / NPC.ladder[k].sp)) : 1;')
     && engSrcAx.includes('const pLag = closeAt(sym, i - lagK);')
     && engSrcAx.includes('const pAdd = pLag > 0 ? pLag : price;')
     && engSrcAx.includes("function stepNpc(slot, side, target, price, floor, speed = NPC.speed, fS = null, fSym = '', lev = 0, pAdd = price) {")
@@ -6457,16 +6453,64 @@ section('9ax · B1 ladder 构造锚 ＋ B2 建仓价滞后接线 ＋ OI/量比�
     && god.NPC.ladder.every((r, i, a) => i === 0 || r.sp > a[i - 1].sp)     // 高杠杆更快（梯度保持）
     && god.NPC.baseHi === 0.011);
 
-  /* 行为锚：B1 后 OI 地板 = 2×base×Σw(≤10x)×日量 = 16.8%（原 10.8%）⇒ OI/量比应落进现实带。
-     2021-06-01 起 72h（平势段），OI/量 ∈ (0.6, 1.4)（标定实测 0.966；现实 0.8–1.15）。 */
+  /* 行为锚：B1 后 OI 地板 = 2×base×Σw(≤10x)×日量×oiF。2021-06-01 起 72h（平势段）：
+     oiF(2021) = 0.5 ⇒ NPC 侧 ≈ 0.48，但 extFlow（2021 巨鲸/ETF 真实披露额，**有意不过闸**）
+     会垫高实际 OI —— 实测该窗 0.804。断言带 (0.6, 1.1)；年代缩的纯净证明在 9ay②（2013 vs 2024 相对断言）。 */
   {
     const s = await mk({ sym: 'BTC', i: idx(at(2021, 6, 1)) });
     for (let h = 0; h < 72; h++) { engine.advanceOneHour(s); if (s.pending) s.pending = null; }
     const oi = engine.openInterestOf(s, 'BTC');
     const vol = market.liqOf('BTC', market.dayIndexOf(s.i)) || 1;
     const ratio = oi / vol;
-    check('9ax② 行为：OI/量比落进现实带（0.6–1.4；现实 0.8–1.15，B1 前 ≈0.1）',
-      ratio > 0.6 && ratio < 1.4, `OI/量=${ratio.toFixed(3)}`);
+    check('9ax② 行为：2021 年 OI/量比 ≈ 0.8（oiF=0.5 缩 NPC 侧 ＋ extFlow 真实额垫高；带 0.6–1.1）',
+      ratio > 0.6 && ratio < 1.1, `OI/量=${ratio.toFixed(3)}`);
+  }
+}
+
+/* ═══════════════════ 9ay · 方案 C1 分年代 OI/量比系数（2026-10-11） ═══════════════════
+   现实 OI/量比是陡峭增长曲线（2013-16≈0 / 2019≈0.25 / 2021≈0.5 / 2024=1.0），游戏曾全期
+   ≈1.0 ⇒ 早年「强平÷当日量」结构性虚高（2013-04-10=17.9%、2020-03-12=13.9%）。
+   阶梯锚（联网核验，见 NPC.eraOI 注）；只缩 npcBuild 仓位侧，dipBuy/extFlow 不乘。
+   标定（BTC 全期）：2013-04-10 → ~2.7%、2020-03-12 → ~4.2%（崩盘日 2–3% 带）、
+   早年 >1% 日大半消失、现代年（2024）不变。 */
+section('9ay · C1 eraOIFactorOf 阶梯锚 ＋ npcBuild 仓位侧接线 ＋ 早年 OI 行为锚');
+{
+  const godSrcAy = fs.readFileSync(path.join(ROOT, 'src/core/god.js'), 'utf8');
+  const engSrcAy = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('9ay① 源：eraOIFactorOf 导出 ＋ NPC.eraOI 七档阶梯 ＋ npcBuild 仓位侧四处接线（target/floor/b/floorMM）',
+    typeof god.eraOIFactorOf === 'function'
+    && godSrcAy.includes('export function eraOIFactorOf(t) {')
+    && (god.NPC.eraOI || []).length === 7
+    && engSrcAy.includes('const oiF = eraOIFactorOf(t);')
+    && engSrcAy.includes('const floor = liqDay * oiF * NPC.floor * w;')
+    && engSrcAy.includes('const b = liqDay * oiF * (low ? NPC.base : NPC.baseHi) * w;')
+    && engSrcAy.includes('const floorMM = liqDay * oiF * NPC.floor;')
+    && engSrcAy.includes('* liqDay * oiF;')
+    && !engSrcAy.includes('dipBuyOf(liqDay * oiF'));                       // dipBuy 不乘（∝当年代自己的日量）
+  check('9ay② 行为：阶梯逐位（2013=0.15 / 2017=0.2 / 2019=0.25 / 2020=0.3 / 2021=0.5 / 2022=0.7 / 2024=1.0，边界取「最后一个 from ≤ t」）',
+    god.eraOIFactorOf(Date.UTC(2013, 0, 1)) === 0.15
+    && god.eraOIFactorOf(Date.UTC(2016, 4, 13)) === 0.15
+    && god.eraOIFactorOf(Date.UTC(2016, 11, 31, 23)) === 0.15
+    && god.eraOIFactorOf(Date.UTC(2017, 0, 1)) === 0.2
+    && god.eraOIFactorOf(Date.UTC(2019, 0, 1)) === 0.25
+    && god.eraOIFactorOf(Date.UTC(2020, 0, 1)) === 0.3
+    && god.eraOIFactorOf(Date.UTC(2021, 0, 1)) === 0.5
+    && god.eraOIFactorOf(Date.UTC(2022, 0, 1)) === 0.7
+    && god.eraOIFactorOf(Date.UTC(2024, 0, 1)) === 1
+    && god.eraOIFactorOf(Date.UTC(2025, 5, 1)) === 1);
+  /* 行为锚：早年 OI 薄 ＋ 现代厚 —— 相对断言（era 缩的纯净证明）。
+     ⚠️ extFlow（巨鲸/ETF 真实披露额，有意不过闸）会垫高早年 OI —— 2013 实测 ~0.83（巨鲸仓
+        就是当年 OI 的主体，诚实口径）；2024（oiF=1.0）实测 ~1.1。断言：2013 < 2024 ＋ 各自带宽。 */
+  {
+    const s13 = await mk({ sym: 'BTC', i: idx(at(2013, 6, 1)) });
+    for (let h = 0; h < 72; h++) { engine.advanceOneHour(s13); if (s13.pending) s13.pending = null; }
+    const r13 = engine.openInterestOf(s13, 'BTC') / (market.liqOf('BTC', market.dayIndexOf(s13.i)) || 1);
+    const s24 = await mk({ sym: 'BTC', i: idx(at(2024, 6, 1)) });
+    for (let h = 0; h < 72; h++) { engine.advanceOneHour(s24); if (s24.pending) s24.pending = null; }
+    const r24 = engine.openInterestOf(s24, 'BTC') / (market.liqOf('BTC', market.dayIndexOf(s24.i)) || 1);
+    check('9ay② 行为：OI/量比 2013 < 2024（era 缩：oiF 0.15 vs 1.0；2013 带 0.4–1.2 · 2024 带 0.8–1.4）',
+      r13 > 0.4 && r13 < 1.2 && r24 > 0.8 && r24 < 1.4 && r13 < r24,
+      `2013=${r13.toFixed(3)} 2024=${r24.toFixed(3)}`);
   }
 }
 
