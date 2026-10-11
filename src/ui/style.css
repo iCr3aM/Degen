@@ -2328,12 +2328,14 @@ button { user-select: none; -webkit-user-select: none; }
 }
 /* 巨鲸页「单笔大仓 Top10」行族（2026-10-11 · 用户拍板）：与 .gfd-* 同一套 9px/13px 纪律，
    列固定宽不换行 —— 档名 44px（`100x→3x` / `做市`）/ 开仓价弹性（省略号）/ 倍数 30px /
-   数量 48px / 金额 52px。「你」行 accent 高亮（与热力图「·你」条同一族标记）。 */
+   强平价 68px（`104,234(-3.2%)`，2026-10-11 用户要求回补）/ 数量 48px / 金额 52px。
+   「你」行 accent 高亮（与热力图「·你」条同一族标记）。 */
 .gwd-head, .gwd-row { display: flex; align-items: center; gap: 4px; font-size: 9px; line-height: 13px; overflow: hidden; }
 .gwd-head { color: var(--mut); }
 .gwd-head i, .gwd-row i { flex: 0 0 44px; font-style: normal; font-weight: 600; overflow: hidden; white-space: nowrap; }
 .gwd-head span, .gwd-row span { flex: 1 1 auto; text-align: right; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .gwd-head n, .gwd-row n { flex: 0 0 30px; text-align: right; color: var(--mut); overflow: hidden; white-space: nowrap; }
+.gwd-head u, .gwd-row u { flex: 0 0 68px; text-decoration: none; text-align: right; color: var(--mut); overflow: hidden; white-space: nowrap; }
 .gwd-head em, .gwd-row em { flex: 0 0 48px; font-style: normal; text-align: right; overflow: hidden; white-space: nowrap; }
 .gwd-head b, .gwd-row b { flex: 0 0 52px; font-weight: 600; text-align: right; overflow: hidden; white-space: nowrap; }
 .gwd-row.you span, .gwd-row.you b, .gwd-row.you i { color: var(--accent); }
@@ -2382,6 +2384,18 @@ button { user-select: none; -webkit-user-select: none; }
   .gfd-head em, .gfd-row em { flex: 0 0 52px; }
   .gfd-head u, .gfd-row u { flex: 0 0 72px; }
   .gfd-sec { font-size: 11px; line-height: 15px; }
+  .gfd-stat { font-size: 11px; line-height: 15px; }
+  .gb-mid { font-size: 11px; line-height: 15px; }
+  /* ── 桌面巨鲸 Top10 字号对齐（2026-10-11 用户报「巨鲸页字体没对齐其它页」）──
+     `.gwd-*` 原来漏了桌面档覆盖、停在手机的 9px/13px，与同结构的 `.gfd-*` 与 `.gb-*`（11/15）
+     不一致。列宽同步放大：档名 56px、倍数 34px、强平价 88px（`104,234(-3.2%)` 11px 字）、
+     数量 52px、金额 56px（与 .gfd-* 桌面档同族）。 */
+  .gwd-head, .gwd-row { font-size: 11px; line-height: 15px; }
+  .gwd-head i, .gwd-row i { flex: 0 0 56px; }
+  .gwd-head n, .gwd-row n { flex: 0 0 34px; }
+  .gwd-head u, .gwd-row u { flex: 0 0 88px; }
+  .gwd-head em, .gwd-row em { flex: 0 0 52px; }
+  .gwd-head b, .gwd-row b { flex: 0 0 56px; }
   /* ── 桌面日志条加高（2026-10-08 拍板加高；2026-10-09 用户要求「还能加更多行」）──
      6 行 × 20px = 120px，与 `render.LOG_ROWS` 的 ≥1280px 分支**同源**（断点一致）；
      手机 / 平板仍是基础规则的 40px（2 行）—— 本块只对桌面生效，手机端逐位不变。

@@ -3692,9 +3692,9 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
        NPC 每档每侧本身就是一笔大仓（某档 long = 8M 就是一个 NPC 开了 8M 多单），候选 = 六档×两侧
        ＋ 做市×两侧 ＋ 玩家仓位（若有），多空各成榜单、按**名义**降序各取前 10。
        列：档（谁）｜ 开仓价（longAvg/shortAvg、玩家 entry）｜ 倍数（npcLevOf 年代封顶后的生效值）｜
+       强平价(距%)（2026-10-11 用户要求回补 —— 旧巨鲸行的「强平 (距%)」信息，与热力图同一公式）｜
        数量（名义 ÷ 开仓价）｜ 金额（= 名义 —— 拍板里「名义」即排序键、与金额同值，只显示一列防重复）。
-       强平价不在此页（那是热力图的本职：价格触发带视图）—— 两个页面从此两个概念，数据源也不同
-       （tiers 持仓聚合 vs liqs 强平价挂带）。 */
+       强平线公式与 godWatchOf/旧 sideRow 同源：`1/lev − GAME.maintRate`，多头向下、空头向上。 */
     const longs = [], shorts = [];
     for (const tr of w.tiers) {
       if (tr.long > 0) longs.push({ name: tr.name, lev: tr.lev, n: tr.long, avg: tr.longAvg, you: false });
@@ -3705,25 +3705,28 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const top10 = a => a.sort((x, y) => y.n - x.n).slice(0, 10);
     const mkHead = () => {
       const h = el('div', 'gwd-head');
-      h.append(el('i', null, '档'), el('span', null, '开仓价'), el('n', null, '倍数'), el('em', null, '数量'), el('b', null, '金额'));
+      h.append(el('i', null, '档'), el('span', null, '开仓价'), el('n', null, '倍数'), el('u', null, '强平'), el('em', null, '数量'), el('b', null, '金额'));
       return h;
     };
-    const sec = (label, list) => {
+    const sec = (label, list, isLong) => {
       if (!list.length) return;
       box.append(el('div', 'god-frow2 mut', label), mkHead());
       for (const c of list) {
+        const drop = 1 / c.lev - GAME.maintRate;
+        const lp = isLong ? c.avg * (1 - drop) : c.avg * (1 + drop);
         const row = el('div', `gwd-row${c.you ? ' you' : ''}`);
         row.append(
           el('i', null, c.name),
           el('span', null, fmtFloatPrice(c.avg)),
           el('n', null, `${Math.round(c.lev * 10) / 10}x`),
+          el('u', null, `${fmtFloatPrice(lp)}(${fmtPct(lp / w.price - 1)})`),
           el('em', null, fmtQty(c.n / c.avg)),
           el('b', null, fmtMoneyShort(c.n)));
         box.append(row);
       }
     };
-    sec('多头', top10(longs));
-    sec('空头', top10(shorts));
+    sec('多头', top10(longs), true);
+    sec('空头', top10(shorts), false);
     if (!longs.length && !shorts.length) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
     /* 情绪读数只留**热度**（2026-10-08 拍板）：恐惧贪婪指数与交易页 K 线左下角那份重复，
        浮窗巨鲸页不再显示（`w.fng` 数据轨保留 —— 审计 9x 仍锚定 godWatchOf 的读数域）。 */

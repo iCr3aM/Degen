@@ -6047,6 +6047,18 @@ section('9al · 玩家仓位可见性（热力图/巨鲸/订单/tape）＋ 插�
     renderSrcAl.includes("const sbLabel = key === 'mood'")
     && renderSrcAl.includes("row.append(el('i', null, sbLabel));"));
 
+  /* 2026-10-11 用户报「巨鲸页字体没对齐其它页 ＋ 少了强平价」：
+     ① `.gwd-*` 补桌面 11/15 档（与 .gfd-* 与 .gb-* 同族）＋ 列宽同步；
+     ② 巨鲸 Top10 回补「强平价(距%)」列（旧 sideRow 的信息，公式与 godWatchOf 同源）；
+     ③ 连带补齐同日新增的 `.gfd-stat`（24h 爆仓统计行）与 `.gb-mid`（订单簿中间价行）的桌面档。 */
+  check('9al⑤ 巨鲸 Top10 强平价列 ＋ 桌面字号对齐（.gwd-* 11/15 ＋ .gfd-stat/.gb-mid 补桌面档）',
+    renderSrcAl.includes("el('u', null, '强平')")
+    && renderSrcAl.includes('const lp = isLong ? c.avg * (1 - drop) : c.avg * (1 + drop);')
+    && styleSrcAl.includes('.gwd-head u, .gwd-row u')
+    && styleSrcAl.includes('.gwd-head, .gwd-row { font-size: 11px; line-height: 15px; }')
+    && styleSrcAl.includes('.gfd-stat { font-size: 11px; line-height: 15px; }')
+    && styleSrcAl.includes('.gb-mid { font-size: 11px; line-height: 15px; }'));
+
   /* ③ 行为：玩家小仓强平也上 tape（2021-04-14 开 10x 多 $100K 名义 ⇒ 04-18 崩盘打爆；
      名义 ≪ 0.1% 日流动性（≈$10M+）⇒ 旧口径 tier=−1 被丢，新口径 minTier=0 强制入带 t=0）。 */
   {
