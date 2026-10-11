@@ -2162,6 +2162,16 @@ button { user-select: none; -webkit-user-select: none; }
 .god-frow2 i { font-style: normal; color: var(--mut); }
 .god-frow2 b { font-weight: 600; }
 .god-frow2.mut { color: var(--mut); }
+/* 迷你曲线（2026-10-11 · 深度页 OI / 资金费 24h）：跟随浮窗宽的 SVG 折线。
+   `preserveAspectRatio="none"` 横向拉伸 ⇒ 线宽必须 `vector-effect` 锁住，否则横越宽线越粗。 */
+.god-spark { display: block; width: 100%; height: 22px; margin: 1px 0 3px; }
+.god-spark polyline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.god-spark .sp-zero { stroke: var(--mut); stroke-width: 1; stroke-dasharray: 3 3; opacity: .6; }
 /* 玩家仓位行的 accent 高亮现走 `.gwd-row.you`（2026-10-11 巨鲸页改 Top10 榜，见下方 gwd 行族）
    ＋ 热力图 `.god-hm-bar.you` ＋ 订单簿 `.gb-row.you` —— 旧的 `.god-frow2.you` 随置顶行退役。 */
 .god-fnote { margin: 4px 0 0; font-size: 10px; color: var(--mut); }

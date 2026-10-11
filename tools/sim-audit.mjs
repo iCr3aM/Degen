@@ -3769,8 +3769,13 @@ section('9aa · 监管事件锚点 7 条 ＋ 回顾节点去重');
   const rv = RV.RV_NODES;
   const rvAt = rv.map(n => n.at);
   const dup = rvAt.filter((x, k) => rvAt.indexOf(x) !== k);
-  check('9aa③ 回顾节点无重复 `at`（anchors 27 ＋ EXTRA 25 互不撞车）', dup.length === 0, dup.join(','));
-  check('9aa③ 回顾节点总数 = 27 ＋ 25 = 52', rv.length === 52, `实得 ${rv.length}`);
+  check('9aa③ 回顾节点无重复 `at`（anchors 27 ＋ EXTRA 26 互不撞车）', dup.length === 0, dup.join(','));
+  check('9aa③ 回顾节点总数 = 27 ＋ 26 = 53', rv.length === 53, `实得 ${rv.length}`);
+  /* 第三批补条（2026-10-11 全量审计）：引擎有完整事件（hack 普损）而回顾层没有卡 —— 补 2016-08-02。 */
+  const hx = rv.find(v => v.at === Math.round((Date.UTC(2016, 7, 2) - C.GAME.start) / H));
+  check('9aa③ Bitfinex 被盗（2016-08-02）有节点：note 非空 ＋ 不复述 title ＋ sym=BTC',
+    !!hx && hx.note.length > 0 && !hx.note.includes('黑客攻击') && hx.sym === 'BTC',
+    hx ? `note=${hx.note.slice(0, 20)}…` : '节点不存在');
   check('9aa③ 7 条新锚点在回顾里都有节点、且 note 非空',
     got.every(a => { const n = rv.find(v => v.at === a.at); return n && typeof n.note === 'string' && n.note.length > 0; }));
   check('9aa③ Tornado Cash 回顾切到 ETH（事件在以太坊上）',
@@ -5258,7 +5263,7 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
   }
 
   check('9ae⑥ 存档 / 状态：feed 移出 EPHEMERAL（进存档 · 2026-10-11 拍板「持续保留跨读档」，lob 先例不进 SHAPE）＋ liq24 入 EPHEMERAL ＋ createState 带两字段',
-    saveSrc9y.includes("const EPHEMERAL = ['godRuined', 'liq24']")
+    saveSrc9y.includes("const EPHEMERAL = ['godRuined', 'liq24', 'oiHist']")
     && !/const EPHEMERAL = \[[^\]]*'feed'/.test(saveSrc9y)
     && !/const SHAPE = \{[^}]*feed/.test(saveSrc9y)
     && stateSrc9y.includes('feed: [],') && stateSrc9y.includes('liq24: [],'));
@@ -5358,7 +5363,7 @@ section('9af · NPC 限价单离散簿（行为级 ＋ 显示/播报读簿 ＋ �
     && engSrc9af.includes('if (!s.lob) s.lob = {};'));
   check('9af① 状态 / 存档：createState 带 lob:{} ＋ 不进 EPHEMERAL（随 {...s} 落盘）＋ 不进 SHAPE（旧档不弃）',
     stateSrc9af.includes('lob: {}')
-    && saveSrc9af.includes("const EPHEMERAL = ['godRuined', 'liq24']")
+    && saveSrc9af.includes("const EPHEMERAL = ['godRuined', 'liq24', 'oiHist']")
     && !/const SHAPE = \{[^}]*lob/.test(saveSrc9af));
   check('9af① 旋钮：SB_KEYS 六键含 lob ＋ sbOf 归一 lob ＋ 四预设全带 lob=1',
     godSrc9af.includes("SB_KEYS = ['heat', 'mood', 'npc', 'shock', 'res', 'lob']")
@@ -6213,6 +6218,57 @@ section('9an · 回流管道：费用落账 · 每小时分流逐位 · 双封�
     for (let h = 0; h < 48; h++) engine.advanceOneHour(s);
     check('9an⑦ 无玩家 48h：exRev 恒 0（费用源全是玩家/上帝侧动作 ⇒ 回流管道休眠）',
       s.exRev === 0, `exRev=${s.exRev}`);
+  }
+}
+
+/* ═══════════════════ 9ba · OI/资金费 24h 快照环（2026-10-11 全量审计后用户拍板） ═══════════════════
+   详情页两条迷你曲线的数据源：`oi24Push` 每小时给当前币落一条 `{ i, oi, fr }`（OI 的 NPC 持仓
+   历史不可回放 ⇒ 必须快照）；读侧 `oi24Of` 按 24h 窗过滤（回退后的未来点在这里被丢弃）。
+   会话级：save.EPHEMERAL 剔除 ＋ rewindTo 置空（同 s.liq24 先例，不升存档版）。 */
+section('9ba · OI/资金费 24h 快照环 oi24Push/oi24Of ＋ EPHEMERAL');
+{
+  const svSrcBa = fs.readFileSync(path.join(ROOT, 'src/core/save.js'), 'utf8');
+  const engSrcBa = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  const FRba = (await import('../src/core/positions.js')).FR;
+
+  /* ① 结构：EPHEMERAL 名单 ＋ rewindTo 清空 ＋ advanceOneHour 喂点在 tickMarket 之后。 */
+  check('9ba① 结构：save.EPHEMERAL 含 oiHist ＋ rewindTo 置空 ＋ advanceOneHour 在 tickMarket 后喂点',
+    svSrcBa.includes("['godRuined', 'liq24', 'oiHist']")
+    && engSrcBa.includes('s.oiHist = null;')
+    && engSrcBa.includes('oi24Push(s, s.sym);'));
+
+  /* ② 行为：真引擎推进 5 小时 ⇒ 每小时恰一条、字段合法、末点与当前口径一致。 */
+  {
+    const s = await mk({ sym: 'BTC', i: idx(at(2021, 5, 10)) });
+    for (let h = 0; h < 5; h++) engine.advanceOneHour(s);
+    const hist = engine.oi24Of(s, 'BTC');
+    check('9ba② 真引擎推进 5h ⇒ oi24Of 恰 5 条（每小时一条）',
+      hist.length === 5, `实得 ${hist.length}`);
+    check('9ba② 字段合法：i 严格递增 ＋ oi ≥ 0 ＋ fr ∈ ±FR.max 内或 null（不编数）',
+      hist.every((p, k) => (k === 0 || p.i > hist[k - 1].i)
+        && Number.isFinite(p.oi) && p.oi >= 0
+        && (p.fr == null || (Number.isFinite(p.fr) && Math.abs(p.fr) <= FRba.max + 1e-12))),
+      JSON.stringify(hist[0]));
+    /* ⚠️ 「快照 = 落笔那一刻的口径」用**直调**验证（推进后强平/结算还会再动 OI，
+       拿推进末点对比当前值是脆弱断言 —— 可能假红）。 */
+    engine.oi24Push(s, 'BTC');
+    const snap = engine.oi24Of(s, 'BTC');
+    check('9ba② oi24Push 直调：快照值与 openInterestOf 当前值逐位一致（同一把尺子）',
+      snap.length === 6
+      && Math.abs(snap[snap.length - 1].oi - engine.openInterestOf(s, 'BTC')) < 1e-6,
+      `快照 ${f(snap[snap.length - 1].oi, 0)} vs 当前 ${f(engine.openInterestOf(s, 'BTC'), 0)}`);
+  }
+
+  /* ③ 窗口过滤 ＋ 未来点丢弃：伪造 40 条历史 ＋ 1 条未来 ⇒ oi24Of 只留 (s.i − 24, s.i] 的 24 条。 */
+  {
+    const s = await mk({ sym: 'BTC', i: idx(at(2021, 5, 10)) });
+    s.oiHist = { BTC: [] };
+    for (let k = 0; k < 40; k++) s.oiHist.BTC.push({ i: s.i - 39 + k, oi: k, fr: 0 });   // 含 i = s.i 这条
+    s.oiHist.BTC.push({ i: s.i + 10, oi: 999, fr: 0 });     // 回退后残留的「未来点」
+    const got = engine.oi24Of(s, 'BTC');
+    check('9ba③ 窗口过滤：只留最近 24h ＋ 丢弃未来点（41 条伪数据 ⇒ 恰 24）',
+      got.length === 24 && got.every(p => p.i > s.i - 24 && p.i <= s.i),
+      `实得 ${got.length}`);
   }
 }
 

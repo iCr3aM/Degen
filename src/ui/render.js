@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtFloatPrice, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { latentOf, available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, eventsOff, exMarkPrice, FEED_STEPS, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, liq24BandOf, liq24Sum, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { latentOf, available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, eventsOff, exMarkPrice, FEED_STEPS, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, liq24BandOf, liq24Sum, marginCapsOf, marginStepOf, newsVars, niceStepOf, oi24Of, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -3567,6 +3567,36 @@ function floatGeo() {
  *     拖动浮窗时列表乱跳，且与订单簿 / 深度页信息重叠 —— 数据源 `tape.js` 一并删除。 */
 /* 分档阈值 → 显示标签（0.001 → "0.1%"）—— 不靠 ×100 现算，避开 0.01×100 = 1.000…2 的浮点毛刺。 */
 const feedPctLabel = i => `${Math.round(FEED_STEPS[i] * 1000) / 10}%`;
+
+/**
+ * **迷你曲线**（2026-10-11 用户拍板「OI / 资金费 24h」）—— 内联 SVG polyline。
+ * 为什么不用 canvas：浮窗 body 每帧重建，`<canvas>` 挂载前拿不到 `clientWidth`（画出 0 宽），
+ * 而 SVG 靠 `viewBox` ＋ `preserveAspectRatio="none"` 天然随容器伸缩；
+ * `vector-effect: non-scaling-stroke` 让横向拉伸不把线宽挤变形。
+ * `zero` 传 0 ＝ 画一条 0 基线（资金费可正可负）；不传 ＝ 纯 min–max 归一（OI 恒正）。
+ * `vals` 长度 ≥ 2 由调用方保证（单点画不出线）。
+ */
+function spark(vals, zero) {
+  const W = 100, H = 26, PAD = 2, NS = 'http://www.w3.org/2000/svg';
+  const lo = Math.min(...vals, ...(zero != null ? [0] : []));
+  const hi = Math.max(...vals, ...(zero != null ? [0] : []));
+  const span = hi - lo || 1;                       // 全平（如资金费恒 0）时不除零：span 兜 1
+  const yOf = v => PAD + (hi - v) / span * (H - PAD * 2);
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('class', 'god-spark');
+  const poly = (pts, cls) => {
+    const p = document.createElementNS(NS, 'polyline');
+    p.setAttribute('points', pts);
+    p.setAttribute('class', cls);
+    svg.append(p);
+  };
+  if (zero != null) poly(`0,${yOf(0).toFixed(2)} ${W},${yOf(0).toFixed(2)}`, 'sp-zero');
+  poly(vals.map((v, k) => `${(k / (vals.length - 1) * W).toFixed(2)},${yOf(v).toFixed(2)}`).join(' '), 'sp-line');
+  return svg;
+}
+
 /**
  * 玩家当前币的**仓位速览**（2026-10-09 · 用户拍板「热力图/巨鲸/订单/日志要显示玩家的仓位」）：
  * 方向 / 生效杠杆 / 开仓价 / 强平价 —— 三页共用同一份派生，`liquidationPrice` / `effLevOf`
@@ -3980,6 +4010,26 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     box.append(row('压力位墙', walls.length
       ? `${walls.length} 条 · 合计 ${fmtMoneyShort(walls.reduce((a, r) => a + r.notional, 0))}`
       : '—'));
+    /* 保险基金存量（2026-10-11 全量审计补）：`s.fund` 是穿仓安全垫（ADL 之前最后一道），
+       引擎完整模拟但一直没有读数。可为负（语义 = 交易所层面的穿仓欠账，见 `engine.adl` 头注）；
+       局终清 null（`s.fund = null`）⇒ 印 '—'，不印 0。 */
+    box.append(row('保险基金', s.fund == null ? '—' : fmtMoneyShort(s.fund)));
+    /* OI / 资金费 24h 迷你曲线（2026-10-11 用户拍板「展示层三条」）—— 引擎 `oi24Push`
+       每小时给**当前币**落一条快照（`{ i, oi, fr }`；OI 的 NPC 持仓历史不可回放 ⇒ 必须快照）。
+       切币后该币从零攒起 ⇒ 点不足 2 或 `fr` 序列里有 null（散户两侧无仓，分不出费率）就不画，
+       不编数。资金费画 0 基线（费率可正可负）。 */
+    const hist = oi24Of(s, s.sym);
+    if (hist.length >= 2) {
+      box.append(row('OI 24h', fmtMoneyShort(hist[hist.length - 1].oi)));
+      box.append(spark(hist.map(p => p.oi), null));
+      const frs = hist.map(p => p.fr);
+      if (frs.every(v => v != null)) {
+        box.append(row('资金费 24h', fmtPct(frs[frs.length - 1], 4)));
+        box.append(spark(frs, 0));
+      } else {
+        box.append(row('资金费 24h', '—'));
+      }
+    }
     /* 风险 / 估值读数（2026-10-11 用户拍板「CDRI / 梅耶倍数**只在详情页**展示」）——
        · 风险指数 = 本作既有的隐藏基准 `cdriOf`（五维加权，口径对齐 CoinGlass CDRI）**首次上屏**；
        · 梅耶倍数 = 现价 ÷ 200 日 MA（`engine.mayerOf`；样本不足显示 `—`，不编数）。

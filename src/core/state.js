@@ -643,6 +643,12 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      */
     liq24: [],
     /**
+     * **OI / 资金费 24h 快照**（2026-10-11 · 详情页迷你曲线）：`{ [sym]: [{ i, oi, fr }] }`，
+     * 每小时一条（`engine.oi24Push`），EPHEMERAL（读档重攒）。null = 未建（首推惰性补）。
+     * 不参与玩法判定；NPC 持仓历史不可回放 ⇒ OI 曲线只能靠快照。
+     */
+    oiHist: null,
+    /**
      * **NPC 限价单离散簿**（2026-10-08 三批⑦）：`{ [sym]: { i, bids:[{p,n,t}], asks:[{p,n,t}] } }`
      * —— 每币一本挂单账（p 绝对价 / n 美元名义 / t 出生小时），引擎 `lobTick` 每小时刻度。
      * ⚠️ **要落盘**（行为状态，与 `mkt` 同类）但**不进 save.js 的 `SHAPE`** —— 旧档没有这个键，

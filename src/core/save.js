@@ -25,7 +25,7 @@ import { isChallenge } from './config.js';
     ＋ 24h/7d 强平台账（2026-10-11：读数窗「最近 7 天」，读档重攒）。
     ⚠️ `feed`（大单 tape）**已移出**本名单（2026-10-11 用户拍板「日志持续保留直到顶掉」
     ⇒ 必须跨读档成立；走 `lob` 先例不进 SHAPE —— 旧档缺键不判废，不升版）。 */
-const EPHEMERAL = ['godRuined', 'liq24'];
+const EPHEMERAL = ['godRuined', 'liq24', 'oiHist'];
 
 const KEY_OF = {
   normal: 'degen_save_normal',

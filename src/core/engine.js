@@ -2578,6 +2578,36 @@ export function liq24BandOf(s, sym) {
   return map;
 }
 
+/* ───────────────────── OI / 资金费 24h 快照（2026-10-11 · 用户拍板「详情页两条迷你曲线」） ─────────────────────
+ * `s.oiHist[sym]`：按币分桶的**小时快照环** —— 每小时一条 `{ i, oi, fr }`
+ * （小时序号 / 全市场未平仓名义 / 下一期资金费率的当前外推）。
+ * ⚠️ **为什么必须快照**：`openInterestOf` 是「当前状态」的派生量（NPC 六档 ＋ 做市盘的持仓
+ *    随时间演化、历史不可回放）⇒ 显示历史曲线只能逐小时落一条。
+ * ⚠️ `fr` 记 `fundingForecastOf` 的 `rate`（与 Binance 界面「预计资金费率」同性质，逐小时随
+ *    失衡变）；散户两侧无仓（分不出多空比）时记 **`null`** —— 显示层见 null 不画曲线（不编数）。
+ * ⚠️ **会话级**（save.js `EPHEMERAL` 剔除 ＋ `rewindTo` 置空）—— 同 `s.liq24` 先例：
+ *    读档/回退后的旧快照没有意义，重攒即可。**不进 SHAPE、不升 `STATE_VERSION`**。
+ * ⚠️ 只攒**当前币**（`tickMarket` 每小时只跑当前币 ⇒ 其他币的 OI 也不该在此刻读）：
+ *    玩家切到哪个币，哪个币的曲线从零攒起 —— 诚实的口径，比「假装有全天历史」好。
+ * ⚠️ 回退后的「未来点」按 `i` 判断天然丢弃（读侧 `p.i <= s.i`），无需在写侧防。
+ * 读侧：`oi24Of`（详情页迷你曲线，24h 窗）。 */
+export const OI24_CAP = 32;    // 略大于 24：容住暂停/回退后同窗内的重复推进，头部过期由读侧按窗过滤
+
+/** 喂入口：当前币落一条快照（`advanceOneHour` 在 `tickMarket` 之后调 —— 本根 OI 已成形）。 */
+export function oi24Push(s, sym) {
+  if (!s.oiHist) s.oiHist = {};                    // 旧档 / 回退后惰性补建（不升存档版）
+  const arr = s.oiHist[sym] || (s.oiHist[sym] = []);
+  const fc = fundingForecastOf(s, sym);
+  arr.push({ i: s.i, oi: openInterestOf(s, sym), fr: fc ? fc.rate : null });
+  if (arr.length > OI24_CAP) arr.splice(0, arr.length - OI24_CAP);
+}
+
+/** 读侧：本币最近 24h 的快照（含 `p.i <= s.i` ⇒ 回退后的未来点在这里被丢弃）。 */
+export function oi24Of(s, sym) {
+  const old = s.i - 24;
+  return ((s.oiHist && s.oiHist[sym]) || []).filter(p => p.i > old && p.i <= s.i);
+}
+
 /**
  * NPC 顺势建仓：把某一侧净持仓朝 `target` 靠 `NPC.speed`。
  *
@@ -6188,6 +6218,11 @@ export function advanceOneHour(s) {
      它自己会往 `s.flow` 写 NPC 的成交，所以必须排在资金费 / 强平之前、玩家的流之后。 */
   tickMarket(s, s.sym);
 
+  /* OI / 资金费 24h 快照（2026-10-11 · 详情页迷你曲线的数据源）：排在 `tickMarket` 之后 ——
+     NPC 刚按本根行情建完仓、`openInterestOf` 才是「这一小时收尾时」的真实口径；
+     排在资金费结算 / 强平之前 ⇒ 待决态（时钟停走）时本根已落一条，不会漏。 */
+  oi24Push(s, s.sym);
+
   /* 其余已加载币的 NPC 刻度（2026-10-07）：紧跟 `tickMarket` —— `crossHeat` 刚把当前币的情绪
      外溢给邻币，邻币的建仓靶心这一拍就能读到（「砸崩 BTC → ETH 散户盘跟着撤」的落点）。
      排在 `advTick` 之前：持有 / 疤痕币的 `syncNpcDrift` 仍由 `advTick` 独家负责（不双步进）。 */
@@ -6334,6 +6369,7 @@ export function rewindTo(s, to) {
   s.log = [];
   s.feed = [];          // 大单日志（2026-10-08 tape）：进存档但跳时间后的旧条目没有意义 ⇒ 清空重攒
   s.liq24 = [];         // 24h 强平台账（2026-10-11）：会话级读数窗，同上清空重攒
+  s.oiHist = null;      // OI/资金费 24h 快照（2026-10-11）：同上 —— 回退后的旧快照没有意义
   s.newsStance = {};    // 新闻立场账本（2026-10-11）：记录的是「回退点之后」看到的方向，回退一律清空重记
   s.lob = {};           // NPC 限价簿（2026-10-08 三批⑦）：可由种子逐位复现 ⇒ 清空后在落点冷启动重长
 
