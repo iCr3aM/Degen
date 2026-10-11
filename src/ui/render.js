@@ -3902,10 +3902,10 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const desk = window.matchMedia && window.matchMedia('(min-width: 1280px)').matches;
     const rowH = desk ? 15 : 13;
     const fh = floatGeo().h;
-    /* 行数按面板高现算：扣掉 列头 ＋ 两条段标题（各 ≈ 一行）＋ 24h 爆仓统计行 ＋ 底部过滤行 ＋
-       边距（104 沿用旧口径）。
+    /* 行数按面板高现算：扣掉 列头 ＋ 两条段标题（各 ≈ 一行）＋ 24h/7d 两条爆仓统计行 ＋
+       底部过滤行 ＋ 边距（104 沿用旧口径）。
        上段 70% / 下段 30%（各至少 2 行）；两段列表高度之和 = 可用高 ⇒ 铺满、过滤行钉死。 */
-    const totalRows = Math.max(6, Math.floor((fh - 104 - 3 * rowH) / rowH));
+    const totalRows = Math.max(6, Math.floor((fh - 104 - 4 * rowH) / rowH));
     const topRows = Math.max(2, Math.round(totalRows * 0.7));
     const botRows = Math.max(2, totalRows - topRows);
     const all = (s.feed || []).filter(r => r.sym === s.sym && r.t >= lf);
@@ -3944,13 +3944,15 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const emptyNote = `暂无大单 —— 超过当日流动性 ${feedPctLabel(lf)} 的合约开/平/爆仓会上这里。`;
     sec('开平仓', topRows, all.filter(r => r.k <= 3).slice(-topRows).reverse(), emptyNote);
     sec('爆仓', botRows, all.filter(r => r.k >= 4).slice(-botRows).reverse(), '—');
-    /* 24h 爆仓统计行（2026-10-11 · 用户拍板）：引擎 `liq24Sum`（会话级事件环 s.liq24 ——
-       不过档位阈值、含做市盘，与 stat.liqNotional 同口径的全市场事实），本币口径与页内 tape 同一把尺。
+    /* 24h/7d 爆仓统计行（2026-10-11 · 用户拍板）：引擎 `liq24Sum`（会话级事件环 s.liq24，
+       不过档位阈值、含做市盘，与 stat.liqNotional 同口径的全市场事实），本币口径与页内 tape
+       同一把尺；`win` 选窗（24 / 168），`maxSide` 给出单笔最大的方向（多/空）。
        无强平印「—」，不印三个 $0（LESS IS MORE）。 */
-    const lq = liq24Sum(s, s.sym);
-    box.append(el('div', 'gfd-stat', lq.max > 0
-      ? `24h爆仓 多 ${fmtMoneyShort(lq.long)} ｜ 空 ${fmtMoneyShort(lq.short)} ｜ 单笔最大 ${fmtMoneyShort(lq.max)}`
-      : '24h爆仓 —'));
+    const fmtStat = (tag, r) => r.max > 0
+      ? `${tag} 多 ${fmtMoneyShort(r.long)} ｜ 空 ${fmtMoneyShort(r.short)} ｜ 单笔最大 ${r.maxSide === 'long' ? '多' : '空'} ${fmtMoneyShort(r.max)}`
+      : `${tag} —`;
+    box.append(el('div', 'gfd-stat', fmtStat('24h爆仓', liq24Sum(s, s.sym))));
+    box.append(el('div', 'gfd-stat', fmtStat('7d爆仓', liq24Sum(s, s.sym, 168))));
     /* 底部过滤档（2026-10-09 用户拍板⑥）：与订单簿步进同一族样式（`.gb-steps` / `.gb-step`），
        标签走 `feedPctLabel`（与引擎阈值同源）；选中档高亮随每帧重画跟随。 */
     const filtRow = el('div', 'gb-steps');

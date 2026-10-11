@@ -2476,8 +2476,8 @@ function npcRealised(long, mag, avg, price) {
  * ⚠️ **进存档**（2026-10-11：从 save.js `EPHEMERAL` 移出）——「持续保留直到顶掉」必须跨读档成立。
  *    ⚠️ 走 `s.lob` 先例：**不进 SHAPE**（旧档没有这个键 ⇒ 列进白名单会把所有旧档判废），
  *       读侧 `if (!s.feed)` 惰性补建、显示层 `(s.feed || [])` 兜底 —— 缺格 = 空日志重攒，**不升版**。 */
-export const FEED_CAP_TRADE = 900;   // 开平仓段（k0–3）独立容量 —— 以「日志页最大可见行数」为锚（可见行数 × 约 3 屏）
-export const FEED_CAP_LIQ = 300;     // 爆仓段（k4–7）独立容量（同锚）—— 爆仓条目少而重要，单独给池
+export const FEED_CAP_TRADE = 1200;  // 开平仓段（k0–3）独立容量 —— 以「日志页最大可见行数」为锚（可见行数 × 约 3 屏）
+export const FEED_CAP_LIQ = 600;     // 爆仓段（k4–7）独立容量（同锚）—— 爆仓条目少而重要，单独给池
 /** 分档阈值（名义 ÷ 当日流动性）—— 与浮窗日志页底部过滤档同序、同源（单一事实）。 */
 export const FEED_STEPS = [0.001, 0.005, 0.01, 0.02, 0.05];
 /** 名义额 ÷ 当日流动性 → 档位（0..4，从浅到深）；低于 0.1% ⇒ −1（不上日志）。 */
@@ -2505,13 +2505,20 @@ export function feedPush(s, sym, k, price, notional, minTier = -1, lev = 0) {
   if (tier < 0) return;
   if (!s.feed) s.feed = [];                        // 旧档 / 回退后惰性补建（不升存档版）
   s.feed.push({ i: s.i, sym, k, p: price, n: notional, t: tier, lev });
-  /* 分段环形（2026-10-11 用户拍板「看不到的直接丢弃」）：本段超容量 ⇒ 只顶掉**本段最老**那条，
-     另一段一个字不动 —— 两段互不挤占。条目按时间序入列 ⇒ 同段条目天然有序，先找到的即最老。
-     O(n) 扫描每次 push 都走一遍（≤1200 条 × 每小时几十次 push，成本可忽略）。 */
+  /* 分段环形（2026-10-11 用户拍板「看不到的直接丢弃」）＋ **低档先死**（2026-10-11 用户报
+     「0.5%/1%/2%/5% 的日志比较少，想让它们显示久一些」）：本段超容量 ⇒ 只顶掉**本段内
+     档位最低**的那条（同档位取更早者）—— 0.1% 档的建平仓小单先死、2%/5% 档的稀有
+     大单长存；全部同档时退化为 FIFO（「新的顶掉旧的」原纪律）。另一段一个字不动。
+     O(n) 扫描每次 push 都走一遍（≤1800 条 × 每小时几十次 push，成本可忽略）。 */
   const seg = k <= 3, cap = seg ? FEED_CAP_TRADE : FEED_CAP_LIQ;
-  let first = -1, cnt = 0;
-  for (let j = 0; j < s.feed.length; j++) if ((s.feed[j].k <= 3) === seg) { if (first < 0) first = j; cnt++; }
-  if (cnt > cap) s.feed.splice(first, 1);
+  let worst = -1, worstT = 9, cnt = 0;
+  for (let j = 0; j < s.feed.length; j++) {
+    const r = s.feed[j];
+    if ((r.k <= 3) !== seg) continue;
+    cnt++;
+    if (r.t < worstT) { worst = j; worstT = r.t; }   // 严格小于 ⇒ 同档位保留最老的（FIFO 退化）
+  }
+  if (cnt > cap) s.feed.splice(worst, 1);
 }
 
 /* ───────────────────── 24h 强平台账（2026-10-11 · 用户拍板「日志页加 24h 爆仓统计」） ─────────────────────
@@ -2519,31 +2526,36 @@ export function feedPush(s, sym, k, price, notional, minTier = -1, lev = 0) {
  * ⚠️ 与 tape（`s.feed`）的三点差别：**不过档位阈值**（小名义也算强平额）、**含做市盘**（`quiet`
  *    只是「不上日志」，不是「没发生」—— 与 `stat.liqNotional` 的累计口径同源）、**含玩家两路径**。
  * ⚠️ **会话级**：save.js `EPHEMERAL` 剔除、`rewindTo` 清空 —— 与 `s.feed` 旧先例同一待遇：
- *    它是「最近 24 小时」的读数窗，读档/跳时间后的旧事件没有意义。
- * ⚠️ 只留 24h：窗口 = `i > s.i − 24`（当前小时 ＋ 前 23 小时）；硬顶 `LIQ24_CAP` 条防极端潮涌撑爆内存。
- * 读侧：`liq24Sum`（日志页统计行）＋ `liq24BandOf`（热力图「该价位已爆」按价带聚合）。 */
-export const LIQ24_CAP = 1000;
+ *    它是「最近一段时间」的读数窗，读档/跳时间后的旧事件没有意义。
+ * ⚠️ 只留 **7d**：窗口 = `i > s.i − 168`（`liq24Sum` 的 24h 行与 7d 行共用同一事件环，
+ *    2026-10-11 用户拍板加「7d 爆仓」行）；硬顶 `LIQ24_CAP` 条防极端潮涌撑爆内存。
+ * 读侧：`liq24Sum`（日志页 24h/7d 统计行，win 参数选窗）＋ `liq24BandOf`（热力图
+ * 「该价位已爆」按价带聚合，恒 24h 窗）。 */
+export const LIQ24_CAP = 4000;
 
 /** 喂入口：一笔强平事件（`side` = `'long'` | `'short'`）。不做任何阈值过滤 —— 见节头注。 */
 export function liq24Push(s, sym, side, price, notional) {
   if (!(price > 0) || !(notional > 0)) return;
   if (!s.liq24) s.liq24 = [];                      // 旧档 / 回退后惰性补建（不升存档版）
   s.liq24.push({ i: s.i, sym, side, p: price, n: notional });
-  const old = s.i - 24;
+  const old = s.i - 168;                           // 7d 窗口：只留 i > s.i − 168 的事件
   let j = 0;
   while (j < s.liq24.length && s.liq24[j].i <= old) j++;   // 事件按时间序入列 ⇒ 头部连续过期
   if (j > 0) s.liq24.splice(0, j);
   if (s.liq24.length > LIQ24_CAP) s.liq24.splice(0, s.liq24.length - LIQ24_CAP);
 }
 
-/** 24h 强平汇总（本币）：多头额 / 空头额 / 单笔最大 —— 日志页统计行的三个读数。 */
-export function liq24Sum(s, sym) {
-  const out = { long: 0, short: 0, max: 0 };
-  const old = s.i - 24;
+/**
+ * 强平汇总（本币）：多头额 / 空头额 / 单笔最大（**含方向** `maxSide`）—— 日志页统计行的读数。
+ * `win` = 读数窗（小时）：日志页 24h 行传缺省 24、7d 行传 168。
+ */
+export function liq24Sum(s, sym, win = 24) {
+  const out = { long: 0, short: 0, max: 0, maxSide: 'long' };
+  const old = s.i - win;
   for (const e of s.liq24 || []) {
     if (e.sym !== sym || e.i <= old) continue;
     if (e.side === 'long') out.long += e.n; else out.short += e.n;
-    if (e.n > out.max) out.max = e.n;
+    if (e.n > out.max) { out.max = e.n; out.maxSide = e.side; }
   }
   return out;
 }

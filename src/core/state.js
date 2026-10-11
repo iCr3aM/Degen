@@ -635,10 +635,11 @@ export function createState(scenId = DEFAULT_SCENARIO) {
      */
     feed: [],
     /**
-     * **24h 强平台账**（2026-10-11）：每笔强平事件 `{ i, sym, side, p, n }`（侧 = 'long'|'short'）。
-     * ⚠️ **会话级**：save.js `EPHEMERAL` 剔除、`rewindTo` 清空、24h 窗口 ＋ `LIQ24_CAP` 条硬顶
-     *    （engine.js `liq24Push`）；不过档位阈值、含做市盘 —— 与 `stat.liqNotional` 同口径的
-     *    「最近 24 小时强平额」读数窗（日志页统计行 ＋ 热力图价带聚合），不参与玩法判定。
+     * **24h/7d 强平台账**（2026-10-11）：每笔强平事件 `{ i, sym, side, p, n }`（侧 = 'long'|'short'）。
+     * ⚠️ **会话级**：save.js `EPHEMERAL` 剔除、`rewindTo` 清空、**7d 窗口** ＋ `LIQ24_CAP` 条硬顶
+     *    （engine.js `liq24Push`；`liq24Sum` 的 win 参数选 24h/7d 读数窗）；不过档位阈值、含做市盘
+     *    —— 与 `stat.liqNotional` 同口径的「近期强平额」读数窗（日志页统计行 ＋ 热力图价带聚合），
+     *    不参与玩法判定。
      */
     liq24: [],
     /**

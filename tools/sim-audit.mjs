@@ -5195,14 +5195,15 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
   const renderSrc9y = readSrc9y('src/ui/render.js');
   const styleSrc9y = readSrc9y('src/ui/style.css');
 
-  check('9ae① 引擎：feedPush / feedTier / FEED_STEPS / 分段环形硬顶（TRADE 900 / LIQ 300 互不挤占）＋ 时龄窗口已废 ＋ rewindTo 清空',
+  check('9ae① 引擎：feedPush / feedTier / FEED_STEPS / 分段环形硬顶（TRADE 1200 / LIQ 600 互不挤占）＋ 低档先死 ＋ 时龄窗口已废 ＋ rewindTo 清空',
     engSrc9y.includes('function feedPush(s, sym, k, price, notional, minTier = -1, lev = 0)')
     && engSrc9y.includes('export function feedTier(notional, liqDay)')
     && engSrc9y.includes('export const FEED_STEPS = [0.001, 0.005, 0.01, 0.02, 0.05]')
-    && engSrc9y.includes('export const FEED_CAP_TRADE = 900')
-    && engSrc9y.includes('export const FEED_CAP_LIQ = 300')
+    && engSrc9y.includes('export const FEED_CAP_TRADE = 1200')
+    && engSrc9y.includes('export const FEED_CAP_LIQ = 600')
     && engSrc9y.includes('const seg = k <= 3, cap = seg ? FEED_CAP_TRADE : FEED_CAP_LIQ;')
-    && engSrc9y.includes('if (cnt > cap) s.feed.splice(first, 1);')
+    && engSrc9y.includes('if (r.t < worstT) { worst = j; worstT = r.t; }')
+    && engSrc9y.includes('if (cnt > cap) s.feed.splice(worst, 1);')
     && !engSrc9y.includes('FEED_DAYS')            // 2026-10-11：按天窗口已废除（改纯环形）
     && engSrc9y.includes('s.feed = [];'));
 
@@ -5234,18 +5235,21 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     && engine.feedTier(1, 0) === -1 && engine.feedTier(0, 100) === -1);
 
   /* 行为锚：大波动段（2020-10 → 2021-10，含 2021-05 崩盘）推进 720h —— 事件必有、字段完整、
-     六型至少三种、rewindTo 清空（会话级）。推进成本 ~0.05ms/h（feedPush 是纯算术＋环形 push）。 */
+     六型至少三种、rewindTo 清空（会话级）。推进成本 ~0.05ms/h（feedPush 是纯算术＋环形 push）。
+     ⚠️ 密度阈 3 条/h（2026-10-11 扩容注释）：旧 1200 环形把此锚压在 ≤1.67 条/h（掩盖真实密度）；
+     扩到 1200/600 后 2020-10→2021-10 段实测 ≈2.2 条/h（用户拍板「让日志填满」的预期结果），
+     显示层每帧只画最新 N 行 ⇒ 不刷屏。 */
   {
     const s9ae = await mk({ i: idx(at(2020, 10, 1)) });
     for (let k = 0; k < 720; k++) engine.advanceOneHour(s9ae);
     const f9ae = s9ae.feed || [];
     const kinds9ae = [0, 0, 0, 0, 0, 0];
     for (const e of f9ae) kinds9ae[e.k]++;
-    check('9ae⑤ 行为：720h 大波动段 feed 非空、字段完整（p>0/n>0/t∈0..4/合法币）、密度不刷屏（<2 条/h）',
+    check('9ae⑤ 行为：720h 大波动段 feed 非空、字段完整（p>0/n>0/t∈0..4/合法币）、密度不刷屏（<3 条/h）',
       f9ae.length > 0
       && f9ae.every(e => e.p > 0 && e.n > 0 && e.t >= 0 && e.t <= 4
         && C.COINS.some(c => c.sym === e.sym) && Number.isInteger(e.k))
-      && f9ae.length < 720 * 2,
+      && f9ae.length < 720 * 3,
       `n=${f9ae.length}（${(f9ae.length / 720).toFixed(2)} 条/h）`);
     check('9ae⑤ 行为：六型至少三种（开/平/爆都有机会发生）', kinds9ae.filter(n => n > 0).length >= 3,
       `kinds=[${kinds9ae.join(',')}]`);
@@ -5284,17 +5288,18 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
      EPHEMERAL、rewindTo 清空；喂点 = flushSlot 四支 ＋ 玩家两条强平路径；读侧 liq24Sum（统计行）
      ＋ liq24BandOf（热力图价带聚合）。 */
   check('9ae⑨ liq24 引擎：liq24Push/Sum/BandOf 导出 ＋ 喂点六处 ＋ rewindTo 清空 ＋ EPHEMERAL',
-    engSrc9y.includes('export const LIQ24_CAP = 1000;')
+    engSrc9y.includes('export const LIQ24_CAP = 4000;')
     && engSrc9y.includes('export function liq24Push(s, sym, side, price, notional)')
-    && engSrc9y.includes('export function liq24Sum(s, sym)')
+    && engSrc9y.includes('export function liq24Sum(s, sym, win = 24)')
     && engSrc9y.includes('export function liq24BandOf(s, sym)')
+    && engSrc9y.includes('const old = s.i - 168;')                        // 7d 窗口（24h/7d 两行共用事件环）
     && engSrc9y.split("liq24Push(s, sym, 'long', price, ").length >= 3      // 爆多 ＋ 强多（做市盘同入账）
     && engSrc9y.split("liq24Push(s, sym, 'short', price, ").length >= 3     // 爆空 ＋ 强空
     && engSrc9y.split('liq24Push(s, pos.sym, pos.side, atPrice, notional);').length >= 3   // 玩家两路径
     && engSrc9y.includes('s.liq24 = [];')
     && saveSrc9y.includes("'liq24'"));
   {
-    /* 行为锚：手工喂事件 ⇒ 汇总 / 价带查询逐位对 ＋ 24h 窗口裁剪 ＋ 硬顶。 */
+    /* 行为锚：手工喂事件 ⇒ 汇总（含 maxSide）/ 价带查询逐位对 ＋ 24h/7d 双窗 ＋ 硬顶。 */
     const s9liq = await mk({ sym: 'BTC', i: idx(at(2021, 5, 10)) });
     s9liq.liq24 = [];                   // mk 的启动 tick 撞上崩盘周会先入几笔真实强平 ⇒ 清空后喂手工事件（断言才逐位）
     engine.liq24Push(s9liq, 'BTC', 'long', 5e4, 1e6);
@@ -5305,15 +5310,19 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     const sum9liq = engine.liq24Sum(s9liq, 'BTC');
     const band9liq = engine.liq24BandOf(s9liq, 'BTC');
     const near = band9liq.get('long|' + Math.round(Math.log(5e4) * 200));  // 同桶邻域查询（0.5% 桶）
-    check('9ae⑨ liq24 行为：汇总（多 2.2m / 空 0.2m / 单笔最大 1m）＋ 价带聚合命中 ＋ 别币不串账',
+    check('9ae⑨ liq24 行为：汇总（多 2.2m / 空 0.2m / 单笔最大 多 1m）＋ 价带聚合命中 ＋ 别币不串账',
       sum9liq.long === 2200000 && sum9liq.short === 200000 && sum9liq.max === 1000000
+      && sum9liq.maxSide === 'long'
       && !!near && near.long === 1700000);
-    s9liq.liq24[0].i = s9liq.i - 24;                                       // 最老一笔滑出 24h 窗口
-    const sum9old = engine.liq24Sum(s9liq, 'BTC');
-    check('9ae⑨ liq24 窗口：i ≤ s.i − 24 的事件不计入（24h 读数窗）',
-      sum9old.long === 1200000 && sum9old.max === 700000);
-    for (let j = 0; j < 1100; j++) engine.liq24Push(s9liq, 'BTC', 'short', 5e4, 1);
-    check('9ae⑨ liq24 硬顶：事件环 ≤ LIQ24_CAP（1000）', s9liq.liq24.length === 1000);
+    s9liq.liq24[0].i = s9liq.i - 24;                                       // 滑出 24h（仍在 7d 内）
+    s9liq.liq24[1].i = s9liq.i - 200;                                      // 滑出 7d
+    const sum24 = engine.liq24Sum(s9liq, 'BTC');
+    const sum7 = engine.liq24Sum(s9liq, 'BTC', 168);
+    check('9ae⑨ liq24 双窗：24h 行不计 i ≤ s.i−24、7d 行不计 i ≤ s.i−168（maxSide 随窗）',
+      sum24.long === 700000 && sum24.max === 700000 && sum24.maxSide === 'long'
+      && sum7.long === 1700000 && sum7.max === 1000000 && sum7.maxSide === 'long');
+    for (let j = 0; j < 4200; j++) engine.liq24Push(s9liq, 'BTC', 'short', 5e4, 1);
+    check('9ae⑨ liq24 硬顶：事件环 ≤ LIQ24_CAP（4000）', s9liq.liq24.length === 4000);
     engine.rewindTo(s9liq, idx(at(2021, 4, 10)));
     check('9ae⑨ liq24 rewindTo 清空', Array.isArray(s9liq.liq24) && s9liq.liq24.length === 0);
   }
@@ -6346,12 +6355,13 @@ section('9ap · 做空供应量上限：硬拒 · 费率 jump · 同口径范围
 }
 
 /* ═══════════════════ 9aq · tape 分段环形保留（2026-10-11）＋ 强平价挂单注入（2026-10-09） ═══════════════════ */
-section('9aq · tape 分段环形保留（900/300）＋ 订单簿强平价注入');
+section('9aq · tape 分段环形保留（1200/600 ＋ 低档先死）＋ 订单簿强平价注入');
 {
-  /* ① 行为：**分段环形**保留（2026-10-11 用户拍板「开平仓段 / 爆仓段各自顶掉最旧、互不挤占」）——
-     旧条目**不因时龄被裁**；开平仓段（k0–3）硬顶 `FEED_CAP_TRADE`（900）、爆仓段（k4–7）硬顶
-     `FEED_CAP_LIQ`（300），一段塞满只顶本段最老、另一段原封不动（旧单列 1200 的病根：
-     NPC 开平小单几小时就把爆仓段全部冲掉 ⇒「日志过一段时间就消失」）。 */
+  /* ① 行为：**分段环形 ＋ 低档先死**（2026-10-11 用户报「0.5%/1%/2%/5% 的日志比较少，
+     想让它们显示久一些」）—— 旧条目**不因时龄被裁**；开平仓段（k0–3）硬顶 `FEED_CAP_TRADE`
+     （1200）、爆仓段（k4–7）硬顶 `FEED_CAP_LIQ`（600）；超容量时只顶掉**本段内档位最低**
+     的那条（同档位取更早者 ⇒ 0.1% 档小单先死、2%/5% 档稀有单长存；全同档退化 FIFO），
+     另一段原封不动。 */
   {
     const s = await mk({ sym: 'BTC', i: idx(at(2021, 5, 10)) });
     s.feed = [
@@ -6362,18 +6372,25 @@ section('9aq · tape 分段环形保留（900/300）＋ 订单簿强平价注入
     engine.feedPush(s, 'BTC', 0, 5e4, 1e7, 0);                        // 推一根触发裁剪检查
     const keptOld = s.feed.some(r => r.i === s.i - 73 * 24);
     const n1 = s.feed.length;
-    /* 分段硬顶 A：塞 1000 条开平仓 ⇒ 开平仓段只剩最新 900，爆仓段那 1 条**原封不动** */
+    /* 分段硬顶 A：塞 1300 条开平仓（t0）⇒ 开平仓段只剩 1200，爆仓段那 1 条**原封不动** */
     s.feed = [{ i: s.i, sym: 'BTC', k: 4, p: 5e4, n: 1e7, t: 4 }];
-    for (let j = 0; j < 1000; j++) engine.feedPush(s, 'BTC', 0, 5e4, 1e7, 0);
+    for (let j = 0; j < 1300; j++) engine.feedPush(s, 'BTC', 0, 5e4, 1e7, 0);
     const nTrade = s.feed.filter(r => r.k <= 3).length;
     const nLiq = s.feed.filter(r => r.k >= 4).length;
-    /* 分段硬顶 B：再塞 400 条爆仓 ⇒ 爆仓段只剩 300，开平仓段 900 一条不动 */
-    for (let j = 0; j < 400; j++) engine.feedPush(s, 'BTC', 4, 5e4, 1e7, 0);
+    /* 分段硬顶 B：再塞 700 条爆仓 ⇒ 爆仓段只剩 600，开平仓段 1200 一条不动 */
+    for (let j = 0; j < 700; j++) engine.feedPush(s, 'BTC', 4, 5e4, 1e7, 0);
     const nTrade2 = s.feed.filter(r => r.k <= 3).length;
     const nLiq2 = s.feed.filter(r => r.k >= 4).length;
-    check('9aq① tape 保留策略：时龄不裁（73 天前的仍在）＋ 分段环形 900/300 互不挤占',
-      keptOld && n1 === 4 && nTrade === 900 && nLiq === 1 && nTrade2 === 900 && nLiq2 === 300,
-      `old=${keptOld} n1=${n1} trade=${nTrade}/${nTrade2} liq=${nLiq}/${nLiq2}`);
+    /* 低档先死：满段的开平仓（全 t<4）里推 1 条 t4（名义 2e9 ≥ 5%×日量）⇒ t4 存活、
+       档位最低且最老的那条被顶（t<4 计数 −1 —— 不锚 t0/t1 混合，防 liqDay 档位边界） */
+    const lowBefore = s.feed.filter(r => r.k <= 3 && r.t < 4).length;
+    engine.feedPush(s, 'BTC', 2, 5e4, 2e9, 0, 5);                     // 2e9 ÷ 日量 ≥ 5% ⇒ t=4
+    const t4In = s.feed.some(r => r.k === 2 && r.t === 4);
+    const lowAfter = s.feed.filter(r => r.k <= 3 && r.t < 4).length;
+    check('9aq① tape 保留策略：时龄不裁（73 天前的仍在）＋ 分段环形 1200/600 互不挤占 ＋ 低档先死（t4 挤掉 t<4）',
+      keptOld && n1 === 4 && nTrade === 1200 && nLiq === 1 && nTrade2 === 1200 && nLiq2 === 600
+      && t4In && lowAfter === lowBefore - 1,
+      `old=${keptOld} n1=${n1} trade=${nTrade}/${nTrade2} liq=${nLiq}/${nLiq2} low=${lowBefore}→${lowAfter}`);
   }
   /* ② 源断言：强平价格注入玩家名义（NPC 量＋玩家量同格）＋ 买卖比不计条件单 ＋ 你 标记沿用。 */
   {

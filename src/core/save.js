@@ -22,7 +22,7 @@ import { STATE_VERSION } from './state.js';
 import { isChallenge } from './config.js';
 
 /** 不落盘的**会话级**键：归零补满的提示闩锁（无实害：`inf` 开启时归零本就自动补满）
-    ＋ 24h 强平台账（2026-10-11：读数窗「最近 24 小时」，读档重攒）。
+    ＋ 24h/7d 强平台账（2026-10-11：读数窗「最近 7 天」，读档重攒）。
     ⚠️ `feed`（大单 tape）**已移出**本名单（2026-10-11 用户拍板「日志持续保留直到顶掉」
     ⇒ 必须跨读档成立；走 `lob` 先例不进 SHAPE —— 旧档缺键不判废，不升版）。 */
 const EPHEMERAL = ['godRuined', 'liq24'];
