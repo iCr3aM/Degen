@@ -6454,16 +6454,16 @@ section('9ax · B1 ladder 构造锚 ＋ B2 建仓价滞后接线 ＋ OI/量比�
     && god.NPC.baseHi === 0.011);
 
   /* 行为锚：B1 后 OI 地板 = 2×base×Σw(≤10x)×日量×oiF。2021-06-01 起 72h（平势段）：
-     oiF(2021) = 0.5 ⇒ NPC 侧 ≈ 0.48，但 extFlow（2021 巨鲸/ETF 真实披露额，**有意不过闸**）
-     会垫高实际 OI —— 实测该窗 0.804。断言带 (0.6, 1.1)；年代缩的纯净证明在 9ay②（2013 vs 2024 相对断言）。 */
+     oiF(2021) = 0.4（逐年考据版）⇒ NPC 侧 ≈ 0.39，但 extFlow（巨鲸/ETF 真实披露额，
+     **有意不过闸**）垫高实际 OI —— 实测该窗 0.780。断言带 (0.55, 1.05)。 */
   {
     const s = await mk({ sym: 'BTC', i: idx(at(2021, 6, 1)) });
     for (let h = 0; h < 72; h++) { engine.advanceOneHour(s); if (s.pending) s.pending = null; }
     const oi = engine.openInterestOf(s, 'BTC');
     const vol = market.liqOf('BTC', market.dayIndexOf(s.i)) || 1;
     const ratio = oi / vol;
-    check('9ax② 行为：2021 年 OI/量比 ≈ 0.8（oiF=0.5 缩 NPC 侧 ＋ extFlow 真实额垫高；带 0.6–1.1）',
-      ratio > 0.6 && ratio < 1.1, `OI/量=${ratio.toFixed(3)}`);
+    check('9ax② 行为：2021 年 OI/量比 ≈ 0.78（oiF=0.4 缩 NPC 侧 ＋ extFlow 真实额垫高；带 0.55–1.05）',
+      ratio > 0.55 && ratio < 1.05, `OI/量=${ratio.toFixed(3)}`);
   }
 }
 
@@ -6477,25 +6477,27 @@ section('9ay · C1 eraOIFactorOf 阶梯锚 ＋ npcBuild 仓位侧接线 ＋ 早�
 {
   const godSrcAy = fs.readFileSync(path.join(ROOT, 'src/core/god.js'), 'utf8');
   const engSrcAy = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
-  check('9ay① 源：eraOIFactorOf 导出 ＋ NPC.eraOI 七档阶梯 ＋ npcBuild 仓位侧四处接线（target/floor/b/floorMM）',
+  check('9ay① 源：eraOIFactorOf 导出 ＋ NPC.eraOI 十档阶梯（逐年考据版·挂事件日） ＋ npcBuild 仓位侧四处接线（target/floor/b/floorMM）',
     typeof god.eraOIFactorOf === 'function'
     && godSrcAy.includes('export function eraOIFactorOf(t) {')
-    && (god.NPC.eraOI || []).length === 7
+    && (god.NPC.eraOI || []).length === 10
     && engSrcAy.includes('const oiF = eraOIFactorOf(t);')
     && engSrcAy.includes('const floor = liqDay * oiF * NPC.floor * w;')
     && engSrcAy.includes('const b = liqDay * oiF * (low ? NPC.base : NPC.baseHi) * w;')
     && engSrcAy.includes('const floorMM = liqDay * oiF * NPC.floor;')
     && engSrcAy.includes('* liqDay * oiF;')
     && !engSrcAy.includes('dipBuyOf(liqDay * oiF'));                       // dipBuy 不乘（∝当年代自己的日量）
-  check('9ay② 行为：阶梯逐位（2013=0.15 / 2017=0.2 / 2019=0.25 / 2020=0.3 / 2021=0.5 / 2022=0.7 / 2024=1.0，边界取「最后一个 from ≤ t」）',
-    god.eraOIFactorOf(Date.UTC(2013, 0, 1)) === 0.15
-    && god.eraOIFactorOf(Date.UTC(2016, 4, 13)) === 0.15
-    && god.eraOIFactorOf(Date.UTC(2016, 11, 31, 23)) === 0.15
-    && god.eraOIFactorOf(Date.UTC(2017, 0, 1)) === 0.2
-    && god.eraOIFactorOf(Date.UTC(2019, 0, 1)) === 0.25
-    && god.eraOIFactorOf(Date.UTC(2020, 0, 1)) === 0.3
-    && god.eraOIFactorOf(Date.UTC(2021, 0, 1)) === 0.5
-    && god.eraOIFactorOf(Date.UTC(2022, 0, 1)) === 0.7
+  check('9ay② 行为：阶梯逐位（2013=0.05 / 2014-08-06=0.10 / 2015=0.20 / 2016-05-13=0.30 / 2017=0.50 / 2019=0.60 / 2020=0.40 / 2022=0.35 / 2023=0.45 / 2024=1.0，边界取「最后一个 from ≤ t」）',
+    god.eraOIFactorOf(Date.UTC(2013, 0, 1)) === 0.05
+    && god.eraOIFactorOf(Date.UTC(2014, 7, 5)) === 0.05
+    && god.eraOIFactorOf(Date.UTC(2014, 7, 6)) === 0.1
+    && god.eraOIFactorOf(Date.UTC(2015, 0, 1)) === 0.2
+    && god.eraOIFactorOf(Date.UTC(2016, 4, 13)) === 0.3
+    && god.eraOIFactorOf(Date.UTC(2017, 0, 1)) === 0.5
+    && god.eraOIFactorOf(Date.UTC(2019, 0, 1)) === 0.6
+    && god.eraOIFactorOf(Date.UTC(2020, 0, 1)) === 0.4
+    && god.eraOIFactorOf(Date.UTC(2022, 0, 1)) === 0.35
+    && god.eraOIFactorOf(Date.UTC(2023, 0, 1)) === 0.45
     && god.eraOIFactorOf(Date.UTC(2024, 0, 1)) === 1
     && god.eraOIFactorOf(Date.UTC(2025, 5, 1)) === 1);
   /* 行为锚：早年 OI 薄 ＋ 现代厚 —— 相对断言（era 缩的纯净证明）。
