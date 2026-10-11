@@ -547,7 +547,7 @@ function lobTick(s, sym) {
     }
   }
   /* ①′ 大档被吃 ⇒ 进 tape（主动方向：吃掉卖档 = 主动买 ▲；吃掉买档 = 主动卖 ▼），
-     名义阈内取最大的 `feedMax` 条 —— volatile 小时也不许刷屏（FEED_CAP 是全币共享的）。 */
+     名义阈内取最大的 `feedMax` 条 —— volatile 小时也不许刷屏（分段环形硬顶是全币共享的）。 */
   eaten.sort((a, z) => z.n - a.n);
   let fed = 0;
   for (const e of eaten) {
@@ -2465,15 +2465,19 @@ function npcRealised(long, mag, avg, price) {
  * 分档按「当日流动性比例」五档（用户拍板；2026-10-09 补 1%）：0.1% / 0.5% / 1% / 2% / 5%
  * —— 跨年代自适应（2013 年的 $1m 与 2024 年的 $1m 不是一回事），低于 0.1% 不上日志；
  * 浮窗页 4 底部那排过滤档与 `FEED_STEPS` **一一对应**（选中第 i 档 ⇒ 只留 `t ≥ i` 的行）。
- * ⚠️ **不进存档**（save.js `EPHEMERAL`）、`rewindTo` 清空、**只按条数硬顶** —— tape 是
- *    「最近发生的事」，不是账本，不参与任何玩法判定。
+ * ⚠️ `rewindTo` 清空、**只按条数硬顶** —— tape 是「最近发生的事」，不是账本，不参与任何玩法判定。
  *
- * **保留策略**（2026-10-11 用户拍板「日志要持续保留，直到新的顶掉旧的」）：**纯环形缓冲** ——
- * 只按条数硬顶本值，新条目挤掉最老的；**不再按游戏时龄裁剪**。⚠️ 旧口径（2026-10-09）是
- * 「3 个游戏日（72h）窗口 ＋ 1200 条硬顶」两条同时生效；按年龄清空与「顶掉才算过期」的直觉
- * 不符（安静时段一过，日志页会整片变空）⇒ 该窗口已废除。显示层另有「按面板高装框」的截断
- * （只画最新 N 行），与保留策略是两件事。 */
-export const FEED_CAP = 1200;
+ * **保留策略**（2026-10-11 用户拍板「日志要持续保留，直到新的顶掉旧的」）：**分段环形缓冲** ——
+ * 开平仓段（k0–3）与爆仓段（k4–7）**各自独立计数、各自顶掉最旧、互不挤占**，超出的直接丢弃。
+ * ⚠️ 旧口径（单列 1200 条）的病根：NPC 每小时建仓/减仓的开平小单几十条，几小时就把 1200 条
+ *    全部冲刷掉 ⇒ 爆仓段（k4–7，本来就少）被段外小单顶掉，观感即「过一段时间就消失」。
+ *    更早的「3 个游戏日（72h）时龄窗口」早已废除（按年龄清空与「顶掉才算过期」的直觉不符）。
+ *    显示层另有「按面板高装框」的截断（只画最新 N 行），与保留策略是两件事。
+ * ⚠️ **进存档**（2026-10-11：从 save.js `EPHEMERAL` 移出）——「持续保留直到顶掉」必须跨读档成立。
+ *    ⚠️ 走 `s.lob` 先例：**不进 SHAPE**（旧档没有这个键 ⇒ 列进白名单会把所有旧档判废），
+ *       读侧 `if (!s.feed)` 惰性补建、显示层 `(s.feed || [])` 兜底 —— 缺格 = 空日志重攒，**不升版**。 */
+export const FEED_CAP_TRADE = 900;   // 开平仓段（k0–3）独立容量 —— 以「日志页最大可见行数」为锚（可见行数 × 约 3 屏）
+export const FEED_CAP_LIQ = 300;     // 爆仓段（k4–7）独立容量（同锚）—— 爆仓条目少而重要，单独给池
 /** 分档阈值（名义 ÷ 当日流动性）—— 与浮窗日志页底部过滤档同序、同源（单一事实）。 */
 export const FEED_STEPS = [0.001, 0.005, 0.01, 0.02, 0.05];
 /** 名义额 ÷ 当日流动性 → 档位（0..4，从浅到深）；低于 0.1% ⇒ −1（不上日志）。 */
@@ -2501,9 +2505,65 @@ export function feedPush(s, sym, k, price, notional, minTier = -1, lev = 0) {
   if (tier < 0) return;
   if (!s.feed) s.feed = [];                        // 旧档 / 回退后惰性补建（不升存档版）
   s.feed.push({ i: s.i, sym, k, p: price, n: notional, t: tier, lev });
-  /* 只按**条数**硬顶（2026-10-11 用户拍板「持续保留，直到新的顶掉旧的」）—— 纯环形：
-     超过 `FEED_CAP` 才从最老那端挤掉（常态零开销）。不再按游戏时龄裁剪。 */
-  if (s.feed.length > FEED_CAP) s.feed.splice(0, s.feed.length - FEED_CAP);
+  /* 分段环形（2026-10-11 用户拍板「看不到的直接丢弃」）：本段超容量 ⇒ 只顶掉**本段最老**那条，
+     另一段一个字不动 —— 两段互不挤占。条目按时间序入列 ⇒ 同段条目天然有序，先找到的即最老。
+     O(n) 扫描每次 push 都走一遍（≤1200 条 × 每小时几十次 push，成本可忽略）。 */
+  const seg = k <= 3, cap = seg ? FEED_CAP_TRADE : FEED_CAP_LIQ;
+  let first = -1, cnt = 0;
+  for (let j = 0; j < s.feed.length; j++) if ((s.feed[j].k <= 3) === seg) { if (first < 0) first = j; cnt++; }
+  if (cnt > cap) s.feed.splice(first, 1);
+}
+
+/* ───────────────────── 24h 强平台账（2026-10-11 · 用户拍板「日志页加 24h 爆仓统计」） ─────────────────────
+ * `s.liq24`：会话级**事件环** —— 每笔强平事件 `{ i, sym, side, p, n }`（小时序号 / 币 / 侧 / 成交价 / 名义）。
+ * ⚠️ 与 tape（`s.feed`）的三点差别：**不过档位阈值**（小名义也算强平额）、**含做市盘**（`quiet`
+ *    只是「不上日志」，不是「没发生」—— 与 `stat.liqNotional` 的累计口径同源）、**含玩家两路径**。
+ * ⚠️ **会话级**：save.js `EPHEMERAL` 剔除、`rewindTo` 清空 —— 与 `s.feed` 旧先例同一待遇：
+ *    它是「最近 24 小时」的读数窗，读档/跳时间后的旧事件没有意义。
+ * ⚠️ 只留 24h：窗口 = `i > s.i − 24`（当前小时 ＋ 前 23 小时）；硬顶 `LIQ24_CAP` 条防极端潮涌撑爆内存。
+ * 读侧：`liq24Sum`（日志页统计行）＋ `liq24BandOf`（热力图「该价位已爆」按价带聚合）。 */
+export const LIQ24_CAP = 1000;
+
+/** 喂入口：一笔强平事件（`side` = `'long'` | `'short'`）。不做任何阈值过滤 —— 见节头注。 */
+export function liq24Push(s, sym, side, price, notional) {
+  if (!(price > 0) || !(notional > 0)) return;
+  if (!s.liq24) s.liq24 = [];                      // 旧档 / 回退后惰性补建（不升存档版）
+  s.liq24.push({ i: s.i, sym, side, p: price, n: notional });
+  const old = s.i - 24;
+  let j = 0;
+  while (j < s.liq24.length && s.liq24[j].i <= old) j++;   // 事件按时间序入列 ⇒ 头部连续过期
+  if (j > 0) s.liq24.splice(0, j);
+  if (s.liq24.length > LIQ24_CAP) s.liq24.splice(0, s.liq24.length - LIQ24_CAP);
+}
+
+/** 24h 强平汇总（本币）：多头额 / 空头额 / 单笔最大 —— 日志页统计行的三个读数。 */
+export function liq24Sum(s, sym) {
+  const out = { long: 0, short: 0, max: 0 };
+  const old = s.i - 24;
+  for (const e of s.liq24 || []) {
+    if (e.sym !== sym || e.i <= old) continue;
+    if (e.side === 'long') out.long += e.n; else out.short += e.n;
+    if (e.n > out.max) out.max = e.n;
+  }
+  return out;
+}
+
+/**
+ * 24h 强平的**价带聚合**（热力图「24h 该价位已爆」读数）：0.5% 对数桶，键 = `'侧|桶号'`。
+ * 查询侧带 ±1 桶邻域（⇒ 实际容差约 ±1%）：强平发生在**触发那一刻的市场价**，与行的
+ * 当前强平价天然有微小漂移（均价摊移 / 价格继续滑），按同价精确匹配会漏掉绝大多数事件。
+ * 纯读侧派生，不写状态；每次调用重建 Map（事件 ≤ `LIQ24_CAP`，成本可忽略）。
+ */
+export function liq24BandOf(s, sym) {
+  const old = s.i - 24, map = new Map();
+  for (const e of s.liq24 || []) {
+    if (e.sym !== sym || e.i <= old) continue;
+    const key = e.side + '|' + Math.round(Math.log(e.p) * 200);
+    const o = map.get(key);
+    if (o) o[e.side] += e.n;
+    else map.set(key, { [e.side]: e.n });
+  }
+  return map;
 }
 
 /**
@@ -3211,7 +3271,10 @@ function flushSlot(s, sym, m, g, lev, price, quiet = false) {
       pushNpcShock(s, sym, m, -1, g.long);
       m.heat = clamp01(m.heat - HEAT.panicDrop);
       liqNotional += g.long;                        // 缺口 16：只认**强平**这一笔（强平潮）
-      if (!quiet) feedPush(s, sym, 4, price, g.long, -1, lev);   // tape：爆多 💥
+      liq24Push(s, sym, 'long', price, g.long);     // 24h 强平台账：不过阈值、含做市盘（见 liq24Push 节头注）
+      /* minTier = 0（2026-10-11 用户拍板）：NPC 的强/爆四型与玩家强平**同权** —— 爆仓是全市场
+         事实流，无论名义多小都上 tape（做市盘仍由 `quiet` 拦在 tape 外，但入 24h 账）。 */
+      if (!quiet) feedPush(s, sym, 4, price, g.long, 0, lev);   // tape：爆多 💥
       fundSettle(s, g.long, g.longAvg, lev, 1, price);   // 缺口 5 ①②：盈余入池 / 穿仓掏池
       g.long = 0; g.longAvg = 0; g.longStopped = false; g.longTp = false; g.longLiq = false;
     } else if (price <= liqLine) {
@@ -3225,7 +3288,8 @@ function flushSlot(s, sym, m, g, lev, price, quiet = false) {
         pushNpcShock(s, sym, m, -1, cut);
         m.heat = clamp01(m.heat - HEAT.panicDrop * NPC.partialFrac);
         liqNotional += cut;
-        if (!quiet) feedPush(s, sym, 6, price, cut, -1, lev);   // tape：强多 ⚡
+        liq24Push(s, sym, 'long', price, cut);
+        if (!quiet) feedPush(s, sym, 6, price, cut, 0, lev);   // tape：强多 ⚡（minTier=0，见爆多支注）
         fundSettle(s, cut, g.longAvg, lev, 1, price);   // 强平线附近成交 ⇒ 正盈余入池
         g.long -= cut;
         g.longLiq = true;
@@ -3267,7 +3331,8 @@ function flushSlot(s, sym, m, g, lev, price, quiet = false) {
       pushNpcShock(s, sym, m, 1, g.short);
       m.heat = clamp01(m.heat + HEAT.panicDrop);
       liqNotional += g.short;
-      if (!quiet) feedPush(s, sym, 5, price, g.short, -1, lev);   // tape：爆空 💥
+      liq24Push(s, sym, 'short', price, g.short);
+      if (!quiet) feedPush(s, sym, 5, price, g.short, 0, lev);   // tape：爆空 💥（minTier=0，见爆多支注）
       fundSettle(s, g.short, g.shortAvg, lev, -1, price);
       g.short = 0; g.shortAvg = 0; g.shortStopped = false; g.shortTp = false; g.shortLiq = false;
     } else if (price >= liqLine) {
@@ -3277,7 +3342,8 @@ function flushSlot(s, sym, m, g, lev, price, quiet = false) {
         pushNpcShock(s, sym, m, 1, cut);
         m.heat = clamp01(m.heat + HEAT.panicDrop * NPC.partialFrac);
         liqNotional += cut;
-        if (!quiet) feedPush(s, sym, 7, price, cut, -1, lev);   // tape：强空 ⚡
+        liq24Push(s, sym, 'short', price, cut);
+        if (!quiet) feedPush(s, sym, 7, price, cut, 0, lev);   // tape：强空 ⚡（minTier=0，见爆多支注）
         fundSettle(s, cut, g.shortAvg, lev, -1, price);
         g.short -= cut;
         g.shortLiq = true;
@@ -4725,6 +4791,7 @@ function forceLiquidate(s, pos, atPrice) {
      ⚠️ 2026-10-11：这里是**整条仓位被打掉** ⇒ `爆多/爆空`（k=4/5）；被削一档的**部分强平**
         走 `partialLiquidate` 的 `强多/强空`（k=6/7）。 */
   feedPush(s, pos.sym, pos.side === 'long' ? 4 : 5, atPrice, notional, 0, effLevOf(pos));
+  liq24Push(s, pos.sym, pos.side, atPrice, notional);   // 24h 强平台账（与 NPC 侧同口径 · §17.3 玩家名义也计）
   delete s.positions[pos.sym];
   refreshOverhang(s, pos.sym, SHOCK.closeGive);   // v25：爆掉的杠杆实物多头同 `closeGive` 比例释放折价
 }
@@ -6220,7 +6287,8 @@ export function rewindTo(s, to) {
      而回退后 `s.positions = {}` 早已清空，这笔锁已无任何对应物，纯属残留陷阱。 */
   s.lockI = -1;
   s.log = [];
-  s.feed = [];          // 大单日志（2026-10-08 tape）：会话级、「最近发生的事」⇒ 跳时间/回退一律清空重攒
+  s.feed = [];          // 大单日志（2026-10-08 tape）：进存档但跳时间后的旧条目没有意义 ⇒ 清空重攒
+  s.liq24 = [];         // 24h 强平台账（2026-10-11）：会话级读数窗，同上清空重攒
   s.newsStance = {};    // 新闻立场账本（2026-10-11）：记录的是「回退点之后」看到的方向，回退一律清空重记
   s.lob = {};           // NPC 限价簿（2026-10-08 三批⑦）：可由种子逐位复现 ⇒ 清空后在落点冷启动重长
 
@@ -6587,6 +6655,7 @@ function partialLiquidate(s, pos, frac, atPrice) {
      （`forceLiquidate` 的 `爆多/爆空` k=4/5）在日志页分开显示。`minTier = 0`：玩家自己的仓，
      小名义也上（深市年代够不着 0.1% 阈值）。 */
   feedPush(s, pos.sym, pos.side === 'long' ? 6 : 7, atPrice, notional, 0, effLevOf(pos));
+  liq24Push(s, pos.sym, pos.side, atPrice, notional);   // 24h 强平台账（部分强平同口径 · 与 liqNotional 一致）
   /* 清算费（2026-10-07 用户拍板 · 补漏）：**部分强平同样按「已平名义」收费**。
      现实里交易所对部分强平也照收 liquidation fee（与整条强平同一张费率表）；旧实现只有
      `forceLiquidate` 扣费 ⇒ 「被削十几档」这条最惨的路反而一分不罚（实测累计 0.2%~0.5% 原始名义）。

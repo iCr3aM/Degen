@@ -13,7 +13,7 @@
 
 import { GAME, COINS, EXCHANGES, SCENARIOS, SPEEDS, USDT_LIVE, OTC, exchangeOf, haltedAt, hasFinancingAt, hasLeverageKindAt, isChallenge, leverageOptionsAt, feeRateOf, HOUR_MS, loanAmountAt, scenarioOf, usdtPriceAt } from '../core/config.js';
 import { fmtCap, fmtDate, fmtFloatPrice, fmtHour, fmtLogPrice, fmtMoney, fmtMoneyShort, fmtPct, fmtQty, fmtRate, moneyTierHeld } from '../core/format.js';
-import { latentOf, available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, eventsOff, exMarkPrice, FEED_STEPS, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
+import { latentOf, available, canAdjustMargin, canCloseAt, canOpenAt, careerOf, chanOf, equity, eventsOff, exMarkPrice, FEED_STEPS, fngBandOf, fngOf, futuresAvailable, godLiqMulOf, godWatchOf, lastPrice, liq24BandOf, liq24Sum, marginCapsOf, marginStepOf, newsVars, niceStepOf, openInterestOf, otcOpenFor, otcUnlocked, pauseLocked, retailLongShareOf, reviewDrawdownOf, reviewFngBandOf, reviewFngOf, reviewVolOf, reviewVolUsdOf, ruinLabelOf, timeOf, totalUnrealized, transferPlan, unrealizedOf, vol30Of, OVER } from '../core/engine.js';
 import { canLiquidate, effLevOf, isMargin, liquidationPrice, marginRateOf, safetyOf } from '../core/positions.js';
 import { ROLL_MS, rollSample, shouldRoll } from '../core/roll.js';
 import { isLoaded, candleAt, rawCloseAt, supplyAt, HOURS_PER_DAY } from '../core/market.js';
@@ -3606,6 +3606,16 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const MARGIN = 6 / HM_H;                        // 上下各留 6px，条不贴边
     const avail = 1 - 2 * MARGIN;
     const clampT = v => Math.min(1 - MARGIN, Math.max(MARGIN, v));
+    /* 24h 该价位已爆（2026-10-11 · 任务③）：引擎 `liq24BandOf` 价带聚合（0.5% 对数桶），
+       查询带 ±1 桶邻域 ⇒ 容差约 ±1%（强平触发价与行价天然微漂，精确匹配会漏绝大多数）。
+       每帧重建一次 Map（事件 ≤ LIQ24_CAP）；无事件 ⇒ 查询恒 0，条尾不缀读数（LESS IS MORE）。 */
+    const band = liq24BandOf(s, s.sym);
+    const bandAt = (side, price) => {
+      const k = Math.round(Math.log(price) * 200);
+      let z = 0;
+      for (let d = -1; d <= 1; d++) { const o = band.get(side + '|' + (k + d)); if (o) z += o[side] || 0; }
+      return z;
+    };
     const rows = w.liqs.map(l => ({ y: yFrac(l.price), l }));
     /* 玩家自己的强平线（2026-10-09 · 用户拍板）：有仓**且有强平线**就画一条「你」的条。纵轴**不**为它
        延展（1x 仓的强平价 ≈ 0，会把整个视窗拉爆）—— 越界时夹到边缘照画，精确数字在巨鲸页。
@@ -3654,17 +3664,22 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
         now.style.top = `${clampT(r.t) * 100}%`;
         hm.append(now);
       } else if (r.you) {
-        /* 玩家条（2026-10-09）：缀「·你」与强平字样 ＋ accent 高亮（CSS `.god-hm-bar.you`）。 */
+        /* 玩家条（2026-10-09）：缀「·你」与强平字样 ＋ accent 高亮（CSS `.god-hm-bar.you`）。
+           2026-10-11 任务③：价后缀「(距现价%)」；24h 该价位已爆 > 0 才缀条尾读数。 */
+        const z = bandAt(r.l.side, r.l.price);
         const bar = el('div', `god-hm-bar ${r.l.side} you`,
-          `强平 ${fmtFloatPrice(r.l.price)} ${fmtQty(r.l.notional / r.l.price)} ${s.sym} ${fmtMoneyShort(r.l.notional)}·你`);
+          `强平 ${fmtFloatPrice(r.l.price)}(${fmtPct(r.l.price / w.price - 1)}) ${fmtQty(r.l.notional / r.l.price)} ${s.sym} ${fmtMoneyShort(r.l.notional)}·你${z > 0 ? `·24h爆${fmtMoneyShort(z)}` : ''}`);
         bar.style.top = `${clampT(r.t) * 100}%`;
         bar.style.width = `${Math.min(92, 10 + r.l.w * 82)}%`;
         hm.append(bar);
       } else {
         /* 数量读数（2026-10-08 三批拍板）：名义 ÷ 强平价 = 币量，缀在价格后 —— 与订单簿页
-           的「数量」列同源（fmtQty），宽度窄的条照旧允许横向溢出（行距级联钉死 ≥12px）。 */
+           的「数量」列同源（fmtQty），宽度窄的条照旧允许横向溢出（行距级联钉死 ≥12px）。
+           2026-10-11 任务③：价后缀「(距现价%)」（正 = 上方空头强平带 / 负 = 下方多头强平带）；
+           24h 该价位已爆 > 0 才缀「·24h爆$Z」（价带聚合，见 bandAt）。 */
+        const z = bandAt(r.l.side, r.l.price);
         const bar = el('div', `god-hm-bar ${r.l.side}`,
-          `${fmtFloatPrice(r.l.price)} ${fmtQty(r.l.notional / r.l.price)} ${s.sym} ${fmtMoneyShort(r.l.notional)}·${r.l.name}`);
+          `${fmtFloatPrice(r.l.price)}(${fmtPct(r.l.price / w.price - 1)}) ${fmtQty(r.l.notional / r.l.price)} ${s.sym} ${fmtMoneyShort(r.l.notional)}·${r.l.name}${z > 0 ? `·24h爆${fmtMoneyShort(z)}` : ''}`);
         bar.style.top = `${clampT(r.t) * 100}%`;
         bar.style.width = `${Math.min(92, 10 + r.l.w * 82)}%`;
         hm.append(bar);
@@ -3673,29 +3688,42 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     box.append(hm);
     if (!w.liqs.length) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
   } else if (page === 1) {
-    const t = w.price;
-    const sideRow = (name, isLong, notional, avg, lev) => {
-      const drop = 1 / lev - GAME.maintRate;
-      const lp = isLong ? avg * (1 - drop) : avg * (1 + drop);
-      return el('div', 'god-frow2',
-        `${name} ${fmtMoneyShort(notional)}@${fmtFloatPrice(avg)} ｜ 强平 ${fmtFloatPrice(lp)} (${fmtPct(lp / t - 1)})`);
-    };
-    /* 多空分组（2026-10-08 三批拍板「巨鲸的 tab 多空要分开」）：多头一行头、空头一行头，
-       各档逐条列在各自组下 —— 行内不再缀「多 / 空」字（组头已表达方向，LESS IS MORE）。
-       玩家自己的仓位（2026-10-09 · 用户拍板）置顶一行：方向 / 生效杠杆 / 名义@开仓价 / 强平价
-       （距%）—— 与 NPC 行同一套读数，accent 高亮（CSS `.god-frow2.you`）标明「这是你」。 */
-    const you = playerPosOf(s);
-    if (you) {
-      box.append(el('div', 'god-frow2 you',
-        `你·${you.side === 'long' ? '多' : '空'} ${Math.round(you.lev * 10) / 10}x ｜ ${fmtMoneyShort(you.pos.notional)}@${fmtFloatPrice(you.pos.entry)} ｜ 强平 ${you.lp != null ? `${fmtFloatPrice(you.lp)} (${fmtPct(you.lp / t - 1)})` : '--'}`));
-    }
+    /* 单笔大仓 Top10（2026-10-11 · 用户拍板）：巨鲸页 = **存量持仓榜**（「现在谁拿着什么仓」）——
+       NPC 每档每侧本身就是一笔大仓（某档 long = 8M 就是一个 NPC 开了 8M 多单），候选 = 六档×两侧
+       ＋ 做市×两侧 ＋ 玩家仓位（若有），多空各成榜单、按**名义**降序各取前 10。
+       列：档（谁）｜ 开仓价（longAvg/shortAvg、玩家 entry）｜ 倍数（npcLevOf 年代封顶后的生效值）｜
+       数量（名义 ÷ 开仓价）｜ 金额（= 名义 —— 拍板里「名义」即排序键、与金额同值，只显示一列防重复）。
+       强平价不在此页（那是热力图的本职：价格触发带视图）—— 两个页面从此两个概念，数据源也不同
+       （tiers 持仓聚合 vs liqs 强平价挂带）。 */
     const longs = [], shorts = [];
     for (const tr of w.tiers) {
-      if (tr.long > 0) longs.push(sideRow(tr.name, true, tr.long, tr.longAvg, tr.lev));
-      if (tr.short > 0) shorts.push(sideRow(tr.name, false, tr.short, tr.shortAvg, tr.lev));
+      if (tr.long > 0) longs.push({ name: tr.name, lev: tr.lev, n: tr.long, avg: tr.longAvg, you: false });
+      if (tr.short > 0) shorts.push({ name: tr.name, lev: tr.lev, n: tr.short, avg: tr.shortAvg, you: false });
     }
-    if (longs.length) { box.append(el('div', 'god-frow2 mut', '多头')); for (const r of longs) box.append(r); }
-    if (shorts.length) { box.append(el('div', 'god-frow2 mut', '空头')); for (const r of shorts) box.append(r); }
+    const you = playerPosOf(s);
+    if (you) (you.side === 'long' ? longs : shorts).push({ name: '你', lev: you.lev, n: you.pos.notional, avg: you.pos.entry, you: true });
+    const top10 = a => a.sort((x, y) => y.n - x.n).slice(0, 10);
+    const mkHead = () => {
+      const h = el('div', 'gwd-head');
+      h.append(el('i', null, '档'), el('span', null, '开仓价'), el('n', null, '倍数'), el('em', null, '数量'), el('b', null, '金额'));
+      return h;
+    };
+    const sec = (label, list) => {
+      if (!list.length) return;
+      box.append(el('div', 'god-frow2 mut', label), mkHead());
+      for (const c of list) {
+        const row = el('div', `gwd-row${c.you ? ' you' : ''}`);
+        row.append(
+          el('i', null, c.name),
+          el('span', null, fmtFloatPrice(c.avg)),
+          el('n', null, `${Math.round(c.lev * 10) / 10}x`),
+          el('em', null, fmtQty(c.n / c.avg)),
+          el('b', null, fmtMoneyShort(c.n)));
+        box.append(row);
+      }
+    };
+    sec('多头', top10(longs));
+    sec('空头', top10(shorts));
     if (!longs.length && !shorts.length) box.append(el('p', 'god-fnote', 'NPC 各档暂无持仓'));
     /* 情绪读数只留**热度**（2026-10-08 拍板）：恐惧贪婪指数与交易页 K 线左下角那份重复，
        浮窗巨鲸页不再显示（`w.fng` 数据轨保留 —— 审计 9x 仍锚定 godWatchOf 的读数域）。 */
@@ -3871,9 +3899,10 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const desk = window.matchMedia && window.matchMedia('(min-width: 1280px)').matches;
     const rowH = desk ? 15 : 13;
     const fh = floatGeo().h;
-    /* 行数按面板高现算：扣掉 列头 ＋ 两条段标题（各 ≈ 一行）＋ 底部过滤行 ＋ 边距（104 沿用旧口径）。
+    /* 行数按面板高现算：扣掉 列头 ＋ 两条段标题（各 ≈ 一行）＋ 24h 爆仓统计行 ＋ 底部过滤行 ＋
+       边距（104 沿用旧口径）。
        上段 70% / 下段 30%（各至少 2 行）；两段列表高度之和 = 可用高 ⇒ 铺满、过滤行钉死。 */
-    const totalRows = Math.max(6, Math.floor((fh - 104 - 2 * rowH) / rowH));
+    const totalRows = Math.max(6, Math.floor((fh - 104 - 3 * rowH) / rowH));
     const topRows = Math.max(2, Math.round(totalRows * 0.7));
     const botRows = Math.max(2, totalRows - topRows);
     const all = (s.feed || []).filter(r => r.sym === s.sym && r.t >= lf);
@@ -3912,6 +3941,13 @@ function floatBody(s, page, bookStep = 1, logFilt = 0) {
     const emptyNote = `暂无大单 —— 超过当日流动性 ${feedPctLabel(lf)} 的合约开/平/爆仓会上这里。`;
     sec('开平仓', topRows, all.filter(r => r.k <= 3).slice(-topRows).reverse(), emptyNote);
     sec('爆仓', botRows, all.filter(r => r.k >= 4).slice(-botRows).reverse(), '—');
+    /* 24h 爆仓统计行（2026-10-11 · 用户拍板）：引擎 `liq24Sum`（会话级事件环 s.liq24 ——
+       不过档位阈值、含做市盘，与 stat.liqNotional 同口径的全市场事实），本币口径与页内 tape 同一把尺。
+       无强平印「—」，不印三个 $0（LESS IS MORE）。 */
+    const lq = liq24Sum(s, s.sym);
+    box.append(el('div', 'gfd-stat', lq.max > 0
+      ? `24h爆仓 多 ${fmtMoneyShort(lq.long)} ｜ 空 ${fmtMoneyShort(lq.short)} ｜ 单笔最大 ${fmtMoneyShort(lq.max)}`
+      : '24h爆仓 —'));
     /* 底部过滤档（2026-10-09 用户拍板⑥）：与订单簿步进同一族样式（`.gb-steps` / `.gb-step`），
        标签走 `feedPctLabel`（与引擎阈值同源）；选中档高亮随每帧重画跟随。 */
     const filtRow = el('div', 'gb-steps');

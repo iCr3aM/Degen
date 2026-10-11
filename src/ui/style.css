@@ -2162,9 +2162,8 @@ button { user-select: none; -webkit-user-select: none; }
 .god-frow2 i { font-style: normal; color: var(--mut); }
 .god-frow2 b { font-weight: 600; }
 .god-frow2.mut { color: var(--mut); }
-/* 玩家自己的仓位行 / 条（2026-10-09 · 用户拍板「热力图/巨鲸/订单要显示玩家的仓位」）：
-   accent 高亮（跟随主题）＋ 一档字重，与 NPC 行同一版式 —— 不加框（LESS IS MORE）。 */
-.god-frow2.you { color: var(--accent); font-weight: 600; }
+/* 玩家仓位行的 accent 高亮现走 `.gwd-row.you`（2026-10-11 巨鲸页改 Top10 榜，见下方 gwd 行族）
+   ＋ 热力图 `.god-hm-bar.you` ＋ 订单簿 `.gb-row.you` —— 旧的 `.god-frow2.you` 随置顶行退役。 */
 .god-fnote { margin: 4px 0 0; font-size: 10px; color: var(--mut); }
 /* 清算热力图：纵轴 = 价格（上高下低），条 = 某档某侧的强平价位（宽 ∝ 名义占比，
    多头强平 = 跌侧红、空头强平 = 涨侧绿 —— 与 K 线涨跌色同一对变量），金虚线 = 当前价。 */
@@ -2314,6 +2313,30 @@ button { user-select: none; -webkit-user-select: none; }
    靠字形（⚡ vs 💥）＋方向文字区分。 */
 .gfd-pl i, .gfd-pl span, .gfd-row.gfd-pl b, .gfd-pl s { color: #f06292; }
 .gfd-ps i, .gfd-ps span, .gfd-row.gfd-ps b, .gfd-ps s { color: #ffb74d; }
+/* 24h 爆仓统计行（2026-10-11 · 用户拍板）：过滤档上方的一条压底读数行 —— 与 .gfd-sec 同族
+   （窄行、深底），一行 nowrap，字数再省也不换行（用户红线）。 */
+.gfd-stat {
+  font-size: 9px;
+  line-height: 13px;
+  font-weight: 600;
+  padding: 0 2px;
+  margin-top: 2px;
+  color: color-mix(in srgb, var(--fg) 68%, var(--mut));
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* 巨鲸页「单笔大仓 Top10」行族（2026-10-11 · 用户拍板）：与 .gfd-* 同一套 9px/13px 纪律，
+   列固定宽不换行 —— 档名 44px（`100x→3x` / `做市`）/ 开仓价弹性（省略号）/ 倍数 30px /
+   数量 48px / 金额 52px。「你」行 accent 高亮（与热力图「·你」条同一族标记）。 */
+.gwd-head, .gwd-row { display: flex; align-items: center; gap: 4px; font-size: 9px; line-height: 13px; overflow: hidden; }
+.gwd-head { color: var(--mut); }
+.gwd-head i, .gwd-row i { flex: 0 0 44px; font-style: normal; font-weight: 600; overflow: hidden; white-space: nowrap; }
+.gwd-head span, .gwd-row span { flex: 1 1 auto; text-align: right; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.gwd-head n, .gwd-row n { flex: 0 0 30px; text-align: right; color: var(--mut); overflow: hidden; white-space: nowrap; }
+.gwd-head em, .gwd-row em { flex: 0 0 48px; font-style: normal; text-align: right; overflow: hidden; white-space: nowrap; }
+.gwd-head b, .gwd-row b { flex: 0 0 52px; font-weight: 600; text-align: right; overflow: hidden; white-space: nowrap; }
+.gwd-row.you span, .gwd-row.you b, .gwd-row.you i { color: var(--accent); }
 
 /* ══════════════ 桌面端分档：详情浮窗扩大 ＋ 容器再放宽（2026-10-08 用户拍板）══════════════
    用户原话「做桌面端（桌面网页版）适配，详细适配，比如详情浮窗可以扩大」。浮窗那三档尺寸改由
