@@ -2586,10 +2586,14 @@ export function liq24BandOf(s, sym) {
  *   （趋势盘六档传，做市盘不传：做市是对手盘流动性、不是方向性合约单，上了 tape 只会是噪声）；
  * @param {string} [fSym] 事件流的币种（与 `fS` 成对）
  * @param {number} [lev] 该档的**生效杠杆**（`npcLevOf` 年代封顶后）—— 只喂 tape 的「倍数」列（缺省 0 ⇒ `—`）
+ * @param {number} [pAdd] **加仓摊均价用的价格**（方案 B2 · 建仓价离散，2026-10-11）：调用方给
+ *   「`⌈0.5/sp⌉` 根前的收盘」（`closeAt`，逐位可复现）⇒ 均价不再贴现价、强平线天然分布，
+ *   价格线穿越只烧一部分（原结构单次级联烧 ~55% OI vs 现实 ~10%）。减仓的已实现盈亏 / 残尾
+ *   清零仍用**现价** `price`（市价平仓）—— 只有加仓的摊平均价用滞后价。缺省 = 现价（逐位同旧）。
  * @returns {number} 本次**减仓**（含残尾清零）的已实现盈亏（正 = NPC 赚）—— 供调用方入对手方池；
  *   没有减仓（纯加仓 / 无变化）时返回 0。方案 A ②：NPC 减仓也要结算，否则「无玩家时」池无收入流。
  */
-function stepNpc(slot, side, target, price, floor, speed = NPC.speed, fS = null, fSym = '', lev = 0) {
+function stepNpc(slot, side, target, price, floor, speed = NPC.speed, fS = null, fSym = '', lev = 0, pAdd = price) {
   const long = side === 'long';
   const key = long ? 'long' : 'short';
   const avgKey = long ? 'longAvg' : 'shortAvg';
@@ -2617,7 +2621,7 @@ function stepNpc(slot, side, target, price, floor, speed = NPC.speed, fS = null,
   const realised = delta < 0 ? npcRealised(long, -delta, slot[avgKey], price) : 0;
   if (fS) feedPush(fS, fSym, long ? (delta > 0 ? 0 : 2) : (delta > 0 ? 1 : 3), price, Math.abs(delta), -1, lev);
   slot[key] = next;
-  if (delta > 0 && price > 0) slot[avgKey] = (slot[avgKey] * cur + price * delta) / next;   // 加仓 ⇒ 摊平均价
+  if (delta > 0 && pAdd > 0) slot[avgKey] = (slot[avgKey] * cur + pAdd * delta) / next;   // 加仓 ⇒ 摊平均价（B2：滞后价）
   return realised;
 }
 
@@ -3581,8 +3585,16 @@ function npcBuild(s, sym, m, i) {
     let tLong = b + Math.max(0, target * w), tShort = b + Math.max(0, -target * w);
     if ((m.npc[k].longCoolUntil || 0) > i) tLong = Math.min(tLong, m.npc[k].long || 0);
     if ((m.npc[k].shortCoolUntil || 0) > i) tShort = Math.min(tShort, m.npc[k].short || 0);
-    npcRealisedSum += stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff);
-    npcRealisedSum += stepNpc(m.npc[k], 'short', tShort, price, floor, NPC.ladder[k].sp, s, sym, eff);
+    /* 方案 B2 · 建仓价离散：加仓摊均价用 **k 根前的收盘**（k = ⌈0.5/sp⌉，随持仓周期缩放 ——
+       3x 持仓数月 ⇒ k≈9h，100x 秒进秒出 ⇒ k=1h）。现实里不同时刻入场的人各有各的均价 ⇒
+       强平线天然分布；原「均价贴现价」结构让价格线穿越 = 整档全灭（单次级联烧 ~55% OI）。
+       上涨段的加仓记在更低的滞后价上 ⇒ 强平线更深 ⇒ 回撤烧不到 —— 这正是「低位建仓者活得久」。
+       零新状态（`closeAt` 逐位可复现）；缺 K 线（币龄不足 / 回溯段外）⇒ 回落现价。 */
+    const lagK = Math.max(1, Math.round(0.5 / NPC.ladder[k].sp));
+    const pLag = closeAt(sym, i - lagK);
+    const pAdd = pLag > 0 ? pLag : price;
+    npcRealisedSum += stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff, pAdd);
+    npcRealisedSum += stepNpc(m.npc[k], 'short', tShort, price, floor, NPC.ladder[k].sp, s, sym, eff, pAdd);
     /* 护盘 / 外部买盘：**当根全量入仓**（不走趋近，2026-10-08 拆分时定的口径）——急购就是
        砸市价单（对照 2025-10-10 实测锚：深度真空 35 分钟恢复九成，分钟级），原「并入靶心
        按 speed 渐近」要 19h 才到位九成，反而失真；且拆两次趋近会引入 `0.15/sp` 的稳态
@@ -3613,11 +3625,13 @@ function npcBuild(s, sym, m, i) {
   if (m.mm) {
     const targetMM = -NPC.mm.absorb * mmMul * trendNet(m);
     const floorMM = liqDay * NPC.floor;
-    /* 做市盘同样吃冷却（`flushSlot` 四支是共享代码 ⇒ mm 格子也会有 coolUntil）：只许减不许加。 */
+    /* 做市盘同样吃冷却（`flushSlot` 四支是共享代码 ⇒ mm 格子也会有 coolUntil）：只许减不许加。
+       B2 同款滞后价（mm.speed = 0.5 ⇒ k = 1 根）。 */
     const tLmm = (m.mm.longCoolUntil || 0) > i ? Math.min(targetMM, m.mm.long || 0) : targetMM;
     const tSmm = (m.mm.shortCoolUntil || 0) > i ? Math.min(-targetMM, m.mm.short || 0) : -targetMM;
-    npcRealisedSum += stepNpc(m.mm, 'long', tLmm, price, floorMM, NPC.mm.speed);
-    npcRealisedSum += stepNpc(m.mm, 'short', tSmm, price, floorMM, NPC.mm.speed);
+    const pAddMM = (() => { const p = closeAt(sym, i - 1); return p > 0 ? p : price; })();
+    npcRealisedSum += stepNpc(m.mm, 'long', tLmm, price, floorMM, NPC.mm.speed, null, '', 0, pAddMM);
+    npcRealisedSum += stepNpc(m.mm, 'short', tSmm, price, floorMM, NPC.mm.speed, null, '', 0, pAddMM);
   }
   settlePool(s, sym, npcRealisedSum, false);
 }

@@ -3259,12 +3259,12 @@ section('9w · NPC 双侧基底 ＋ 档名生效杠杆 ＋ 50x 性能预算');
       worst < 1e-6, `最大差 ${f(worst, 12)}`);
   }
   const engSrc9w = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
-  check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 动量/基底走档位速度 sp ＋ 冷却侧靶心夹持 ＋ 护盘/外部流当根入仓（恒等式前提）',
+  check('9w② npcBuild 靶心构造：基底叠在 max(0,·) 之外 ＋ 动量/基底走档位速度 sp ＋ 冷却侧靶心夹持 ＋ 建仓价滞后（B2）＋ 护盘/外部流当根入仓（恒等式前提）',
     engSrc9w.includes("let tLong = b + Math.max(0, target * w), tShort = b + Math.max(0, -target * w);")
     && engSrc9w.includes('if ((m.npc[k].longCoolUntil || 0) > i) tLong = Math.min(tLong, m.npc[k].long || 0);')
     && engSrc9w.includes('if ((m.npc[k].shortCoolUntil || 0) > i) tShort = Math.min(tShort, m.npc[k].short || 0);')
-    && engSrc9w.includes("stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff)")
-    && engSrc9w.includes("stepNpc(m.npc[k], 'short', tShort, price, floor, NPC.ladder[k].sp, s, sym, eff)")
+    && engSrc9w.includes("stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff, pAdd)")
+    && engSrc9w.includes("stepNpc(m.npc[k], 'short', tShort, price, floor, NPC.ladder[k].sp, s, sym, eff, pAdd)")
     && engSrc9w.includes('const b = liqDay * (low ? NPC.base : NPC.baseHi) * w;')
     && engSrc9w.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;'));
 
@@ -3562,7 +3562,7 @@ section('9y · 深跌护盘 dipOf ＋ y 轴/浮窗步进自适应 fmtAxisPrice')
   check('9y② 接线：dipOf 导出 ＋ npcBuild 长侧 dipBuy（买加长侧）＋ npcOtherTick 复用（护盘覆盖全币）',
     engSrc9y.includes('export function dipOf')
     && engSrc9y.includes('const dipBuy = d3.dipBuy;')
-    && engSrc9y.includes("stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff, pAdd)")
     && engSrc9y.includes('const buy = (dipBuy + Math.max(0, extFlow)) * w;')
     && engSrc9y.includes('npcBuild(s, sym, m, s.i);')
     && engSrc9y.includes('import { candleAt, closeAt, dayIndexOf'));
@@ -5205,10 +5205,10 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
     && !engSrc9y.includes('FEED_DAYS')            // 2026-10-11：按天窗口已废除（改纯环形）
     && engSrc9y.includes('s.feed = [];'));
 
-  check('9ae② 挂点：六档建减仓发事件（s, sym, lev）＋ 冷却侧靶心夹持（liqCool · 2026-10-11）＋ 做市盘**不带**（对手盘不上 tape）',
-    engSrc9y.includes("stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff)")
-    && engSrc9y.includes("stepNpc(m.npc[k], 'short', tShort, price, floor, NPC.ladder[k].sp, s, sym, eff)")
-    && engSrc9y.includes("stepNpc(m.mm, 'long', tLmm, price, floorMM, NPC.mm.speed)")
+  check('9ae② 挂点：六档建减仓发事件（s, sym, lev, pAdd）＋ 冷却侧靶心夹持（liqCool）＋ 做市盘**不带**（对手盘不上 tape）',
+    engSrc9y.includes("stepNpc(m.npc[k], 'long', tLong, price, floor, NPC.ladder[k].sp, s, sym, eff, pAdd)")
+    && engSrc9y.includes("stepNpc(m.npc[k], 'short', tShort, price, floor, NPC.ladder[k].sp, s, sym, eff, pAdd)")
+    && engSrc9y.includes("stepNpc(m.mm, 'long', tLmm, price, floorMM, NPC.mm.speed, null, '', 0, pAddMM)")
     && engSrc9y.includes('flushSlot(s, sym, m, m.mm, NPC.mm.lev, lastPrice(s, sym), true)'));
 
   check('9ae③ 挂点：flushSlot 止损/止盈/强/爆（quiet；强/爆四型 minTier=0 与玩家同权 · 2026-10-11 拍板）＋ 护盘/巨鲸急购 ＋ 玩家开/平/强平（含 `lev`）',
@@ -5295,6 +5295,7 @@ section('16 · 归零门槛无死区（同源判据 · 门槛处恰好翻转 · 
   {
     /* 行为锚：手工喂事件 ⇒ 汇总 / 价带查询逐位对 ＋ 24h 窗口裁剪 ＋ 硬顶。 */
     const s9liq = await mk({ sym: 'BTC', i: idx(at(2021, 5, 10)) });
+    s9liq.liq24 = [];                   // mk 的启动 tick 撞上崩盘周会先入几笔真实强平 ⇒ 清空后喂手工事件（断言才逐位）
     engine.liq24Push(s9liq, 'BTC', 'long', 5e4, 1e6);
     engine.liq24Push(s9liq, 'BTC', 'long', 5.02e4, 5e5);
     engine.liq24Push(s9liq, 'BTC', 'short', 5e4, 2e5);
@@ -6430,6 +6431,42 @@ section('9aw · 强平后重建冷却 liqCool（挂点四支 ＋ 靶心夹持 �
     engine.advanceOneHour(s);
     check('9aw② 行为：冷却结束后重建恢复（探针仓朝基底 b 增长）',
       g.long > probe, `long=${g.long.toPrecision(3)} probe=${probe}`);
+  }
+}
+
+/* ═══════════════════ 9ax · 方案 B1 权重迁移 ＋ B2 建仓价离散（2026-10-11） ═══════════════════
+   靶点：单次级联烧 ~55% OI（现实 ~10%，2025-10-10 = $19.16B/~$200B）。B1 把六档权重向低杠杆
+   迁移（保 w50:w100=4:1 唯一硬锚 ＋ Σw=1 ＋ Σ(w×sp)≈0.153 总节奏），-10% 日燃烧面 75%→35% OI；
+   B2 让加仓摊均价用 k=⌈0.5/sp⌉ 根前的收盘（零新状态，closeAt 逐位可复现）⇒ 强平线天然分布。
+   标定（BTC 全期 · 19+）：p99 5.25→2.97%（锚 ~2.5 ✓）、>2% 日 39.7→12.8/年、p50=0.155% 在锚、
+   多:空 1:0.86 不漂、OI/量比 0.108→0.966（现实 0.8–1.15 ✓）。残差：max（2020-03-12 单日 13.9%）、
+   >1% 日 44.7/年 —— 记录不追。 */
+section('9ax · B1 ladder 构造锚 ＋ B2 建仓价滞后接线 ＋ OI/量比行为锚');
+{
+  const engSrcAx = fs.readFileSync(path.join(ROOT, 'src/core/engine.js'), 'utf8');
+  check('9ax① 源：B2 滞后价接线（k=⌈0.5/sp⌉ ＋ closeAt 缺 K 线回落现价 ＋ stepNpc pAdd 缺省=现价）',
+    engSrcAx.includes('const lagK = Math.max(1, Math.round(0.5 / NPC.ladder[k].sp));')
+    && engSrcAx.includes('const pLag = closeAt(sym, i - lagK);')
+    && engSrcAx.includes('const pAdd = pLag > 0 ? pLag : price;')
+    && engSrcAx.includes("function stepNpc(slot, side, target, price, floor, speed = NPC.speed, fS = null, fSym = '', lev = 0, pAdd = price) {")
+    && engSrcAx.includes('if (delta > 0 && pAdd > 0) slot[avgKey] = (slot[avgKey] * cur + pAdd * delta) / next;'));
+  check('9ax② B1 ladder 构造：Σw=1 ＋ Σ(w×sp)≈0.153（总节奏不变）＋ w50:w100=4:1（BitMEX 锚）＋ baseHi 补偿 0.011',
+    Math.abs(god.NPC.ladder.reduce((a, r) => a + r.w, 0) - 1) < 1e-9
+    && Math.abs(god.NPC.ladder.reduce((a, r) => a + r.w * r.sp, 0) - 0.153) < 0.001
+    && Math.abs(god.NPC.ladder[4].w / god.NPC.ladder[5].w - 4) < 1e-9
+    && god.NPC.ladder.every((r, i, a) => i === 0 || r.sp > a[i - 1].sp)     // 高杠杆更快（梯度保持）
+    && god.NPC.baseHi === 0.011);
+
+  /* 行为锚：B1 后 OI 地板 = 2×base×Σw(≤10x)×日量 = 16.8%（原 10.8%）⇒ OI/量比应落进现实带。
+     2021-06-01 起 72h（平势段），OI/量 ∈ (0.6, 1.4)（标定实测 0.966；现实 0.8–1.15）。 */
+  {
+    const s = await mk({ sym: 'BTC', i: idx(at(2021, 6, 1)) });
+    for (let h = 0; h < 72; h++) { engine.advanceOneHour(s); if (s.pending) s.pending = null; }
+    const oi = engine.openInterestOf(s, 'BTC');
+    const vol = market.liqOf('BTC', market.dayIndexOf(s.i)) || 1;
+    const ratio = oi / vol;
+    check('9ax② 行为：OI/量比落进现实带（0.6–1.4；现实 0.8–1.15，B1 前 ≈0.1）',
+      ratio > 0.6 && ratio < 1.4, `OI/量=${ratio.toFixed(3)}`);
   }
 }
 
